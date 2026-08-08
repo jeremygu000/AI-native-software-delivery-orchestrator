@@ -1,0 +1,16 @@
+{
+  "name": "dag",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/dag/src",
+  "projectType": "library",
+  "tags": ["scope:core", "type:engine"],
+  "// targets": "to see all targets run: nx show project dag --web",
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "oxlint --type-aware libs/dag/src"
+      }
+    }
+  }
+}

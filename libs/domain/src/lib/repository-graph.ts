@@ -1,0 +1,61 @@
+export type ProjectId = string;
+export type FileId = string;
+export type SymbolId = string;
+
+export type SymbolKind = 'class' | 'method' | 'function' | 'interface' | 'type' | 'variable';
+
+export interface ProjectNode {
+  readonly id: ProjectId;
+  readonly name: string;
+  readonly root: string;
+  readonly sourceRoot?: string;
+}
+
+export interface FileNode {
+  readonly id: FileId;
+  readonly projectId: ProjectId;
+  readonly path: string;
+  readonly isGenerated: boolean;
+}
+
+export interface SymbolNode {
+  readonly id: SymbolId;
+  readonly fileId: FileId;
+  readonly name: string;
+  readonly path: string;
+  readonly kind: SymbolKind;
+  readonly parentSymbolId?: SymbolId;
+  readonly exported: boolean;
+  readonly signature?: string;
+}
+
+export interface GraphEdge<TNodeId extends string> {
+  readonly from: TNodeId;
+  readonly to: TNodeId;
+}
+
+export interface RepositoryGraph {
+  readonly repositoryPath: string;
+  readonly projects: ReadonlyMap<ProjectId, ProjectNode>;
+  readonly files: ReadonlyMap<FileId, FileNode>;
+  readonly symbols: ReadonlyMap<SymbolId, SymbolNode>;
+  readonly projectDependencies: readonly GraphEdge<ProjectId>[];
+  readonly fileDependencies: readonly GraphEdge<FileId>[];
+  readonly symbolReferences: readonly GraphEdge<SymbolId>[];
+}
+
+export interface ApiSurfaceChange {
+  readonly symbolId: SymbolId;
+  readonly beforeSignature?: string;
+  readonly afterSignature?: string;
+  readonly consumers: readonly SymbolId[];
+}
+
+export interface RepositoryAnalysisRequest {
+  readonly repositoryPath: string;
+  readonly changedFiles?: readonly string[];
+}
+
+export interface RepositoryAnalyzer {
+  analyze(request: RepositoryAnalysisRequest): Promise<RepositoryGraph>;
+}

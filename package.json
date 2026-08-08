@@ -1,18 +1,42 @@
 {
   "name": "@apra-amcos-admin-coding-orchestrator/source",
   "version": "0.0.0",
-  "license": "MIT",
-  "scripts": {},
   "private": true,
-  "dependencies": {},
-  "devDependencies": {
-    "@nx/js": "23.1.1",
-    "@swc/helpers": "~0.5.18",
-    "nx": "23.1.1",
-    "tslib": "^2.3.0",
-    "typescript": "~6.0.3"
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "nx run-many -t build",
+    "check": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test",
+    "format": "oxfmt --ignore-path=.oxfmtignore --write .",
+    "format:check": "oxfmt --ignore-path=.oxfmtignore --check .",
+    "lint": "nx run-many -t lint",
+    "test": "nx run-many -t test --configuration=ci",
+    "typecheck": "nx run-many -t typecheck"
   },
-  "workspaces": [
-    "packages/*"
-  ]
+  "dependencies": {
+    "commander": "15.0.0",
+    "drizzle-orm": "0.45.2",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@nx/esbuild": "23.1.1",
+    "@nx/js": "23.1.1",
+    "@nx/node": "23.1.1",
+    "@nx/vitest": "23.1.1",
+    "@swc/helpers": "~0.5.18",
+    "@types/node": "^26.2.0",
+    "@typescript/native": "npm:typescript@7.0.2",
+    "@vitest/coverage-v8": "~4.1.0",
+    "drizzle-kit": "0.31.10",
+    "esbuild": "^0.27.0",
+    "nx": "23.1.1",
+    "oxfmt": "0.61.0",
+    "oxlint": "1.77.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "tslib": "^2.3.0",
+    "typescript": "npm:@typescript/typescript6@~6.0.2",
+    "vite": "^8.0.0",
+    "vitest": "4.1.10"
+  },
+  "packageManager": "pnpm@11.1.0"
 }

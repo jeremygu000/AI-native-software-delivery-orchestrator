@@ -1,0 +1,6 @@
+.agents/
+.codex/
+AGENTS.md
+node_modules/
+dist/
+.nx/
