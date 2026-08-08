@@ -5,14 +5,16 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "build": "nx run-many -t build",
+    "build": "pnpm build:packages && pnpm build:cli",
+    "build:cli": "esbuild apps/cli/src/main.ts --bundle --packages=external --platform=node --target=node24 --format=esm --sourcemap --outfile=apps/cli/dist/main.js",
+    "build:packages": "tsc -b libs/domain/tsconfig.lib.json libs/dag/tsconfig.lib.json --force",
     "check": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test:coverage",
     "format": "oxfmt --ignore-path=.oxfmtignore --write .",
     "format:check": "oxfmt --ignore-path=.oxfmtignore --check .",
-    "lint": "nx run-many -t lint",
-    "test": "nx run-many -t test",
-    "test:coverage": "nx run-many -t test --coverage",
-    "typecheck": "nx run-many -t typecheck"
+    "lint": "oxlint --type-aware apps libs",
+    "test": "vitest run --config vitest.config.ts",
+    "test:coverage": "vitest run --config vitest.config.ts --coverage",
+    "typecheck": "tsc -b --force --emitDeclarationOnly"
   },
   "dependencies": {
     "commander": "15.0.0",
@@ -20,23 +22,16 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@nx/esbuild": "23.1.1",
-    "@nx/js": "23.1.1",
-    "@nx/node": "23.1.1",
-    "@nx/vitest": "23.1.1",
-    "@swc/helpers": "~0.5.18",
     "@types/node": "^26.2.0",
     "@typescript/native": "npm:typescript@7.0.2",
     "@vitest/coverage-v8": "~4.1.0",
     "drizzle-kit": "0.31.10",
     "esbuild": "^0.27.0",
-    "nx": "23.1.1",
     "oxfmt": "0.61.0",
     "oxlint": "1.77.0",
     "oxlint-tsgolint": "7.0.2001",
     "tslib": "^2.3.0",
     "typescript": "npm:@typescript/typescript6@~6.0.2",
-    "vite": "^8.0.0",
     "vitest": "4.1.10"
   },
   "engines": {

@@ -22,7 +22,7 @@ libs/
 
   # Added in later milestones when each boundary has real behaviour:
   repository-analysis/ TypeScript repository analyzer facade
-  project-graph/        Nx project graph provider
+  project-graph/        Provider-neutral graph port plus Nx and fallback adapters
   task-impact/          Contract selector resolution and impact expansion
   conflict-engine/      Explainable deterministic conflict scoring
   scheduler/            Dependency- and conflict-aware wave construction
@@ -52,7 +52,8 @@ analysis, impact, conflict, scheduler, guard, persistence
 
 `domain` has no internal workspace dependencies. `dag` depends only on `domain`. Future engines
 may depend on `domain` and, where necessary, `dag`; domain code never imports an adapter. Git,
-SQLite, Nx, TypeScript Compiler API, Commander, and model-provider details remain at the edges.
+SQLite, project-graph providers, TypeScript Compiler API, Commander, and model-provider details
+remain at the edges.
 
 ## Domain model
 
@@ -124,16 +125,21 @@ models, DAG, analyzers, conflict engine, scheduler, and guard are stable. Persis
 will store reconstructable orchestration state, not raw ASTs. PostgreSQL support must be addable by
 implementing the same repository ports.
 
-## Package manager decision
+## Workspace tooling decision
 
-The workspace uses Nx with pnpm workspaces. pnpm owns dependency installation and workspace
-linking; Nx owns the project graph and task orchestration. Repository analysis will remain package
-manager-neutral and eventually recognize npm, pnpm, and Yarn lockfiles.
+The repository uses pnpm workspaces for package linking, TypeScript solution references for build
+order, Vitest projects for tests, and esbuild for the CLI. It does not use a repository task
+orchestrator at the current scale. This is the reversible decision recorded in ADR-009.
+
+Repository analysis remains package-manager-neutral and will eventually recognize npm, pnpm, and
+Yarn lockfiles. Nx is one project-graph adapter, not a core fact source. Static Nx fixtures are not
+members of the root pnpm workspace; live provider tests must use a separately pinned toolchain.
 
 ## Milestone plan
 
-1. **Setup:** TypeScript 7 CLI with the TypeScript 6 compatibility API required by Nx, strict ESM,
-   pnpm, Commander, Vitest, Oxlint, Oxfmt, Zod, Drizzle, and SQLite-ready persistence dependencies.
+1. **Setup:** TypeScript 7 CLI with the TypeScript 6 compatibility API reserved for repository
+   analysis, strict ESM, pnpm, Commander, Vitest, Oxlint, Oxfmt, Zod, Drizzle, and SQLite-ready
+   persistence dependencies.
 2. **Domain:** task contracts, repository graph, impact/conflict, execution, state, and write-lease
    models with boundary schemas and tests.
 3. **DAG:** deterministic validation, cycle detection, topological sorting, and ready-task selection.
@@ -146,6 +152,5 @@ manager-neutral and eventually recognize npm, pnpm, and Yarn lockfiles.
 10. **Workspace and Git:** isolated worktrees, rebase, integration, and disposal behind ports.
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
-non-interactive tests, project-wide coverage thresholds, and an uncached build before the next
-starts. Nx Cloud atomization is intentionally deferred; the local `test-ci` target is not used
-because Nx only permits it when Nx Cloud is enabled.
+non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before
+the next starts.

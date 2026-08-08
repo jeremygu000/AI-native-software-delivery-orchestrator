@@ -4,17 +4,14 @@
     {
       "type": "node",
       "request": "launch",
-      "name": "Debug cli with Nx",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["exec", "nx", "serve", "cli"],
-      "env": {
-        "NODE_OPTIONS": "--inspect=9229"
-      },
+      "name": "Debug built CLI",
+      "program": "${workspaceFolder}/apps/cli/dist/main.js",
+      "args": ["--help"],
       "console": "integratedTerminal",
       "internalConsoleOptions": "neverOpen",
       "skipFiles": ["<node_internals>/**"],
       "sourceMaps": true,
-      "outFiles": ["${workspaceFolder}/apps/cli/dist/**/*.(m|c|)js", "!**/node_modules/**"]
+      "outFiles": ["${workspaceFolder}/apps/cli/dist/**/*.js", "!**/node_modules/**"]
     }
   ]
 }

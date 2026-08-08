@@ -8,7 +8,7 @@ resources, and runtime write ownership instead of relying on model guesses about
 
 Milestones 0–2 establish the deterministic core:
 
-- TypeScript 7 native CLI checks and ESM in an Nx monorepo;
+- TypeScript 7 native CLI checks and ESM in a pnpm workspace;
 - pnpm workspaces for dependency management;
 - a Commander-based `forge` CLI shell;
 - validated task contracts and orchestration domain models;
@@ -27,9 +27,9 @@ are implemented.
 - Node.js 24 or newer
 - pnpm 11
 
-Nx and Vite still require the TypeScript programmatic API, which TypeScript 7 does not currently
-ship. Following Nx's supported setup, `tsc` is TypeScript 7.0.2 for project builds and type checks,
-while the aliased TypeScript 6 package supplies the internal API used by Nx tooling.
+TypeScript 7 does not currently ship the stable programmatic API needed by the future repository
+analyzer. `tsc` is TypeScript 7.0.2 for project builds and type checks, while the aliased TypeScript
+6 package is retained for that future analyzer boundary.
 
 ## Getting started
 
@@ -54,15 +54,13 @@ models, and milestone plan.
 
 ## Commands
 
-| Command              | Purpose                                   |
-| -------------------- | ----------------------------------------- |
-| `pnpm build`         | Build all applicable Nx projects          |
-| `pnpm typecheck`     | Type-check all Nx projects                |
-| `pnpm lint`          | Run type-aware Oxlint                     |
-| `pnpm test`          | Run non-interactive Vitest through Nx     |
-| `pnpm test:coverage` | Enforce project-wide coverage thresholds  |
-| `pnpm format`        | Format source and documentation           |
-| `pnpm format:check`  | Verify formatting without writing         |
-| `pnpm check`         | Run formatting, types, lint, and tests    |
-| `pnpm exec nx graph` | Inspect workspace project dependencies    |
-| `pnpm exec nx sync`  | Synchronize TypeScript project references |
+| Command              | Purpose                                  |
+| -------------------- | ---------------------------------------- |
+| `pnpm build`         | Build libraries and bundle the CLI       |
+| `pnpm typecheck`     | Type-check all TypeScript references     |
+| `pnpm lint`          | Run type-aware Oxlint                    |
+| `pnpm test`          | Run all Vitest projects                  |
+| `pnpm test:coverage` | Enforce project-wide coverage thresholds |
+| `pnpm format`        | Format source and documentation          |
+| `pnpm format:check`  | Verify formatting without writing        |
+| `pnpm check`         | Run formatting, types, lint, and tests   |

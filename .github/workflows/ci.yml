@@ -38,14 +38,11 @@ jobs:
           test "$(pnpm exec tsc --version)" = "Version 7.0.2"
           pnpm exec tsc6 --version
 
-      - name: Verify Nx project references
-        run: pnpm exec nx sync:check
-
       - name: Run quality gates
         run: pnpm check
 
-      - name: Run uncached build
-        run: pnpm exec nx run-many -t build --skip-nx-cache
+      - name: Build packages and CLI
+        run: pnpm build
 
-      - name: Export project graph
-        run: pnpm exec nx graph --file=/tmp/orchestrator-project-graph.json
+      - name: List workspace packages
+        run: pnpm list --recursive --depth -1
