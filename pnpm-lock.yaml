@@ -75,12 +75,6 @@ importers:
 
   apps/cli:
     dependencies:
-      '@apra-amcos-admin-coding-orchestrator/dag':
-        specifier: workspace:*
-        version: link:../../libs/dag
-      '@apra-amcos-admin-coding-orchestrator/domain':
-        specifier: workspace:*
-        version: link:../../libs/domain
       commander:
         specifier: 15.0.0
         version: 15.0.0

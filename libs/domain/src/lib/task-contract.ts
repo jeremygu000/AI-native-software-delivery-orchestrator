@@ -13,6 +13,10 @@ export const resourceSelectorSchema = z.object({
   value: z.string().trim().min(1)
 });
 
+const stableUniqueStringsSchema = z
+  .array(z.string().trim().min(1))
+  .transform((values) => [...new Set(values)].toSorted((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+
 export const verificationRuleSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('command'),
@@ -34,7 +38,7 @@ export const taskContractSchema = z
     dependencies: z.array(z.string().trim().min(1)),
     expectedReads: z.array(resourceSelectorSchema),
     expectedWrites: z.array(resourceSelectorSchema),
-    sharedResources: z.array(z.string().trim().min(1)),
+    sharedResources: stableUniqueStringsSchema,
     verification: z.array(verificationRuleSchema),
     priority: z.int().optional()
   })
@@ -56,9 +60,33 @@ export const taskContractSchema = z
     }
   });
 
-export const taskSpecificationSchema = z.object({
-  tasks: z.array(taskContractSchema).min(1)
-});
+export const taskSpecificationSchema = z
+  .object({
+    tasks: z.array(taskContractSchema).min(1)
+  })
+  .superRefine((specification, context) => {
+    const taskIds = new Set<string>();
+    for (const [index, task] of specification.tasks.entries()) {
+      if (taskIds.has(task.id)) {
+        context.addIssue({
+          code: 'custom',
+          message: `Duplicate task ID: ${task.id}`,
+          path: ['tasks', index, 'id']
+        });
+      }
+      taskIds.add(task.id);
+    }
+  });
+
+export const collectSharedResourceIds = (task: TaskContract): readonly string[] => {
+  const resourceIds = new Set(task.sharedResources);
+  for (const selector of [...task.expectedReads, ...task.expectedWrites]) {
+    if (selector.type === 'shared-resource') {
+      resourceIds.add(selector.value);
+    }
+  }
+  return [...resourceIds].toSorted((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+};
 
 export type ResourceSelectorType = z.infer<typeof resourceSelectorTypeSchema>;
 export type ResourceSelector = z.infer<typeof resourceSelectorSchema>;

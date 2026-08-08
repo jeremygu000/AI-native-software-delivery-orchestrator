@@ -6,6 +6,11 @@ export type TaskGraphIssue =
       readonly taskId: string;
     }
   | {
+      readonly type: 'duplicate-dependency';
+      readonly taskId: string;
+      readonly dependencyId: string;
+    }
+  | {
       readonly type: 'missing-dependency';
       readonly taskId: string;
       readonly dependencyId: string;
@@ -34,10 +39,68 @@ export class InvalidTaskGraphError extends Error {
   }
 }
 
+const compareIds = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 const compareTasks = (a: TaskContract, b: TaskContract): number => {
   const priorityDifference = (b.priority ?? 0) - (a.priority ?? 0);
-  return priorityDifference !== 0 ? priorityDifference : a.id.localeCompare(b.id);
+  return priorityDifference !== 0 ? priorityDifference : compareIds(a.id, b.id);
 };
+
+class TaskPriorityQueue {
+  readonly #tasks: TaskContract[] = [];
+
+  get size(): number {
+    return this.#tasks.length;
+  }
+
+  enqueue(task: TaskContract): void {
+    this.#tasks.push(task);
+    let index = this.#tasks.length - 1;
+
+    while (index > 0) {
+      const parentIndex = Math.floor((index - 1) / 2);
+      const parent = this.#tasks[parentIndex];
+      if (compareTasks(parent, task) <= 0) {
+        break;
+      }
+      this.#tasks[index] = parent;
+      index = parentIndex;
+    }
+
+    this.#tasks[index] = task;
+  }
+
+  dequeue(): TaskContract {
+    const first = this.#tasks[0];
+    const last = this.#tasks.pop()!;
+    if (this.#tasks.length === 0) {
+      return first;
+    }
+
+    let index = 0;
+    while (true) {
+      const leftIndex = index * 2 + 1;
+      const rightIndex = leftIndex + 1;
+      const left = this.#tasks[leftIndex];
+      if (left === undefined) {
+        break;
+      }
+      const right = this.#tasks[rightIndex];
+      const nextIndex =
+        right !== undefined && compareTasks(right, left) < 0 ? rightIndex : leftIndex;
+      const next = this.#tasks[nextIndex];
+      if (compareTasks(next, last) >= 0) {
+        break;
+      }
+
+      this.#tasks[index] = next;
+      index = nextIndex;
+    }
+
+    this.#tasks[index] = last;
+    return first;
+  }
+}
 
 const buildUniqueTaskMap = (tasks: readonly TaskContract[]): Map<string, TaskContract> => {
   const taskById = new Map<string, TaskContract>();
@@ -49,63 +112,141 @@ const buildUniqueTaskMap = (tasks: readonly TaskContract[]): Map<string, TaskCon
   return taskById;
 };
 
-const detectCycle = (
+const buildAdjacency = (
   taskById: ReadonlyMap<string, TaskContract>
-): readonly string[] | undefined => {
-  const stateByTask = new Map<string, 'visiting' | 'visited'>();
-  const stack: string[] = [];
+): ReadonlyMap<string, readonly string[]> => {
+  const adjacency = new Map<string, readonly string[]>();
+  for (const taskId of [...taskById.keys()].toSorted(compareIds)) {
+    const task = taskById.get(taskId)!;
+    const dependencies = new Set(
+      task.dependencies.filter(
+        (dependencyId) => dependencyId !== taskId && taskById.has(dependencyId)
+      )
+    );
+    adjacency.set(taskId, [...dependencies].toSorted(compareIds));
+  }
+  return adjacency;
+};
 
-  const visit = (taskId: string): readonly string[] | undefined => {
-    const state = stateByTask.get(taskId);
-    if (state === 'visiting') {
-      const cycleStart = stack.indexOf(taskId);
-      return [...stack.slice(cycleStart), taskId];
+interface TraversalFrame {
+  readonly taskId: string;
+  nextDependencyIndex: number;
+}
+
+const buildFinishingOrder = (
+  taskIds: readonly string[],
+  adjacency: ReadonlyMap<string, readonly string[]>
+): readonly string[] => {
+  const visited = new Set<string>();
+  const finishingOrder: string[] = [];
+
+  for (const startTaskId of taskIds) {
+    if (visited.has(startTaskId)) {
+      continue;
     }
-    if (state === 'visited') {
-      return undefined;
-    }
 
-    stateByTask.set(taskId, 'visiting');
-    stack.push(taskId);
+    visited.add(startTaskId);
+    const stack: TraversalFrame[] = [{ taskId: startTaskId, nextDependencyIndex: 0 }];
 
-    const task = taskById.get(taskId);
-    const dependencies = task?.dependencies.filter((id) => taskById.has(id)).toSorted() ?? [];
-    for (const dependencyId of dependencies) {
-      const cycle = visit(dependencyId);
-      if (cycle !== undefined) {
-        return cycle;
+    while (stack.length > 0) {
+      const frame = stack.at(-1)!;
+      const dependencies = adjacency.get(frame.taskId) ?? [];
+      const dependencyId = dependencies[frame.nextDependencyIndex];
+      if (dependencyId !== undefined) {
+        frame.nextDependencyIndex += 1;
+        if (!visited.has(dependencyId)) {
+          visited.add(dependencyId);
+          stack.push({ taskId: dependencyId, nextDependencyIndex: 0 });
+        }
+        continue;
       }
-    }
 
-    stack.pop();
-    stateByTask.set(taskId, 'visited');
-    return undefined;
-  };
-
-  for (const taskId of [...taskById.keys()].toSorted()) {
-    const cycle = visit(taskId);
-    if (cycle !== undefined) {
-      return cycle;
+      finishingOrder.push(frame.taskId);
+      stack.pop();
     }
   }
 
-  return undefined;
+  return finishingOrder;
+};
+
+const reverseAdjacency = (
+  taskIds: readonly string[],
+  adjacency: ReadonlyMap<string, readonly string[]>
+): ReadonlyMap<string, readonly string[]> => {
+  const reversed = new Map(taskIds.map((taskId) => [taskId, [] as string[]]));
+  for (const [taskId, dependencies] of adjacency) {
+    for (const dependencyId of dependencies) {
+      reversed.get(dependencyId)!.push(taskId);
+    }
+  }
+  return new Map(
+    [...reversed].map(([taskId, dependents]) => [taskId, dependents.toSorted(compareIds)])
+  );
+};
+
+const findCycleComponents = (
+  taskById: ReadonlyMap<string, TaskContract>
+): readonly (readonly string[])[] => {
+  const taskIds = [...taskById.keys()].toSorted(compareIds);
+  const adjacency = buildAdjacency(taskById);
+  const finishingOrder = buildFinishingOrder(taskIds, adjacency);
+  const reversed = reverseAdjacency(taskIds, adjacency);
+  const visited = new Set<string>();
+  const components: string[][] = [];
+
+  for (const startTaskId of finishingOrder.toReversed()) {
+    if (visited.has(startTaskId)) {
+      continue;
+    }
+
+    const component: string[] = [];
+    const stack = [startTaskId];
+    visited.add(startTaskId);
+    while (stack.length > 0) {
+      const taskId = stack.pop()!;
+      component.push(taskId);
+      for (const dependentId of reversed.get(taskId)?.toReversed() ?? []) {
+        if (!visited.has(dependentId)) {
+          visited.add(dependentId);
+          stack.push(dependentId);
+        }
+      }
+    }
+
+    if (component.length > 1) {
+      components.push(component.toSorted(compareIds));
+    }
+  }
+
+  return components.toSorted((a, b) => compareIds(a[0], b[0]));
 };
 
 export const validateTaskGraph = (tasks: readonly TaskContract[]): TaskGraphValidationResult => {
   const issues: TaskGraphIssue[] = [];
   const taskById = buildUniqueTaskMap(tasks);
-  const seenTaskIds = new Set<string>();
+  const taskCounts = new Map<string, number>();
 
   for (const task of tasks) {
-    if (seenTaskIds.has(task.id)) {
-      issues.push({ type: 'duplicate-task', taskId: task.id });
+    taskCounts.set(task.id, (taskCounts.get(task.id) ?? 0) + 1);
+  }
+  for (const [taskId, count] of [...taskCounts].toSorted(([a], [b]) => compareIds(a, b))) {
+    if (count > 1) {
+      issues.push({ type: 'duplicate-task', taskId });
     }
-    seenTaskIds.add(task.id);
   }
 
-  for (const task of taskById.values()) {
+  for (const task of [...taskById.values()].toSorted(compareTasks)) {
+    const dependencyCounts = new Map<string, number>();
     for (const dependencyId of task.dependencies) {
+      dependencyCounts.set(dependencyId, (dependencyCounts.get(dependencyId) ?? 0) + 1);
+    }
+
+    for (const [dependencyId, count] of [...dependencyCounts].toSorted(([a], [b]) =>
+      compareIds(a, b)
+    )) {
+      if (count > 1) {
+        issues.push({ type: 'duplicate-dependency', taskId: task.id, dependencyId });
+      }
       if (dependencyId === task.id) {
         issues.push({ type: 'self-dependency', taskId: task.id });
       } else if (!taskById.has(dependencyId)) {
@@ -114,9 +255,8 @@ export const validateTaskGraph = (tasks: readonly TaskContract[]): TaskGraphVali
     }
   }
 
-  const cycle = detectCycle(taskById);
-  if (cycle !== undefined) {
-    issues.push({ type: 'cycle', taskIds: cycle });
+  for (const taskIds of findCycleComponents(taskById)) {
+    issues.push({ type: 'cycle', taskIds });
   }
 
   return { valid: issues.length === 0, issues };
@@ -144,25 +284,25 @@ export const topologicalSort = (tasks: readonly TaskContract[]): readonly string
     }
   }
 
-  let ready = [...taskById.values()]
-    .filter((task) => task.dependencies.length === 0)
-    .toSorted(compareTasks);
+  const ready = new TaskPriorityQueue();
+  for (const task of taskById.values()) {
+    if (task.dependencies.length === 0) {
+      ready.enqueue(task);
+    }
+  }
   const orderedTaskIds: string[] = [];
 
-  while (ready.length > 0) {
-    const task = ready.shift();
-    if (task === undefined) {
-      break;
-    }
+  while (ready.size > 0) {
+    const task = ready.dequeue();
     orderedTaskIds.push(task.id);
 
-    for (const dependentId of dependentsByTask.get(task.id)?.toSorted() ?? []) {
+    for (const dependentId of dependentsByTask.get(task.id)?.toSorted(compareIds) ?? []) {
       const dependencyCount = (remainingDependencies.get(dependentId) ?? 0) - 1;
       remainingDependencies.set(dependentId, dependencyCount);
       if (dependencyCount === 0) {
         const dependent = taskById.get(dependentId);
         if (dependent !== undefined) {
-          ready = [...ready, dependent].toSorted(compareTasks);
+          ready.enqueue(dependent);
         }
       }
     }

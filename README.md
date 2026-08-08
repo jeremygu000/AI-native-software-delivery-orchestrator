@@ -13,9 +13,10 @@ Milestones 0–2 establish the deterministic core:
 - a Commander-based `forge` CLI shell;
 - validated task contracts and orchestration domain models;
 - explicit task lifecycle transition rules;
-- DAG validation, missing-dependency and cycle detection;
+- stack-safe DAG validation, complete SCC cycle diagnostics, and stable ordering;
 - deterministic topological sorting and ready-task calculation;
-- Vitest, type-aware Oxlint, and Oxfmt quality gates.
+- self-contained hierarchical write-resource and recoverable lease contracts;
+- Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
 Repository analysis, conflict scoring, scheduling waves, write leases, and persistence are the next
 milestones. The CLI exposes `analyze` and `plan` as discoverable placeholders until those engines
@@ -58,7 +59,8 @@ models, and milestone plan.
 | `pnpm build`         | Build all applicable Nx projects          |
 | `pnpm typecheck`     | Type-check all Nx projects                |
 | `pnpm lint`          | Run type-aware Oxlint                     |
-| `pnpm test`          | Run Vitest through Nx                     |
+| `pnpm test`          | Run non-interactive Vitest through Nx     |
+| `pnpm test:coverage` | Enforce project-wide coverage thresholds  |
 | `pnpm format`        | Format source and documentation           |
 | `pnpm format:check`  | Verify formatting without writing         |
 | `pnpm check`         | Run formatting, types, lint, and tests    |

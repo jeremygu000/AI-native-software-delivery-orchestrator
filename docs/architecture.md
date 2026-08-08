@@ -64,7 +64,18 @@ projects, files, globs, stable symbols, and named shared resources. Verification
 commands or Nx targets.
 
 Functional dependencies are task IDs and form a DAG. Duplicate IDs, missing dependencies,
-self-dependencies, and cycles are errors before scheduling begins.
+self-dependencies, duplicate dependency entries, and cycles are errors before scheduling begins.
+Cycle detection is iterative and reports every strongly connected component, so valid deep plans do
+not depend on the JavaScript call-stack limit. All tie-breaking uses locale-independent ID ordering.
+
+Shared resources have two deliberately separate declarations:
+
+- a `shared-resource` selector in `expectedReads` or `expectedWrites` predicts static impact;
+- `sharedResources` requests concurrency coordination regardless of predicted file access.
+
+`collectSharedResourceIds` forms the canonical, sorted union used by impact and conflict analysis.
+The schema normalizes duplicate coordination declarations rather than requiring planners to emit a
+perfectly canonical array.
 
 ### Repository graph
 
@@ -91,8 +102,9 @@ configuration, not domain types or scheduler branches.
 
 ### Write leases
 
-`WritableResource` models project, file, symbol, and shared-resource ownership. Symbol resources
-include their file and ancestor symbol IDs so containment checks are deterministic:
+`WritableResource` models project, file, symbol, and shared-resource ownership. File and symbol
+resources always carry their project ID; symbols also carry their file and ancestor symbol IDs.
+This makes a persisted lease self-contained and containment checks deterministic:
 
 - a project lease conflicts with contained files and symbols;
 - a file lease conflicts with all symbols in that file;
@@ -100,8 +112,10 @@ include their file and ancestor symbol IDs so containment checks are determinist
 - sibling methods may receive separate exclusive leases;
 - a named shared resource follows its configured concurrency rule.
 
-The Phase 1 guard grants or blocks exclusive leases. Queuing and rebase/resume coordination are
-orchestration concerns layered above the guard.
+Every lease is scoped by `runId`, has a monotonic version and expiry, and supports optimistic renew.
+Release reports `released` or `not-found`; treating an unknown lease as an idempotent outcome makes
+restart recovery safe. The Phase 1 guard grants or blocks exclusive leases. Queuing and
+rebase/resume coordination are orchestration concerns layered above the guard.
 
 ## Persistence boundary
 
@@ -131,4 +145,7 @@ manager-neutral and eventually recognize npm, pnpm, and Yarn lockfiles.
 9. **Persistence:** recoverable runs, transitions, conflicts, waves, and leases in SQLite/Drizzle.
 10. **Workspace and Git:** isolated worktrees, rebase, integration, and disposal behind ports.
 
-Every milestone must pass formatting, type checking, linting, and tests before the next starts.
+Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
+non-interactive tests, project-wide coverage thresholds, and an uncached build before the next
+starts. Nx Cloud atomization is intentionally deferred; the local `test-ci` target is not used
+because Nx only permits it when Nx Cloud is enabled.

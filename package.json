@@ -6,11 +6,12 @@
   "type": "module",
   "scripts": {
     "build": "nx run-many -t build",
-    "check": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test",
+    "check": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test:coverage",
     "format": "oxfmt --ignore-path=.oxfmtignore --write .",
     "format:check": "oxfmt --ignore-path=.oxfmtignore --check .",
     "lint": "nx run-many -t lint",
-    "test": "nx run-many -t test --configuration=ci",
+    "test": "nx run-many -t test",
+    "test:coverage": "nx run-many -t test --coverage",
     "typecheck": "nx run-many -t typecheck"
   },
   "dependencies": {
@@ -37,6 +38,9 @@
     "typescript": "npm:@typescript/typescript6@~6.0.2",
     "vite": "^8.0.0",
     "vitest": "4.1.10"
+  },
+  "engines": {
+    "node": ">=24"
   },
   "packageManager": "pnpm@11.1.0"
 }

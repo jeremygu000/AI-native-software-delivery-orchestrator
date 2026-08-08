@@ -12,7 +12,15 @@ export default defineConfig(() => ({
     reporters: ['default'],
     coverage: {
       reportsDirectory: './test-output/vitest/coverage',
-      provider: 'v8' as const
+      provider: 'v8' as const,
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.spec.ts', 'src/index.ts'],
+      thresholds: {
+        branches: 90,
+        functions: 90,
+        lines: 90,
+        statements: 90
+      }
     }
   }
 }));

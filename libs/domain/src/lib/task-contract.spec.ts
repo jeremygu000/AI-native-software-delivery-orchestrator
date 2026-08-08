@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { taskContractSchema } from './task-contract.js';
+import {
+  collectSharedResourceIds,
+  taskContractSchema,
+  taskSpecificationSchema
+} from './task-contract.js';
 
 const validTask = {
   id: 'T1',
@@ -28,5 +32,35 @@ describe('taskContractSchema', () => {
     const result = taskContractSchema.safeParse({ ...validTask, dependencies: ['T0', 'T0'] });
 
     expect(result.success).toBe(false);
+  });
+
+  it('normalizes explicit shared-resource coordination declarations', () => {
+    const parsed = taskContractSchema.parse({
+      ...validTask,
+      sharedResources: ['npm-dependencies', 'graphql-schema', 'npm-dependencies']
+    });
+
+    expect(parsed.sharedResources).toEqual(['graphql-schema', 'npm-dependencies']);
+  });
+
+  it('collects and deduplicates shared resources from coordination and impact declarations', () => {
+    const parsed = taskContractSchema.parse({
+      ...validTask,
+      expectedReads: [{ type: 'shared-resource', value: 'generated-code' }],
+      expectedWrites: [{ type: 'shared-resource', value: 'graphql-schema' }],
+      sharedResources: ['graphql-schema', 'npm-dependencies']
+    });
+
+    expect(collectSharedResourceIds(parsed)).toEqual([
+      'generated-code',
+      'graphql-schema',
+      'npm-dependencies'
+    ]);
+  });
+
+  it('rejects duplicate task IDs at the specification boundary', () => {
+    expect(
+      taskSpecificationSchema.safeParse({ tasks: [validTask, { ...validTask }] }).success
+    ).toBe(false);
   });
 });

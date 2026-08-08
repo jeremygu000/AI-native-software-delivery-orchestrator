@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   assertTaskStateTransition,
   canTransitionTaskState,
-  InvalidTaskStateTransitionError
+  InvalidTaskStateTransitionError,
+  taskStateSchema
 } from './task-state.js';
 
 describe('task state transitions', () => {
@@ -24,5 +25,30 @@ describe('task state transitions', () => {
       InvalidTaskStateTransitionError
     );
     expect(canTransitionTaskState('COMPLETED', 'READY')).toBe(false);
+  });
+
+  it('matches the complete allowed transition matrix', () => {
+    const allowed = new Set([
+      'PENDING->READY',
+      'PENDING->CANCELLED',
+      'READY->RUNNING',
+      'READY->CANCELLED',
+      'RUNNING->BLOCKED',
+      'RUNNING->VERIFYING',
+      'RUNNING->FAILED',
+      'RUNNING->CANCELLED',
+      'BLOCKED->READY',
+      'BLOCKED->FAILED',
+      'BLOCKED->CANCELLED',
+      'VERIFYING->COMPLETED',
+      'VERIFYING->FAILED',
+      'VERIFYING->CANCELLED'
+    ]);
+
+    for (const from of taskStateSchema.options) {
+      for (const to of taskStateSchema.options) {
+        expect(canTransitionTaskState(from, to)).toBe(allowed.has(`${from}->${to}`));
+      }
+    }
   });
 });

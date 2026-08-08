@@ -4,8 +4,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@apra-amcos-admin-coding-orchestrator/dag": "workspace:*",
-    "@apra-amcos-admin-coding-orchestrator/domain": "workspace:*",
     "commander": "15.0.0"
   }
 }

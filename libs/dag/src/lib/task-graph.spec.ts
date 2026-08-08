@@ -45,19 +45,73 @@ describe('validateTaskGraph', () => {
   });
 
   it('detects self dependencies', () => {
-    expect(validateTaskGraph([task('T1', ['T1'])]).issues).toContainEqual({
-      type: 'self-dependency',
-      taskId: 'T1'
+    const issues = validateTaskGraph([task('T1', ['T1'])]).issues;
+
+    expect(issues).toEqual([
+      {
+        type: 'self-dependency',
+        taskId: 'T1'
+      }
+    ]);
+  });
+
+  it('detects duplicate dependencies when callers bypass schema validation', () => {
+    expect(validateTaskGraph([task('T1'), task('T2', ['T1', 'T1'])]).issues).toContainEqual({
+      type: 'duplicate-dependency',
+      taskId: 'T2',
+      dependencyId: 'T1'
     });
   });
 
-  it('detects cycles and includes a closed path', () => {
+  it('reports every independent cycle as a stable strongly connected component', () => {
+    const result = validateTaskGraph([
+      task('T1', ['T2']),
+      task('T2', ['T1']),
+      task('T3', ['T5']),
+      task('T4', ['T3']),
+      task('T5', ['T4'])
+    ]);
+
+    expect(result.issues).toEqual([
+      { type: 'cycle', taskIds: ['T1', 'T2'] },
+      { type: 'cycle', taskIds: ['T3', 'T4', 'T5'] }
+    ]);
+  });
+
+  it('handles a valid dependency chain deeper than the JavaScript call stack', () => {
+    const tasks = Array.from({ length: 20_000 }, (_, index) =>
+      task(`T${index}`, index === 0 ? [] : [`T${index - 1}`])
+    );
+
+    expect(validateTaskGraph(tasks)).toEqual({ valid: true, issues: [] });
+    const ordered = topologicalSort(tasks);
+    expect(ordered).toHaveLength(20_000);
+    expect(ordered[0]).toBe('T0');
+    expect(ordered.at(-1)).toBe('T19999');
+  }, 20_000);
+
+  it('does not use locale-sensitive ordering for diagnostics', () => {
+    const result = validateTaskGraph([task('ä', ['z']), task('z', ['ä'])]);
+
+    expect(result.issues).toEqual([{ type: 'cycle', taskIds: ['z', 'ä'] }]);
+  });
+
+  it('reports a cycle component without duplicating its first task', () => {
     const result = validateTaskGraph([task('T1', ['T3']), task('T2', ['T1']), task('T3', ['T2'])]);
 
     expect(result.issues).toContainEqual({
       type: 'cycle',
-      taskIds: ['T1', 'T3', 'T2', 'T1']
+      taskIds: ['T1', 'T2', 'T3']
     });
+  });
+
+  it('reports a self dependency only once', () => {
+    expect(validateTaskGraph([task('T1', ['T1'])]).issues).toEqual([
+      {
+        type: 'self-dependency',
+        taskId: 'T1'
+      }
+    ]);
   });
 });
 
@@ -77,6 +131,21 @@ describe('topologicalSort', () => {
       'T1',
       'T2'
     ]);
+  });
+
+  it('uses code-unit ordering instead of the host locale', () => {
+    expect(topologicalSort([task('ä'), task('z')])).toEqual(['z', 'ä']);
+  });
+
+  it('orders a broad ready set by priority through the deterministic queue', () => {
+    const tasks = Array.from({ length: 50 }, (_, index) =>
+      task(`T${index.toString().padStart(2, '0')}`, [], (index * 17) % 50)
+    );
+    const expected = tasks
+      .toSorted((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+      .map(({ id }) => id);
+
+    expect(topologicalSort(tasks)).toEqual(expected);
   });
 
   it('rejects an invalid graph', () => {
