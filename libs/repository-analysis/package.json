@@ -1,0 +1,26 @@
+{
+  "name": "@apra-amcos-admin-coding-orchestrator/repository-analysis",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "@apra-amcos-admin-coding-orchestrator/source": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@apra-amcos-admin-coding-orchestrator/domain": "workspace:*",
+    "@typescript/native": "npm:typescript@7.0.2",
+    "jsonc-parser": "3.3.1",
+    "tinyglobby": "0.2.17",
+    "tslib": "^2.3.0",
+    "yaml": "2.8.1"
+  }
+}

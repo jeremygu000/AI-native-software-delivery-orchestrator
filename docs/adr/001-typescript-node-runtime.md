@@ -7,14 +7,15 @@ Accepted
 ## Decision
 
 Use the TypeScript 7 native CLI for project builds and type checks, with strict settings, Node.js,
-and ESM. Because TypeScript 7 does not yet expose the stable programmatic API required by the
-future repository analyzer, retain the official TypeScript 6 compatibility package under the
-`typescript` alias. The
-`@typescript/native` alias supplies the `tsc` 7 executable. Workspace packages declare
+and ESM. The `@typescript/native` alias supplies the `tsc` 7 executable. Do not retain a second
+TypeScript version for anticipated work. If the repository analyzer later requires a programmatic
+API that TypeScript 7 cannot provide, add the compatibility package only to that workspace package
+and remove it when the compatibility boundary is no longer required. Workspace packages declare
 `type: module`, and provider-specific types stay out of the domain layer.
 
 ## Consequences
 
-Application code is checked by TypeScript 7. The future repository analyzer initially uses the
-TypeScript 6 programmatic API and can move to TypeScript 7 when that API becomes stable. Strictness
-catches invalid graph states early, while ESM avoids maintaining a second module format.
+Application code is checked by a single TypeScript 7 toolchain. The repository avoids the version
+ambiguity and maintenance cost of an unused compatibility compiler. A future analyzer may introduce
+a package-local compatibility dependency only when an implemented use case proves it necessary.
+Strictness catches invalid graph states early, while ESM avoids maintaining a second module format.

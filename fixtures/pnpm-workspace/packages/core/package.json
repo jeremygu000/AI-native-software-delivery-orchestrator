@@ -1,0 +1,7 @@
+{
+  "name": "@fixture/core",
+  "private": true,
+  "peerDependencies": {
+    "@fixture/utils": "workspace:*"
+  }
+}

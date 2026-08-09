@@ -6,10 +6,9 @@ Accepted; supersedes ADR-002
 
 ## Context
 
-The repository currently contains three packages. pnpm workspaces, TypeScript project references,
+The repository initially contained three packages. pnpm workspaces, TypeScript project references,
 Vitest projects, Oxlint, Oxfmt, and esbuild cover its installation, dependency ordering, testing,
-quality, and CLI packaging needs. Supporting Nx repositories is a product capability, but it does
-not require this repository to use Nx as its own build orchestrator.
+quality, and CLI packaging needs. No implemented product requirement currently depends on Nx.
 
 The migration deliberately gives up Nx affected calculation, task-level caching,
 `build-deps`/`watch-deps`, target inference, and automatic project-reference synchronization. These
@@ -23,9 +22,9 @@ order, Vitest projects for tests, Oxlint/Oxfmt for quality checks, and the esbui
 executable. Nx is not a root dependency and its types or commands may not enter domain or engine
 libraries.
 
-Nx remains a future project-graph adapter target. Static contract fixtures stay outside the pnpm
-workspace and contain no installed Nx dependency. Live `nx graph` integration tests, when needed,
-must create or install a separately pinned fixture toolchain rather than adding Nx to the root.
+Repository analysis begins with the package manager the product actually uses: pnpm. Additional
+repository providers are introduced only when a concrete supported-repository requirement exists;
+they are not reserved as milestones in advance.
 
 ## Reassessment triggers
 
@@ -44,5 +43,5 @@ evaluation; it does not automatically restore Nx.
 
 The core repository has fewer tool-specific configuration layers and keeps its provider boundary
 honest. TypeScript references remain manually reviewed and compiler-validated. CI always performs
-a forced build because there is no task cache. Future Nx provider tests have an explicit static
-fixture tier and an isolated live-integration tier.
+a forced build because there is no task cache. Supporting another repository format later requires
+a new evidence-backed decision and provider-specific tests.

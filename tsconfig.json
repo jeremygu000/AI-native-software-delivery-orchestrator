@@ -11,6 +11,9 @@
     },
     {
       "path": "./libs/dag"
+    },
+    {
+      "path": "./libs/repository-analysis"
     }
   ]
 }

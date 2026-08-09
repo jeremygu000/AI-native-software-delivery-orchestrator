@@ -14,7 +14,7 @@ const validTask = {
   expectedReads: [{ type: 'project', value: 'catalog-domain' }],
   expectedWrites: [{ type: 'symbol', value: 'catalog-domain:src/product.ts:Product' }],
   sharedResources: [],
-  verification: [{ type: 'nx-target', project: 'catalog-domain', target: 'test' }]
+  verification: [{ type: 'command', command: 'pnpm test' }]
 } as const;
 
 describe('taskContractSchema', () => {
@@ -56,6 +56,12 @@ describe('taskContractSchema', () => {
       'graphql-schema',
       'npm-dependencies'
     ]);
+  });
+
+  it('ignores ordinary read and write selectors when collecting shared resources', () => {
+    const parsed = taskContractSchema.parse(validTask);
+
+    expect(collectSharedResourceIds(parsed)).toEqual([]);
   });
 
   it('rejects duplicate task IDs at the specification boundary', () => {

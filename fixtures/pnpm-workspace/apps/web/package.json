@@ -1,0 +1,11 @@
+{
+  "name": "@fixture/web",
+  "private": true,
+  "dependencies": {
+    "@fixture/core": "workspace:*",
+    "external-package": "1.0.0"
+  },
+  "devDependencies": {
+    "@fixture/utils": "workspace:^"
+  }
+}

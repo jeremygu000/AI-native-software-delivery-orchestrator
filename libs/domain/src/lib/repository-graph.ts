@@ -2,7 +2,17 @@ export type ProjectId = string;
 export type FileId = string;
 export type SymbolId = string;
 
-export type SymbolKind = 'class' | 'method' | 'function' | 'interface' | 'type' | 'variable';
+export type SymbolKind =
+  | 'class'
+  | 'constructor'
+  | 'enum'
+  | 'function'
+  | 'interface'
+  | 'method'
+  | 'namespace'
+  | 'property'
+  | 'type'
+  | 'variable';
 
 export interface ProjectNode {
   readonly id: ProjectId;
@@ -24,6 +34,7 @@ export interface SymbolNode {
   readonly name: string;
   readonly path: string;
   readonly kind: SymbolKind;
+  readonly mergedKinds?: readonly SymbolKind[];
   readonly parentSymbolId?: SymbolId;
   readonly exported: boolean;
   readonly signature?: string;
@@ -34,6 +45,20 @@ export interface GraphEdge<TNodeId extends string> {
   readonly to: TNodeId;
 }
 
+export type RepositoryDiagnosticCode =
+  | 'EMPTY_TYPESCRIPT_PROJECT'
+  | 'MISSING_TYPESCRIPT_CONFIGURATION'
+  | 'UNCOVERED_TYPESCRIPT_FILES';
+
+export interface RepositoryDiagnostic {
+  readonly code: RepositoryDiagnosticCode;
+  readonly severity: 'warning';
+  readonly projectId: ProjectId;
+  readonly message: string;
+  readonly configPaths: readonly string[];
+  readonly filePaths?: readonly string[];
+}
+
 export interface RepositoryGraph {
   readonly repositoryPath: string;
   readonly projects: ReadonlyMap<ProjectId, ProjectNode>;
@@ -42,6 +67,7 @@ export interface RepositoryGraph {
   readonly projectDependencies: readonly GraphEdge<ProjectId>[];
   readonly fileDependencies: readonly GraphEdge<FileId>[];
   readonly symbolReferences: readonly GraphEdge<SymbolId>[];
+  readonly diagnostics: readonly RepositoryDiagnostic[];
 }
 
 export interface ApiSurfaceChange {
@@ -57,5 +83,11 @@ export interface RepositoryAnalysisRequest {
 }
 
 export interface RepositoryAnalyzer {
+  analyze(request: RepositoryAnalysisRequest): Promise<RepositoryGraph>;
+}
+
+export interface ProjectGraphProvider {
+  readonly id: string;
+  supports(repositoryPath: string): Promise<boolean>;
   analyze(request: RepositoryAnalysisRequest): Promise<RepositoryGraph>;
 }

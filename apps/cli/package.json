@@ -2,8 +2,13 @@
   "name": "@apra-amcos-admin-coding-orchestrator/cli",
   "version": "0.0.1",
   "private": true,
+  "bin": {
+    "forge": "./dist/main.js"
+  },
   "type": "module",
   "dependencies": {
+    "@apra-amcos-admin-coding-orchestrator/domain": "workspace:*",
+    "@apra-amcos-admin-coding-orchestrator/repository-analysis": "workspace:*",
     "commander": "15.0.0"
   }
 }

@@ -13,6 +13,7 @@ describe('task state transitions', () => {
     expect(canTransitionTaskState('READY', 'RUNNING')).toBe(true);
     expect(canTransitionTaskState('RUNNING', 'VERIFYING')).toBe(true);
     expect(canTransitionTaskState('VERIFYING', 'COMPLETED')).toBe(true);
+    expect(() => assertTaskStateTransition('PENDING', 'READY')).not.toThrow();
   });
 
   it('allows a blocked task to become ready again', () => {

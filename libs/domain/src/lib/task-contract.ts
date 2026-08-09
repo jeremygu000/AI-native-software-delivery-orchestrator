@@ -15,19 +15,12 @@ export const resourceSelectorSchema = z.object({
 
 const stableUniqueStringsSchema = z
   .array(z.string().trim().min(1))
-  .transform((values) => [...new Set(values)].toSorted((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+  .transform((values) => [...new Set(values)].toSorted());
 
-export const verificationRuleSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('command'),
-    command: z.string().trim().min(1)
-  }),
-  z.object({
-    type: z.literal('nx-target'),
-    project: z.string().trim().min(1),
-    target: z.string().trim().min(1)
-  })
-]);
+export const verificationRuleSchema = z.object({
+  type: z.literal('command'),
+  command: z.string().trim().min(1)
+});
 
 export const taskContractSchema = z
   .object({
@@ -85,7 +78,7 @@ export const collectSharedResourceIds = (task: TaskContract): readonly string[] 
       resourceIds.add(selector.value);
     }
   }
-  return [...resourceIds].toSorted((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return [...resourceIds].toSorted();
 };
 
 export type ResourceSelectorType = z.infer<typeof resourceSelectorTypeSchema>;

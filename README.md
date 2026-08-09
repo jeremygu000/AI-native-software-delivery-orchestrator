@@ -6,7 +6,7 @@ resources, and runtime write ownership instead of relying on model guesses about
 
 ## Current milestone
 
-Milestones 0–2 establish the deterministic core:
+Milestones 1–5 establish the deterministic core and a working TypeScript repository analyzer:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
 - pnpm workspaces for dependency management;
@@ -16,20 +16,22 @@ Milestones 0–2 establish the deterministic core:
 - stack-safe DAG validation, complete SCC cycle diagnostics, and stable ordering;
 - deterministic topological sorting and ready-task calculation;
 - self-contained hierarchical write-resource and recoverable lease contracts;
+- pnpm workspace discovery and deterministic local package dependency mapping;
+- TypeScript 7-native analysis of files, imports, exports, declarations, and symbol references;
+- recursive solution-style project-reference discovery and explicit empty/missing-project diagnostics;
+- a working `forge analyze` command with summary and `--full` repository-graph output;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Repository analysis, conflict scoring, scheduling waves, write leases, and persistence are the next
-milestones. The CLI exposes `analyze` and `plan` as discoverable placeholders until those engines
-are implemented.
+Task-impact resolution and conflict scoring are the next milestone. Scheduling waves, live write
+leases, persistence, isolated workspaces, and agent execution remain later work. The CLI exposes
+`plan` as a discoverable placeholder until those engines are implemented.
 
 ## Requirements
 
 - Node.js 24 or newer
 - pnpm 11
 
-TypeScript 7 does not currently ship the stable programmatic API needed by the future repository
-analyzer. `tsc` is TypeScript 7.0.2 for project builds and type checks, while the aliased TypeScript
-6 package is retained for that future analyzer boundary.
+TypeScript 7.0.2 is the single compiler used for project builds and type checks.
 
 ## Getting started
 
@@ -38,6 +40,8 @@ pnpm install
 pnpm check
 pnpm build
 node apps/cli/dist/main.js --help
+pnpm exec forge analyze .
+pnpm exec forge analyze . --full
 ```
 
 ## Workspace
@@ -46,6 +50,7 @@ node apps/cli/dist/main.js --help
 apps/cli     Thin CLI adapter
 libs/domain  Schemas, domain types, ports, and state rules
 libs/dag     Functional dependency graph engine
+libs/repository-analysis  pnpm project discovery plus TypeScript semantic analysis
 docs/adr     Architecture decisions
 ```
 
