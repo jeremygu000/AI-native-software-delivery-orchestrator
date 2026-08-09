@@ -13,6 +13,9 @@ may only recommend staggering or serialization. Risk conflicts cannot carry stru
 Scheduler methods receive hard and risk conflicts as separate required inputs.
 The score retained on a hard conflict is explanation metadata only; scheduler implementations must
 not use it to filter, cap, or selectively enforce structural constraints.
+The default `guarded-parallel` threshold is intentionally 1: any detected nonzero risk receives at
+least runtime guarding. Deployments may tune the validated monotonic thresholds, but plain parallel
+is the default only for a zero-score pair.
 
 ## Consequences
 

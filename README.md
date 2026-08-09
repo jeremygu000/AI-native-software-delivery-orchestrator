@@ -7,7 +7,7 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–5 establish the deterministic core and a working TypeScript repository analyzer:
+Milestones 1–6 establish the deterministic analysis core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
 - pnpm workspaces for dependency management;
@@ -21,11 +21,16 @@ Milestones 1–5 establish the deterministic core and a working TypeScript repos
 - TypeScript 7-native analysis of files, imports, exports, declarations, and symbol references;
 - recursive solution-style project-reference discovery and explicit empty/missing-project diagnostics;
 - a working `forge analyze` command with summary and `--full` repository-graph output;
+- deterministic task-selector resolution with project, file, glob, symbol, and shared-resource scope;
+- transitive downstream-project expansion and explicit `public-api-touch` risk reporting;
+- a configurable shared-resource registry with exclusive, ordered, and producer-controlled policies;
+- structurally separate hard conflicts and scored risks with explainable reasons and actions;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Task-impact resolution and conflict scoring are the next milestone. Scheduling waves, live write
-leases, persistence, isolated workspaces, and agent execution remain later work. The CLI exposes
-`plan` as a discoverable placeholder until those engines are implemented.
+Event-driven scheduling is the next milestone. Before it starts, scheduler events and decision
+reasons will gain structured payloads for audit and replay. Live write leases, persistence, isolated
+workspaces, and agent execution remain later work. The CLI exposes `plan` as a discoverable
+placeholder until those engines are integrated.
 
 ## Requirements
 
@@ -52,6 +57,8 @@ apps/cli     Thin CLI adapter
 libs/domain  Schemas, domain types, ports, and state rules
 libs/dag     Functional dependency graph engine
 libs/repository-analysis  pnpm project discovery plus TypeScript semantic analysis
+libs/task-impact  Task selector resolution, impact expansion, shared-resource registry
+libs/conflict-engine  Hard constraints and explainable conflict scoring
 docs/adr     Architecture decisions
 ```
 

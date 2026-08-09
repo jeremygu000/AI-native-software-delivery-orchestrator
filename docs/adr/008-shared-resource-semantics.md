@@ -12,7 +12,17 @@ inside `expectedReads` or `expectedWrites` predicts static impact and retains re
 
 At the analysis boundary, `collectSharedResourceIds` produces a stable, deduplicated union for the
 conservative `TaskImpact.sharedResources` set. The detailed selectors remain available when a
-future engine needs to distinguish read and write access.
+future engine needs to distinguish read and write access. Predicted impact now normalizes those
+details into `read`, `write`, and `coordinate` modes for every resource.
+
+The registry is validated configuration. `exclusive` and `ordered` apply to every declared access;
+`producer-controlled` allows concurrent readers but constrains writes and coordination requests.
+Every explicitly named resource must resolve before task-impact analysis; unknown IDs fail with
+structured evidence instead of weakening a likely hard policy because of a typo. The conflict
+engine keeps a scored unknown-resource fallback only for manually constructed or old persisted
+impacts that bypass this validation. File and path rules are resolved centrally, including
+non-TypeScript files that do not appear in the semantic file graph and files reached through symbol
+or whole-project selectors.
 
 ## Consequences
 

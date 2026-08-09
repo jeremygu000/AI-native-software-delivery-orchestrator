@@ -8,8 +8,9 @@ tasks or implement them later, but they do not decide dependency order, conflict
 transitions, or verification outcomes.
 
 The implemented foundation covers repository setup, domain models, the task dependency graph, a
-first-class Repository Facts Layer, and TypeScript file/symbol analysis. Predicted task impact is
-the next implementation boundary.
+first-class Repository Facts Layer, TypeScript file/symbol analysis, predicted task impact, shared
+resource policies, and deterministic conflict analysis. Event-driven scheduling is the next
+implementation boundary.
 
 ## Workspace structure
 
@@ -22,10 +23,10 @@ libs/
   dag/                 Functional dependency validation and ordering
 
   repository-analysis/ Repository facts and TypeScript semantic analysis
+  task-impact/          Contract selector resolution, impact expansion, resource registry
+  conflict-engine/      Hard constraints and explainable deterministic scoring
 
   # Added in later milestones when each boundary has real behaviour:
-  task-impact/          Contract selector resolution and impact expansion
-  conflict-engine/      Explainable deterministic conflict scoring
   scheduler/            Event-driven dependency- and conflict-aware dispatch
   runtime-guard/        Hierarchical write leases
   persistence/          Drizzle repositories backed by SQLite
@@ -167,6 +168,49 @@ and shared-resource levels. It also records downstream projects and explainable 
 changes, and generated-file changes. `TaskImpact` keeps the prediction and optional observation
 together without pretending they are the same kind of evidence.
 
+The implemented impact pipeline is deterministic:
+
+```text
+TaskContract selectors
+        |
+        v
+project / file / glob / symbol lookup -----> ambiguity signals
+        |
+        v
+file and project ancestry + registry rules
+        |
+        v
+reverse project-dependency traversal
+        |
+        v
+PredictedTaskImpact
+```
+
+A symbol selector matches stable ID, declaration path, or simple name. Exact selectors that resolve
+to zero or several facts produce an `ambiguous-selector` signal; globs may intentionally match many
+files. File and symbol selections automatically include their owning project. Writes expand through
+the reverse project-dependency graph to every transitive downstream project. Sets, resource access
+modes, and diagnostics use locale-independent stable ordering.
+
+Shared-resource rules are validated configuration owned by `task-impact`, not filename conditionals
+inside the scheduler. File rules and path patterns can attach resources even when a non-TypeScript
+file such as `package.json` is absent from the semantic file graph. Predicted impact retains
+`read`, `write`, and `coordinate` modes. `exclusive` and `ordered` rules constrain all declared
+access; `producer-controlled` permits concurrent reads but constrains producer/write access. File
+ownership is resolved through the registry for file, glob, and symbol selectors. A whole-project
+selector checks the manifest and every known file owned by that project without falsely expanding
+the task's explicit file-write set.
+
+Every explicitly named shared resource must exist in the registry before impact analysis begins.
+Unknown IDs fail with structured `UNKNOWN_SHARED_RESOURCE` evidence, so a spelling mistake cannot
+silently weaken an intended hard policy. Conflict analysis retains a soft unknown-resource fallback
+only for defensive handling of manually constructed or older persisted impacts that bypassed the
+normal analyzer.
+
+An exported symbol selected for writing produces `public-api-touch`. It does not produce
+`public-api-signature-change`: touching an implementation is not evidence that its public signature
+changed. That stronger signal is reserved for future before/after observed-diff analysis.
+
 The functional dependency graph and pairwise conflict graph remain separate. `TaskConflict` is a
 discriminated union. A `HardTaskConflict` must contain at least one structural scheduling constraint
 and may recommend only stagger or serialize. A `RiskTaskConflict` has `none`/`soft` severity, an
@@ -176,6 +220,14 @@ single scored list. Scoring constants live in conflict-engine configuration, not
 scheduler branches. `HardTaskConflict.score` remains explainability metadata; a Scheduler
 implementation must never filter, ignore, or cap hard conflicts by score. This invariant requires
 an explicit implementation-level test when Scheduler development begins.
+
+The implemented conflict engine compares task pairs in canonical task-ID order and emits stable,
+deduplicated reasons. Same-symbol writes and configured shared-resource policies create structural
+constraints independently of numeric weight; a test proves that a same-symbol conflict stays hard
+even when its weight is zero. Same-file sibling-symbol writes, same-project writes,
+producer/consumer overlap, generated code, dependency direction, public API touch, and high fan-out
+remain explainable scored risks. Scores are capped at 100, and weights and action thresholds are
+validated engine configuration rather than domain constants.
 
 ### Write leases
 
@@ -248,7 +300,7 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
 5. **Repository analysis:** TypeScript program, import/export/file/symbol/reference graph, stable IDs.
    **Complete.**
 6. **Impact and conflict:** predicted selector resolution, affected-package expansion,
-   shared-resource registry, severity, hard constraints, and explainable scoring.
+   shared-resource registry, severity, hard constraints, and explainable scoring. **Complete.**
 7. **Scheduler:** event-driven dispatch respecting dependencies, hard constraints, priorities, and
    max concurrency; waves remain a visualization only.
 8. **Runtime guard:** hierarchical lease acquisition, heartbeat, stale recovery, and release.

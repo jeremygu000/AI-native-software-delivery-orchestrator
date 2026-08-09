@@ -739,24 +739,115 @@ Follow-up 独立 Review 已确认 H1、M1–M3、L1–L3 全部关闭,没有 Cri
 的阻塞项。Review 对活跃研究仓库的最新采样为 963 个文件、7,265 个符号、3,440 条文件依赖和
 13,123 条符号引用;相对上一次多 2 个符号属于研究仓库持续变化的正常漂移。
 
+### Milestone 6 前的正式架构 Gate Review
+
+第一次正式 architecture/code gate 已通过,没有 Blocker。Review 确认了 domain 依赖方向、Task
+Contract、DAG、Repository Facts Layer、symbol graph、conflict 判别联合、lease 层级和 scheduler
+边界。两项面向后续的 High 被作为新里程碑约束接受,不是里程碑 1–5 的缺陷:
+
+- 预测分析必须区分“触碰 exported symbol”和“已经证明公开 API signature 改变”;
+- Scheduler 实现前,event 和 decision reason 必须改成适合审计、持久化与 replay 的结构化 payload。
+
+Review 同时保留了 worktree 阶段的 phase-aware integration blocking 设计,并要求 shared-resource
+并发语义继续集中在 registry 中。没有要求返工 RepositoryGraph 或 DAG。
+
+### Milestone 6:Task Impact、Shared Resource Registry 与 Conflict Engine
+
+Milestone 6 已经实现为两个单向依赖的库:
+
+```text
+domain
+  ^
+task-impact
+  ^
+conflict-engine
+```
+
+`RepositoryTaskImpactAnalyzer` 会在只读 `RepositoryGraph` 上解析 `project`、`file`、`glob`、
+`symbol` 与 `shared-resource` selector。文件和符号会自动补齐所属项目;写入项目会沿反向项目依赖
+递归扩展,得到全部下游消费者。精确 selector 匹配 0 个或多个事实时会产生稳定、可解释的 ambiguity
+signal;glob 则允许有意匹配多个文件。
+
+可配置的 `SharedResourceRegistry` 会校验 resource ID 唯一性,支持 `exclusive`、`ordered` 和
+`producer-controlled`。它能通过精确文件或 path pattern 附加规则,包括没有进入 TypeScript
+semantic file graph 的 `package.json`。预测影响保留规范化的 `read`、`write`、`coordinate`
+访问模式,不再把所有 shared-resource 使用压成一个 boolean。
+
+任务可能写 exported symbol 时,风险信号现在明确叫 `public-api-touch`,不会声称
+`public-api-signature-change`;后者必须等未来 observed before/after signature comparison 提供证据。
+Generated write、下游高 fan-out 和 selector ambiguity 也会单独报告。
+
+`DeterministicConflictEngine` 会按规范化 task pair 生成稳定 reasons、0–100 分数与建议动作。
+Same-symbol write 和已注册 resource policy 会独立于分数形成 hard structural constraint。同文件的
+sibling-symbol 写入、同项目写入、producer/consumer scope 重叠、generated code、上下游项目关系、
+public API touch 与 high fan-out 保持为可解释的 scored risk。显式但未知的 shared-resource ID
+会让 impact analysis 直接失败,不会静默削弱原本想要的 hard policy。Conflict Engine 只为绕过
+正常验证的手工构造或旧持久化 impact 保留 soft fallback。
+
+新增测试直接证明:
+
+- 即使 same-symbol 权重配置为 0,它仍然是 hard conflict;
+- 同文件 sibling symbols 是 soft risk,不会自动变成 hard conflict;
+- exclusive、ordered、producer-controlled 保持三种不同语义;
+- producer-controlled 的 read/read 可以并行;
+- registry 已解析的 `package.json` 不会被误报成未解析 TypeScript 文件;
+- 独立项目得到 0 分和 parallel 建议。
+
+完整质量门已有 93 个测试通过。覆盖率为:语句 96.69%、分支 91.10%、函数 99.50%、行
+96.62%。`pnpm build` 也通过。项目自分析现在得到 7 个项目、40 个 TypeScript 文件、462 个
+符号、13 条项目依赖、62 条文件依赖、781 条符号引用和 2 条预期 root-project diagnostic。
+
+本阶段完成后再次分析活跃研究仓库:3 个项目、965 个文件、7,276 个符号、3 条项目依赖、
+3,442 条文件依赖、13,136 条符号引用,仍然只有一条覆盖 25 个 API scripts 的
+`UNCOVERED_TYPESCRIPT_FILES` diagnostic。这次运行是 Repository Facts Layer 的回归验证。
+`forge analyze` 仍然只返回仓库事实;Task Impact 与 Conflict Engine 当前是 library API,还没有
+接入新的 CLI command。
+
+#### Milestone 6 独立 Review 加固
+
+独立 Review 没有发现 Critical,发现一项 High 的 shared-resource 发现缺口。Symbol selector 会
+把所属文件和项目加入 impact,但没有把该文件交给 registry path rule。结果是:通过 symbol 表达的
+migration 任务可能漏掉 `ordered` resource,而通过 file selector 表达的另一个任务却能找到。
+现在 registry lookup 统一由 file recording 负责,file、glob、symbol selector 共用同一条路径。
+新增集成回归测试会分析一个 symbol 任务和同一 ordered stream 中另一个不同文件任务,并强制要求
+产生 `ordered-resource` hard constraint。
+
+相关的 Medium project-selector 缺口也已关闭。Whole-project scope 会检查项目 manifest 和所有
+已知所属文件的 resource rule,但 `filesWritten` 仍保持为空,不会把项目级 scope 伪装成“显式写
+每一个文件”。对于第二项 Medium 设计问题,项目选择 fail-fast:显式未知 resource ID 会产生按
+稳定顺序排列的 `TaskImpactAnalysisError`,code 为 `UNKNOWN_SHARED_RESOURCE`。
+
+Low 的稳定排序观察也已关闭:reason/constraint comparator 增加 detail 作为最终 tie-break。
+默认 `guardedParallel = 1` 保持不变,这是有意的保守默认值:只要检测到非零风险,至少需要 guard;
+部署方仍可通过已校验的配置提高 threshold。
+
+Follow-up Reviewer 独立重跑了 coverage、TypeScript build、Oxlint 与 whitespace validation,并
+手工追踪 symbol/file ordered-resource 场景以及 project/unknown-ID 路径。93 个测试与覆盖率数字
+完全一致,没有发现新问题,正式接受 Milestone 6:H1、M1、M2、L1 全部关闭,L2 按文档接受。
+
+只保留一条非阻塞维护建议:project-level resource discovery 当前会独立遍历所属文件,没有与
+`recordFile` 共用 helper。如果未来 per-file 行为不只 registry lookup,应提取一个无副作用的
+resource-discovery helper,避免 project-level 路径漂移。本次不会仅为了这个 cosmetic seam 在验收
+以后继续改代码。
+
 ## 目前整体状态(截止到本文写作时)
 
-- 架构规划的 10 个里程碑中完成了 1–5,按里程碑数量约为 50%。这不代表总工程量恰好完成
+- 架构规划的 10 个里程碑中完成了 1–6,按里程碑数量约为 60%。这不代表总工程量恰好完成
   一半:后面的运行时、持久化、Git 和 Agent 执行阶段比多个地基阶段更大、风险也更高。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 75 个测试全部通过。
-- 覆盖率为:语句 96.16%、分支 91.11%、函数 100%、行 96.08%;四项都达到至少 90% 的门槛。
-- `pnpm build` 通过。`forge analyze` 已在 963 个文件的真实仓库验证;`forge plan` 仍然刻意
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 93 个测试全部通过。
+- 覆盖率为:语句 96.69%、分支 91.10%、函数 99.50%、行 96.62%;四项都达到至少 90% 的门槛。
+- `pnpm build` 通过。`forge analyze` 已在 965 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 
 ## 还没有实现的部分
 
-- 把自然语言或结构化任务中的 selector 解析成它可能读写的项目、文件和符号。
-- 沿下游消费者扩展影响范围,并计算可解释的两两冲突分数。
 - 根据任务依赖、hard constraint 与并发限制,逐事件决定下一批可启动任务。
+- Scheduler 实现前,把过薄的 event 和字符串 reason 改成结构化判别 payload。
 - 实现活动租约的申请、heartbeat、stale 恢复、释放、存储和运行时写入强制检查。
 - 持久化编排运行,让程序重启后能恢复现场。
 - 创建隔离 Git 工作区,安全地 rebase 和集成各任务改动。
 - 真正调用编码 Agent、监控执行并验证结果。
 
-简单说:**编排器现在能为真实 TypeScript pnpm 仓库建立确定的结构地图。下一阶段要把任务意图
-连接到这张地图;目前仍然不会规划或运行 Agent。**
+简单说:**编排器现在能为真实 TypeScript pnpm 仓库建立确定的结构地图,把结构化任务意图解析成
+预测影响,并确定地比较任务对。下一阶段是事件驱动 Scheduler;目前仍然不会规划自然语言任务或
+运行 Agent。**

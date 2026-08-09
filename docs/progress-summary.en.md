@@ -835,29 +835,131 @@ blocker. The reviewer's latest active-repository sample was 963 files, 7,265 sym
 dependencies, and 13,123 symbol references; the two-symbol drift from the previous run is normal
 activity in the research repository.
 
+### Formal architecture gate before Milestone 6
+
+The first formal architecture/code gate passed with no Blocker. It confirmed the domain direction,
+Task Contract, DAG, Repository Facts Layer, symbol graph, conflict variants, lease hierarchy, and
+scheduler boundary. Two forward-looking High items were accepted as milestone constraints rather
+than defects in milestones 1–5:
+
+- predicted analysis must distinguish touching an exported symbol from proving that its API
+  signature changed;
+- before Scheduler implementation, scheduler events and decision reasons need structured payloads
+  suitable for audit, persistence, and replay.
+
+The review also retained the phase-aware integration-blocking design for the worktree milestone and
+required shared-resource concurrency semantics to remain centralized in a registry. No
+RepositoryGraph or DAG rework was requested.
+
+### Milestone 6: Task Impact, Shared Resource Registry, and Conflict Engine
+
+Milestone 6 is now implemented as two libraries with one-way dependencies:
+
+```text
+domain
+  ^
+task-impact
+  ^
+conflict-engine
+```
+
+`RepositoryTaskImpactAnalyzer` resolves `project`, `file`, `glob`, `symbol`, and `shared-resource`
+selectors against a read-only `RepositoryGraph`. File and symbol selections add their owning
+projects. Written projects are traversed in the reverse dependency direction to collect every
+transitive downstream consumer. Exact selectors with zero or multiple matches produce stable,
+explainable ambiguity signals, while globs may intentionally match many files.
+
+The configurable `SharedResourceRegistry` validates unique definitions and supports `exclusive`,
+`ordered`, and `producer-controlled` policies. It attaches rules from exact files and path patterns,
+including non-TypeScript files such as package manifests that do not appear in the semantic file
+graph. Predicted impact retains normalized `read`, `write`, and `coordinate` modes instead of
+collapsing all shared-resource use into one boolean.
+
+Risk reporting now says `public-api-touch` when a task may write an exported symbol. It deliberately
+does not claim `public-api-signature-change`; that stronger signal requires a future observed
+before/after signature comparison. Generated writes, high downstream fan-out, and ambiguous
+selectors are also reported explicitly.
+
+`DeterministicConflictEngine` compares a canonical task pair and emits stable reasons, a bounded
+score, and a recommended action. Same-symbol writes and registered resource policies create hard
+structural constraints independently of score. Same-file sibling-symbol writes, same-project
+writes, producer/consumer scope overlap, generated code, upstream/downstream project relationships,
+public API touch, and high fan-out remain scored risks. Explicit unknown shared-resource IDs fail
+impact analysis instead of silently weakening an intended hard policy. The Conflict Engine keeps a
+soft fallback only for manually constructed or old persisted impacts that bypass normal validation.
+
+The test suite now directly proves that:
+
+- a same-symbol write stays hard even when its configured score is zero;
+- sibling symbols in one file are a soft risk, not automatically a hard conflict;
+- exclusive, ordered, and producer-controlled resources preserve different semantics;
+- producer-controlled read/read access may remain parallel;
+- registry-resolved `package.json` scope is not mislabeled as an unresolved TypeScript file;
+- independent projects produce a zero-score parallel recommendation.
+
+The full quality gate passes with 93 tests. Coverage is 96.69% statements, 91.10% branches, 99.50%
+functions, and 96.62% lines. `pnpm build` also passes. Self-analysis now reports 7 projects, 40
+TypeScript files, 462 symbols, 13 project dependencies, 62 file dependencies, 781 symbol references,
+and 2 expected root-project diagnostics.
+
+The active research repository was analyzed again after the milestone: 3 projects, 965 files,
+7,276 symbols, 3 project dependencies, 3,442 file dependencies, 13,136 symbol references, and the
+same one `UNCOVERED_TYPESCRIPT_FILES` diagnostic covering 25 API scripts. This run is a regression
+check for the Repository Facts Layer. `forge analyze` still returns repository facts only; Task
+Impact and Conflict Engine are currently library APIs and have not yet been wired into a new CLI
+command.
+
+#### Milestone 6 independent-review hardening
+
+The independent review found no Critical issue and one High shared-resource discovery gap. A symbol
+selector added its owning file and project to impact but did not apply registry path rules to that
+file. A symbol-scoped migration task could therefore miss an `ordered` resource that a file-scoped
+task found correctly. File recording now owns registry lookup, so file, glob, and symbol selectors
+share one path. An integration regression test analyzes a symbol task and a different-file task in
+one ordered stream and requires an `ordered-resource` hard constraint.
+
+The related Medium project-selector gap was also closed. Whole-project scope now checks the project
+manifest and all known owned files for resource rules while leaving `filesWritten` empty; project
+scope is not misrepresented as an explicit write to every file. For the second Medium design
+question, the project chose fail-fast validation: explicit unknown resource IDs produce a sorted
+`TaskImpactAnalysisError` with code `UNKNOWN_SHARED_RESOURCE`.
+
+The Low deterministic-order observation was closed by adding reason/constraint detail as the final
+tie-break. The default `guardedParallel = 1` threshold remains intentional: any detected nonzero
+risk receives at least guarding, while validated deployment configuration can raise the threshold.
+
+The follow-up reviewer independently reran coverage, TypeScript builds, Oxlint, and whitespace
+validation, then hand-traced the symbol/file ordered-resource scenario and the project/unknown-ID
+paths. The reported 93 tests and coverage numbers matched exactly. It found no new issue and
+formally accepted Milestone 6, closing H1, M1, M2, and L1 and accepting L2 as documented.
+
+One non-blocking maintenance note is carried forward: project-level resource discovery currently
+iterates owned files separately from `recordFile`. If per-file behavior grows beyond registry lookup,
+extract a shared side-effect-free resource-discovery helper so project-level discovery cannot drift.
+No code change was made after acceptance solely for this cosmetic seam.
+
 ## Current overall status (as of this writing)
 
-- Architecture milestones 1–5 of 10 are complete. That is roughly 50% by milestone count, not 50%
+- Architecture milestones 1–6 of 10 are complete. That is roughly 60% by milestone count, not 60%
   of total engineering effort: later runtime, persistence, Git, and agent-execution milestones are
   larger and riskier than several foundation milestones.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 75 tests,
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 93 tests,
   all passing.
-- Coverage is 96.16% statements, 91.11% branches, 100% functions, and 96.08% lines. Every enforced
+- Coverage is 96.69% statements, 91.10% branches, 99.50% functions, and 96.62% lines. Every enforced
   threshold is at least 90%.
-- `pnpm build` passes. `forge analyze` is real and verified on a 963-file repository; `forge plan`
+- `pnpm build` passes. `forge analyze` is real and verified on a 965-file repository; `forge plan`
   remains intentionally unavailable.
 
 ## What has NOT been implemented yet
 
-- Resolve a natural-language or structured task's selectors into the projects, files, and symbols
-  it may read or write.
-- Expand impact to downstream consumers and calculate explainable pairwise conflict scores.
 - Dispatch tasks event-by-event while respecting dependencies, hard constraints, and concurrency.
+- Replace thin scheduler events and string reasons with structured discriminated payloads before
+  implementing dispatch.
 - Implement live lease acquire/heartbeat/stale/release storage and runtime write enforcement.
 - Persist orchestration runs so they can recover after restart.
 - Create isolated Git workspaces, rebase and integrate task changes safely.
 - Invoke coding agents, monitor them, and verify their results.
 
-In short: **the orchestrator can now build a deterministic structural map of a real TypeScript pnpm
-repository. The next stage must connect task intentions to that map; it still does not plan or run
-agents.**
+In short: **the orchestrator can now map a real TypeScript pnpm repository, resolve structured task
+intent into predicted impact, and compare task pairs deterministically. The next stage is the
+event-driven Scheduler; it still does not plan natural-language work or run agents.**

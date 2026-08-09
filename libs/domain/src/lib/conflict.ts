@@ -4,7 +4,8 @@ import type { TaskContract } from './task-contract.js';
 export type ResourceId = string;
 
 export type ImpactRiskSignalType =
-  | 'public-api-change'
+  | 'public-api-touch'
+  | 'public-api-signature-change'
   | 'generated-artifact'
   | 'high-fan-out'
   | 'ambiguous-selector';
@@ -12,6 +13,13 @@ export type ImpactRiskSignalType =
 export interface ImpactRiskSignal {
   readonly type: ImpactRiskSignalType;
   readonly detail: string;
+}
+
+export type SharedResourceAccessMode = 'read' | 'write' | 'coordinate';
+
+export interface SharedResourceAccess {
+  readonly resourceId: ResourceId;
+  readonly modes: readonly SharedResourceAccessMode[];
 }
 
 export interface PredictedTaskImpact {
@@ -23,6 +31,7 @@ export interface PredictedTaskImpact {
   readonly symbolsRead: ReadonlySet<SymbolId>;
   readonly symbolsWritten: ReadonlySet<SymbolId>;
   readonly sharedResources: ReadonlySet<ResourceId>;
+  readonly sharedResourceAccesses: readonly SharedResourceAccess[];
   readonly downstreamProjects: ReadonlySet<ProjectId>;
   readonly riskSignals: readonly ImpactRiskSignal[];
 }
@@ -52,7 +61,9 @@ export type ConflictReasonType =
   | 'shared-resource'
   | 'producer-consumer'
   | 'generated-code'
-  | 'upstream-downstream-project';
+  | 'upstream-downstream-project'
+  | 'public-api-touch'
+  | 'high-fan-out';
 
 export interface ConflictReason {
   readonly type: ConflictReasonType;
@@ -67,6 +78,7 @@ export type ConflictSeverity = 'none' | 'soft' | 'hard';
 export type SchedulingConstraintType =
   | 'exclusive-resource'
   | 'ordered-resource'
+  | 'producer-controlled-resource'
   | 'same-symbol-write'
   | 'runtime-scope-expansion';
 

@@ -14,6 +14,12 @@
     },
     {
       "path": "./libs/repository-analysis"
+    },
+    {
+      "path": "./libs/task-impact"
+    },
+    {
+      "path": "./libs/conflict-engine"
     }
   ]
 }
