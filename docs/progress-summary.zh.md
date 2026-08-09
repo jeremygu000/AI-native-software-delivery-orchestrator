@@ -459,270 +459,240 @@ import/export、声明和符号引用。未来 LLM 可以帮助把自然语言�
 **这一阶段的成果**:编排器现在能打开一个真实的 pnpm 多包仓库,建立代码仓库地图的第一层。
 这是项目第一次完整打通"用户输入 → 命令行 → 真实分析结果"的可用路径。
 
-## 阶段七:TypeScript 文件和符号分析
+## 阶段七:RepositoryGraph——TypeScript 文件与符号分析
 
-阶段六回答的是"仓库里有哪些项目包"。阶段七继续回答更深入、但仍然完全确定的问题:
-"这些项目里有哪些 TypeScript 文件、哪些文件 import 了哪些文件、代码里声明了哪些有名字的
-结构、这些声明又引用了哪些其他声明?"
+阶段六找出了 pnpm 仓库里有哪些项目包。阶段七继续把这份项目清单扩展成一张确定性的代码仓库
+地图:每个项目拥有哪些 TypeScript 文件、文件里声明了哪些代码符号,以及项目、文件和符号之间
+有哪些依赖或引用关系。
 
-这仍然**不是 LLM 分析**。`forge analyze` 不访问网络,也不会把源码发给模型。它使用固定版本
-的 TypeScript 7 原生 API 打开每个项目真实的 `tsconfig.json`,所以会遵守该仓库自己的编译
-选项、模块解析规则和 path alias。TypeScript 类型检查器负责解析 import 和符号关系;确定的
-转换规则再把这些编译器事实写进通用 `RepositoryGraph`。
+这**不是 LLM 分析**。`forge analyze` 不访问网络,不把源码发送给模型,也不会修改被分析仓库。
+它把 pnpm manifest 与固定版本的 TypeScript 7 原生 API 组合起来,再把编译器确认的事实转换成
+与具体工具无关的 `RepositoryGraph`。
 
-分析器现在依次执行:
+更详细的代码级说明见[《RepositoryGraph 分析器——实现与工作机制》](./repository-graph-analysis.zh.md)。
 
-1. 找出 pnpm workspace 项目对应的 `tsconfig.json`。
-2. 让 TypeScript 7 建立各项目的 Program,只保留仓库内部的 TypeScript 源文件,排除
-   `node_modules` 里的依赖源码。
-3. 把文件归属到路径最具体的 workspace 项目,用"项目 ID + 仓库相对路径"生成稳定文件 ID,
-   并标记生成代码路径。
-4. 通过类型检查器解析 import,建立文件依赖边。因此,即使 `package.json` 没写 workspace
-   依赖,通过 TypeScript alias 或共享源码形成的关系也能被发现。
-5. 建立顶层 class、function、interface、type alias、enum、namespace、variable 的索引,
-   并索引 class/interface 里的 constructor、method、getter/setter 和 property。
-6. 记录符号的父子层级和 export 可见性;private/protected 成员不会误标成公开 API。
-7. 通过类型检查器把标识符使用转换成去重后的符号引用边。
-8. 从跨项目文件依赖反推出项目依赖,再与 package manifest 的依赖合并。
+### RepositoryGraph 包含什么
 
-稳定 ID 不使用行号。只是在同一个文件里把一段代码向上或向下移动,不会改变它的身份。一个
-典型符号 ID 类似:
+```text
+RepositoryGraph
+├── projects: ProjectNode[]
+├── files: FileNode[]
+├── symbols: SymbolNode[]
+├── projectDependencies: Project -> Project
+├── fileDependencies: File -> File
+├── symbolReferences: Symbol -> Symbol
+└── diagnostics: 分析警告
+```
+
+- `ProjectNode` 表示一个 pnpm workspace package。
+- `FileNode` 表示一个由项目拥有的真实 TypeScript 文件。
+- `SymbolNode` 表示 class、function、interface、method、property 等有名字的声明。
+- 图中的边表示 TypeScript 或 package manifest 确实解析出了这条关系。它是事实证据,还不是
+  “某个编码任务一定会修改这里”的预测。
+
+### `forge analyze` 是怎样工作的
+
+```text
+forge analyze <repository>
+        |
+        v
+解析仓库路径并选择 provider
+        |
+        v
+PnpmWorkspaceProvider
+  ├── 读取 pnpm-workspace.yaml
+  ├── 查找 package.json
+  ├── 建立 ProjectNode
+  └── 建立 manifest 项目依赖边
+        |
+        v
+TypeScriptRepositoryAnalyzer
+  ├── 查找根 tsconfig.json
+  ├── 递归跟随 project references
+  ├── 打开真实 TypeScript Program 与 Checker
+  ├── 归属并去重源码文件
+  ├── 建立文件依赖边
+  ├── 把代码声明建立成 SymbolNode
+  ├── 建立符号引用边
+  ├── 反推出跨项目依赖
+  └── 报告缺失、空项目和未覆盖文件
+        |
+        v
+输出简洁摘要,或通过 --full 输出完整图
+```
+
+#### 1. 从 pnpm 发现项目
+
+`PnpmWorkspaceProvider` 读取 `pnpm-workspace.yaml`,展开其中的 package pattern,再解析根目录和
+各 workspace 的 `package.json`。Package name 成为稳定项目 ID;仓库相对的 package root 和
+source root 成为项目元数据。
+
+Workspace package 之间声明的依赖会形成第一批项目依赖边。Provider 会拒绝损坏的 manifest、
+重复 package name、自依赖、缺失的 `workspace:*` 目标、不可读仓库,以及解析后跑出仓库边界的
+workspace 路径。
+
+Provider 边界可以替换:领域图不依赖 pnpm 类型。pnpm 是当前已经实现的输入 provider,不是未来
+所有仓库格式唯一的事实来源。
+
+#### 2. 发现 TypeScript 配置
+
+分析器从每个项目根 `tsconfig.json` 开始,解析支持注释和尾逗号的 TypeScript JSONC,并递归
+跟随 `references`,找到真正参与编译的配置:
+
+```text
+tsconfig.json
+├── tsconfig.app.json
+├── tsconfig.spec.json
+└── config/tsconfig.build.json
+```
+
+缺失、损坏、循环、不可读或跑出仓库的 reference 都会被确定地处理;非法输入会返回结构化错误,
+而不是成功产生一张空图。普通 tsconfig 和“根配置只有 references”的 solution-style 仓库都能
+正确分析。
+
+所有已发现配置会交给固定版本的 TypeScript 7 原生 API。它建立的 Program 和 Checker 会遵守
+目标仓库真实的 compiler options、module resolution、path alias、package exports 和 workspace
+link。`unstable` API 路径只存在于 `libs/repository-analysis` 内部;原生 AST 和 Checker 不会进入
+领域模型,项目也没有重新安装 TypeScript 6。
+
+#### 3. 文件归属、身份和安全边界
+
+每个源码文件归属于“真实文件路径上最具体的 pnpm 项目”。分析它的编译配置也必须属于同一个
+项目,所以根项目或兄弟项目不能随意把自己的 Checker 借给其他项目源码。
+
+在判断归属、仓库边界、图身份和去重以前,文件系统 symlink 会先解析成真实路径。因此多个
+symlink 指向同一文件时,图里只有一个 `FileNode` 和一套符号。真实目标位于 `node_modules` 或
+仓库外部的 symlink 会被排除。因为身份使用真实文件,`FileNode.path` 可能与 import 中写下的
+symlink 路径不同。
+
+文件 ID 由“所属项目 ID + 真实仓库相对路径”组成:
+
+```text
+api:workspace/api/src/modules/work/router.ts
+```
+
+生成文件路径会单独标记。ID 不包含行号,所以只在文件内移动声明不会改变身份。
+
+当 production 和 spec/test 配置同时包含一个文件时,production context 优先。如果两个
+production 配置重叠,当前用配置路径字母序最靠前者作为确定性 tie-break;这只保证结果可复现,
+不代表它的 compiler options 在语义上更优。
+
+#### 4. 建立文件依赖边
+
+文件关系来自 TypeScript 已解析的 module 信息,不是字符串搜索。因此普通 import、export、
+`export *`、多跳 re-export、path alias、bare workspace package 和共享源码 import 都可以解析到
+真实目标 `FileNode`。
+
+跨项目文件边还会提升成项目依赖边,再与前面从 manifest 得到的依赖合并。即使 workspace
+manifest 没有显式声明依赖,图仍可能通过真实源码引用发现它。
+
+#### 5. 建立符号索引和稳定身份
+
+分析器会索引顶层 class、function、interface、type alias、enum、namespace 和 variable,以及
+constructor、method、accessor 和 property。Namespace 内容会递归处理。父子层级、公开 export
+状态和 private/protected 可见性都会保留。
+
+Class/namespace declaration merging 使用固定 kind 优先级,并用 `mergedKinds` 记录所有参与类型,
+因此结果不依赖声明顺序。动态 computed property 使用经过转义的表达式身份;getter/setter 共用
+一个 callable symbol;多余外层括号会归一化;重复 property 只在相同表达式的出现次数中编号。
+
+符号 ID 在文件 ID 后面增加稳定声明路径:
 
 ```text
 api:workspace/api/src/modules/work/router.ts:createWorkRouter
 ```
 
-TypeScript 7 的程序化 API 当前仍通过 `unstable` 路径发布。项目把这个风险严格限制在
-`libs/repository-analysis` 内,固定精确版本,并且不允许 AST、Checker 或原生 Symbol 泄漏到
-领域模型。**没有重新加入 TypeScript 6**;整个仓库仍然只有一个 TypeScript 版本。ADR-004
-记录了未来稳定 API 出现时需要重新评估这个边界。
+#### 6. 建立符号引用边
 
-CLI 现在已经注册成本 workspace 可执行命令。构建以后可运行:
+TypeScript Checker 会把 identifier use 解析到真实 declaration。分析器把这些结果转换成去重后的
+`Symbol -> Symbol` 边,包括跨文件、alias、re-export 和跨 workspace 项目的引用。请求会分成有
+上限的 batch,控制临时 native handle 和内存压力。
+
+#### 7. Diagnostics 与资源清理
+
+分析成功后仍可能带 warning:
+
+- `MISSING_TYPESCRIPT_CONFIGURATION`:项目没有根 TypeScript 配置;
+- `EMPTY_TYPESCRIPT_PROJECT`:配置合法,但没有产生属于该项目的源码;
+- `UNCOVERED_TYPESCRIPT_FILES`:磁盘上存在 TypeScript 文件,但没有被任何已发现配置覆盖。
+  Diagnostic 会列出仓库相对路径,而不是静默猜一个错误的 Checker。
+
+未覆盖文件比较会排除依赖、构建/覆盖率输出和嵌套 pnpm workspace。有意排除的生成文件仍可能
+形成诊断噪声;未来策略可以把生成文件与手写文件分成不同严重级别。
+
+Native 资源一定会清理:snapshot dispose 与 API close 都会尝试执行。原始结构化分析错误优先于
+cleanup error,并保留原始 stack;只有 cleanup 失败时也不会静默忽略。
+
+### CLI 用法和真实仓库结果
+
+构建以后可以运行:
 
 ```sh
 pnpm exec forge analyze /仓库路径
+pnpm exec forge analyze /仓库路径 --full
 ```
 
-默认输出适合人阅读的摘要:数量、项目和项目依赖。加 `--full` 才会输出全部文件、符号、文件
-依赖和符号引用。大型仓库的完整 JSON 会很大,所以默认摘要是更实用的行为。
+摘要模式输出数量、项目、项目依赖和 diagnostics。`--full` 还会输出所有文件、符号、文件边和
+符号边,大型仓库的 JSON 会非常大。
 
-### 阶段七真实验证:Ingestion and Matching
+分析器已经反复在下面的真实研究仓库运行:
 
-阶段七第一版已经按要求实际执行:
-
-```sh
-pnpm exec forge analyze \
-  ~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching
+```text
+~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching
 ```
 
-本机约 14.5 秒完成,结果如下:
+最终独立 Review 的最近一次采样是:
 
 | 图中的事实      |   数量 |
 | --------------- | -----: |
 | 项目            |      3 |
-| TypeScript 文件 |    973 |
-| 建立索引的符号  |  7,819 |
+| TypeScript 文件 |    959 |
+| 建立索引的符号  |  7,224 |
 | 项目依赖        |      3 |
-| 文件依赖        |  3,514 |
-| 符号引用        | 13,475 |
+| 文件依赖        |  3,424 |
+| 符号引用        | 13,037 |
+| Diagnostics     |      1 |
 
-三个项目仍然是仓库根项目、`api` 和 `ingestion-and-matching-ui`。最重要的新结果是,增强后的图
-已经出现 `ingestion-and-matching-ui → api`。阶段六只读 package manifest,当时看不到两个
-workspace 包之间的依赖;阶段七通过 TypeScript 解析找到了真实的代码级关系。这正好说明了
-为什么"项目清单分析"和"源码语义分析"必须是两层能力。
+研究仓库仍在活跃修改,所以不同运行之间出现少量数字变化是正常的。稳定结论更重要:图一直能发现
+`ingestion-and-matching-ui -> api`;唯一 warning 会列出磁盘上存在、但没有被
+`workspace/api/tsconfig.json` 覆盖的 API scripts。
 
-这些数字不表示工具已经"理解"了 7,819 个符号的业务含义。它表示系统有了一份确定的结构
-索引:声明在哪里,TypeScript 如何解析它们之间的关系。下一阶段的 Impact/Conflict Engine
-会查询这份事实地图。
+这些数字不表示工具理解了 7,224 个符号的业务含义。它表示系统建立了一份确定的结构索引:
+声明在哪里,TypeScript 怎样解析它们之间的关系。这就是 Task Impact Engine 的事实输入。
 
-### 当前分析能力的限制
+### 加固时间线
 
-- 只分析被已发现 `tsconfig.json` 纳入的 TypeScript 系列文件,不是 JavaScript、SQL、CDK、
-  数据库或基础设施的万能语义分析器。
-- 当前覆盖有明确支持的声明类别,不是每一种嵌套或匿名 AST 结构都会单独成为符号。
-- 已记录 export 可见性,但还没有提取规范化的函数/类型签名。
-- 目前每次是全量扫描;合同里虽然预留 `changedFiles`,增量刷新尚未实现。
-- 图中的边只表示"TypeScript 确认存在这个关系",不等于某个任务一定会改这里,也不能直接
-  推出两个任务的风险或并发许可。
-- `forge plan` 仍不可用;`forge analyze` 不调度 Agent,也不会修改被分析仓库的源码。
+多轮独立 Review 使用临时对抗仓库、本项目自分析和真实研究仓库验证边界。这里只保留简短时间
+线,因为最终行为比逐轮 Review 叙事更重要:
 
-**这一阶段的成果**:`forge analyze` 已经能为真实 TypeScript pnpm 仓库建立项目、文件、符号、
-文件依赖和符号引用五个层次的图。架构里程碑 5 完成,下一步已经有了计算任务影响和冲突所需的
-事实输入。
+| 顺序                 | 发现的问题                                                                | 简单修复                                                                                       |
+| -------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 第一轮加固           | 嵌套 namespace、声明合并、modifier、computed name 和项目归属存在边界问题  | 增加递归索引、确定的 merged kinds、有类型的 modifier 检查、稳定 computed ID 和严格项目 context |
+| Solution 布局 Review | 只有 references 的根配置可能得到 `0 files / 0 symbols`                    | 增加 JSONC 与递归 project-reference 发现;损坏 reference 明确失败                               |
+| 归属/诊断 Review     | 项目子目录配置被拒绝、部分未覆盖文件静默消失、native 失败清理缺少集成测试 | 按最具体项目归属配置,增加 `UNCOVERED_TYPESCRIPT_FILES`,并测试真实 snapshot/API cleanup         |
+| Symlink Review       | 同一真实文件通过多个 symlink 变成重复文件和符号                           | 真实路径统一负责归属、去重、边、ID 和仓库边界                                                  |
+| 最终收尾             | 存在一次重复 `realpath`,公开路径语义不够明确                              | 删除重复系统调用,明确 FileNode 使用真实路径                                                    |
 
-### 独立 Review 与阶段七加固
+最终 Review 没有发现 Critical、High 或 Medium,并同意结束 RepositoryGraph 事实层专项 Review。
 
-进入下一里程碑前,Claude 对所有未提交改动进行了独立 Review,重新运行了全部质量门,还建立
-临时仓库实测语言边界。Review 没有发现 Critical 问题,并确认单一 TS7 边界、只读行为、稳定
-ID、路径逃逸防护、Nx 移除和 alias/re-export 解析都真实成立。同时发现的正确性缺口已在交付前
-修复:
+### 当前限制
 
-- 现在会递归索引 namespace 内的 function、variable、class、嵌套 namespace 和点式
-  namespace 声明。
-- class/namespace 声明合并不再由谁先出现在源码里决定。固定优先级决定主 `kind`,同时用
-  `mergedKinds` 保存所有参与合并的类型。
-- modifier 检查直接使用 TypeScript 7 有类型保证的 `modifierFlags`,删除了可能静默失败的
-  Reflect 读取。private/protected 成员仍保持非导出。
-- 动态 computed property 会明确标记为 computed 并增加出现序号;字符串/数字字面量 key 会
-  恢复成字面名称。路径分隔字符会转义,包含 `.` 的属性名不会伪装成另一层符号层级。
-- 文件只允许由所属 pnpm 项目拥有的 TypeScript 配置分析。没有自己配置的项目不会再随意
-  借用某个兄弟项目的 Checker。
-- 清理阶段报错不会覆盖真正的分析错误;如果分析成功但清理失败,仍会返回结构化清理错误。
-- 重复的路径工具已合并,CLI 完整输出使用具体 `FileNode`/`SymbolNode` 类型,并补充了引用批大小
-  的理由。
+- 只有被已发现配置覆盖的 TypeScript 系列文件会建立语义索引;它不是 JavaScript、SQL、数据库、
+  CDK 或基础设施的万能分析器。
+- 当前索引支持的有名声明类别,不是每一种匿名或深层 AST 结构。
+- 已记录 export 状态,但还没有提取规范化 callable/type signature。
+- 当前是全量扫描;`changedFiles` 是扩展点,增量刷新还没有实现。
+- 项目依赖边还不记录证据来自 manifest、production、test、generated、runtime 还是 type-only
+  import。Task Impact 可以先用于可达性,但 Conflict Engine 在分配不同权重前必须重新评估
+  provenance。
+- 额外未覆盖文件 glob 只在约一千文件规模验证,还没有为数万文件仓库做 benchmark。
+- 摘要 JSON 包含仓库绝对路径,分享日志时可能暴露本机用户名。
+- `forge plan` 仍不可用;`forge analyze` 不会调度 Agent,也不会修改源码。
 
-新增回归测试覆盖 namespace 子成员、两种声明合并顺序、computed name、多跳 re-export、
-`export *`、`tsconfig.paths`、通过 workspace 符号链接解析 bare package specifier、re-export
-可见性,以及没有所属 tsconfig 的文件不应被索引。
-
-修复后再次分析真实仓库,当前最终结果为:
-
-| 图中的事实      |   数量 |
-| --------------- | -----: |
-| 项目            |      3 |
-| TypeScript 文件 |    952 |
-| 建立索引的符号  |  7,188 |
-| 项目依赖        |      3 |
-| 文件依赖        |  3,401 |
-| 符号引用        | 12,958 |
-
-文件和符号数量降低是刻意的正确性修复:第一版会通过一个不属于该文件 pnpm 项目的编译 context
-把文件带进来;加固版本只有在所属项目提供根 `tsconfig.json` 时才纳入这些文件。关键的
-`ingestion-and-matching-ui → api` 语义依赖仍然存在。
-
-还有一个图模型限制已经明确登记。TypeScript import 推导出的项目依赖会与 manifest 依赖合并,
-但依赖边目前还不记录它来自生产代码、测试、生成代码、type-only import 还是 package
-manifest。下一阶段只能把它当作"可达性证据",不能假设每条边的架构强度完全相同。Edge
-provenance 需要作为图模型扩展专门设计。另外,摘要 JSON 会输出仓库绝对路径;分享日志前要注意
-它可能暴露本机用户名和目录结构。
-
-### 第二轮独立 Review:Solution 配置与稳定 computed 符号
-
-第二轮 Claude Review 发现,上一轮收紧文件归属时引入了一个 Critical 回归:solution-style 项目
-可能以成功退出码返回空图。这类常见结构的 `tsconfig.json` 只保存 `references`,真正包含源码的
-配置位于 `tsconfig.lib.json`、`tsconfig.app.json` 等文件。只打开 solution 文件时,TS7 原生
-API 不会自动展开这些 reference。本项目自己正好采用这种结构,独立复现结果是
-`0 files / 0 symbols`。
-
-修正后的分析器现在会:
-
-- 解析带注释和尾逗号的 TypeScript JSONC 配置;
-- 递归跟随 project references,拒绝缺失目标和跑出仓库的引用;
-- 打开每一份被引用的真实编译配置;
-- 仍然要求文件使用同一 pnpm 项目拥有的编译 context;
-- 当生产配置和 spec 配置都包含同一文件时,确定地优先使用生产配置;
-- 对坏配置返回 `INVALID_TYPESCRIPT_CONFIGURATION`;
-- 对无法提供所属源码的合法项目输出 `MISSING_TYPESCRIPT_CONFIGURATION` 或
-  `EMPTY_TYPESCRIPT_PROJECT` warning;
-- 在普通 `forge analyze` 输出里展示 diagnostics 及数量。
-
-Review 还发现动态 computed getter/setter 被拆成两个符号,而且 ID 使用成员在整个 class 里的
-绝对位置。现在同一表达式的动态 callable/accessor 会共享一个符号;重复动态 property 只按
-"同一表达式出现了几次"编号,所以在前面插入无关成员不会改变它的 ID。
-
-Native 清理结果逻辑已提取成可直接测试的内部模块。测试现在证明:dispose 和 close 都会尝试;
-原始分析错误优先于清理错误;只有清理失败时仍会明确报错;理论上不应出现的"没有结果也没有
-错误"状态也会大声失败。
-
-本项目自身已经成为永久的 solution-layout 回归测试。真实自分析结果为:
-
-| 图中的事实      | 数量 |
-| --------------- | ---: |
-| 项目            |    5 |
-| TypeScript 文件 |   29 |
-| 建立索引的符号  |  298 |
-| 项目依赖        |    5 |
-| 文件依赖        |   44 |
-| 符号引用        |  424 |
-| Diagnostics     |    1 |
-
-唯一 diagnostic 符合预期:根 package 只负责 solution/协调,没有自己的 TypeScript 源码。它现在
-和坏配置有明确区别——坏配置会直接令分析失败。
-
-最新一次 Ingestion and Matching 分析仍然健康:952 个文件、7,191 个符号、3,411 条文件依赖、
-12,983 条符号引用、0 diagnostics,UI 到 API 的依赖仍然存在。
-
-### 第三轮独立 Review:配置归属与诊断完整性
-
-第三轮 Claude Review 确认 solution-style 分析已经修好,随后发现一个更窄的合法布局仍会被
-排除:项目根 `tsconfig.json` 可以引用根目录下面的真实编译配置,例如
-`config/tsconfig.build.json`。旧规则要求配置目录与项目根目录完全相等,所以即使这份配置确实
-属于同一个项目,也会被拒绝。
-
-现在的归属规则会把每份已发现配置交给“包含它的、路径最具体的 pnpm 项目”。被引用配置可以
-放在这个项目根目录下的任意子目录,但不能索引嵌套项目或兄弟项目拥有的源码。专门的回归仓库
-已经证明:`packages/a/config/tsconfig.build.json` 可以合法纳入
-`packages/a/src/index.ts`,同时不放松项目隔离。
-
-Review 还发现诊断系统的盲区:只要项目已有一个文件成功建立索引,其他没有被 tsconfig 覆盖的
-TypeScript 文件仍可能静默消失。分析器现在会扫描仓库,把“项目拥有的 TypeScript 文件”与
-“实际建立索引的文件”做差集。存在差集时会输出 `UNCOVERED_TYPESCRIPT_FILES`,并列出准确的
-仓库相对路径。依赖目录、构建产物、覆盖率输出和嵌套 pnpm workspace 会从比较中排除。这个
-warning 不会擅自把文件塞进可能错误的编译 context;它负责让遗漏对人和未来策略层可见。
-
-Native cleanup 现在不仅有纯函数单元测试,还有真实接线的集成测试。测试会打开真实 TypeScript
-native snapshot,在活动会话内触发非法 compiler option diagnostic,并验证返回结构化错误以前
-确实执行了 `snapshot.dispose()` 和 `api.close()`。结构化分析错误改为直接重新抛出,所以保留
-原始堆栈。Computed property 身份也会去掉多余外层括号,因此 `[key]` 与 `[(key)]` 使用同一个
-表达式身份。
-
-生产配置优先于 spec/test 配置。如果两个生产配置同时覆盖同一文件,当前使用配置路径字母序最
-靠前的一份。这个规则只保证结果可复现,不代表被选配置的 compiler options 在语义上更优;
-如果真实仓库依赖这种差异,未来仍适合增加“配置重叠”diagnostic。
-
-第三轮修复后的本项目自分析结果是:
-
-| 图中的事实      | 数量 |
-| --------------- | ---: |
-| 项目            |    5 |
-| TypeScript 文件 |   29 |
-| 建立索引的符号  |  299 |
-| 项目依赖        |    5 |
-| 文件依赖        |   44 |
-| 符号引用        |  437 |
-| Diagnostics     |    2 |
-
-根 solution package 仍有 `EMPTY_TYPESCRIPT_PROJECT`;同时新增的一条
-`UNCOVERED_TYPESCRIPT_FILES` 会准确指出根目录 `vitest.config.ts` 没有被配置覆盖。fixture
-workspace 被正确视为嵌套仓库边界,不会再当成根项目源码制造噪声。
-
-按要求再次运行真实研究仓库后,结果为 3 个项目、957 个索引文件、7,218 个符号、3 条项目依赖、
-3,422 条文件依赖、13,030 条符号引用和 1 条 diagnostic。这条 diagnostic 列出
-`workspace/api/src/scripts/**` 下 25 个存在于磁盘、但未被 `workspace/api/tsconfig.json` 覆盖的
-文件。分析器没有猜测编译 context,也没有静默加入它们。这正是新能力提供的区别:主图仍可使用,
-被省略的脚本集合也明确可审查。
-
-### 第四轮独立 Review:symlink 身份加固
-
-第四轮 Claude Review 没有发现 Critical 或 High 问题,并独立确认第三轮的三个修复都已经真正
-关闭。剩余的数据正确性问题是:当两个 TypeScript 路径通过文件系统 symlink 指向同一个真实
-文件时,旧分析器会生成两个 `FileNode`,也会把每个符号建立两次索引。未来 Impact Engine 会
-因此把同一份代码错误计算两次。
-
-文件身份现在会先解析文件系统真实路径,然后再判断项目归属、去重、生成图 ID 和检查仓库边界。
-如果 `src/index-link.ts` 指向 `src/index.ts`,图里只保留 `src/index.ts` 和一套符号。如果仓库内
-的 symlink 指向仓库外部 TypeScript 文件,真实目标无法通过边界检查,不会进入索引。两个场景都
-有回归测试。重复的 computed expression 括号剥除逻辑也合并成一个内部 helper;没有增加任何
-公共 export 或 re-export。
-
-还有两个限制被明确登记,而不是隐藏起来:
-
-- 有意排除的生成 TypeScript 文件仍会出现在 `UNCOVERED_TYPESCRIPT_FILES`;事实判断没有错,
-  但可能产生噪声,未来策略可以把生成文件和手写文件分成不同严重级别;
-- 未覆盖文件检测需要额外执行一次仓库 glob。当前 957 文件研究仓库表现可接受,但在默认认为
-  它同样适合数万文件仓库之前,必须重新做性能基准。
-
-修复后,研究仓库仍稳定为 957 个文件、7,218 个符号、3,422 条文件依赖、13,030 条符号引用,
-以及同一条有价值的 25 文件未覆盖脚本 diagnostic。本项目自分析为 29 个文件、302 个符号、
-44 条文件依赖、442 条符号引用和相同的两条根项目 diagnostic。与上次相比增加的少量符号和
-引用来自新分析 helper 与回归测试源码,不是 symlink 重复数据。
-
-最终独立 Review 没有发现 Critical、High 或 Medium。它还额外实测了多个 symlink 指向同一
-文件、跨项目链接、链接到 `node_modules`、损坏链接和通过 symlink import;文件依赖和符号引用
-都稳定指向真实所属文件。两个 Low 也在最终收尾中处理:已经是真实路径的文件不会再重复调用
-第二次 `realpath`;架构文档也明确说明 `FileNode.path` 表示真实仓库相对路径,不保证等于 import
-里写下的路径字符串。RepositoryGraph 事实层专项 Review 至此正式关闭。下一个实现阶段是
-Task Impact Engine。
+**这一阶段的成果**:`forge analyze` 已经能为真实 pnpm TypeScript 仓库建立经过测试的项目、
+文件、符号、依赖、引用和 diagnostic 地图。架构里程碑 5 与 RepositoryGraph 事实层专项 Review
+已经完成。下一阶段是 Task Impact Engine:把任务 selector 解析到这张图,再扩展出可解释的影响
+范围。
 
 ## 目前整体状态(截止到本文写作时)
 

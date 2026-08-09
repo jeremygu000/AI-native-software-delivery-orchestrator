@@ -530,302 +530,259 @@ Stage 6 intentionally stopped at the **project level**. The following stage remo
 layer of its repository map. This is the first completed path from user input through the CLI to a
 real analysis result.
 
-## Stage 7: TypeScript file and symbol analysis
+## Stage 7: RepositoryGraph — TypeScript file and symbol analysis
 
-Stage 6 answered "which packages exist?" Stage 7 answers a deeper set of deterministic questions:
-"which TypeScript files belong to those packages, which files import which other files, what named
-code declarations exist, and which declarations refer to which other declarations?"
+Stage 6 discovered which pnpm packages exist. Stage 7 turns that package list into a deterministic
+map of the repository: which TypeScript files belong to each project, what declarations those files
+contain, and how projects, files, and symbols depend on or refer to one another.
 
-This is still **not LLM analysis**. `forge analyze` makes no network request and sends no source code
-to a model. It opens each discovered `tsconfig.json` with the pinned TypeScript 7 native API, so it
-uses the repository's real compiler options, module-resolution rules, and path aliases. The type
-checker resolves imports and references; fixed conversion rules turn those compiler facts into the
-provider-neutral `RepositoryGraph`.
+This is **not LLM analysis**. `forge analyze` makes no network request, sends no source code to a
+model, and does not modify the analyzed repository. It combines pnpm manifests with the pinned
+TypeScript 7 native API and converts compiler facts into a provider-neutral `RepositoryGraph`.
 
-The analyzer now performs these steps:
+For a code-level walkthrough, see [RepositoryGraph Analysis — Implementation and Working
+Model](./repository-graph-analysis.en.md).
 
-1. Discover the relevant `tsconfig.json` files for pnpm workspace projects.
-2. Ask TypeScript 7 for each configured program and keep only TypeScript source files inside the
-   repository, excluding dependency files under `node_modules`.
-3. Assign each file to the most specific workspace project and create a stable ID from the project
-   ID plus repository-relative path. Generated paths are marked explicitly.
-4. Resolve import specifiers semantically and create file-dependency edges. This can discover
-   relationships expressed through TypeScript aliases or shared source paths even when no
-   `package.json` workspace dependency exists.
-5. Index top-level classes, functions, interfaces, type aliases, enums, namespaces, and variables,
-   plus class/interface constructors, methods, accessors, and properties.
-6. Record parent-child symbol structure and public export visibility, while keeping private and
-   protected members non-exported.
-7. Use the type checker to turn identifier use into deduplicated symbol-reference edges.
-8. Infer project dependencies from cross-project file dependencies and merge them with manifest
-   dependencies.
+### What RepositoryGraph contains
 
-Stable identities do not contain line numbers. Moving a declaration up or down in the same file
-does not change its graph ID. A typical ID looks like:
+```text
+RepositoryGraph
+├── projects: ProjectNode[]
+├── files: FileNode[]
+├── symbols: SymbolNode[]
+├── projectDependencies: Project -> Project
+├── fileDependencies: File -> File
+├── symbolReferences: Symbol -> Symbol
+└── diagnostics: analysis warnings
+```
+
+- A `ProjectNode` represents a pnpm workspace package.
+- A `FileNode` represents one real TypeScript file owned by a project.
+- A `SymbolNode` represents a named declaration such as a class, function, interface, method, or
+  property.
+- An edge records a relationship TypeScript or a package manifest actually resolved. It is factual
+  evidence, not yet a prediction that a coding task will change that node.
+
+### How `forge analyze` works
+
+```text
+forge analyze <repository>
+        |
+        v
+resolve repository path and select a provider
+        |
+        v
+PnpmWorkspaceProvider
+  ├── read pnpm-workspace.yaml
+  ├── find package.json manifests
+  ├── create ProjectNode records
+  └── create manifest project-dependency edges
+        |
+        v
+TypeScriptRepositoryAnalyzer
+  ├── discover root tsconfig.json files
+  ├── recursively follow project references
+  ├── open real TypeScript Programs and Checkers
+  ├── assign and deduplicate source files
+  ├── build file dependency edges
+  ├── index declarations as SymbolNode records
+  ├── build symbol reference edges
+  ├── infer cross-project dependencies
+  └── report missing, empty, or uncovered input
+        |
+        v
+serialize a concise summary, or the complete graph with --full
+```
+
+#### 1. Project discovery from pnpm
+
+`PnpmWorkspaceProvider` reads `pnpm-workspace.yaml`, expands its package patterns, and parses the
+root and workspace `package.json` files. Package names become stable project IDs. Repository-relative
+package and source roots become project metadata.
+
+Dependencies declared between workspace packages produce the first project edges. The provider
+rejects malformed manifests, duplicate package names, self-dependencies, missing `workspace:*`
+targets, unreadable repositories, and workspace paths that resolve outside the repository.
+
+The provider boundary is replaceable: the domain graph does not depend on pnpm types. pnpm is the
+implemented input provider, not the universal source of truth for every future repository format.
+
+#### 2. TypeScript configuration discovery
+
+For every project, the analyzer starts at its root `tsconfig.json`. It parses TypeScript JSONC,
+including comments and trailing commas, and recursively follows `references` to real compilation
+configs such as:
+
+```text
+tsconfig.json
+├── tsconfig.app.json
+├── tsconfig.spec.json
+└── config/tsconfig.build.json
+```
+
+Missing, malformed, cyclic, unreadable, or out-of-repository references are handled deterministically;
+invalid input becomes a structured error rather than a successful empty graph. This supports both
+ordinary configs and solution-style repositories whose root config contains only references.
+
+The discovered configs are opened with the pinned TypeScript 7 native API. The resulting Programs
+and Checkers obey the target repository's real compiler options, module resolution, path aliases,
+package exports, and workspace links. The unstable native API path is isolated inside
+`libs/repository-analysis`; native AST and Checker objects never enter the domain model, and
+TypeScript 6 is not installed.
+
+#### 3. File ownership, identity, and safety
+
+Each source file is assigned to the most specific pnpm project containing its real filesystem path.
+The compiler configuration must belong to that same project, so a root or sibling project cannot
+lend an arbitrary Checker to another project's source.
+
+Filesystem symlinks are resolved before ownership, boundary checks, graph identity, and
+deduplication. Multiple symlink spellings of one file therefore produce one `FileNode` and one
+symbol set. A symlink into `node_modules` or outside the repository is excluded. Because identity is
+based on the real file, `FileNode.path` may differ from the symlink spelling written in an import.
+
+A file ID combines the owning project ID with its real repository-relative path:
+
+```text
+api:workspace/api/src/modules/work/router.ts
+```
+
+Generated paths are marked. IDs do not contain line numbers, so moving a declaration within a file
+does not by itself change identity.
+
+When production and spec/test configs both include one file, the production context wins. If two
+production configs overlap, the lexicographically first config path is the documented deterministic
+tie-break; it is not a claim that those compiler options are semantically better.
+
+#### 4. File dependency edges
+
+File relationships come from TypeScript's resolved module information, not from text matching.
+Normal imports, exports, `export *`, re-export chains, path aliases, bare workspace packages, and
+shared-source imports can therefore resolve to the real target `FileNode`.
+
+Cross-project file edges are promoted into project-dependency edges and merged with the manifest
+edges found earlier. This lets the graph expose a real source dependency even when a workspace
+manifest did not declare it explicitly.
+
+#### 5. Symbol indexing and stable identity
+
+The analyzer indexes top-level classes, functions, interfaces, type aliases, enums, namespaces, and
+variables, plus constructors, methods, accessors, and properties. Namespace bodies are recursive.
+Parent-child structure, public export visibility, and private/protected visibility are retained.
+
+Class/namespace declaration merging uses a fixed kind priority and records all participating kinds
+in `mergedKinds`, so results do not depend on declaration order. Dynamic computed properties use an
+escaped expression-based identity. Getter/setter pairs share one callable symbol, redundant outer
+parentheses are normalized, and repeated properties are numbered only among occurrences of the
+same expression.
+
+A symbol ID extends the file ID with a stable declaration path:
 
 ```text
 api:workspace/api/src/modules/work/router.ts:createWorkRouter
 ```
 
-The TypeScript 7 programmatic API is currently published under an `unstable` import path. That risk
-is deliberately isolated inside `libs/repository-analysis`, the exact compiler version is pinned,
-and no native AST or checker object enters the domain model. TypeScript 6 was **not** reintroduced;
-the repository still has one TypeScript version. ADR-004 records when this boundary must be
-reevaluated.
+#### 6. Symbol reference edges
 
-The CLI is now registered as a workspace executable. After building, the concise form is:
+The TypeScript Checker resolves identifier uses to their actual declarations. The analyzer converts
+those resolved relationships into deduplicated `Symbol -> Symbol` edges, including references that
+cross files, aliases, re-exports, or workspace projects. Requests are processed in bounded batches
+to cap temporary native handle and memory pressure.
+
+#### 7. Diagnostics and cleanup
+
+Successful analysis can still contain warnings:
+
+- `MISSING_TYPESCRIPT_CONFIGURATION`: a project has no root TypeScript configuration;
+- `EMPTY_TYPESCRIPT_PROJECT`: valid configuration produced no owned source files;
+- `UNCOVERED_TYPESCRIPT_FILES`: TypeScript files exist on disk but are not covered by a discovered
+  configuration. The diagnostic lists their repository-relative paths rather than silently choosing
+  an incorrect Checker.
+
+The uncovered-file comparison excludes dependencies, build/coverage output, and nested pnpm
+workspaces. Intentionally excluded generated files can still add diagnostic noise; a future policy
+may separate generated and handwritten files by severity.
+
+Native resources are always cleaned up. Both snapshot disposal and API close are attempted. The
+original structured analysis error takes priority over cleanup failures and retains its original
+stack; a cleanup-only failure is still reported.
+
+### CLI usage and real-repository result
+
+After building:
 
 ```sh
 pnpm exec forge analyze /path/to/repository
+pnpm exec forge analyze /path/to/repository --full
 ```
 
-The default output is a readable summary with counts, projects, and project dependencies. Add
-`--full` to emit every file, symbol, file-dependency edge, and symbol-reference edge. Full output can
-be very large, so summary mode is the practical default for a large repository.
+Summary mode returns counts, projects, project dependencies, and diagnostics. `--full` additionally
+returns every file, symbol, file edge, and symbol edge, which can be very large.
 
-### Real Stage 7 validation: Ingestion and Matching
+The analyzer has repeatedly been run against:
 
-The exact command requested for the research repository was run successfully for the initial Stage
-7 implementation:
-
-```sh
-pnpm exec forge analyze \
-  ~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching
+```text
+~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching
 ```
 
-It completed in about 14.5 seconds on this machine and produced:
+The latest independent-review sample reported:
 
 | Graph fact           |  Count |
 | -------------------- | -----: |
 | Projects             |      3 |
-| TypeScript files     |    973 |
-| Indexed symbols      |  7,819 |
+| TypeScript files     |    959 |
+| Indexed symbols      |  7,224 |
 | Project dependencies |      3 |
-| File dependencies    |  3,514 |
-| Symbol references    | 13,475 |
+| File dependencies    |  3,424 |
+| Symbol references    | 13,037 |
+| Diagnostics          |      1 |
 
-The three projects are the repository root, `api`, and `ingestion-and-matching-ui`. Most
-importantly, the enriched graph now contains `ingestion-and-matching-ui → api`. Stage 6 reported no
-manifest dependency between those workspace packages; Stage 7 found the real code-level relation
-through TypeScript resolution. This is exactly why project-manifest discovery and semantic source
-analysis are separate layers.
+The repository is active, so small count changes between runs are expected. The stable result is
+more important: the graph consistently finds `ingestion-and-matching-ui -> api`, and the one warning
+lists API scripts that exist on disk but are outside `workspace/api/tsconfig.json` coverage.
 
-These counts do not mean the tool "understands the business meaning" of all 7,819 symbols. They mean
-it has a deterministic structural index: where declarations live and how TypeScript resolves
-relationships between them. That is the evidence layer the next impact/conflict engine will query.
+These numbers do not mean the tool understands the business meaning of 7,224 symbols. They mean it
+has a deterministic structural index of where declarations live and how TypeScript resolves their
+relationships. That is the factual input for Task Impact Engine.
 
-### Current limitations of analysis
+### Hardening timeline
 
-- It analyzes TypeScript-family files covered by discovered `tsconfig.json` files; it is not a
-  universal JavaScript, SQL, CDK, database, or infrastructure semantic analyzer.
-- It indexes supported declaration categories, not every possible nested or anonymous AST construct.
-- It records export visibility but does not yet extract normalized callable/type signatures.
-- Analysis is currently a full scan; `changedFiles` exists in the contract but incremental refresh
-  is not implemented.
-- A graph edge says "TypeScript resolved this relationship." It does not by itself say a proposed
-  task will change that code, how risky two changes are, or whether agents may run concurrently.
-- `forge plan` remains unavailable; no agent is dispatched and no source file is modified by
-  `forge analyze`.
+Several independent reviews used temporary adversarial workspaces, self-analysis, and the real
+research repository. The history is kept briefly because the final behavior matters more than the
+review-by-review narrative:
 
-**Outcome of this stage**: `forge analyze` now builds the project, file, symbol, file-dependency, and
-symbol-reference layers of a real TypeScript pnpm repository graph. This completes architecture
-milestone 5 and provides the factual input required by task-impact and conflict analysis.
+| Sequence                    | Problem found                                                                                                                              | Resulting fix                                                                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Initial hardening           | Nested namespaces, declaration merging, modifiers, computed names, and project ownership had edge cases                                    | Added recursive indexing, deterministic merged kinds, typed modifier checks, stable computed IDs, and strict owning-project contexts |
+| Solution-layout review      | A references-only root config could return `0 files / 0 symbols`                                                                           | Added JSONC parsing and recursive project-reference discovery; malformed references now fail visibly                                 |
+| Ownership/diagnostic review | Configs below the project root were rejected, partially uncovered files were silent, and native failure cleanup lacked an integration test | Assigned configs to their most specific project, added `UNCOVERED_TYPESCRIPT_FILES`, and tested real snapshot/API cleanup            |
+| Symlink review              | One real file reachable by several symlink paths became duplicate files and symbols                                                        | Real-path identity now drives ownership, deduplication, edges, IDs, and repository-boundary checks                                   |
+| Final review                | One redundant `realpath` call and unclear public path semantics remained                                                                   | Removed the repeated filesystem call and documented that FileNode identity uses the real path                                        |
 
-### Independent review and Stage 7 hardening
+The final review found no Critical, High, or Medium issue and approved closing the dedicated
+RepositoryGraph factual-layer review.
 
-Before starting the next milestone, an independent Claude review inspected the uncommitted changes,
-reran every quality gate, and built separate temporary repositories for language edge cases. The
-review found no Critical issue and confirmed the single-TS7 boundary, read-only behavior, stable IDs,
-path-escape protection, Nx removal, and semantic alias/re-export resolution. It also found several
-correctness gaps that were fixed before handoff:
+### Current limitations
 
-- Namespace bodies are now indexed recursively, including functions, variables, classes, nested
-  namespaces, and dotted namespace declarations.
-- Class/namespace declaration merging no longer depends on which declaration appears first. A fixed
-  kind priority selects the primary `kind`, while `mergedKinds` records every participating kind.
-- Modifier checks now use TypeScript 7's typed `modifierFlags`; the previous reflective, silently
-  failing lookup was removed. Private and protected members remain non-exported.
-- Dynamic computed properties are labelled explicitly as computed and receive an occurrence suffix;
-  string/numeric computed keys are restored to their literal name. Reserved path separators are
-  escaped so a property containing `.` cannot pretend to be another hierarchy level.
-- A file is now analyzed only by a TypeScript configuration owned by its pnpm project. A project
-  with no owning configuration no longer borrows an arbitrary sibling project's checker.
-- Cleanup failures can no longer replace the original analysis failure. If analysis succeeded but
-  cleanup failed, the cleanup error is still reported as a structured error.
-- Shared path helpers were consolidated, full CLI output uses concrete `FileNode`/`SymbolNode`
-  types, and the reference batch-size rationale is documented.
+- Only TypeScript-family files covered by discovered configs receive semantic indexing; this is not
+  a universal JavaScript, SQL, database, CDK, or infrastructure analyzer.
+- Supported named declaration categories are indexed, not every anonymous or nested AST construct.
+- Export visibility is present, but normalized callable/type signatures are not yet extracted.
+- Analysis is a full scan; `changedFiles` exists as an extension point but incremental refresh is
+  not implemented.
+- Project dependency edges do not yet record whether evidence came from a manifest, production,
+  tests, generated code, runtime use, or a type-only import. Task Impact may use them for
+  reachability, but Conflict Engine must revisit provenance before assigning different weights.
+- The extra uncovered-file glob is proven at roughly one-thousand-file scale, not yet benchmarked
+  for repositories with tens of thousands of files.
+- Summary JSON contains an absolute repository path, which may reveal a local username when logs
+  are shared.
+- `forge plan` remains unavailable. `forge analyze` neither dispatches agents nor modifies source.
 
-Regression tests now cover namespace children, both declaration-merge orders, computed names,
-multi-hop re-exports, `export *`, `tsconfig.paths`, bare package specifiers through a workspace
-symlink, re-export visibility, and the no-owning-tsconfig rule.
-
-After these fixes, the real repository was analyzed again. The current result is:
-
-| Graph fact           |  Count |
-| -------------------- | -----: |
-| Projects             |      3 |
-| TypeScript files     |    952 |
-| Indexed symbols      |  7,188 |
-| Project dependencies |      3 |
-| File dependencies    |  3,401 |
-| Symbol references    | 12,958 |
-
-The lower file/symbol counts are intentional: the original analyzer admitted files through a
-compiler context that did not belong to the file's pnpm project. The hardened analyzer excludes
-those ambiguous files unless the owning project supplies its own root `tsconfig.json`. The
-important `ingestion-and-matching-ui → api` semantic dependency remains present.
-
-One graph limitation is now explicit. Project dependencies inferred from TypeScript imports are
-merged with manifest dependencies, but an edge does not yet record whether it came from production,
-tests, generated code, a type-only import, or a package manifest. The next impact engine must treat
-these edges as reachability evidence, not assume every edge has equal architectural strength. Edge
-provenance remains a graph-schema extension to design deliberately. Summary JSON also contains the
-absolute repository path; users sharing logs should be aware that it can reveal a local username or
-directory layout.
-
-### Second independent review: solution configurations and stable computed symbols
-
-A second Claude review found that the stricter ownership rule had introduced a Critical regression:
-solution-style projects could return a successful but empty graph. In this common layout,
-`tsconfig.json` contains only `references`, while `tsconfig.lib.json`, `tsconfig.app.json`, or similar
-files contain the actual source includes. The native API does not automatically expand those
-references when only the solution files are opened. This repository uses exactly that layout and
-was independently reproduced as `0 files / 0 symbols`.
-
-The corrected analyzer now:
-
-- parses TypeScript JSONC configuration, including comments and trailing commas;
-- follows project references recursively and rejects missing or out-of-repository targets;
-- opens every referenced real compilation configuration;
-- keeps file ownership tied to a compiler context owned by the same pnpm project;
-- deterministically prefers production contexts when production and spec configs contain the same
-  file;
-- rejects malformed configuration with `INVALID_TYPESCRIPT_CONFIGURATION`;
-- emits `MISSING_TYPESCRIPT_CONFIGURATION` or `EMPTY_TYPESCRIPT_PROJECT` warnings for valid projects
-  that cannot contribute owned source files;
-- includes diagnostics and their count in normal `forge analyze` output.
-
-The review also found that dynamic computed getter/setter pairs were split and that their IDs used
-the absolute member position. They now share one expression-based callable symbol. Repeated dynamic
-properties are numbered only among occurrences of the same expression, so inserting an unrelated
-member does not change the computed property's ID.
-
-Native cleanup outcome logic was extracted into a directly tested internal module. Tests now prove
-that both cleanup actions are attempted, the original analysis error wins over cleanup errors, a
-cleanup-only failure remains visible, and an impossible missing-result state fails loudly.
-
-This repository itself is now a permanent solution-layout regression test. A real self-analysis
-produced:
-
-| Graph fact           | Count |
-| -------------------- | ----: |
-| Projects             |     5 |
-| TypeScript files     |    29 |
-| Indexed symbols      |   298 |
-| Project dependencies |     5 |
-| File dependencies    |    44 |
-| Symbol references    |   424 |
-| Diagnostics          |     1 |
-
-The one diagnostic is expected: the root package is a solution/coordination package with no owned
-TypeScript source. It is now visibly different from a malformed config, which fails analysis.
-
-The latest Ingestion and Matching run remains healthy and reports 952 files, 7,191 symbols, 3,411
-file dependencies, 12,983 symbol references, and zero diagnostics. Its UI-to-API dependency remains
-present.
-
-### Third independent review: configuration ownership and diagnostic completeness
-
-The third Claude review confirmed that solution-style analysis was repaired, then found a narrower
-valid layout that was still excluded: a project-root `tsconfig.json` may reference a real compiler
-configuration below the root, for example `config/tsconfig.build.json`. Exact directory equality
-rejected that configuration even though it belonged to the same project.
-
-The ownership rule now assigns each discovered configuration to the most specific pnpm project that
-contains the configuration file. A referenced configuration may live anywhere below that project
-root, but it cannot claim source owned by a nested or sibling workspace project. A dedicated
-regression repository proves that `packages/a/config/tsconfig.build.json` can include
-`packages/a/src/index.ts` without weakening project isolation.
-
-The review also identified a diagnostic blind spot: a project with one indexed file could silently
-omit other TypeScript files. The analyzer now scans the repository and compares project-owned
-TypeScript files with the indexed set. Any difference produces `UNCOVERED_TYPESCRIPT_FILES` with
-the exact repository-relative paths. Dependency, build, coverage, and nested pnpm-workspace trees
-are excluded from this comparison. This warning does not force those files into a potentially wrong
-compiler context; it makes the missing coverage visible for a human or later policy layer.
-
-Native cleanup now has an integration test, not only pure lifecycle tests. The test opens a real
-TypeScript native snapshot, triggers an invalid compiler-option diagnostic inside the active
-session, and verifies that both `snapshot.dispose()` and `api.close()` run before the structured
-failure is returned. Structured analysis errors are rethrown directly, preserving their original
-stack. Computed property identity also removes redundant outer parentheses, so `[key]` and
-`[(key)]` use the same expression identity.
-
-The production/spec context preference is deterministic. If two production configurations cover
-the same file, the lexicographically first configuration path currently wins. This is documented as
-a reproducibility rule, not as proof that its compiler options are semantically better; a future
-overlap diagnostic remains appropriate if real repositories depend on this distinction.
-
-After the third-round fixes, self-analysis reports:
-
-| Graph fact           | Count |
-| -------------------- | ----: |
-| Projects             |     5 |
-| TypeScript files     |    29 |
-| Indexed symbols      |   299 |
-| Project dependencies |     5 |
-| File dependencies    |    44 |
-| Symbol references    |   437 |
-| Diagnostics          |     2 |
-
-The root solution package still receives `EMPTY_TYPESCRIPT_PROJECT`. It also receives one
-`UNCOVERED_TYPESCRIPT_FILES` warning for the root `vitest.config.ts`; fixture workspaces are
-correctly treated as nested repository boundaries instead of root-project source.
-
-The requested real-repository run now reports 3 projects, 957 indexed files, 7,218 symbols, 3
-project dependencies, 3,422 file dependencies, 13,030 symbol references, and 1 diagnostic. The
-diagnostic lists 25 files under `workspace/api/src/scripts/**` that exist on disk but are not covered
-by `workspace/api/tsconfig.json`. The analyzer did not guess a compiler context or silently add
-them. This is exactly the newly visible distinction: the main repository graph remains usable, and
-the omitted script set is explicitly reviewable.
-
-### Fourth independent review: symlink identity hardening
-
-The fourth Claude review found no Critical or High issue and independently confirmed all three
-third-round fixes. Its remaining data-correctness finding was that two TypeScript paths pointing to
-the same real file through a filesystem symlink became two `FileNode` records and two copies of each
-symbol. That would cause a later impact engine to count one code asset twice.
-
-File identity now resolves the filesystem real path before ownership, deduplication, graph-ID, and
-repository-boundary decisions. If `src/index-link.ts` points to `src/index.ts`, the graph contains
-only `src/index.ts` and one symbol set. If a repository-local symlink points to a TypeScript file
-outside the repository, the real target fails the boundary check and is not indexed. Tests cover
-both cases. The repeated computed-expression parenthesis logic was also consolidated into one
-internal helper; no new public export or re-export was added.
-
-Two limitations are deliberately recorded rather than hidden:
-
-- intentionally excluded generated TypeScript files still appear in
-  `UNCOVERED_TYPESCRIPT_FILES`; the warning is factually correct but may be noisy, so future policy
-  may separate generated and handwritten files by severity;
-- uncovered-file detection performs an additional repository glob. It is acceptable on the current
-  957-file research repository, but must be benchmarked again before assuming it scales unchanged
-  to repositories with tens of thousands of files.
-
-After this fix, the research repository remains stable at 957 files, 7,218 symbols, 3,422 file
-dependencies, 13,030 symbol references, and the same useful 25-file uncovered-script diagnostic.
-Self-analysis reports 29 files, 302 symbols, 44 file dependencies, 442 symbol references, and the
-same two expected root diagnostics. The increased counts from the previous self-run come from the
-new analyzer helper and regression-test source, not duplicate symlink data.
-
-The final independent review reported no Critical, High, or Medium finding. It additionally tested
-multiple symlinks to one file, cross-project links, links into `node_modules`, broken links, and
-imports through a symlink; file dependencies and symbol references consistently resolved to the
-real owning file. Its two Low observations were closed during final cleanup: the analyzer no longer
-performs a second redundant `realpath` call for an already-resolved file, and the architecture now
-states that `FileNode.path` is the real repository-relative path rather than necessarily the path
-spelling used in an import. The dedicated RepositoryGraph factual-layer review is now closed. The
-next implementation stage is Task Impact Engine.
+**Outcome of this stage**: `forge analyze` now builds a tested project, file, symbol, dependency,
+reference, and diagnostic map for real pnpm TypeScript repositories. Architecture milestone 5 and
+the dedicated RepositoryGraph factual-layer review are complete. The next stage is Task Impact
+Engine: resolving task selectors into this graph and expanding their explainable impact.
 
 ## Current overall status (as of this writing)
 
