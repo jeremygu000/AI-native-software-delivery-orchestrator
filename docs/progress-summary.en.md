@@ -185,10 +185,10 @@ A lease request identifies:
 - `agentId` — the agent requesting permission;
 - `taskId` — the task being performed;
 - `resource` — the exact project, file, symbol, or shared resource;
-- `mode` — currently always `exclusive`;
-- `leaseDurationMs` — how long the permission remains valid.
+- `mode` — currently always `exclusive`.
 
-A successful request returns `granted` with a lease ID, version, acquisition time, and expiry time.
+A successful request returns `granted` with a lease ID, version, state, acquisition time, and latest
+heartbeat time.
 A blocked request returns `blocked` plus the IDs of the active leases causing the conflict. This lets
 the scheduler explain which owner a task is waiting for instead of reporting an unexplained delay.
 
@@ -196,15 +196,16 @@ the scheduler explain which owner a task is waiting for instead of reporting an 
 reuse the same task or agent ID. It does not mean two runs may automatically write the same checkout;
 the eventual guard must still consider every active lease protecting that workspace.
 
-#### Renewal, versions, and expiry
+#### Heartbeats, versions, and stale recovery
 
-Long-running work renews its lease before expiry. Renewal includes the lease ID, the version the
-agent expects to be current, and a new duration. If the stored version still matches, the guard
-increments the version and extends the expiry. If the lease is gone, it returns `not-found`. If a
-newer version exists, it returns `version-conflict` with the actual version.
+Long-running work heartbeats its lease. A heartbeat includes the lease ID and the version the agent
+expects to be current. If the stored version still matches, the guard increments the version and
+records new liveness evidence. If the lease is gone, it returns `not-found`. If a newer version
+exists, it returns `version-conflict` with the actual version.
 
-This is optimistic concurrency control. It prevents a stale worker from extending a lease after a
-recovery process or replacement worker has already taken responsibility for newer state.
+This is optimistic concurrency control. A fixed timer alone may not release a lease. The runtime
+must combine missed heartbeats, agent liveness, workspace state, a grace policy, and explicit
+recovery evidence before marking a lease `STALE` and allowing it to be reclaimed.
 
 Release returns either `released` or `not-found`. Treating an already-absent lease as a successful
 cleanup outcome makes release idempotent: retries and crash recovery can safely issue the same
@@ -217,7 +218,7 @@ The complete service will need to:
 ```text
 resolve and validate the requested resource identity
         ↓
-ignore or remove expired leases
+load ACTIVE leases and evaluate liveness evidence
         ↓
 load active leases that could overlap
         ↓
@@ -225,7 +226,7 @@ apply areWritableResourcesConflicting()
         ↓
 atomically grant a new lease or return blocked
         ↓
-renew during long work and release after verification
+heartbeat during long work, mark stale only with evidence, and release after integration
 ```
 
 The conflict check and lease creation must be one atomic database operation. If two agents can both
@@ -239,8 +240,8 @@ Implemented now:
 
 - writable-resource identities and their complete hierarchy;
 - deterministic and symmetric containment-conflict rules;
-- request and result contracts for acquire, renew, and release;
-- run, agent, task, version, acquisition, and expiry fields;
+- request and result contracts for acquire, heartbeat, mark-stale, and release;
+- run, agent, task, version, state, acquisition, heartbeat, release, and stale-evidence fields;
 - tests for the principal conflicting and independent resource combinations.
 
 Not implemented yet:
@@ -248,13 +249,14 @@ Not implemented yet:
 - a concrete `WriteGuard` service;
 - active-lease storage or SQLite/Drizzle persistence;
 - atomic acquisition transactions;
-- expiry cleanup, heartbeats, or automatic renewal;
+- heartbeat processing, liveness evaluation, and stale recovery;
 - enforcement that intercepts an agent before an actual write;
 - blocked-task queues, wake-up, and crash recovery;
 - repository-graph resolution and validation of resource identities.
 
 The accurate current status is: **the lease contracts and resource-conflict decision are working;
-live lease acquisition, storage, renewal, expiry, release, and enforcement are still future work.**
+live lease acquisition, storage, heartbeat, stale recovery, release, and enforcement are still
+future work.**
 
 There is also an important practical limitation. Two sibling methods in the same file may receive
 separate symbol leases, but two agents that rewrite the whole file can still produce a Git conflict.
@@ -369,35 +371,25 @@ implemented yet).
 their dependencies, it tells you whether the batch is valid, and if so, in what order and at what
 pace the tasks should run.
 
-## Stage 4: Simplifying the toolchain — removing Nx
+## Stage 4: Simplifying workspace tooling
 
-The project originally decided to use a tool called Nx to manage "which package should be built or
-tested in what order" across multiple packages. During actual implementation, the team found that
-with only 3 packages, the complexity Nx introduced (extra configuration files, extra sync commands,
-and occasionally "phantom dependencies" that looked real in the project graph but weren't actually
-used in code) outweighed its benefits.
-
-The team therefore decided to **remove Nx from its role as this repository's own build
-orchestrator**, replacing it with a simpler combination of tools:
+The project established a small, explicit workspace toolchain appropriate for its current size:
 
 - pnpm (a package manager) handles how the packages reference each other.
 - TypeScript's built-in "project references" feature handles which package compiles before which.
 - Vitest's built-in multi-project feature handles running all packages' tests in one go.
 
-This decision was written up as a formal architecture decision record (ADR-009), which explicitly
-states that **this is not "Nx is bad" — it's "not needed at the current scale"**, and it lists
-concrete conditions under which the team should reconsider a similar orchestration tool (for
-example, if the number of packages grows past 12, or if running all checks starts taking more than
-five minutes).
+This decision is recorded in ADR-009, together with measurable conditions for reassessing build
+orchestration: package count, CI duration, duplicated affected-build logic, watch-mode cost, and
+measurable caching opportunity.
 
 This cleanup also fixed a real bug along the way: the command-line tool's (`apps/cli`) configuration
 previously _declared_ that it depended on the `domain` and `dag` packages, but the actual code never
 used them — a leftover configuration mistake. This cleanup removed that phantom dependency as well.
 
-**Outcome of this stage**: the project is still structured as "multiple packages in one repository,"
-but no longer relies on an extra orchestration tool. A smaller, easier-to-understand combination of
-tools achieves the same result, and the change itself had no negative impact on the workflow or
-build output (all checks and builds were re-verified and produced identical results).
+**Outcome of this stage**: the project is structured as multiple packages in one repository, using
+an explicit toolchain whose responsibilities are easy to inspect and whose build output was fully
+re-verified.
 
 ## Stage 5: Simplifying the toolchain — unifying the TypeScript version
 
@@ -452,10 +444,9 @@ YAML or JSON, packages without usable names, duplicate package names, self-depen
 entries that escape the repository directory. This prevents bad repository metadata from silently
 producing a misleading graph.
 
-A small provider-neutral interface separates "ask for a project graph" from "how pnpm stores
+A small provider-neutral interface separates "ask for workspace facts" from "how pnpm stores
 workspace metadata." Only the pnpm provider is implemented because it is the only current product
-requirement. The previously reserved Nx fixture and Nx-specific verification rule were removed;
-another provider will be added only if a real supported-repository requirement appears.
+requirement. Another provider will be added only if a real supported-repository requirement appears.
 
 The `forge analyze` command is now a real command rather than a placeholder. Running:
 
@@ -473,16 +464,16 @@ where it correctly found five workspace projects and four dependency edges.
 The analyzer was also run against the existing local repository:
 
 ```text
-~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching
+~/Desktop/research-repositories/ingestion-and-matching
 ```
 
 The command completed successfully with the `pnpm-workspace` provider and discovered three projects:
 
-| Project                                   | Repository root | Source root         |
-| ----------------------------------------- | --------------- | ------------------- |
-| `apra-amcos-admin-ingestion-and-matching` | `.`             | not declared        |
-| `api`                                     | `workspace/api` | `workspace/api/src` |
-| `ingestion-and-matching-ui`               | `workspace/ui`  | `workspace/ui/src`  |
+| Project                     | Repository root | Source root         |
+| --------------------------- | --------------- | ------------------- |
+| `ingestion-and-matching`    | `.`             | not declared        |
+| `api`                       | `workspace/api` | `workspace/api/src` |
+| `ingestion-and-matching-ui` | `workspace/ui`  | `workspace/ui/src`  |
 
 It reported zero local package-dependency edges. This result must be interpreted narrowly: neither
 workspace package declares the other as a local dependency under the dependency fields currently
@@ -496,7 +487,7 @@ verified invocation at that historical point was:
 
 ```sh
 node apps/cli/dist/main.js analyze \
-  ~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching
+  ~/Desktop/research-repositories/ingestion-and-matching
 ```
 
 Stage 7 registers the executable and uses `pnpm exec forge`; see the next section. Therefore, the
@@ -572,7 +563,7 @@ forge analyze <repository>
 resolve repository path and select a provider
         |
         v
-PnpmWorkspaceProvider
+PnpmWorkspaceGraphProvider
   ├── read pnpm-workspace.yaml
   ├── find package.json manifests
   ├── create ProjectNode records
@@ -596,7 +587,7 @@ serialize a concise summary, or the complete graph with --full
 
 #### 1. Project discovery from pnpm
 
-`PnpmWorkspaceProvider` reads `pnpm-workspace.yaml`, expands its package patterns, and parses the
+`PnpmWorkspaceGraphProvider` reads `pnpm-workspace.yaml`, expands its package patterns, and parses the
 root and workspace `package.json` files. Package names become stable project IDs. Repository-relative
 package and source roots become project metadata.
 
@@ -722,7 +713,7 @@ returns every file, symbol, file edge, and symbol edge, which can be very large.
 The analyzer has repeatedly been run against:
 
 ```text
-~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching
+~/Desktop/research-repositories/ingestion-and-matching
 ```
 
 The latest independent-review sample reported:
@@ -768,11 +759,10 @@ RepositoryGraph factual-layer review.
   a universal JavaScript, SQL, database, CDK, or infrastructure analyzer.
 - Supported named declaration categories are indexed, not every anonymous or nested AST construct.
 - Export visibility is present, but normalized callable/type signatures are not yet extracted.
-- Analysis is a full scan; `changedFiles` exists as an extension point but incremental refresh is
-  not implemented.
-- Project dependency edges do not yet record whether evidence came from a manifest, production,
-  tests, generated code, runtime use, or a type-only import. Task Impact may use them for
-  reachability, but Conflict Engine must revisit provenance before assigning different weights.
+- Analysis is a full scan; no incremental refresh contract is exposed yet.
+- Project dependency edges now record broad evidence sources from manifests, `workspace:` protocol,
+  TypeScript project references, and TypeScript imports. They do not yet subdivide imports into
+  production/test/generated/runtime/type-only categories.
 - The extra uncovered-file glob is proven at roughly one-thousand-file scale, not yet benchmarked
   for repositories with tens of thousands of files.
 - Summary JSON contains an absolute repository path, which may reveal a local username when logs
@@ -784,16 +774,77 @@ reference, and diagnostic map for real pnpm TypeScript repositories. Architectur
 the dedicated RepositoryGraph factual-layer review are complete. The next stage is Task Impact
 Engine: resolving task selectors into this graph and expanding their explainable impact.
 
+### Architecture-alignment checkpoint before Task Impact
+
+Before implementing Task Impact, the contracts were reviewed against the intended product boundary
+and corrected where an implementation-shaped assumption had leaked into the model:
+
+- `WorkspaceGraphProvider` now means “supply generic workspace facts.” The pnpm implementation
+  returns a `WorkspaceGraph`; the TypeScript analyzer separately enriches it into `RepositoryGraph`.
+- Every project now retains `packageJsonPath`, dependency names/versions/kinds, `workspace:` usage,
+  scripts, source roots, and every owned discovered `tsconfig` path.
+- Project dependency edges carry provenance. Manifest, workspace-protocol, TypeScript-reference,
+  and TypeScript-import evidence are already emitted and merged deterministically.
+- Verification accepts either a generic command with optional `cwd` or a package script selected by
+  package name.
+- Task impact is split into `PredictedTaskImpact` and `ObservedTaskImpact`; the planner remains a
+  separate future component.
+- Conflicts distinguish hard structural constraints from scored risk. Scheduler methods receive
+  those collections separately rather than accepting one mixed scored list.
+- Scheduler contracts are event-driven. An initial wave plan is visualization only, not a runtime
+  barrier.
+- Task state now includes `INTEGRATING` between verification and completion.
+- Write leases use `ACTIVE`/`RELEASED`/`STALE`, versioned heartbeats, and evidence-based stale
+  recovery rather than automatic fixed-duration expiry.
+
+This checkpoint changed contracts and factual output; it did not implement Task Impact, Conflict
+Engine, Scheduler, or the live Write Guard. The research repository was analyzed again after the
+change: 3 projects, 963 files, 7,263 symbols, 3 project dependencies, 3,440 file dependencies,
+13,121 symbol references, and the same single 25-file `UNCOVERED_TYPESCRIPT_FILES` warning for API
+scripts. Project edges now explain that their current evidence is `typescript-import`.
+
+#### Independent-review corrections
+
+The independent contract review found no Critical issue and confirmed the two-stage facts pipeline,
+provenance direction/merging, predicted/observed boundary, event-driven shape, and non-TTL lease
+semantics. Its High and cleanup findings were resolved before Task Impact work:
+
+- `TaskConflict` became a discriminated union. `HardTaskConflict` requires a non-empty constraint
+  tuple and allows only stagger/serialize; `RiskTaskConflict` cannot contain constraints. Scheduler
+  methods take hard and risk collections as separate required parameters.
+- The duplicate optional `sourceRoot` was removed; `sourceRoots` is now the only representation.
+- `RepositoryGraph extends WorkspaceGraph`, so their shared factual fields cannot drift.
+- The unused `RepositoryAnalyzer` and duplicate `RepositoryAnalysisRequest` were removed rather
+  than preserving an unimplemented incremental-analysis abstraction.
+- The single-value `ExecutionPlan.kind` placeholder was removed, and `lease-stale` was added as an
+  explicit scheduler event.
+- Exact-symbol lease identity now has a dedicated test in addition to hierarchy tests.
+
+The review also noted that integration conflicts may eventually need recoverable blocking. The
+current state machine deliberately remains terminal from `INTEGRATING` because a single `BLOCKED`
+state cannot remember whether it should resume execution or integration. A phase-aware resume model
+must be designed before the worktree-integration milestone; adding a lossy transition now would hide
+that requirement rather than solve it.
+
+The follow-up independent review closed H1, M1–M3, and L1–L3 with no Critical, High, or Medium
+finding. It approved ending contract calibration and starting Task Impact Engine. One non-blocking
+Low note remains: `HardTaskConflict.score` still exists for explanation, so the future Scheduler
+implementation must be tested to ensure it never filters or selectively enforces hard conflicts by
+score. That is an implementation-review gate for the Scheduler milestone, not a Task Impact
+blocker. The reviewer's latest active-repository sample was 963 files, 7,265 symbols, 3,440 file
+dependencies, and 13,123 symbol references; the two-symbol drift from the previous run is normal
+activity in the research repository.
+
 ## Current overall status (as of this writing)
 
 - Architecture milestones 1–5 of 10 are complete. That is roughly 50% by milestone count, not 50%
   of total engineering effort: later runtime, persistence, Git, and agent-execution milestones are
   larger and riskier than several foundation milestones.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 70 tests,
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 75 tests,
   all passing.
-- Coverage is 96.15% statements, 91.24% branches, 100% functions, and 96.07% lines. Every enforced
+- Coverage is 96.16% statements, 91.11% branches, 100% functions, and 96.08% lines. Every enforced
   threshold is at least 90%.
-- `pnpm build` passes. `forge analyze` is real and verified on a 957-file repository; `forge plan`
+- `pnpm build` passes. `forge analyze` is real and verified on a 963-file repository; `forge plan`
   remains intentionally unavailable.
 
 ## What has NOT been implemented yet
@@ -801,8 +852,8 @@ Engine: resolving task selectors into this graph and expanding their explainable
 - Resolve a natural-language or structured task's selectors into the projects, files, and symbols
   it may read or write.
 - Expand impact to downstream consumers and calculate explainable pairwise conflict scores.
-- Group tasks into dependency-safe and conflict-safe execution waves.
-- Implement live lease acquire/renew/release storage and runtime write enforcement.
+- Dispatch tasks event-by-event while respecting dependencies, hard constraints, and concurrency.
+- Implement live lease acquire/heartbeat/stale/release storage and runtime write enforcement.
 - Persist orchestration runs so they can recover after restart.
 - Create isolated Git workspaces, rebase and integrate task changes safely.
 - Invoke coding agents, monitor them, and verify their results.

@@ -17,10 +17,18 @@ const stableUniqueStringsSchema = z
   .array(z.string().trim().min(1))
   .transform((values) => [...new Set(values)].toSorted());
 
-export const verificationRuleSchema = z.object({
-  type: z.literal('command'),
-  command: z.string().trim().min(1)
-});
+export const verificationRuleSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('command'),
+    command: z.string().trim().min(1),
+    cwd: z.string().trim().min(1).optional()
+  }),
+  z.object({
+    type: z.literal('package-script'),
+    packageName: z.string().trim().min(1),
+    script: z.string().trim().min(1)
+  })
+]);
 
 export const taskContractSchema = z
   .object({

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   analyzeRepository,
   ProjectGraphError
-} from '@apra-amcos-admin-coding-orchestrator/repository-analysis';
+} from '@ai-native-software-delivery-orchestrator/repository-analysis';
 
 import { createForgeProgram } from './app.js';
 
@@ -37,30 +37,89 @@ describe('forge analyze', () => {
         diagnostics: 1
       },
       projects: [
-        { id: '@fixture/root', name: '@fixture/root', root: '.' },
+        {
+          id: '@fixture/root',
+          name: '@fixture/root',
+          root: '.',
+          packageJsonPath: 'package.json',
+          dependencies: [],
+          scripts: {},
+          sourceRoots: [],
+          tsconfigPaths: ['tsconfig.json']
+        },
         {
           id: '@fixture/web',
           name: '@fixture/web',
           root: 'apps/web',
-          sourceRoot: 'apps/web/src'
+          packageJsonPath: 'apps/web/package.json',
+          dependencies: [
+            {
+              name: '@fixture/core',
+              version: 'workspace:*',
+              kind: 'dependency',
+              workspaceProtocol: true
+            },
+            {
+              name: '@fixture/utils',
+              version: 'workspace:^',
+              kind: 'dev-dependency',
+              workspaceProtocol: true
+            },
+            {
+              name: 'external-package',
+              version: '1.0.0',
+              kind: 'dependency',
+              workspaceProtocol: false
+            }
+          ],
+          scripts: {},
+          sourceRoots: ['apps/web/src'],
+          tsconfigPaths: ['apps/web/tsconfig.json']
         },
         {
           id: '@fixture/core',
           name: '@fixture/core',
           root: 'packages/core',
-          sourceRoot: 'packages/core/src'
+          packageJsonPath: 'packages/core/package.json',
+          dependencies: [
+            {
+              name: '@fixture/utils',
+              version: 'workspace:*',
+              kind: 'peer-dependency',
+              workspaceProtocol: true
+            }
+          ],
+          scripts: {},
+          sourceRoots: ['packages/core/src'],
+          tsconfigPaths: ['packages/core/tsconfig.json']
         },
         {
           id: '@fixture/utils',
           name: '@fixture/utils',
           root: 'packages/utils',
-          sourceRoot: 'packages/utils/src'
+          packageJsonPath: 'packages/utils/package.json',
+          dependencies: [],
+          scripts: {},
+          sourceRoots: ['packages/utils/src'],
+          tsconfigPaths: ['packages/utils/tsconfig.json']
         }
       ],
       projectDependencies: [
-        { from: '@fixture/core', to: '@fixture/utils' },
-        { from: '@fixture/web', to: '@fixture/core' },
-        { from: '@fixture/web', to: '@fixture/utils' }
+        {
+          from: '@fixture/core',
+          to: '@fixture/utils',
+          sources: ['package-dependency', 'typescript-import', 'workspace-protocol']
+        },
+        {
+          from: '@fixture/web',
+          to: '@fixture/core',
+          sources: ['package-dependency', 'typescript-import', 'workspace-protocol']
+        },
+        {
+          from: '@fixture/web',
+          to: '@fixture/utils',
+          sources: ['package-dependency', 'workspace-protocol']
+        }
       ],
       diagnostics: [
         {

@@ -22,6 +22,17 @@ describe('taskContractSchema', () => {
     expect(taskContractSchema.parse(validTask)).toEqual(validTask);
   });
 
+  it('supports repository commands and package scripts as verification rules', () => {
+    const verification = [
+      { type: 'command', command: 'pnpm test', cwd: 'fixtures/demo' },
+      { type: 'package-script', packageName: '@fixture/api', script: 'test' }
+    ] as const;
+
+    expect(taskContractSchema.parse({ ...validTask, verification }).verification).toEqual(
+      verification
+    );
+  });
+
   it('rejects a self dependency', () => {
     const result = taskContractSchema.safeParse({ ...validTask, dependencies: ['T1'] });
 

@@ -1,4 +1,4 @@
-# ADR-010: pnpm project graph provider
+# ADR-010: pnpm workspace graph provider
 
 ## Status
 
@@ -13,19 +13,21 @@ current workflow can validate end to end.
 
 ## Decision
 
-Keep the `ProjectGraphProvider` port in the domain layer and implement the first provider in
+Keep the `WorkspaceGraphProvider` port in the domain layer and implement the first provider in
 `repository-analysis` for pnpm workspaces. The provider reads `pnpm-workspace.yaml`, discovers the
-root and matched package manifests, and maps local package dependencies into `RepositoryGraph`.
+root and matched package manifests, and maps package facts into `WorkspaceGraph`.
 
 Package names are stable project IDs. Project roots and source roots are repository-relative,
-portable paths. A dependency edge points from the package declaring the dependency to the local
-package it depends on. External packages are not project nodes. Explicit `workspace:` references
+portable paths. Project facts retain manifest paths, dependency kinds and versions, package scripts,
+source roots, and TypeScript configuration paths. A dependency edge points from the package
+declaring the dependency to the local package it depends on and records its evidence sources.
+External packages are not project nodes. Explicit `workspace:` references
 to missing packages, duplicate package names, malformed configuration, invalid manifests,
 self-dependencies, and paths escaping the repository are structured errors.
 
-The provider itself discovers projects only; the subsequent TypeScript analyzer enriches its graph
-with files, symbols, and semantic dependencies. Additional providers require a concrete product use
-case and must remain outside the domain layer.
+The provider itself discovers workspace facts only; the subsequent TypeScript analyzer enriches
+them into a Repository Knowledge Graph containing files, symbols, and semantic dependencies.
+Additional providers require a concrete product use case and must remain outside the domain layer.
 
 Use `yaml` rather than a hand-written parser because pnpm workspace files are YAML and require
 correct handling of quoting and collection syntax. Use `tinyglobby` for workspace inclusion and

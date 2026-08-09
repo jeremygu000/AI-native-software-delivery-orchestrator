@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RepositoryGraph } from '@apra-amcos-admin-coding-orchestrator/domain';
+import type { RepositoryGraph } from '@ai-native-software-delivery-orchestrator/domain';
 
 import { cleanupAnalysisResources, resolveAnalysisOutcome } from './analysis-lifecycle.js';
 import { ProjectGraphError } from './project-graph-error.js';

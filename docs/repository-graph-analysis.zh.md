@@ -47,8 +47,8 @@ RepositoryGraph
 
 ### 节点
 
-- `ProjectNode` 表示一个 pnpm workspace package,记录稳定 package ID、package root 和可选
-  source root。
+- `ProjectNode` 表示一个 pnpm workspace package,记录稳定 package ID、package root 和零个或
+  多个 source roots。
 - `FileNode` 表示一个只属于一个项目的真实 TypeScript 文件。
 - `SymbolNode` 表示文件里当前支持的有名声明,包括父符号、kind、merged kinds 和 export 状态。
 
@@ -77,7 +77,7 @@ project-graph-analysis.ts
         +------------------------------+
         |                              |
         v                              |
-PnpmWorkspaceProvider                  |
+PnpmWorkspaceGraphProvider             |
   读取 workspace 结构                  |
   建立项目和 manifest 依赖边            |
         |                              |
@@ -101,15 +101,15 @@ TypeScript 转换规则。
 
 ## 阶段一:选择 Repository Provider
 
-`analyzeProjectGraph()` 先把请求路径解析成绝对路径,再按顺序检查已配置的 provider。目前默认
-列表只有 `PnpmWorkspaceProvider`。
+`analyzeWorkspaceGraph()` 先把请求路径解析成绝对路径,再按顺序检查已配置的 provider。目前默认
+列表只有 `PnpmWorkspaceGraphProvider`。
 
 仓库根目录存在 `pnpm-workspace.yaml` 时,pnpm provider 才认为自己支持这个仓库。如果没有任何
 provider 支持,分析返回 `UNSUPPORTED_REPOSITORY`,不会静默猜测仓库结构。
 
 ## 阶段二:建立 pnpm 项目图
 
-`PnpmWorkspaceProvider` 执行:
+`PnpmWorkspaceGraphProvider` 执行:
 
 ```text
 读取 pnpm-workspace.yaml
@@ -144,7 +144,10 @@ Provider 校验:
 - 项目是否自依赖;
 - manifest 真实路径是否跑出仓库。
 
-这一阶段结束时,`projects` 和 manifest `projectDependencies` 已填充;文件、符号和语义边仍为空。
+这一阶段结束时,`WorkspaceGraph.projects` 已包含 package manifest 路径、依赖类型和版本、
+`workspace:` 使用情况、scripts、source roots 与 TypeScript 配置路径。Manifest 依赖边会记录
+`package-dependency`,使用 workspace protocol 时还会记录 `workspace-protocol` 来源;文件、符号和
+语义边在下一阶段加入。
 
 ## 阶段三:发现 TypeScript 配置
 
@@ -374,8 +377,9 @@ Workspace/Git 层。
 - 语义索引当前覆盖 TypeScript 系列文件,不是所有语言或基础设施格式。
 - 不是每种匿名或深层 AST 结构都会变成独立符号。
 - 还没有提取规范化 callable 和 type signature。
-- 当前是全量扫描,没有实现增量 `changedFiles` refresh。
-- 项目边还没有保存 manifest、production、test、generated、runtime 或 type-only 等 provenance。
+- 当前是全量扫描,还没有暴露增量 refresh 合同。
+- 项目边已经保存 manifest、workspace protocol、TypeScript reference 和 TypeScript import
+  provenance,但 import 还没有细分 production/test/generated/runtime/type-only。
 - 未覆盖文件扫描已在约一千文件规模验证,还没有为数万文件仓库做 benchmark。
 - 摘要包含仓库绝对路径,可能暴露本机目录信息。
 

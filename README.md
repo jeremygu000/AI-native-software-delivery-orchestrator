@@ -1,8 +1,9 @@
-# APRA AMCOS Admin Coding Orchestrator
+# AI Native Software Delivery Orchestrator
 
 A TypeScript-native, repository-aware multi-agent coding orchestrator. The system is designed to
-derive safe execution waves from task dependencies, repository structure, symbol impact, shared
-resources, and runtime write ownership instead of relying on model guesses about parallelism.
+derive safe execution decisions from task dependencies, repository structure, symbol impact,
+shared resources, and runtime write ownership instead of relying on model guesses about
+parallelism.
 
 ## Current milestone
 
@@ -69,3 +70,12 @@ models, and milestone plan.
 | `pnpm format`        | Format source and documentation          |
 | `pnpm format:check`  | Verify formatting without writing        |
 | `pnpm check`         | Run formatting, types, lint, and tests   |
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, quality gates, commit
+conventions, and pull-request checklist.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

@@ -5,8 +5,8 @@ import { join, resolve } from 'node:path';
 import { API } from '@typescript/native/unstable/sync';
 import { describe, expect, it, vi } from 'vitest';
 
-import { analyzeProjectGraph, analyzeRepository } from './project-graph-analysis.js';
-import { PnpmWorkspaceProvider } from './pnpm-workspace-provider.js';
+import { analyzeRepository, analyzeWorkspaceGraph } from './project-graph-analysis.js';
+import { PnpmWorkspaceGraphProvider } from './pnpm-workspace-provider.js';
 
 const fixturePath = resolve(import.meta.dirname, '../../../../fixtures/pnpm-workspace');
 const repositoryPath = resolve(import.meta.dirname, '../../../..');
@@ -29,52 +29,109 @@ const createWorkspace = async (
   return workspacePath;
 };
 
-describe('PnpmWorkspaceProvider', () => {
+describe('PnpmWorkspaceGraphProvider', () => {
   it('detects pnpm workspaces', async () => {
-    const provider = new PnpmWorkspaceProvider();
+    const provider = new PnpmWorkspaceGraphProvider();
 
-    await expect(provider.supports(fixturePath)).resolves.toBe(true);
-    await expect(provider.supports(tmpdir())).resolves.toBe(false);
+    await expect(provider.supports({ repositoryPath: fixturePath })).resolves.toBe(true);
+    await expect(provider.supports({ repositoryPath: tmpdir() })).resolves.toBe(false);
   });
 
   it('builds a deterministic project graph from a pnpm workspace', async () => {
-    const provider = new PnpmWorkspaceProvider();
+    const provider = new PnpmWorkspaceGraphProvider();
 
     const graph = await provider.analyze({ repositoryPath: fixturePath });
 
     expect([...graph.projects.values()]).toEqual([
-      { id: '@fixture/root', name: '@fixture/root', root: '.' },
+      {
+        id: '@fixture/root',
+        name: '@fixture/root',
+        root: '.',
+        packageJsonPath: 'package.json',
+        dependencies: [],
+        scripts: {},
+        sourceRoots: [],
+        tsconfigPaths: ['tsconfig.json']
+      },
       {
         id: '@fixture/web',
         name: '@fixture/web',
         root: 'apps/web',
-        sourceRoot: 'apps/web/src'
+        packageJsonPath: 'apps/web/package.json',
+        dependencies: [
+          {
+            name: '@fixture/core',
+            version: 'workspace:*',
+            kind: 'dependency',
+            workspaceProtocol: true
+          },
+          {
+            name: '@fixture/utils',
+            version: 'workspace:^',
+            kind: 'dev-dependency',
+            workspaceProtocol: true
+          },
+          {
+            name: 'external-package',
+            version: '1.0.0',
+            kind: 'dependency',
+            workspaceProtocol: false
+          }
+        ],
+        scripts: {},
+        sourceRoots: ['apps/web/src'],
+        tsconfigPaths: ['apps/web/tsconfig.json']
       },
       {
         id: '@fixture/core',
         name: '@fixture/core',
         root: 'packages/core',
-        sourceRoot: 'packages/core/src'
+        packageJsonPath: 'packages/core/package.json',
+        dependencies: [
+          {
+            name: '@fixture/utils',
+            version: 'workspace:*',
+            kind: 'peer-dependency',
+            workspaceProtocol: true
+          }
+        ],
+        scripts: {},
+        sourceRoots: ['packages/core/src'],
+        tsconfigPaths: ['packages/core/tsconfig.json']
       },
       {
         id: '@fixture/utils',
         name: '@fixture/utils',
         root: 'packages/utils',
-        sourceRoot: 'packages/utils/src'
+        packageJsonPath: 'packages/utils/package.json',
+        dependencies: [],
+        scripts: {},
+        sourceRoots: ['packages/utils/src'],
+        tsconfigPaths: ['packages/utils/tsconfig.json']
       }
     ]);
     expect(graph.projects.has('@fixture/ignored')).toBe(false);
     expect(graph.projectDependencies).toEqual([
-      { from: '@fixture/core', to: '@fixture/utils' },
-      { from: '@fixture/web', to: '@fixture/core' },
-      { from: '@fixture/web', to: '@fixture/utils' }
+      {
+        from: '@fixture/core',
+        to: '@fixture/utils',
+        sources: ['package-dependency', 'workspace-protocol']
+      },
+      {
+        from: '@fixture/web',
+        to: '@fixture/core',
+        sources: ['package-dependency', 'workspace-protocol']
+      },
+      {
+        from: '@fixture/web',
+        to: '@fixture/utils',
+        sources: ['package-dependency', 'workspace-protocol']
+      }
     ]);
-    expect(graph.files.size).toBe(0);
-    expect(graph.symbols.size).toBe(0);
   });
 
   it('selects the pnpm provider through the provider-neutral entry point', async () => {
-    const result = await analyzeProjectGraph(fixturePath);
+    const result = await analyzeWorkspaceGraph(fixturePath);
 
     expect(result.providerId).toBe('pnpm-workspace');
     expect(result.graph.projects.size).toBe(4);
@@ -101,7 +158,8 @@ describe('PnpmWorkspaceProvider', () => {
     ]);
     expect(graph.projectDependencies).toContainEqual({
       from: '@fixture/web',
-      to: '@fixture/core'
+      to: '@fixture/core',
+      sources: ['package-dependency', 'typescript-import', 'workspace-protocol']
     });
     expect([...graph.symbols.values()]).toEqual(
       expect.arrayContaining([
@@ -299,7 +357,8 @@ void selfValue;
     ).toHaveLength(1);
     expect(graph.projectDependencies).toContainEqual({
       from: '@fixture/consumer',
-      to: '@fixture/model'
+      to: '@fixture/model',
+      sources: ['typescript-import']
     });
   });
 
@@ -475,7 +534,39 @@ void selfValue;
     expect([...graph.symbols.values()]).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: 'value', exported: true })])
     );
+    expect(graph.projects.get('@fixture/temporary-root')?.tsconfigPaths).toEqual([
+      'tsconfig.json',
+      'tsconfig.lib.json'
+    ]);
     expect(graph.diagnostics).toEqual([]);
+  });
+
+  it('records cross-project TypeScript reference provenance', async () => {
+    const workspacePath = await createWorkspace("packages:\n  - 'packages/*'\n", {
+      'packages/library': { name: '@fixture/library' }
+    });
+    const libraryPath = join(workspacePath, 'packages/library');
+    await mkdir(join(libraryPath, 'src'), { recursive: true });
+    await writeFile(
+      join(workspacePath, 'tsconfig.json'),
+      JSON.stringify({ files: [], references: [{ path: './packages/library' }] })
+    );
+    await writeFile(
+      join(libraryPath, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: { module: 'nodenext', moduleResolution: 'nodenext', target: 'es2022' },
+        include: ['src/**/*.ts']
+      })
+    );
+    await writeFile(join(libraryPath, 'src/index.ts'), 'export const value = true;\n');
+
+    const graph = (await analyzeRepository(workspacePath)).graph;
+
+    expect(graph.projectDependencies).toContainEqual({
+      from: '@fixture/temporary-root',
+      to: '@fixture/library',
+      sources: ['tsconfig-reference']
+    });
   });
 
   it('owns a referenced TypeScript configuration stored below its project root', async () => {
@@ -689,7 +780,7 @@ void selfValue;
     });
 
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: workspacePath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: workspacePath })
     ).rejects.toMatchObject({
       code: 'INVALID_PROJECT_DEPENDENCY'
     });
@@ -702,7 +793,7 @@ void selfValue;
     });
 
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: workspacePath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: workspacePath })
     ).rejects.toMatchObject({
       code: 'DUPLICATE_PROJECT_ID'
     });
@@ -711,48 +802,48 @@ void selfValue;
   it('rejects malformed workspace configuration and manifests', async () => {
     const invalidWorkspacePath = await createWorkspace('packages: invalid\n', {});
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: invalidWorkspacePath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: invalidWorkspacePath })
     ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_CONFIGURATION' });
 
     const invalidManifestPath = await createWorkspace("packages:\n  - 'packages/*'\n", {
       'packages/unnamed': { private: true }
     });
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: invalidManifestPath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: invalidManifestPath })
     ).rejects.toMatchObject({ code: 'INVALID_PACKAGE_MANIFEST' });
   });
 
   it('rejects invalid YAML, manifest JSON, dependency maps, and dependency versions', async () => {
     const invalidYamlPath = await createWorkspace('packages: [\n', {});
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: invalidYamlPath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: invalidYamlPath })
     ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_CONFIGURATION' });
 
     const invalidJsonPath = await createWorkspace("packages:\n  - 'packages/*'\n", {});
     await mkdir(join(invalidJsonPath, 'packages/broken'), { recursive: true });
     await writeFile(join(invalidJsonPath, 'packages/broken/package.json'), '{');
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: invalidJsonPath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: invalidJsonPath })
     ).rejects.toMatchObject({ code: 'INVALID_PACKAGE_MANIFEST' });
 
     const invalidDependenciesPath = await createWorkspace("packages:\n  - 'packages/*'\n", {
       'packages/app': { name: '@fixture/app', dependencies: [] }
     });
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: invalidDependenciesPath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: invalidDependenciesPath })
     ).rejects.toMatchObject({ code: 'INVALID_PACKAGE_MANIFEST' });
 
     const invalidVersionPath = await createWorkspace("packages:\n  - 'packages/*'\n", {
       'packages/app': { name: '@fixture/app', dependencies: { broken: 1 } }
     });
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: invalidVersionPath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: invalidVersionPath })
     ).rejects.toMatchObject({ code: 'INVALID_PACKAGE_MANIFEST' });
   });
 
   it('includes a root-only workspace and rejects self dependencies', async () => {
     const rootOnlyPath = await createWorkspace('{}\n', {});
-    const graph = await new PnpmWorkspaceProvider().analyze({ repositoryPath: rootOnlyPath });
+    const graph = await new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: rootOnlyPath });
     expect([...graph.projects.keys()]).toEqual(['@fixture/temporary-root']);
 
     const selfDependencyPath = await createWorkspace("packages:\n  - 'packages/*'\n", {
@@ -762,27 +853,29 @@ void selfValue;
       }
     });
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: selfDependencyPath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: selfDependencyPath })
     ).rejects.toMatchObject({ code: 'INVALID_PROJECT_DEPENDENCY' });
   });
 
   it('reports unsupported and invalid repositories with structured errors', async () => {
-    await expect(analyzeProjectGraph(tmpdir())).rejects.toMatchObject({
+    await expect(analyzeWorkspaceGraph(tmpdir())).rejects.toMatchObject({
       code: 'UNSUPPORTED_REPOSITORY'
     });
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: join(tmpdir(), 'missing-repository') })
+      new PnpmWorkspaceGraphProvider().analyze({
+        repositoryPath: join(tmpdir(), 'missing-repository')
+      })
     ).rejects.toMatchObject({ code: 'INVALID_REPOSITORY' });
 
     const filePath = join(await mkdtemp(join(tmpdir(), 'coding-orchestrator-file-')), 'file.txt');
     await writeFile(filePath, 'not a repository');
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: filePath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: filePath })
     ).rejects.toMatchObject({ code: 'INVALID_REPOSITORY' });
 
     const noWorkspacePath = await mkdtemp(join(tmpdir(), 'coding-orchestrator-no-workspace-'));
     await expect(
-      new PnpmWorkspaceProvider().analyze({ repositoryPath: noWorkspacePath })
+      new PnpmWorkspaceGraphProvider().analyze({ repositoryPath: noWorkspacePath })
     ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_CONFIGURATION' });
   });
 });

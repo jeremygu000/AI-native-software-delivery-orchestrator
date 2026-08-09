@@ -7,11 +7,11 @@ export default defineConfig(() => ({
   cacheDir: '../../node_modules/.vite/apps/cli',
   resolve: {
     alias: {
-      '@apra-amcos-admin-coding-orchestrator/domain': resolve(
+      '@ai-native-software-delivery-orchestrator/domain': resolve(
         import.meta.dirname,
         '../../libs/domain/src/index.ts'
       ),
-      '@apra-amcos-admin-coding-orchestrator/repository-analysis': resolve(
+      '@ai-native-software-delivery-orchestrator/repository-analysis': resolve(
         import.meta.dirname,
         '../../libs/repository-analysis/src/index.ts'
       )

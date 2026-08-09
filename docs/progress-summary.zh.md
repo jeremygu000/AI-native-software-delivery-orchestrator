@@ -163,10 +163,9 @@ Guard 不需要重新加载 Repository Graph,也能知道某个方法属于哪�
 - `agentId`——哪个 Agent 正在申请;
 - `taskId`——正在执行哪个任务;
 - `resource`——要写入哪个项目、文件、符号或共享资源;
-- `mode`——目前固定为 `exclusive` 独占模式;
-- `leaseDurationMs`——许可保持有效的时长。
+- `mode`——目前固定为 `exclusive` 独占模式。
 
-申请成功会返回 `granted`,其中包含租约 ID、版本、取得时间和过期时间;申请被阻塞会返回
+申请成功会返回 `granted`,其中包含租约 ID、版本、状态、取得时间和最近 heartbeat 时间;申请被阻塞会返回
 `blocked`,并附上造成冲突的活动租约 ID。这样 Scheduler 可以解释"任务正在等谁",而不是
 只报告一个原因不明的等待状态。
 
@@ -174,14 +173,14 @@ Guard 不需要重新加载 Repository Graph,也能知道某个方法属于哪�
 agent ID。它不代表不同 run 可以自动同时写一个 checkout;未来的 Guard 仍然必须检查保护
 同一个工作区的所有活动租约。
 
-#### 续期、版本和过期
+#### Heartbeat、版本与失活恢复
 
-长时间运行的任务必须在租约过期前续期。续期请求包含租约 ID、Agent 认为当前应该存在的
-版本,以及新的有效时长。如果数据库里的版本仍然一致,Guard 就增加版本号并推迟过期时间;
-租约已经不存在时返回 `not-found`;存在更新版本时返回 `version-conflict` 和实际版本号。
+长时间运行的任务需要持续发送 heartbeat。请求包含租约 ID 和 Agent 认为当前应该存在的版本。
+如果数据库里的版本仍然一致,Guard 就增加版本号并记录新的存活证据;租约已经不存在时返回
+`not-found`;存在更新版本时返回 `version-conflict` 和实际版本号。
 
-这属于乐观并发控制,可以防止过时的 Worker 在恢复流程或替代 Worker 已经接管新状态后,
-错误地延长旧租约。
+这属于乐观并发控制。系统不能仅仅因为固定时长已过就释放租约;必须综合 heartbeat、Agent
+存活状态、worktree 状态、宽限策略和明确的恢复证据,才能把租约标记为 `STALE` 并回收。
 
 释放操作返回 `released` 或 `not-found`。把"租约本来就不存在"也当成安全的清理结果,
 可以让释放操作保持幂等:重试和崩溃恢复可以重复执行清理,最终状态仍然一致。
@@ -193,7 +192,7 @@ agent ID。它不代表不同 run 可以自动同时写一个 checkout;未来的
 ```text
 解析并校验资源身份
         ↓
-忽略或清理已过期租约
+读取 ACTIVE 租约并评估存活证据
         ↓
 读取可能重叠的活动租约
         ↓
@@ -201,7 +200,7 @@ agent ID。它不代表不同 run 可以自动同时写一个 checkout;未来的
         ↓
 以原子方式创建新租约,或者返回 blocked
         ↓
-长任务持续续期,验证完成后释放
+长任务持续 heartbeat,有证据才标记 stale,集成完成后释放
 ```
 
 "检查是否冲突"和"创建新租约"必须是一个不可分割的数据库操作。如果两个 Agent 都能在
@@ -214,8 +213,8 @@ agent ID。它不代表不同 run 可以自动同时写一个 checkout;未来的
 
 - 可写资源身份和完整层级;
 - 确定、对称的包含关系冲突判断;
-- acquire、renew、release 的请求和结果合同;
-- run、agent、task、版本、取得时间和过期时间字段;
+- acquire、heartbeat、mark-stale、release 的请求和结果合同;
+- run、agent、task、版本、状态、取得时间、heartbeat、释放和 stale 证据字段;
 - 主要冲突组合和独立资源组合的测试。
 
 还没有实现:
@@ -223,13 +222,13 @@ agent ID。它不代表不同 run 可以自动同时写一个 checkout;未来的
 - 具体的 `WriteGuard` 服务;
 - 活动租约存储或 SQLite/Drizzle 持久化;
 - 原子申请事务;
-- 过期清理、heartbeat 或自动续期;
+- heartbeat 处理、存活判断和 stale 恢复;
 - 在 Agent 真正写入之前进行强制拦截;
 - 阻塞任务队列、唤醒和崩溃恢复;
 - 根据 Repository Graph 解析并校验资源身份。
 
-准确的当前状态是:**租约合同和资源冲突判断已经可以工作;真正的租约申请、存储、续期、
-过期、释放和强制执行仍是未来工作。**
+准确的当前状态是:**租约合同和资源冲突判断已经可以工作;真正的租约申请、存储、heartbeat、
+stale 恢复、释放和强制执行仍是未来工作。**
 
 还有一个重要的实际限制。同一个文件里的两个同级方法可以分别取得符号租约,但如果两个 Agent
 都采用"重写整个文件"的方式修改代码,Git 层面仍然可能冲突。只有实际写入范围能够限制并
@@ -322,29 +321,23 @@ DAG 全称 **Directed Acyclic Graph**(有向无环图)。拆开看三个词:
 **这一阶段的成果**:一个可以直接拿来用的"任务排序计算器",输入一批任务及其依赖关系,
 输出"这批任务有没有问题"以及"该按什么顺序、以什么节奏执行"。
 
-## 阶段四:简化技术栈——移除 Nx
+## 阶段四:简化工作区工具链
 
-项目最初决定用一个叫 Nx 的工具来管理"多个包之间要按什么顺序编译、测试"。但在实际搭建
-过程中发现,当前项目只有 3 个包,Nx 带来的复杂度(需要额外的配置文件、额外的同步命令、
-偶尔会产生"看起来有依赖但实际没用到"的假象)超过了它带来的好处。
-
-于是团队做出决定:**把 Nx 从"自身项目的构建工具"这个角色上移除**,改用更朴素的组合:
+项目根据当前规模建立了一套职责明确、容易检查的工作区工具组合:
 
 - 用 pnpm(一个包管理工具)负责"几个包之间怎么互相引用"。
 - 用 TypeScript 自带的"项目引用"功能负责"先编译哪个包、后编译哪个包"。
 - 用 Vitest 自带的多项目功能负责"一次性跑完所有包的测试"。
 
-这个决定被写成了一份正式的架构决策记录(ADR-009),里面明确写了:**这不是"Nx 不好",
-而是"当前规模下不需要"**,并且列出了几条"如果以后满足这些条件,就应该重新考虑用类似
-工具"的判断标准(比如包的数量超过 12 个、或者每次检查代码要花 5 分钟以上)。
+这个决定写入了 ADR-009,并列出重新评估构建编排的可测量条件:包数量、CI 时长、重复的
+affected/build-order 逻辑、watch 模式成本和可量化的缓存收益。
 
 同时,这次改动顺手修复了一个真实问题:命令行工具(`apps/cli`)之前的配置文件里"声明"
 了它用到 `domain` 和 `dag` 这两个包,但实际代码里根本没有用到,这是一个配置错误。这次
 清理把这个错误的假依赖也一起删掉了。
 
-**这一阶段的成果**:项目仍然是"多个包放在一个仓库里"的结构,但不再依赖额外的编排工具,
-用几个更基础、更容易理解的工具组合达到同样效果,同时改动本身对流程和构建结果没有任何
-负面影响(所有检查和构建流程都重新验证过,结果一致)。
+**这一阶段的成果**:项目采用"多个包放在一个仓库里"的结构,工具职责清楚、配置可直接检查,
+并且所有检查和构建结果都重新验证过。
 
 ## 阶段五:简化技术栈——统一 TypeScript 版本
 
@@ -390,9 +383,9 @@ TypeScript。
 依赖自己、显式写了 `workspace:` 依赖但目标包不存在、仓库目录无法读取,或者工作区路径跑到
 仓库外面,系统都会返回带错误类型的明确诊断,而不是悄悄生成一张不可信的图。
 
-代码中保留了一个很小的"通用 Provider 接口",把"我要一张项目图"和"pnpm 具体把信息存
-在哪里"分开。目前只实现 pnpm,因为它是现在唯一真实存在的需求。之前预留的 Nx fixture 和
-Nx 专用验证规则已经删除;只有未来真的出现需要支持的其他仓库格式时,才会增加新的 Provider。
+代码中保留了一个很小的"通用 Provider 接口",把"我要工作区事实"和"pnpm 具体把信息存
+在哪里"分开。目前只实现 pnpm,因为它是现在唯一真实存在的需求。只有未来真的出现需要支持的
+其他仓库格式时,才会增加新的 Provider。
 
 `forge analyze` 现在已经不再是占位命令。运行:
 
@@ -409,16 +402,16 @@ forge analyze /某个/pnpm-工作区路径
 分析器还实际运行在现有本地仓库上:
 
 ```text
-~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching
+~/Desktop/research-repositories/ingestion-and-matching
 ```
 
 命令成功选择了 `pnpm-workspace` Provider,并识别出 3 个项目:
 
-| 项目                                      | 仓库内根目录    | 源码根目录          |
-| ----------------------------------------- | --------------- | ------------------- |
-| `apra-amcos-admin-ingestion-and-matching` | `.`             | 未声明              |
-| `api`                                     | `workspace/api` | `workspace/api/src` |
-| `ingestion-and-matching-ui`               | `workspace/ui`  | `workspace/ui/src`  |
+| 项目                        | 仓库内根目录    | 源码根目录          |
+| --------------------------- | --------------- | ------------------- |
+| `ingestion-and-matching`    | `.`             | 未声明              |
+| `api`                       | `workspace/api` | `workspace/api/src` |
+| `ingestion-and-matching-ui` | `workspace/ui`  | `workspace/ui/src`  |
 
 结果中本地项目依赖边为 0 条。这个结果必须按当前能力范围理解:两个 workspace 包没有在
 分析器目前读取的 `package.json` 依赖字段中,把对方声明成本地依赖。它**不能证明** API 和
@@ -430,7 +423,7 @@ UI 在代码层面完全没有关系。通过 TypeScript path alias、共享源�
 
 ```sh
 node apps/cli/dist/main.js analyze \
-  ~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching
+  ~/Desktop/research-repositories/ingestion-and-matching
 ```
 
 阶段七已经注册了可执行入口,改用 `pnpm exec forge`,见下一节。所以阶段六结束时的准确
@@ -499,7 +492,7 @@ forge analyze <repository>
 解析仓库路径并选择 provider
         |
         v
-PnpmWorkspaceProvider
+PnpmWorkspaceGraphProvider
   ├── 读取 pnpm-workspace.yaml
   ├── 查找 package.json
   ├── 建立 ProjectNode
@@ -523,7 +516,7 @@ TypeScriptRepositoryAnalyzer
 
 #### 1. 从 pnpm 发现项目
 
-`PnpmWorkspaceProvider` 读取 `pnpm-workspace.yaml`,展开其中的 package pattern,再解析根目录和
+`PnpmWorkspaceGraphProvider` 读取 `pnpm-workspace.yaml`,展开其中的 package pattern,再解析根目录和
 各 workspace 的 `package.json`。Package name 成为稳定项目 ID;仓库相对的 package root 和
 source root 成为项目元数据。
 
@@ -638,7 +631,7 @@ pnpm exec forge analyze /仓库路径 --full
 分析器已经反复在下面的真实研究仓库运行:
 
 ```text
-~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching
+~/Desktop/research-repositories/ingestion-and-matching
 ```
 
 最终独立 Review 的最近一次采样是:
@@ -681,10 +674,9 @@ pnpm exec forge analyze /仓库路径 --full
   CDK 或基础设施的万能分析器。
 - 当前索引支持的有名声明类别,不是每一种匿名或深层 AST 结构。
 - 已记录 export 状态,但还没有提取规范化 callable/type signature。
-- 当前是全量扫描;`changedFiles` 是扩展点,增量刷新还没有实现。
-- 项目依赖边还不记录证据来自 manifest、production、test、generated、runtime 还是 type-only
-  import。Task Impact 可以先用于可达性,但 Conflict Engine 在分配不同权重前必须重新评估
-  provenance。
+- 当前是全量扫描,还没有暴露增量 refresh 合同。
+- 项目依赖边现在会记录 manifest、`workspace:` protocol、TypeScript project reference 和
+  TypeScript import 这些大类证据;目前还没有继续细分 production/test/generated/runtime/type-only。
 - 额外未覆盖文件 glob 只在约一千文件规模验证,还没有为数万文件仓库做 benchmark。
 - 摘要 JSON 包含仓库绝对路径,分享日志时可能暴露本机用户名。
 - `forge plan` 仍不可用;`forge analyze` 不会调度 Agent,也不会修改源码。
@@ -694,21 +686,74 @@ pnpm exec forge analyze /仓库路径 --full
 已经完成。下一阶段是 Task Impact Engine:把任务 selector 解析到这张图,再扩展出可解释的影响
 范围。
 
+### 进入 Task Impact 前的架构校准
+
+在实现 Task Impact 前,项目按照最终产品责任边界重新检查了现有合同,并修正了几项受早期实现
+形态影响的假设:
+
+- `WorkspaceGraphProvider` 现在只表示“提供通用工作区事实”。pnpm 实现先返回
+  `WorkspaceGraph`,TypeScript 分析器再把它丰富成 `RepositoryGraph`。
+- 每个项目现在保留 `packageJsonPath`、依赖名称/版本/类型、`workspace:` 使用情况、scripts、
+  source roots,以及属于该项目的全部已发现 `tsconfig` 路径。
+- 项目依赖边带有 provenance。Manifest、workspace protocol、TypeScript reference 和
+  TypeScript import 证据已经可以确定地生成与合并。
+- Verification 支持带可选 `cwd` 的通用命令,也支持按 package name 指定 package script。
+- Task Impact 分成 `PredictedTaskImpact` 与 `ObservedTaskImpact`;Planner 保持为另一个未来组件。
+- Conflict 把 hard structural constraint 与 scored risk 分开;Scheduler 方法分别接收两组输入,
+  不再接收一个混合的 scored list。
+- Scheduler 合同改为事件驱动;初始 wave 只用于可视化,不是运行时 barrier。
+- Task state 在验证与完成之间增加 `INTEGRATING`。
+- Write Lease 使用 `ACTIVE`/`RELEASED`/`STALE`、带版本 heartbeat 与基于证据的 stale 恢复,
+  不再因为固定时间到期就自动释放。
+
+本次校准修改了合同和事实输出,但没有开始实现 Task Impact、Conflict Engine、Scheduler 或真实
+Write Guard。改动后再次分析研究仓库,得到 3 个项目、963 个文件、7,263 个符号、3 条项目依赖、
+3,440 条文件依赖、13,121 条符号引用;仍然只有同一条 API scripts 的 25 文件
+`UNCOVERED_TYPESCRIPT_FILES` warning。项目依赖边现在能说明当前证据来自
+`typescript-import`。
+
+#### 独立 Review 后的修正
+
+本轮独立合同 Review 没有发现 Critical,并确认两阶段 facts pipeline、provenance 方向与合并、
+predicted/observed 边界、事件驱动形态和非 TTL 租约语义正确。进入 Task Impact 前已处理它提出的
+High 与清理问题:
+
+- `TaskConflict` 改成判别联合。`HardTaskConflict` 必须携带非空 constraint tuple,只能建议
+  stagger/serialize;`RiskTaskConflict` 不能包含 constraint。Scheduler 方法把 hard 与 risk
+  collection 作为两个独立必填参数。
+- 删除重复的可选 `sourceRoot`,只保留 `sourceRoots`。
+- 改为 `RepositoryGraph extends WorkspaceGraph`,共享事实字段由类型系统保证一致。
+- 删除没有消费者的 `RepositoryAnalyzer` 和重复 `RepositoryAnalysisRequest`,不再为未实现的
+  incremental analysis 保留抽象。
+- 删除只有一个取值的 `ExecutionPlan.kind`,并增加显式 `lease-stale` scheduler event。
+- 除层级租约测试外,增加“完全相同 symbol”租约冲突的独立测试。
+
+Review 还指出 integration conflict 未来可能需要可恢复阻塞。当前状态机仍让 `INTEGRATING` 走向
+终态,因为单一 `BLOCKED` 状态无法记住应该恢复到执行还是集成阶段。在 worktree integration
+里程碑前必须设计 phase-aware resume model;现在增加一个有信息损失的 transition 只会掩盖问题。
+
+Follow-up 独立 Review 已确认 H1、M1–M3、L1–L3 全部关闭,没有 Critical、High 或 Medium,并批准
+结束合同校准、正式开始 Task Impact Engine。只剩一条不阻塞的 Low 记录:
+`HardTaskConflict.score` 仍用于解释,所以未来 Scheduler 实现必须通过测试证明不会按 score
+过滤或选择性执行 hard conflict。这是 Scheduler 里程碑的实现 Review gate,不是 Task Impact
+的阻塞项。Review 对活跃研究仓库的最新采样为 963 个文件、7,265 个符号、3,440 条文件依赖和
+13,123 条符号引用;相对上一次多 2 个符号属于研究仓库持续变化的正常漂移。
+
 ## 目前整体状态(截止到本文写作时)
 
 - 架构规划的 10 个里程碑中完成了 1–5,按里程碑数量约为 50%。这不代表总工程量恰好完成
   一半:后面的运行时、持久化、Git 和 Agent 执行阶段比多个地基阶段更大、风险也更高。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 70 个测试全部通过。
-- 覆盖率为:语句 96.15%、分支 91.24%、函数 100%、行 96.07%;四项都达到至少 90% 的门槛。
-- `pnpm build` 通过。`forge analyze` 已在 957 个文件的真实仓库验证;`forge plan` 仍然刻意
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 75 个测试全部通过。
+- 覆盖率为:语句 96.16%、分支 91.11%、函数 100%、行 96.08%;四项都达到至少 90% 的门槛。
+- `pnpm build` 通过。`forge analyze` 已在 963 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 
 ## 还没有实现的部分
 
 - 把自然语言或结构化任务中的 selector 解析成它可能读写的项目、文件和符号。
 - 沿下游消费者扩展影响范围,并计算可解释的两两冲突分数。
-- 根据任务依赖和代码冲突,生成安全的并行执行波次。
-- 实现活动租约的申请、续期、释放、存储和运行时写入强制检查。
+- 根据任务依赖、hard constraint 与并发限制,逐事件决定下一批可启动任务。
+- 实现活动租约的申请、heartbeat、stale 恢复、释放、存储和运行时写入强制检查。
 - 持久化编排运行,让程序重启后能恢复现场。
 - 创建隔离 Git 工作区,安全地 rebase 和集成各任务改动。
 - 真正调用编码 Agent、监控执行并验证结果。

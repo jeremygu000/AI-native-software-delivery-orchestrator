@@ -1,5 +1,5 @@
 {
-  "name": "@apra-amcos-admin-coding-orchestrator/dag",
+  "name": "@ai-native-software-delivery-orchestrator/dag",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -10,13 +10,13 @@
     "./package.json": "./package.json",
     ".": {
       "types": "./dist/index.d.ts",
-      "@apra-amcos-admin-coding-orchestrator/source": "./src/index.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     }
   },
   "dependencies": {
-    "@apra-amcos-admin-coding-orchestrator/domain": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
     "tslib": "^2.3.0"
   }
 }

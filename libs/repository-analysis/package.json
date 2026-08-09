@@ -1,5 +1,5 @@
 {
-  "name": "@apra-amcos-admin-coding-orchestrator/repository-analysis",
+  "name": "@ai-native-software-delivery-orchestrator/repository-analysis",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -10,13 +10,13 @@
     "./package.json": "./package.json",
     ".": {
       "types": "./dist/index.d.ts",
-      "@apra-amcos-admin-coding-orchestrator/source": "./src/index.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     }
   },
   "dependencies": {
-    "@apra-amcos-admin-coding-orchestrator/domain": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
     "@typescript/native": "npm:typescript@7.0.2",
     "jsonc-parser": "3.3.1",
     "tinyglobby": "0.2.17",

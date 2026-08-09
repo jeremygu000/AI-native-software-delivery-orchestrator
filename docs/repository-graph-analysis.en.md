@@ -51,7 +51,7 @@ RepositoryGraph
 ### Nodes
 
 - `ProjectNode` represents a pnpm workspace package and records its stable package ID, package root,
-  and optional source root.
+  and zero or more source roots.
 - `FileNode` represents one real TypeScript file owned by exactly one project.
 - `SymbolNode` represents a supported named declaration inside a file, including its parent symbol,
   kind, merged kinds, and export visibility.
@@ -83,7 +83,7 @@ project-graph-analysis.ts
         +------------------------------+
         |                              |
         v                              |
-PnpmWorkspaceProvider                  |
+PnpmWorkspaceGraphProvider             |
   read workspace structure             |
   create projects and manifest edges   |
         |                              |
@@ -107,8 +107,8 @@ can be added without changing the domain graph or the TypeScript conversion rule
 
 ## Phase 1: selecting a repository provider
 
-`analyzeProjectGraph()` resolves the requested path to an absolute path and checks the configured
-providers in order. The current default list contains `PnpmWorkspaceProvider`.
+`analyzeWorkspaceGraph()` resolves the requested path to an absolute path and checks the configured
+providers in order. The current default list contains `PnpmWorkspaceGraphProvider`.
 
 The pnpm provider supports a repository when its root contains `pnpm-workspace.yaml`. If no provider
 supports the path, analysis fails with `UNSUPPORTED_REPOSITORY`; it does not silently guess a
@@ -116,7 +116,7 @@ repository layout.
 
 ## Phase 2: building the pnpm project graph
 
-`PnpmWorkspaceProvider` performs the following work:
+`PnpmWorkspaceGraphProvider` performs the following work:
 
 ```text
 read pnpm-workspace.yaml
@@ -152,8 +152,10 @@ The provider validates:
 - project self-dependencies;
 - manifest paths that resolve outside the repository.
 
-At the end of this phase, `projects` and manifest `projectDependencies` are populated. Files,
-symbols, and semantic edges are still empty.
+At the end of this phase, `WorkspaceGraph.projects` contains package manifest paths, dependency
+kinds and versions, `workspace:` usage, scripts, source roots, and TypeScript configuration paths.
+Manifest dependency edges carry `package-dependency` and, when applicable, `workspace-protocol`
+provenance. Files, symbols, and semantic edges are added only in the next phase.
 
 ## Phase 3: discovering TypeScript configurations
 
@@ -398,9 +400,9 @@ and Workspace/Git layers respectively.
   format.
 - Not every anonymous or deeply nested AST construct becomes a symbol.
 - Normalized callable and type signatures are not yet extracted.
-- Analysis is a full scan; incremental `changedFiles` refresh is not implemented.
-- Project edges do not yet preserve provenance such as manifest, production, test, generated,
-  runtime, or type-only evidence.
+- Analysis is a full scan; no incremental refresh contract is exposed yet.
+- Project edges preserve manifest, workspace-protocol, TypeScript-reference, and TypeScript-import
+  provenance, but imports are not yet subdivided into production/test/generated/runtime/type-only.
 - The uncovered-file scan is validated around one-thousand-file scale, not yet benchmarked for
   repositories with tens of thousands of files.
 - Summary output includes an absolute repository path and may reveal local directory information.

@@ -21,6 +21,10 @@ describe('areWritableResourcesConflicting', () => {
     [project('catalog'), symbol('catalog', 'product.ts', 'ProductService.search')],
     [file('catalog', 'product.ts'), symbol('catalog', 'product.ts', 'ProductService.search')],
     [
+      symbol('catalog', 'product.ts', 'ProductService.search', ['ProductService']),
+      symbol('catalog', 'product.ts', 'ProductService.search', ['ProductService'])
+    ],
+    [
       symbol('catalog', 'product.ts', 'ProductService'),
       symbol('catalog', 'product.ts', 'ProductService.search', ['ProductService'])
     ],

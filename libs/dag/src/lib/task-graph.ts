@@ -1,4 +1,4 @@
-import type { TaskContract } from '@apra-amcos-admin-coding-orchestrator/domain';
+import type { TaskContract } from '@ai-native-software-delivery-orchestrator/domain';
 
 export type TaskGraphIssue =
   | {

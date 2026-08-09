@@ -2,6 +2,23 @@ export type ProjectId = string;
 export type FileId = string;
 export type SymbolId = string;
 
+export interface RepositoryContext {
+  readonly repositoryPath: string;
+}
+
+export type PackageDependencyKind =
+  | 'dependency'
+  | 'dev-dependency'
+  | 'peer-dependency'
+  | 'optional-dependency';
+
+export interface PackageDependency {
+  readonly name: string;
+  readonly version: string;
+  readonly kind: PackageDependencyKind;
+  readonly workspaceProtocol: boolean;
+}
+
 export type SymbolKind =
   | 'class'
   | 'constructor'
@@ -18,7 +35,11 @@ export interface ProjectNode {
   readonly id: ProjectId;
   readonly name: string;
   readonly root: string;
-  readonly sourceRoot?: string;
+  readonly packageJsonPath: string;
+  readonly dependencies: readonly PackageDependency[];
+  readonly scripts: Readonly<Record<string, string>>;
+  readonly sourceRoots: readonly string[];
+  readonly tsconfigPaths: readonly string[];
 }
 
 export interface FileNode {
@@ -45,6 +66,18 @@ export interface GraphEdge<TNodeId extends string> {
   readonly to: TNodeId;
 }
 
+export type ProjectDependencySource =
+  | 'package-dependency'
+  | 'workspace-protocol'
+  | 'tsconfig-reference'
+  | 'typescript-import'
+  | 'generated-artifact'
+  | 'manual';
+
+export interface ProjectDependencyEdge extends GraphEdge<ProjectId> {
+  readonly sources: readonly ProjectDependencySource[];
+}
+
 export type RepositoryDiagnosticCode =
   | 'EMPTY_TYPESCRIPT_PROJECT'
   | 'MISSING_TYPESCRIPT_CONFIGURATION'
@@ -59,12 +92,15 @@ export interface RepositoryDiagnostic {
   readonly filePaths?: readonly string[];
 }
 
-export interface RepositoryGraph {
+export interface WorkspaceGraph {
   readonly repositoryPath: string;
   readonly projects: ReadonlyMap<ProjectId, ProjectNode>;
+  readonly projectDependencies: readonly ProjectDependencyEdge[];
+}
+
+export interface RepositoryGraph extends WorkspaceGraph {
   readonly files: ReadonlyMap<FileId, FileNode>;
   readonly symbols: ReadonlyMap<SymbolId, SymbolNode>;
-  readonly projectDependencies: readonly GraphEdge<ProjectId>[];
   readonly fileDependencies: readonly GraphEdge<FileId>[];
   readonly symbolReferences: readonly GraphEdge<SymbolId>[];
   readonly diagnostics: readonly RepositoryDiagnostic[];
@@ -77,17 +113,8 @@ export interface ApiSurfaceChange {
   readonly consumers: readonly SymbolId[];
 }
 
-export interface RepositoryAnalysisRequest {
-  readonly repositoryPath: string;
-  readonly changedFiles?: readonly string[];
-}
-
-export interface RepositoryAnalyzer {
-  analyze(request: RepositoryAnalysisRequest): Promise<RepositoryGraph>;
-}
-
-export interface ProjectGraphProvider {
+export interface WorkspaceGraphProvider {
   readonly id: string;
-  supports(repositoryPath: string): Promise<boolean>;
-  analyze(request: RepositoryAnalysisRequest): Promise<RepositoryGraph>;
+  supports(repository: RepositoryContext): Promise<boolean>;
+  analyze(repository: RepositoryContext): Promise<WorkspaceGraph>;
 }

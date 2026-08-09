@@ -2,12 +2,14 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 
 import type {
-  GraphEdge,
-  ProjectGraphProvider,
+  PackageDependency,
+  PackageDependencyKind,
+  ProjectDependencyEdge,
   ProjectNode,
-  RepositoryAnalysisRequest,
-  RepositoryGraph
-} from '@apra-amcos-admin-coding-orchestrator/domain';
+  RepositoryContext,
+  WorkspaceGraph,
+  WorkspaceGraphProvider
+} from '@ai-native-software-delivery-orchestrator/domain';
 import { glob } from 'tinyglobby';
 import { parse } from 'yaml';
 
@@ -15,22 +17,22 @@ import { ProjectGraphError } from './project-graph-error.js';
 import { compareText, isWithin, pathExists, toPortablePath } from './path-utils.js';
 
 const WORKSPACE_FILE = 'pnpm-workspace.yaml';
-const DEPENDENCY_FIELDS = [
-  'dependencies',
-  'devDependencies',
-  'optionalDependencies',
-  'peerDependencies'
-] as const;
+const DEPENDENCY_FIELDS = {
+  dependencies: 'dependency',
+  devDependencies: 'dev-dependency',
+  optionalDependencies: 'optional-dependency',
+  peerDependencies: 'peer-dependency'
+} as const satisfies Readonly<Record<string, PackageDependencyKind>>;
 
 interface PackageManifest {
   readonly name: string;
-  readonly dependencies: ReadonlyMap<string, string>;
+  readonly dependencies: readonly PackageDependency[];
+  readonly scripts: Readonly<Record<string, string>>;
 }
 
 interface DiscoveredProject {
   readonly manifestPath: string;
   readonly node: ProjectNode;
-  readonly dependencies: ReadonlyMap<string, string>;
 }
 
 const readWorkspacePatterns = async (workspacePath: string): Promise<readonly string[]> => {
@@ -108,8 +110,8 @@ const readManifest = async (manifestPath: string): Promise<PackageManifest> => {
     );
   }
 
-  const dependencies = new Map<string, string>();
-  for (const field of DEPENDENCY_FIELDS) {
+  const dependencies: PackageDependency[] = [];
+  for (const [field, kind] of Object.entries(DEPENDENCY_FIELDS)) {
     const values = Reflect.get(parsed, field);
     if (values === undefined) {
       continue;
@@ -129,11 +131,44 @@ const readManifest = async (manifestPath: string): Promise<PackageManifest> => {
           manifestPath
         );
       }
-      dependencies.set(dependencyName, version);
+      dependencies.push({
+        name: dependencyName,
+        version,
+        kind,
+        workspaceProtocol: version.startsWith('workspace:')
+      });
     }
   }
 
-  return { name: name.trim(), dependencies };
+  const rawScripts = Reflect.get(parsed, 'scripts');
+  const scripts: Record<string, string> = {};
+  if (rawScripts !== undefined) {
+    if (rawScripts === null || typeof rawScripts !== 'object' || Array.isArray(rawScripts)) {
+      throw new ProjectGraphError(
+        'INVALID_PACKAGE_MANIFEST',
+        `${manifestPath} scripts must be an object`,
+        manifestPath
+      );
+    }
+    for (const [scriptName, command] of Object.entries(rawScripts)) {
+      if (typeof command !== 'string') {
+        throw new ProjectGraphError(
+          'INVALID_PACKAGE_MANIFEST',
+          `${manifestPath} script ${scriptName} must be a string`,
+          manifestPath
+        );
+      }
+      scripts[scriptName] = command;
+    }
+  }
+
+  return {
+    name: name.trim(),
+    dependencies: dependencies.toSorted(
+      (a, b) => compareText(a.name, b.name) || compareText(a.kind, b.kind)
+    ),
+    scripts
+  };
 };
 
 const discoverManifestPaths = async (
@@ -181,6 +216,11 @@ const discoverProject = async (
   const sourceRoot = (await pathExists(sourcePath))
     ? toPortablePath(relative(repositoryPath, sourcePath))
     : undefined;
+  const packageJsonPath = toPortablePath(relative(repositoryPath, manifestPath));
+  const defaultTsconfigPath = join(packagePath, 'tsconfig.json');
+  const tsconfigPaths = (await pathExists(defaultTsconfigPath))
+    ? [toPortablePath(relative(repositoryPath, defaultTsconfigPath))]
+    : [];
 
   return {
     manifestPath,
@@ -188,39 +228,52 @@ const discoverProject = async (
       id: manifest.name,
       name: manifest.name,
       root,
-      ...(sourceRoot === undefined ? {} : { sourceRoot })
-    },
-    dependencies: manifest.dependencies
+      packageJsonPath,
+      dependencies: manifest.dependencies,
+      scripts: manifest.scripts,
+      sourceRoots: sourceRoot === undefined ? [] : [sourceRoot],
+      tsconfigPaths
+    }
   };
 };
 
 const buildProjectDependencies = (
   projects: readonly DiscoveredProject[]
-): readonly GraphEdge<string>[] => {
+): readonly ProjectDependencyEdge[] => {
   const projectIds = new Set(projects.map((project) => project.node.id));
-  const edges = new Map<string, GraphEdge<string>>();
+  const edges = new Map<string, ProjectDependencyEdge>();
 
   for (const project of projects) {
-    for (const [dependencyId, version] of project.dependencies) {
-      if (version.startsWith('workspace:') && !projectIds.has(dependencyId)) {
+    for (const dependency of project.node.dependencies) {
+      if (dependency.workspaceProtocol && !projectIds.has(dependency.name)) {
         throw new ProjectGraphError(
           'INVALID_PROJECT_DEPENDENCY',
-          `${project.node.id} declares missing workspace dependency ${dependencyId}`,
+          `${project.node.id} declares missing workspace dependency ${dependency.name}`,
           project.manifestPath
         );
       }
-      if (!projectIds.has(dependencyId)) {
+      if (!projectIds.has(dependency.name)) {
         continue;
       }
-      if (dependencyId === project.node.id) {
+      if (dependency.name === project.node.id) {
         throw new ProjectGraphError(
           'INVALID_PROJECT_DEPENDENCY',
           `${project.node.id} cannot depend on itself`,
           project.manifestPath
         );
       }
-      const edge = { from: project.node.id, to: dependencyId };
-      edges.set(`${edge.from}\0${edge.to}`, edge);
+      const edgeKey = `${project.node.id}\0${dependency.name}`;
+      const previous = edges.get(edgeKey);
+      const sources = new Set(previous?.sources ?? []);
+      sources.add('package-dependency');
+      if (dependency.workspaceProtocol) {
+        sources.add('workspace-protocol');
+      }
+      edges.set(edgeKey, {
+        from: project.node.id,
+        to: dependency.name,
+        sources: [...sources].toSorted(compareText)
+      });
     }
   }
 
@@ -229,15 +282,15 @@ const buildProjectDependencies = (
   );
 };
 
-export class PnpmWorkspaceProvider implements ProjectGraphProvider {
+export class PnpmWorkspaceGraphProvider implements WorkspaceGraphProvider {
   readonly id = 'pnpm-workspace';
 
-  async supports(repositoryPath: string): Promise<boolean> {
-    return pathExists(join(resolve(repositoryPath), WORKSPACE_FILE));
+  async supports(repository: RepositoryContext): Promise<boolean> {
+    return pathExists(join(resolve(repository.repositoryPath), WORKSPACE_FILE));
   }
 
-  async analyze(request: RepositoryAnalysisRequest): Promise<RepositoryGraph> {
-    const requestedPath = resolve(request.repositoryPath);
+  async analyze(repository: RepositoryContext): Promise<WorkspaceGraph> {
+    const requestedPath = resolve(repository.repositoryPath);
     let repositoryPath: string;
     try {
       const repositoryStats = await stat(requestedPath);
@@ -294,12 +347,7 @@ export class PnpmWorkspaceProvider implements ProjectGraphProvider {
     return {
       repositoryPath,
       projects,
-      files: new Map(),
-      symbols: new Map(),
-      projectDependencies: buildProjectDependencies(discoveredProjects),
-      fileDependencies: [],
-      symbolReferences: [],
-      diagnostics: []
+      projectDependencies: buildProjectDependencies(discoveredProjects)
     };
   }
 }

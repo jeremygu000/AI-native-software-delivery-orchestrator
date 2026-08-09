@@ -1,8 +1,8 @@
 {
-  "name": "@apra-amcos-admin-coding-orchestrator/source",
+  "name": "@ai-native-software-delivery-orchestrator/source",
   "version": "0.0.0",
   "private": true,
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "build": "pnpm build:packages && pnpm build:cli",
@@ -23,7 +23,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@apra-amcos-admin-coding-orchestrator/cli": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/cli": "workspace:*",
     "@types/node": "^26.2.0",
     "@typescript/native": "npm:typescript@7.0.2",
     "@vitest/coverage-v8": "~4.1.0",

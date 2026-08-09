@@ -5,12 +5,14 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import type {
   FileNode,
   GraphEdge,
+  ProjectDependencyEdge,
+  ProjectDependencySource,
   ProjectNode,
   RepositoryDiagnostic,
   RepositoryGraph,
   SymbolKind,
   SymbolNode
-} from '@apra-amcos-admin-coding-orchestrator/domain';
+} from '@ai-native-software-delivery-orchestrator/domain';
 import {
   isClassDeclaration,
   isComputedPropertyName,
@@ -256,7 +258,12 @@ const resolveReferencedConfigPath = async (
   );
 };
 
-const discoverConfigPaths = async (graph: RepositoryGraph): Promise<readonly string[]> => {
+interface ConfigDiscovery {
+  readonly paths: readonly string[];
+  readonly references: readonly GraphEdge<string>[];
+}
+
+const discoverConfigPaths = async (graph: RepositoryGraph): Promise<ConfigDiscovery> => {
   const pending: string[] = [];
   for (const project of graph.projects.values()) {
     const projectPath =
@@ -268,6 +275,7 @@ const discoverConfigPaths = async (graph: RepositoryGraph): Promise<readonly str
   }
 
   const discovered = new Set<string>();
+  const references = new Map<string, GraphEdge<string>>();
   while (pending.length > 0) {
     const nextConfigPath = pending.shift();
     if (nextConfigPath === undefined) {
@@ -296,10 +304,53 @@ const discoverConfigPaths = async (graph: RepositoryGraph): Promise<readonly str
     }
     discovered.add(configPath);
     for (const reference of await readConfigReferences(configPath)) {
-      pending.push(await resolveReferencedConfigPath(graph.repositoryPath, configPath, reference));
+      const referencedConfigPath = await resolveReferencedConfigPath(
+        graph.repositoryPath,
+        configPath,
+        reference
+      );
+      pending.push(referencedConfigPath);
+      references.set(`${configPath}\0${referencedConfigPath}`, {
+        from: configPath,
+        to: referencedConfigPath
+      });
     }
   }
-  return [...discovered].toSorted(compareText);
+  return {
+    paths: [...discovered].toSorted(compareText),
+    references: [...references.values()].toSorted(
+      (a, b) => compareText(a.from, b.from) || compareText(a.to, b.to)
+    )
+  };
+};
+
+const enrichProjectsWithConfigPaths = (
+  graph: RepositoryGraph,
+  configPaths: readonly string[]
+): ReadonlyMap<string, ProjectNode> => {
+  const projectsBySpecificity = [...graph.projects.values()].toSorted(
+    (a, b) => b.root.length - a.root.length || compareText(a.root, b.root)
+  );
+  const pathsByProject = new Map<string, string[]>();
+  for (const configPath of configPaths) {
+    const owner = findOwningProject(graph.repositoryPath, projectsBySpecificity, configPath);
+    if (owner !== undefined) {
+      const paths = pathsByProject.get(owner.id) ?? [];
+      paths.push(toPortablePath(relative(graph.repositoryPath, configPath)));
+      pathsByProject.set(owner.id, paths);
+    }
+  }
+  return new Map(
+    [...graph.projects].map(([projectId, project]) => [
+      projectId,
+      {
+        ...project,
+        tsconfigPaths: [
+          ...new Set(pathsByProject.get(projectId) ?? project.tsconfigPaths)
+        ].toSorted(compareText)
+      }
+    ])
+  );
 };
 
 const contextPriority = (context: ProjectContext): number =>
@@ -950,14 +1001,30 @@ const buildSymbolReferences = (
 const mergeProjectDependencies = (
   graph: RepositoryGraph,
   files: ReadonlyMap<string, FileCandidate>,
-  fileDependencies: readonly GraphEdge<string>[]
-): readonly GraphEdge<string>[] => {
+  fileDependencies: readonly GraphEdge<string>[],
+  configReferences: readonly GraphEdge<string>[]
+): readonly ProjectDependencyEdge[] => {
   const projectIdByFileId = new Map(
     [...files.values()].map((candidate) => [candidate.node.id, candidate.node.projectId])
   );
-  const edges = new Map<string, GraphEdge<string>>();
+  const edges = new Map<string, ProjectDependencyEdge>();
   for (const edge of graph.projectDependencies) {
     edges.set(`${edge.from}\0${edge.to}`, edge);
+  }
+  const projectsBySpecificity = [...graph.projects.values()].toSorted(
+    (a, b) => b.root.length - a.root.length || compareText(a.root, b.root)
+  );
+  for (const reference of configReferences) {
+    const from = findOwningProject(graph.repositoryPath, projectsBySpecificity, reference.from)?.id;
+    const to = findOwningProject(graph.repositoryPath, projectsBySpecificity, reference.to)?.id;
+    if (from === undefined || to === undefined || from === to) {
+      continue;
+    }
+    const edgeKey = `${from}\0${to}`;
+    const previous = edges.get(edgeKey);
+    const sources = new Set<ProjectDependencySource>(previous?.sources ?? []);
+    sources.add('tsconfig-reference');
+    edges.set(edgeKey, { from, to, sources: [...sources].toSorted(compareText) });
   }
   for (const edge of fileDependencies) {
     const from = projectIdByFileId.get(edge.from);
@@ -965,7 +1032,11 @@ const mergeProjectDependencies = (
     if (from === undefined || to === undefined || from === to) {
       continue;
     }
-    edges.set(`${from}\0${to}`, { from, to });
+    const edgeKey = `${from}\0${to}`;
+    const previous = edges.get(edgeKey);
+    const sources = new Set<ProjectDependencySource>(previous?.sources ?? []);
+    sources.add('typescript-import');
+    edges.set(edgeKey, { from, to, sources: [...sources].toSorted(compareText) });
   }
   return [...edges.values()].toSorted(
     (a, b) => compareText(a.from, b.from) || compareText(a.to, b.to)
@@ -1031,14 +1102,18 @@ const buildRepositoryDiagnostics = (
 export const analyzeTypeScriptRepository = async (
   graph: RepositoryGraph
 ): Promise<RepositoryGraph> => {
-  const configPaths = await discoverConfigPaths(graph);
-  const discoveredTypeScriptFiles = await discoverTypeScriptFilesByProject(graph);
-  if (configPaths.length === 0) {
+  const configDiscovery = await discoverConfigPaths(graph);
+  const factGraph = {
+    ...graph,
+    projects: enrichProjectsWithConfigPaths(graph, configDiscovery.paths)
+  };
+  const discoveredTypeScriptFiles = await discoverTypeScriptFilesByProject(factGraph);
+  if (configDiscovery.paths.length === 0) {
     return {
-      ...graph,
+      ...factGraph,
       diagnostics: [
-        ...graph.diagnostics,
-        ...buildRepositoryDiagnostics(graph, [], new Map(), discoveredTypeScriptFiles)
+        ...factGraph.diagnostics,
+        ...buildRepositoryDiagnostics(factGraph, [], new Map(), discoveredTypeScriptFiles)
       ]
     };
   }
@@ -1048,7 +1123,7 @@ export const analyzeTypeScriptRepository = async (
   let result: RepositoryGraph | undefined;
   let analysisFailure: unknown;
   try {
-    snapshot = api.updateSnapshot({ openProjects: [...configPaths] });
+    snapshot = api.updateSnapshot({ openProjects: [...configDiscovery.paths] });
     const contexts = snapshot.getProjects().map((project) => ({ project }));
     for (const context of contexts) {
       const diagnostics = context.project.program
@@ -1062,7 +1137,7 @@ export const analyzeTypeScriptRepository = async (
         );
       }
     }
-    const fileCandidates = discoverFiles(graph, contexts);
+    const fileCandidates = discoverFiles(factGraph, contexts);
     const files = new Map(
       [...fileCandidates.values()].map((candidate) => [candidate.node.id, candidate.node])
     );
@@ -1084,15 +1159,25 @@ export const analyzeTypeScriptRepository = async (
     const symbolReferences = buildSymbolReferences(indexed, declarations);
 
     result = {
-      ...graph,
+      ...factGraph,
       files,
       symbols: orderedSymbols,
-      projectDependencies: mergeProjectDependencies(graph, fileCandidates, fileDependencies),
+      projectDependencies: mergeProjectDependencies(
+        factGraph,
+        fileCandidates,
+        fileDependencies,
+        configDiscovery.references
+      ),
       fileDependencies,
       symbolReferences,
       diagnostics: [
-        ...graph.diagnostics,
-        ...buildRepositoryDiagnostics(graph, configPaths, fileCandidates, discoveredTypeScriptFiles)
+        ...factGraph.diagnostics,
+        ...buildRepositoryDiagnostics(
+          factGraph,
+          configDiscovery.paths,
+          fileCandidates,
+          discoveredTypeScriptFiles
+        )
       ]
     };
   } catch (error) {

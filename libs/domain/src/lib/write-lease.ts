@@ -59,8 +59,9 @@ export interface WriteLeaseRequest {
   readonly taskId: string;
   readonly resource: WritableResource;
   readonly mode: 'exclusive';
-  readonly leaseDurationMs: number;
 }
+
+export type WriteLeaseState = 'ACTIVE' | 'RELEASED' | 'STALE';
 
 export interface WriteLease {
   readonly id: string;
@@ -70,8 +71,11 @@ export interface WriteLease {
   readonly resource: WritableResource;
   readonly mode: 'exclusive';
   readonly version: number;
+  readonly state: WriteLeaseState;
   readonly acquiredAt: Date;
-  readonly expiresAt: Date;
+  readonly lastHeartbeatAt: Date;
+  readonly releasedAt?: Date;
+  readonly staleDetectedAt?: Date;
 }
 
 export type WriteLeaseResult =
@@ -84,15 +88,14 @@ export type WriteLeaseResult =
       readonly conflictingLeaseIds: readonly string[];
     };
 
-export interface RenewWriteLeaseRequest {
+export interface HeartbeatWriteLeaseRequest {
   readonly leaseId: string;
   readonly expectedVersion: number;
-  readonly leaseDurationMs: number;
 }
 
-export type RenewWriteLeaseResult =
+export type HeartbeatWriteLeaseResult =
   | {
-      readonly status: 'renewed';
+      readonly status: 'active';
       readonly lease: WriteLease;
     }
   | {
@@ -103,10 +106,22 @@ export type RenewWriteLeaseResult =
       readonly actualVersion: number;
     };
 
+export interface MarkWriteLeaseStaleRequest {
+  readonly leaseId: string;
+  readonly expectedVersion: number;
+  readonly evidence: string;
+}
+
+export type MarkWriteLeaseStaleResult =
+  | { readonly status: 'stale'; readonly lease: WriteLease }
+  | { readonly status: 'not-found' }
+  | { readonly status: 'version-conflict'; readonly actualVersion: number };
+
 export type ReleaseWriteLeaseResult = 'released' | 'not-found';
 
 export interface WriteGuard {
   acquire(request: WriteLeaseRequest): Promise<WriteLeaseResult>;
-  renew(request: RenewWriteLeaseRequest): Promise<RenewWriteLeaseResult>;
+  heartbeat(request: HeartbeatWriteLeaseRequest): Promise<HeartbeatWriteLeaseResult>;
+  markStale(request: MarkWriteLeaseStaleRequest): Promise<MarkWriteLeaseStaleResult>;
   release(leaseId: string): Promise<ReleaseWriteLeaseResult>;
 }

@@ -1,48 +1,63 @@
 import { resolve } from 'node:path';
 
 import type {
-  ProjectGraphProvider,
-  RepositoryGraph
-} from '@apra-amcos-admin-coding-orchestrator/domain';
+  RepositoryGraph,
+  WorkspaceGraph,
+  WorkspaceGraphProvider
+} from '@ai-native-software-delivery-orchestrator/domain';
 
-import { PnpmWorkspaceProvider } from './pnpm-workspace-provider.js';
+import { PnpmWorkspaceGraphProvider } from './pnpm-workspace-provider.js';
 import { ProjectGraphError } from './project-graph-error.js';
 import { analyzeTypeScriptRepository } from './typescript-repository-analyzer.js';
 
-export interface ProjectGraphAnalysis {
+export interface RepositoryGraphAnalysis {
   readonly providerId: string;
   readonly graph: RepositoryGraph;
 }
 
-export const analyzeProjectGraph = async (
+export interface WorkspaceGraphAnalysis {
+  readonly providerId: string;
+  readonly graph: WorkspaceGraph;
+}
+
+export const analyzeWorkspaceGraph = async (
   repositoryPath: string,
-  providers: readonly ProjectGraphProvider[] = [new PnpmWorkspaceProvider()]
-): Promise<ProjectGraphAnalysis> => {
+  providers: readonly WorkspaceGraphProvider[] = [new PnpmWorkspaceGraphProvider()]
+): Promise<WorkspaceGraphAnalysis> => {
   const absoluteRepositoryPath = resolve(repositoryPath);
+  const repository = { repositoryPath: absoluteRepositoryPath };
 
   for (const provider of providers) {
-    if (await provider.supports(absoluteRepositoryPath)) {
+    if (await provider.supports(repository)) {
       return {
         providerId: provider.id,
-        graph: await provider.analyze({ repositoryPath: absoluteRepositoryPath })
+        graph: await provider.analyze(repository)
       };
     }
   }
 
   throw new ProjectGraphError(
     'UNSUPPORTED_REPOSITORY',
-    `No project graph provider supports ${absoluteRepositoryPath}`,
+    `No workspace graph provider supports ${absoluteRepositoryPath}`,
     absoluteRepositoryPath
   );
 };
 
 export const analyzeRepository = async (
   repositoryPath: string,
-  providers: readonly ProjectGraphProvider[] = [new PnpmWorkspaceProvider()]
-): Promise<ProjectGraphAnalysis> => {
-  const projectAnalysis = await analyzeProjectGraph(repositoryPath, providers);
+  providers: readonly WorkspaceGraphProvider[] = [new PnpmWorkspaceGraphProvider()]
+): Promise<RepositoryGraphAnalysis> => {
+  const workspaceAnalysis = await analyzeWorkspaceGraph(repositoryPath, providers);
+  const graph: RepositoryGraph = {
+    ...workspaceAnalysis.graph,
+    files: new Map(),
+    symbols: new Map(),
+    fileDependencies: [],
+    symbolReferences: [],
+    diagnostics: []
+  };
   return {
-    providerId: projectAnalysis.providerId,
-    graph: await analyzeTypeScriptRepository(projectAnalysis.graph)
+    providerId: workspaceAnalysis.providerId,
+    graph: await analyzeTypeScriptRepository(graph)
   };
 };

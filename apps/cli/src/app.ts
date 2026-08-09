@@ -5,17 +5,17 @@ import type {
   RepositoryDiagnostic,
   RepositoryGraph,
   SymbolNode
-} from '@apra-amcos-admin-coding-orchestrator/domain';
+} from '@ai-native-software-delivery-orchestrator/domain';
 import {
   analyzeRepository,
   ProjectGraphError,
-  type ProjectGraphAnalysis
-} from '@apra-amcos-admin-coding-orchestrator/repository-analysis';
+  type RepositoryGraphAnalysis
+} from '@ai-native-software-delivery-orchestrator/repository-analysis';
 import { Command } from 'commander';
 
 export interface ForgeProgramDependencies {
   readonly cwd?: string;
-  readonly analyzeRepository?: (repositoryPath: string) => Promise<ProjectGraphAnalysis>;
+  readonly analyzeRepository?: (repositoryPath: string) => Promise<RepositoryGraphAnalysis>;
   readonly writeOutput?: (output: string) => void;
 }
 
@@ -35,9 +35,22 @@ interface SerializableProjectGraph {
     readonly id: string;
     readonly name: string;
     readonly root: string;
-    readonly sourceRoot?: string;
+    readonly packageJsonPath: string;
+    readonly dependencies: readonly {
+      readonly name: string;
+      readonly version: string;
+      readonly kind: string;
+      readonly workspaceProtocol: boolean;
+    }[];
+    readonly scripts: Readonly<Record<string, string>>;
+    readonly sourceRoots: readonly string[];
+    readonly tsconfigPaths: readonly string[];
   }[];
-  readonly projectDependencies: readonly { readonly from: string; readonly to: string }[];
+  readonly projectDependencies: readonly {
+    readonly from: string;
+    readonly to: string;
+    readonly sources: readonly string[];
+  }[];
   readonly diagnostics: readonly RepositoryDiagnostic[];
   readonly files?: readonly FileNode[];
   readonly symbols?: readonly SymbolNode[];

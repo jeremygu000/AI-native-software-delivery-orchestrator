@@ -11,13 +11,17 @@ Containment is explicit: broader resources conflict with descendants, while sibl
 leased independently. Repository resources carry a complete project/file/symbol lineage so a lease
 can be evaluated after persistence without loading a separate repository graph.
 
-Leases are scoped to a run, expire, and carry a monotonic version. Renewal uses an expected version
-to prevent stale workers from extending a replaced lease. Releasing an unknown lease returns
-`not-found` rather than failing, making cleanup idempotent during recovery.
+Leases are scoped to a run, carry a monotonic version, and record state plus heartbeat evidence.
+They do not expire solely because a fixed duration elapsed. Runtime recovery combines heartbeat,
+agent liveness, workspace state, a grace policy, and recovery evidence before marking a lease
+`STALE`. Heartbeats use an expected version to prevent an obsolete worker from updating a replaced
+lease. Releasing an unknown lease returns `not-found` rather than failing, making cleanup
+idempotent during recovery.
 
 ## Consequences
 
 Unexpected writes block before merge time, and old runs cannot collide solely because they reused
 task or agent IDs. Resource identities must be resolved and validated against the repository graph
-before acquisition. Phase 1 uses safe blocking, renewal, expiry, and release; queuing, workspace
-rebasing, and task resumption remain higher-level orchestration behaviours.
+before acquisition. Phase 1 uses safe blocking, heartbeat, evidence-based stale recovery, and
+release; queuing, workspace rebasing, and task resumption remain higher-level orchestration
+behaviours.

@@ -18,7 +18,7 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@apra-amcos-admin-coding-orchestrator/cli':
+      '@ai-native-software-delivery-orchestrator/cli':
         specifier: workspace:*
         version: link:apps/cli
       '@types/node':
@@ -54,10 +54,10 @@ importers:
 
   apps/cli:
     dependencies:
-      '@apra-amcos-admin-coding-orchestrator/domain':
+      '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../../libs/domain
-      '@apra-amcos-admin-coding-orchestrator/repository-analysis':
+      '@ai-native-software-delivery-orchestrator/repository-analysis':
         specifier: workspace:*
         version: link:../../libs/repository-analysis
       commander:
@@ -66,7 +66,7 @@ importers:
 
   libs/dag:
     dependencies:
-      '@apra-amcos-admin-coding-orchestrator/domain':
+      '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../domain
       tslib:
@@ -84,7 +84,7 @@ importers:
 
   libs/repository-analysis:
     dependencies:
-      '@apra-amcos-admin-coding-orchestrator/domain':
+      '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../domain
       '@typescript/native':

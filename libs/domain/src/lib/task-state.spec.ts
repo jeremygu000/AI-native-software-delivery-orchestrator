@@ -12,7 +12,8 @@ describe('task state transitions', () => {
     expect(canTransitionTaskState('PENDING', 'READY')).toBe(true);
     expect(canTransitionTaskState('READY', 'RUNNING')).toBe(true);
     expect(canTransitionTaskState('RUNNING', 'VERIFYING')).toBe(true);
-    expect(canTransitionTaskState('VERIFYING', 'COMPLETED')).toBe(true);
+    expect(canTransitionTaskState('VERIFYING', 'INTEGRATING')).toBe(true);
+    expect(canTransitionTaskState('INTEGRATING', 'COMPLETED')).toBe(true);
     expect(() => assertTaskStateTransition('PENDING', 'READY')).not.toThrow();
   });
 
@@ -41,9 +42,12 @@ describe('task state transitions', () => {
       'BLOCKED->READY',
       'BLOCKED->FAILED',
       'BLOCKED->CANCELLED',
-      'VERIFYING->COMPLETED',
+      'VERIFYING->INTEGRATING',
       'VERIFYING->FAILED',
-      'VERIFYING->CANCELLED'
+      'VERIFYING->CANCELLED',
+      'INTEGRATING->COMPLETED',
+      'INTEGRATING->FAILED',
+      'INTEGRATING->CANCELLED'
     ]);
 
     for (const from of taskStateSchema.options) {
