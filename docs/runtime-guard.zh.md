@@ -262,15 +262,17 @@ retry 不会改变历史 stale record。
 
 ## Release 与 cleanup
 
-Release 有意保持 idempotent：
+Release 使用与 heartbeat/stale marking 相同的 version fence：
 
 ```text
-ACTIVE lease -> release -> released
-RELEASED/STALE/missing lease -> release -> not-found
+ACTIVE lease + matching version -> released with incremented version
+ACTIVE lease + stale version -> version-conflict
+RELEASED/STALE/missing lease -> not-found
 ```
 
-第一次成功 release 增加 version、记录 `releasedAt` 并改为 `RELEASED`。Outer runtime 可在 crash 后 retry
-cleanup，不会把已完成 cleanup 当作 error。
+第一次成功 release 增加 version、记录 `releasedAt` 并改为 `RELEASED`。使用成功返回 version 的 retry
+会得到 `not-found`，因此 caller 已观察到完成后 cleanup 仍保持 idempotent。Version fencing 能阻止基于
+旧 lifecycle view 的 delayed release 错误释放已经推进的 lease。
 
 ## Defensive input validation
 
@@ -317,6 +319,7 @@ acquire operation 才决定具体 ownership。
 
 - persist lease、heartbeat、stale evidence 或 release record；
 - 在 process、host 或 orchestration run restart 后协调 lease；
+- 让一个 Guard instance 服务 resource ID 可能冲突的不同 repository/workspace namespace；
 - observe real filesystem write 或 intercept agent write call；
 - 通过 `RepositoryGraph` 解析 filesystem path 或 symbol name；
 - 根据 timeout 推断 stale evidence；
@@ -330,10 +333,12 @@ Exact in-memory lifecycle behavior 是真实且经过测试的。Storage、obser
 
 ## 验证与当前限制
 
-Runtime Guard package 有 22 个测试通过，statements/functions/lines 均为 100%，branches 为 94.73%。
-Repository quality gate 有 153 个测试通过，全仓覆盖率为语句 97.07%、分支 91.93%、函数 99.64%、行
-96.99%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
+Runtime Guard package 有 23 个测试通过，statements/functions/lines 均为 100%，branches 为 96.15%。
+Repository quality gate 有 154 个测试通过，全仓覆盖率为语句 97.07%、分支 92.04%、函数 99.64%、行
+97.00%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
 
 下一个主要 architecture concern 是 Milestone 9 persistence。在保存 Scheduler event 以供 replay 前，
 项目必须确定每个 event 是“snapshot 已包含 resulting state 的 state observation”，还是“Scheduler
-自行应用的 runtime evidence”。In-memory guard 有意不替代这个 persistent replay contract。
+自行应用的 runtime evidence”。In-memory guard 有意不替代这个 persistent replay contract。在 agent runtime
+执行真实 write 前，后续 milestone 还必须把 lease version 作为真正 fencing token 带到 write authorization
+boundary；当前 version 只 fence guard lifecycle operation。

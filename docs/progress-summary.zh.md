@@ -182,8 +182,9 @@ agent ID。它不代表不同 run 可以自动同时写一个 checkout;未来的
 这属于乐观并发控制。系统不能仅仅因为固定时长已过就释放租约;必须综合 heartbeat、Agent
 存活状态、worktree 状态、宽限策略和明确的恢复证据,才能把租约标记为 `STALE` 并回收。
 
-释放操作返回 `released` 或 `not-found`。把"租约本来就不存在"也当成安全的清理结果,
-可以让释放操作保持幂等:重试和崩溃恢复可以重复执行清理,最终状态仍然一致。
+Release 携带 caller 的 expected lease version。匹配的 ACTIVE lease 返回带递增 version 的 `released`；
+旧 version 返回 `version-conflict`；不存在或 non-active lease 返回 `not-found`。使用成功结果 version
+重试时 cleanup 保持 idempotent，同时 delayed stale release 不会结束已经推进的 lease。
 
 #### 未来 Runtime Guard 必须怎样安全地申请租约
 
@@ -997,21 +998,21 @@ idempotency、malformed request 和 duplicate generated ID。
 in-process operation serialization、versioned heartbeat、evidence-based stale recovery、idempotent
 release、Scheduler event integration，以及有意未实现的 persistence 和 filesystem-enforcement behavior。
 
-完整质量门现在有 153 个测试通过。覆盖率为语句 97.07%、分支 91.93%、函数 99.64%、行 96.99%。
+完整质量门现在有 154 个测试通过。覆盖率为语句 97.07%、分支 92.04%、函数 99.64%、行 97.00%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 独立 Review 没有发现 Critical、High 或 Medium。两个 Low finding 已在交接前修复：symbol lease 的
 idempotency 现在把 ancestor collection 当作与顺序无关；一个不可达的 resource-comparison fallback
 已删除。Follow-up test 还覆盖 broader-resource retry、concurrent heartbeat/release serialization 以及
 invalid non-finite version。Guard package suite 现在有 22 个测试通过，statements/functions/lines 均为
-100%，branches 为 94.73%。
+100%，branches 为 96.15%。
 
 ## 目前整体状态(截止到本文写作时)
 
 - 架构规划的 10 个里程碑中完成了 1–8,按里程碑数量约为 80%。这不代表总工程量恰好完成
   80%:后面的持久化、Git 和 Agent 执行阶段比多个地基阶段更大、风险也更高。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 153 个测试全部通过。
-- 覆盖率为:语句 97.07%、分支 91.93%、函数 99.64%、行 96.99%;四项都达到至少 90% 的门槛。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 154 个测试全部通过。
+- 覆盖率为:语句 97.07%、分支 92.04%、函数 99.64%、行 97.00%;四项都达到至少 90% 的门槛。
 - `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 - Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有

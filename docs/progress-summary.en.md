@@ -207,9 +207,10 @@ This is optimistic concurrency control. A fixed timer alone may not release a le
 must combine missed heartbeats, agent liveness, workspace state, a grace policy, and explicit
 recovery evidence before marking a lease `STALE` and allowing it to be reclaimed.
 
-Release returns either `released` or `not-found`. Treating an already-absent lease as a successful
-cleanup outcome makes release idempotent: retries and crash recovery can safely issue the same
-cleanup operation more than once.
+Release carries the caller's expected lease version. A matching ACTIVE lease returns `released` with
+an incremented version; an old version returns `version-conflict`; an absent or non-active lease
+returns `not-found`. Retrying with the version returned after a successful release is therefore an
+idempotent cleanup outcome, while a delayed stale release cannot end a lease that has advanced.
 
 #### How the future runtime guard must acquire leases safely
 
@@ -1131,14 +1132,14 @@ identity, in-process operation serialization, versioned heartbeats, evidence-bas
 idempotent release, Scheduler event integration, and the intentionally absent persistence and
 filesystem-enforcement behavior.
 
-The full quality gate now has 153 passing tests. Coverage is 97.07% statements, 91.93% branches,
-99.64% functions, and 96.99% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 154 passing tests. Coverage is 97.07% statements, 92.04% branches,
+99.64% functions, and 97.00% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 Independent review found no Critical, High, or Medium issue. Two Low findings were corrected before
 handoff: symbol lease idempotency now treats ancestor collections as order-independent, and an
 unreachable resource-comparison fallback was removed. Follow-up tests also cover broader-resource
 retries, concurrent heartbeat/release serialization, and invalid non-finite versions. The guard's
-package suite now has 22 passing tests with 100% statements, functions, and lines, plus 94.73%
+package suite now has 23 passing tests with 100% statements, functions, and lines, plus 96.15%
 branches.
 
 ## Current overall status (as of this writing)
@@ -1146,9 +1147,9 @@ branches.
 - Architecture milestones 1–8 of 10 are complete. That is roughly 80% by milestone count, not 80%
   of total engineering effort: later runtime, persistence, Git, and agent-execution milestones are
   larger and riskier than several foundation milestones.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 153 tests,
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 154 tests,
   all passing.
-- Coverage is 97.07% statements, 91.93% branches, 99.64% functions, and 96.99% lines. Every enforced
+- Coverage is 97.07% statements, 92.04% branches, 99.64% functions, and 97.00% lines. Every enforced
   threshold is at least 90%.
 - `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.

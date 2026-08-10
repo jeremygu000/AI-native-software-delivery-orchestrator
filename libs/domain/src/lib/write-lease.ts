@@ -118,11 +118,19 @@ export type MarkWriteLeaseStaleResult =
   | { readonly status: 'not-found' }
   | { readonly status: 'version-conflict'; readonly actualVersion: number };
 
-export type ReleaseWriteLeaseResult = 'released' | 'not-found';
+export interface ReleaseWriteLeaseRequest {
+  readonly leaseId: string;
+  readonly expectedVersion: number;
+}
+
+export type ReleaseWriteLeaseResult =
+  | { readonly status: 'released'; readonly lease: WriteLease }
+  | { readonly status: 'not-found' }
+  | { readonly status: 'version-conflict'; readonly actualVersion: number };
 
 export interface WriteGuard {
   acquire(request: WriteLeaseRequest): Promise<WriteLeaseResult>;
   heartbeat(request: HeartbeatWriteLeaseRequest): Promise<HeartbeatWriteLeaseResult>;
   markStale(request: MarkWriteLeaseStaleRequest): Promise<MarkWriteLeaseStaleResult>;
-  release(leaseId: string): Promise<ReleaseWriteLeaseResult>;
+  release(request: ReleaseWriteLeaseRequest): Promise<ReleaseWriteLeaseResult>;
 }

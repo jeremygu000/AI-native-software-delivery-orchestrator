@@ -260,16 +260,20 @@ This makes a persisted lease self-contained and containment checks deterministic
 Every lease is scoped by `runId`, has a monotonic version, state, and heartbeat evidence. A lease
 does not become available merely because a fixed timer elapsed. The runtime combines heartbeat,
 agent liveness, workspace state, a grace policy, and recovery evidence before marking an active
-lease `STALE`; only then may recovery reclaim it. Release reports `released` or `not-found`, making
-cleanup idempotent. The implemented `InMemoryWriteGuard` serializes in-process operations, so
+lease `STALE`; only then may recovery reclaim it. Heartbeat, stale marking, and release all require
+the current lease version; a stale lifecycle request returns `version-conflict`. An absent or
+non-active lease returns `not-found`. The implemented `InMemoryWriteGuard` serializes in-process operations, so
 simultaneous conflicting acquires cannot both succeed. The implementation records supplied stale
 evidence but does not decide staleness from a timer. Queuing and rebase/resume coordination are
 orchestration concerns layered above the guard.
 
 The guard is intentionally process-local and non-persistent. It does not coordinate multiple Node.js
 processes, survive process termination, resolve a user-supplied path against the repository graph,
-observe a write, or mutate Scheduler state. Milestone 9 must replace or wrap this storage behavior
-with persistent, atomic repositories before cross-process recovery claims are valid.
+observe a write, or mutate Scheduler state. One guard instance serves one workspace namespace and
+must not be shared by unrelated workspaces with colliding resource IDs. Milestone 9 must replace or
+wrap this storage behavior with persistent, atomic repositories before cross-process recovery claims
+are valid. Before an agent runtime performs a real write, a later milestone must carry the lease
+version as a true write fencing token; the current version fences only guard lifecycle operations.
 
 ### Planning and runtime feedback
 

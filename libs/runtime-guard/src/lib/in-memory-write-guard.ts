@@ -4,6 +4,7 @@ import {
   type HeartbeatWriteLeaseResult,
   type MarkWriteLeaseStaleRequest,
   type MarkWriteLeaseStaleResult,
+  type ReleaseWriteLeaseRequest,
   type ReleaseWriteLeaseResult,
   type WritableResource,
   type WriteGuard,
@@ -195,20 +196,25 @@ export class InMemoryWriteGuard implements WriteGuard {
     });
   }
 
-  async release(leaseId: string): Promise<ReleaseWriteLeaseResult> {
+  async release(request: ReleaseWriteLeaseRequest): Promise<ReleaseWriteLeaseResult> {
     return this.#exclusive(() => {
-      requireNonEmpty(leaseId, 'leaseId');
-      const lease = this.#leases.get(leaseId);
+      requireNonEmpty(request.leaseId, 'leaseId');
+      this.#assertVersion(request.expectedVersion);
+      const lease = this.#leases.get(request.leaseId);
       if (lease === undefined || lease.state !== 'ACTIVE') {
-        return 'not-found';
+        return { status: 'not-found' };
       }
-      this.#leases.set(lease.id, {
+      if (lease.version !== request.expectedVersion) {
+        return { status: 'version-conflict', actualVersion: lease.version };
+      }
+      const updated: WriteLease = {
         ...lease,
         version: lease.version + 1,
         state: 'RELEASED',
         releasedAt: this.#now()
-      });
-      return 'released';
+      };
+      this.#leases.set(updated.id, updated);
+      return { status: 'released', lease: cloneLease(updated) };
     });
   }
 

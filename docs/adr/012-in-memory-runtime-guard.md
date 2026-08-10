@@ -19,16 +19,24 @@ A repeated acquire by the same run, agent, task, and exact resource returns the 
 without incrementing its version. A different owner remains blocked by normal resource conflict rules.
 This makes agent retries idempotent without granting concurrent write access.
 
-Heartbeat and stale marking require the lease's current positive version. Heartbeat increments the
-version and refreshes liveness time. Marking stale requires non-empty evidence supplied by an outer
-runtime, increments the version, and records evidence with the stale timestamp. The guard never uses
-a fixed timeout or `Date.now()` to decide that a lease is stale. `STALE` and `RELEASED` leases are not
-active blockers. Release is idempotent: absent or non-active leases return `not-found`.
+Heartbeat, stale marking, and release require the lease's current positive version. Heartbeat
+increments the version and refreshes liveness time. Marking stale requires non-empty evidence
+supplied by an outer runtime, increments the version, and records evidence with the stale timestamp.
+Release also increments the version and rejects a stale request with `version-conflict`. The guard
+never uses a fixed timeout or `Date.now()` to decide that a lease is stale. `STALE` and `RELEASED`
+leases are not active blockers. An absent or non-active lease returns `not-found`.
+
+One `InMemoryWriteGuard` instance serves exactly one repository/workspace namespace. Resource IDs are
+therefore compared only within that instance; it must not be shared across unrelated workspaces whose
+project, file, or symbol identifiers may coincide. A future multi-workspace persistent guard must add
+an explicit workspace or repository identity to its resource key before sharing storage.
 
 ## Consequences
 
-The Runtime Guard supplies tested live lease behavior for one Node.js process while leaving storage,
-cross-process atomicity, recovery, event persistence, and replay to Milestone 9. It does not inspect
-files, resolve repository identities, authorize a real filesystem write, change scheduler state, run
-agents, or invoke Git. The outer runtime must resolve resources before requesting a lease and must
-apply resulting block/release events to the Scheduler.
+The Runtime Guard supplies tested live lease behavior for one Node.js process and one workspace while
+leaving storage, cross-process atomicity, recovery, event persistence, and replay to Milestone 9. It
+does not inspect files, resolve repository identities, authorize a real filesystem write, change
+scheduler state, run agents, or invoke Git. The outer runtime must resolve resources before
+requesting a lease and must apply resulting block/release events to the Scheduler. Before an agent
+runtime performs a real write, a later milestone must carry a lease version as a true fencing token
+to the write authorization boundary; the current version only protects guard lifecycle operations.

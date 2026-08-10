@@ -268,7 +268,9 @@ describe('InMemoryWriteGuard', () => {
         evidence: 'Repeated recovery attempt'
       })
     ).toEqual({ status: 'not-found' });
-    expect(await guard.release(acquired.lease.id)).toBe('not-found');
+    expect(await guard.release({ leaseId: acquired.lease.id, expectedVersion: 2 })).toEqual({
+      status: 'not-found'
+    });
   });
 
   it('returns version conflict or not-found for obsolete lifecycle requests', async () => {
@@ -301,8 +303,13 @@ describe('InMemoryWriteGuard', () => {
       throw new Error('Expected granted lease');
     }
 
-    expect(await guard.release(acquired.lease.id)).toBe('released');
-    expect(await guard.release(acquired.lease.id)).toBe('not-found');
+    expect(await guard.release({ leaseId: acquired.lease.id, expectedVersion: 1 })).toMatchObject({
+      status: 'released',
+      lease: { version: 2, state: 'RELEASED', releasedAt: new Date('2026-08-10T00:00:01.000Z') }
+    });
+    expect(await guard.release({ leaseId: acquired.lease.id, expectedVersion: 2 })).toEqual({
+      status: 'not-found'
+    });
     expect(await guard.heartbeat({ leaseId: acquired.lease.id, expectedVersion: 2 })).toEqual({
       status: 'not-found'
     });
@@ -312,7 +319,27 @@ describe('InMemoryWriteGuard', () => {
     });
   });
 
-  it('serializes heartbeat and release requests against the same lease', async () => {
+  it('rejects a stale release version without changing an active lease', async () => {
+    const guard = createGuard();
+    const acquired = await guard.acquire(request());
+    if (acquired.status !== 'granted') {
+      throw new Error('Expected granted lease');
+    }
+
+    await guard.heartbeat({ leaseId: acquired.lease.id, expectedVersion: 1 });
+    expect(await guard.release({ leaseId: acquired.lease.id, expectedVersion: 1 })).toEqual({
+      status: 'version-conflict',
+      actualVersion: 2
+    });
+    expect(await guard.heartbeat({ leaseId: acquired.lease.id, expectedVersion: 2 })).toMatchObject(
+      {
+        status: 'active',
+        lease: { version: 3 }
+      }
+    );
+  });
+
+  it('fences a release whose expected version becomes stale behind a heartbeat', async () => {
     const guard = createGuard();
     const acquired = await guard.acquire(request());
     if (acquired.status !== 'granted') {
@@ -321,11 +348,15 @@ describe('InMemoryWriteGuard', () => {
 
     const [heartbeat, release] = await Promise.all([
       guard.heartbeat({ leaseId: acquired.lease.id, expectedVersion: 1 }),
-      guard.release(acquired.lease.id)
+      guard.release({ leaseId: acquired.lease.id, expectedVersion: 1 })
     ]);
 
     expect(heartbeat).toMatchObject({ status: 'active', lease: { version: 2 } });
-    expect(release).toBe('released');
+    expect(release).toEqual({ status: 'version-conflict', actualVersion: 2 });
+    expect(await guard.release({ leaseId: acquired.lease.id, expectedVersion: 2 })).toMatchObject({
+      status: 'released',
+      lease: { version: 3 }
+    });
   });
 
   it('rejects malformed requests and duplicate generated lease IDs', async () => {
@@ -351,6 +382,9 @@ describe('InMemoryWriteGuard', () => {
     await expect(
       guard.heartbeat({ leaseId: 'missing', expectedVersion: Number.NaN })
     ).rejects.toThrow('expectedVersion must be a positive integer');
+    await expect(guard.release({ leaseId: 'missing', expectedVersion: 0 })).rejects.toThrow(
+      'expectedVersion must be a positive integer'
+    );
     await guard.acquire(request());
     await expect(guard.acquire(request({ resource: file('catalog', 'price.ts') }))).rejects.toThrow(
       'Duplicate lease ID: same-id'

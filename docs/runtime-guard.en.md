@@ -327,6 +327,7 @@ It does not:
 
 - persist leases, heartbeats, stale evidence, or release records;
 - coordinate leases between processes, hosts, or orchestration runs after restart;
+- share one guard instance across unrelated repository/workspace namespaces with colliding resource IDs;
 - observe a real filesystem write or intercept an agent write call;
 - resolve a filesystem path or symbol name through `RepositoryGraph`;
 - infer stale evidence from a timeout;
@@ -340,9 +341,9 @@ boundaries are deliberately deferred rather than silently claimed.
 
 ## Verification and current limits
 
-The Runtime Guard package has 22 passing tests with 100% statements, functions, and lines, plus
-94.73% branches. The repository quality gate has 153 passing tests with 97.07% statements, 91.93%
-branches, 99.64% functions, and 96.99% lines. `pnpm check`, `pnpm build`, and `git diff --check`
+The Runtime Guard package has 23 passing tests with 100% statements, functions, and lines, plus
+96.15% branches. The repository quality gate has 154 passing tests with 97.07% statements, 92.04%
+branches, 99.64% functions, and 97.00% lines. `pnpm check`, `pnpm build`, and `git diff --check`
 pass.
 
 The immediate next architecture concern is Milestone 9 persistence. Before storing Scheduler events
