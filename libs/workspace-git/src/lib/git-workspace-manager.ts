@@ -24,6 +24,7 @@ interface GitResult {
 
 export interface GitCommandRunner {
   run(cwd: string, args: readonly string[]): GitResult;
+  workspacePathExists?(path: string): boolean;
 }
 
 class NativeGitCommandRunner implements GitCommandRunner {
@@ -72,7 +73,16 @@ export class GitWorkspaceManager implements WorkspaceManager {
     const parsed = createTaskWorkspaceRequestSchema.parse(request);
     const repositoryPath = resolve(parsed.repositoryPath);
     const workspacePath = resolve(parsed.workspacePath);
-    if (existsSync(workspacePath)) {
+    if (this.#workspacePathExists(workspacePath)) {
+      if (this.#isMatchingWorktree(repositoryPath, workspacePath, parsed.branchName)) {
+        return {
+          ...parsed,
+          repositoryPath,
+          workspacePath,
+          revision: 1,
+          phase: 'READY_TO_INTEGRATE'
+        };
+      }
       throw new GitWorkspaceError(
         ['worktree', 'add', workspacePath],
         'Workspace path already exists.'
@@ -145,17 +155,21 @@ export class GitWorkspaceManager implements WorkspaceManager {
 
   async dispose(request: DisposeTaskWorkspaceRequest): Promise<DisposeTaskWorkspaceResult> {
     const parsed = disposeTaskWorkspaceRequestSchema.parse(request);
-    const dirtyPaths = this.#dirtyPaths(parsed.workspace.workspacePath);
-    if (dirtyPaths.length > 0 && !parsed.force) {
-      return { status: 'dirty', paths: dirtyPaths };
+    if (this.#workspacePathExists(parsed.workspace.workspacePath)) {
+      const dirtyPaths = this.#dirtyPaths(parsed.workspace.workspacePath);
+      if (dirtyPaths.length > 0 && !parsed.force) {
+        return { status: 'dirty', paths: dirtyPaths };
+      }
+      this.#git(parsed.workspace.repositoryPath, [
+        'worktree',
+        'remove',
+        ...(parsed.force ? ['--force'] : []),
+        parsed.workspace.workspacePath
+      ]);
     }
-    this.#git(parsed.workspace.repositoryPath, [
-      'worktree',
-      'remove',
-      ...(parsed.force ? ['--force'] : []),
-      parsed.workspace.workspacePath
-    ]);
-    this.#git(parsed.workspace.repositoryPath, ['branch', '-D', parsed.workspace.branchName]);
+    if (this.#branchExists(parsed.workspace.repositoryPath, parsed.workspace.branchName)) {
+      this.#git(parsed.workspace.repositoryPath, ['branch', '-D', parsed.workspace.branchName]);
+    }
     return { status: 'disposed' };
   }
 
@@ -269,6 +283,33 @@ export class GitWorkspaceManager implements WorkspaceManager {
 
   #integrationRepositoryPath(workspace: TaskWorkspace): string {
     return workspace.repositoryPath;
+  }
+
+  #isMatchingWorktree(repositoryPath: string, workspacePath: string, branchName: string): boolean {
+    const worktree = this.#tryGit(workspacePath, ['rev-parse', '--is-inside-work-tree']);
+    const branch = this.#tryGit(workspacePath, ['branch', '--show-current']);
+    const head = this.#tryGit(workspacePath, ['rev-parse', 'HEAD']);
+    const expectedHead = this.#tryGit(repositoryPath, ['rev-parse', '--verify', branchName]);
+    if (
+      worktree?.stdout.trim() !== 'true' ||
+      branch?.stdout.trim() !== branchName ||
+      head === undefined ||
+      expectedHead === undefined
+    ) {
+      return false;
+    }
+    return head.stdout.trim() === expectedHead.stdout.trim();
+  }
+
+  #branchExists(repositoryPath: string, branchName: string): boolean {
+    return (
+      this.#tryGit(repositoryPath, ['rev-parse', '--verify', `refs/heads/${branchName}`]) !==
+      undefined
+    );
+  }
+
+  #workspacePathExists(path: string): boolean {
+    return this.#runner.workspacePathExists?.(path) ?? existsSync(path);
   }
 
   #readyWorkspace(workspace: TaskWorkspace, advanceRevision = true): TaskWorkspace {

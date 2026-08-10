@@ -56,6 +56,11 @@ class FakeGitRunner implements GitCommandRunner {
   readonly calls: Array<{ cwd: string; args: readonly string[] }> = [];
   readonly failures = new Map<string, string>();
   readonly outputs = new Map<string, string>();
+  readonly missingWorkspacePaths = new Set<string>();
+
+  workspacePathExists(path: string): boolean {
+    return !this.missingWorkspacePaths.has(path);
+  }
 
   run(cwd: string, args: readonly string[]): { stdout: string; stderr: string } {
     this.calls.push({ cwd, args });
@@ -200,12 +205,22 @@ describe('GitWorkspaceManager', () => {
     expect(existsSync(workspaceRequest.workspacePath)).toBe(false);
   });
 
+  it('reuses a matching worktree after persistence is interrupted', async () => {
+    const repositoryPath = createRepository();
+    const manager = new GitWorkspaceManager();
+    const first = await manager.create(request(repositoryPath));
+
+    await expect(manager.create(request(repositoryPath))).resolves.toEqual(first);
+    await manager.dispose({ workspace: first, force: true, reason: 'Test cleanup.' });
+  });
+
   it('cleans a partially created worktree when checkout fails', async () => {
     const runner = new FakeGitRunner();
     runner.outputs.set(['rev-parse', '--verify', 'main'].join('\u0000'), 'commit\n');
     runner.failures.set(['checkout'].join('\u0000'), 'checkout failed');
     const manager = new GitWorkspaceManager(runner);
     const workspaceRequest = request('/repository');
+    runner.missingWorkspacePaths.add(workspaceRequest.workspacePath);
 
     await expect(manager.create(workspaceRequest)).rejects.toThrow('checkout failed');
     expect(runner.calls.map(({ args }) => args)).toContainEqual([
@@ -239,6 +254,31 @@ describe('GitWorkspaceManager', () => {
       'worktree',
       'remove',
       '/workspace'
+    ]);
+  });
+
+  it('cleans a residual branch when a worktree was removed before disposal retry', async () => {
+    const runner = new FakeGitRunner();
+    runner.missingWorkspacePaths.add('/workspace');
+    runner.outputs.set(
+      ['rev-parse', '--verify', 'refs/heads/orchestrator/run-1/task-1'].join('\u0000'),
+      'commit\n'
+    );
+    const manager = new GitWorkspaceManager(runner);
+
+    await expect(manager.dispose({ workspace: fixtureWorkspace, force: false })).resolves.toEqual({
+      status: 'disposed'
+    });
+    expect(runner.calls.map(({ args }) => args)).not.toContainEqual(['status', '--porcelain=v1']);
+    expect(runner.calls.map(({ args }) => args)).not.toContainEqual([
+      'worktree',
+      'remove',
+      '/workspace'
+    ]);
+    expect(runner.calls.map(({ args }) => args)).toContainEqual([
+      'branch',
+      '-D',
+      'orchestrator/run-1/task-1'
     ]);
   });
 
@@ -424,6 +464,7 @@ describe('GitWorkspaceManager', () => {
     const runner = new FakeGitRunner();
     runner.failures.set(['rev-parse', '--verify', 'main'].join('\u0000'), '');
     const manager = new GitWorkspaceManager(runner);
+    runner.missingWorkspacePaths.add(request('/repository').workspacePath);
 
     await expect(manager.create(request('/repository'))).rejects.toThrow(
       'Git command failed: git rev-parse --verify main'
