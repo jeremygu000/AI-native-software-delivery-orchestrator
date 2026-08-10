@@ -51,9 +51,9 @@ analysis, impact, conflict, scheduler, guard, persistence
        DAG ------------> Domain
 ```
 
-`domain` has no internal workspace dependencies. `dag` depends only on `domain`. `scheduler` depends
-only on `domain` and `dag`. Future engines may depend on `domain` and, where necessary, `dag`; domain
-code never imports an adapter. Git,
+`domain` has no internal workspace dependencies. `dag` and `runtime-guard` depend only on `domain`.
+`scheduler` depends only on `domain` and `dag`. Future engines may depend on `domain` and, where
+necessary, `dag`; domain code never imports an adapter. Git,
 SQLite, package-manager parsers, TypeScript Compiler API, Commander, and model-provider details
 remain at the edges.
 
@@ -239,9 +239,11 @@ validated engine configuration rather than domain constants.
 A conflict edge is pairwise and symmetric: it says two tasks must not execute concurrently. A
 producer-consumer constraint additionally carries `producerTaskId` and `consumerTaskId`, expressing
 an ordering edge independent of canonical pair order. One writer plus one reader of a
-producer-controlled resource produces this directional constraint; read/read remains parallel, and
-writer/writer remains a nondirectional hard serialization conflict. A future Scheduler may derive a
-functional ordering edge from the directional constraint, but Milestone 6 does not rewrite the DAG.
+producer-controlled resource, or a one-way repository file/symbol write-read overlap, produces this
+directional constraint. Read/read remains parallel, writer/writer remains a nondirectional hard
+serialization conflict, and bidirectional repository reads and writes remain an undirected scored
+risk rather than an invented producer order. The implemented Scheduler consumes directional
+constraints as separate completion requirements without rewriting the functional DAG.
 
 ### Write leases
 
@@ -259,8 +261,15 @@ Every lease is scoped by `runId`, has a monotonic version, state, and heartbeat 
 does not become available merely because a fixed timer elapsed. The runtime combines heartbeat,
 agent liveness, workspace state, a grace policy, and recovery evidence before marking an active
 lease `STALE`; only then may recovery reclaim it. Release reports `released` or `not-found`, making
-cleanup idempotent. The Phase 1 guard grants or blocks exclusive leases. Queuing and rebase/resume
-coordination are orchestration concerns layered above the guard.
+cleanup idempotent. The implemented `InMemoryWriteGuard` serializes in-process operations, so
+simultaneous conflicting acquires cannot both succeed. The implementation records supplied stale
+evidence but does not decide staleness from a timer. Queuing and rebase/resume coordination are
+orchestration concerns layered above the guard.
+
+The guard is intentionally process-local and non-persistent. It does not coordinate multiple Node.js
+processes, survive process termination, resolve a user-supplied path against the repository graph,
+observe a write, or mutate Scheduler state. Milestone 9 must replace or wrap this storage behavior
+with persistent, atomic repositories before cross-process recovery claims are valid.
 
 ### Planning and runtime feedback
 
@@ -329,12 +338,29 @@ The current Scheduler does not start agents, change the input snapshot, acquire 
 collect events, write persistence records, run verification, create worktrees, or invoke Git. Those
 remain outer-runtime responsibilities.
 
+The event contract has one documented non-blocking refinement before persistence work: ordinary
+observation events such as `task-completed`, `verification-completed`, and `workspace-integrated`
+currently request reevaluation but do not themselves verify that the supplied snapshot reflects a
+matching post-event task state. `task-failed` does verify `FAILED`, while runtime blocker events
+explicitly apply their own `RUNNING -> BLOCKED` transition. Before Milestone 9 persists and replays
+events, either add matching snapshot-state validation to all observation events or split the domain
+contract into state-observation and runtime-evidence event variants. Do not change this accepted
+Scheduler behavior incidentally during Runtime Guard work.
+
 ## Persistence boundary
 
 Drizzle and SQLite are installed in the workspace but persistence is deferred until the core
 models, DAG, analyzers, conflict engine, scheduler, and guard are stable. Persistence repositories
 will store reconstructable orchestration state, not raw ASTs. PostgreSQL support must be addable by
 implementing the same repository ports.
+
+Before Milestone 9 stores or replays Scheduler events, it must close the event/snapshot contract
+refinement recorded above. The persistence design must classify each event as either a state
+observation whose supplied snapshot already contains the resulting state, or runtime evidence that
+the Scheduler itself applies to its reconstructable state. It must define matching post-event state
+validation for every observation event or replace the current union with separate event variants.
+Do not persist the current implicit `task-completed` / `verification-completed` /
+`workspace-integrated` convention as a permanent replay contract.
 
 ## Workspace tooling
 
@@ -363,9 +389,10 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
 7. **Scheduler:** event-driven dispatch respecting dependencies, producer direction, hard
    constraints, explicit risk policy, priorities, existing work, and max concurrency; waves remain a
    visualization only. **Complete.**
-8. **Runtime guard:** hierarchical lease acquisition, heartbeat, stale recovery, and release.
-9. **Persistence:** recoverable runs, transitions, conflicts, decisions, observations, and leases in
-   SQLite/Drizzle.
+8. **Runtime guard:** process-local hierarchical lease acquisition, heartbeat, evidence-based stale
+   recovery, and idempotent release. **Complete for the in-memory scope.**
+9. **Persistence:** first finalize the Scheduler event/snapshot replay contract, then persist
+   recoverable runs, transitions, conflicts, decisions, observations, and leases in SQLite/Drizzle.
 10. **Workspace and Git:** isolated worktrees, rebase, integration, and disposal behind ports.
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,

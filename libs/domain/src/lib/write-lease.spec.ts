@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { areWritableResourcesConflicting, type WritableResource } from './write-lease.js';
+import {
+  areWritableResourcesConflicting,
+  type WritableResource,
+  type WriteLease
+} from './write-lease.js';
 
 const project = (projectId: string): WritableResource => ({ type: 'project', projectId });
 const file = (projectId: string, fileId: string): WritableResource => ({
@@ -52,5 +56,26 @@ describe('areWritableResourcesConflicting', () => {
   ])('allows independent resources', (a, b) => {
     expect(areWritableResourcesConflicting(a, b)).toBe(false);
     expect(areWritableResourcesConflicting(b, a)).toBe(false);
+  });
+});
+
+describe('WriteLease contract', () => {
+  it('retains evidence used to mark a lease stale', () => {
+    const lease: WriteLease = {
+      id: 'lease-1',
+      runId: 'run-1',
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      resource: file('catalog', 'product.ts'),
+      mode: 'exclusive',
+      version: 2,
+      state: 'STALE',
+      acquiredAt: new Date('2026-08-10T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-10T00:01:00.000Z'),
+      staleDetectedAt: new Date('2026-08-10T00:02:00.000Z'),
+      staleEvidence: 'Agent process exited and workspace is unchanged'
+    };
+
+    expect(lease.staleEvidence).toContain('Agent process exited');
   });
 });

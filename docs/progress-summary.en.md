@@ -1082,28 +1082,90 @@ diagnostic; its current 3 projects, 1,010 files, 7,617 symbols, 3 project depend
 dependencies, and 13,893 symbol references are normal active-repository drift rather than a
 Repository Facts Layer regression.
 
+## Stage 8: Runtime Guard
+
+The project now includes an in-memory Runtime Guard: a live component that grants or blocks exclusive
+write leases inside one Node.js process. This is the first layer that can make a concrete runtime
+decision about write ownership rather than only predict risk before work begins.
+
+The guard uses the existing project/file/symbol/shared-resource hierarchy. A broad project lease
+blocks files and symbols inside that project; a file lease blocks its symbols; a parent symbol blocks
+its descendants; sibling symbols may remain independent; and equal named shared resources conflict.
+The guard serializes every operation, so simultaneous conflicting requests cannot both see an empty
+state and receive permission.
+
+An agent retry for the exact same run, agent, task, and resource returns its existing active lease.
+This makes retry safe without allowing a different agent to share the lease. Other owners receive a
+stable list of active conflicting lease IDs.
+
+Leases begin `ACTIVE` at version 1. A heartbeat must provide the expected version; on success it
+increments the version and records fresh liveness time. A stale transition also requires the current
+version and non-empty evidence supplied by an outer runtime, such as confirmed agent loss and an
+unchanged workspace. The guard deliberately has no fixed timeout and never decides staleness merely
+because time elapsed. A `STALE` lease no longer blocks a replacement. Releasing an active lease
+returns `released`; retrying release returns `not-found`, making cleanup idempotent.
+
+This implementation is deliberately in-memory and process-local. It does not persist leases, survive
+a process restart, coordinate multiple Node.js processes, resolve user paths against the repository
+graph, observe filesystem writes, or automatically notify the Scheduler. These boundaries remain
+necessary for the persistence and runtime-integration work that follows.
+
+One Scheduler contract refinement is recorded for later rather than changed during this Runtime Guard
+stage. `task-failed` verifies that its supplied snapshot already shows `FAILED`; runtime blocker
+events apply their own blocking transition. Other observation events currently only request a new
+evaluation. Before event persistence and replay are implemented, the project must either verify the
+matching post-event state for every observation event or split state-observation events from
+runtime-evidence events in the domain contract. This is an explicit **Milestone 9 entry gate**, not
+an optional cleanup note: persistence must not store the current implicit convention as a permanent
+replay API.
+
+The Runtime Guard package depends only on `domain`, keeps its clock and lease-ID factory injectable
+for deterministic tests, and contains no database, Git, pnpm, CLI, provider, or agent logic. Its
+adversarial tests cover hierarchy overlap, independent resources, retry idempotency, concurrent
+acquisition, version conflicts, stale evidence, stale replacement, release idempotency, malformed
+requests, and duplicate generated IDs.
+
+For a code-level teaching model, see [Runtime Guard and Write Leases](./runtime-guard.en.md) and its
+[Chinese edition](./runtime-guard.zh.md). The guides explain resource containment, exact retry
+identity, in-process operation serialization, versioned heartbeats, evidence-based stale recovery,
+idempotent release, Scheduler event integration, and the intentionally absent persistence and
+filesystem-enforcement behavior.
+
+The full quality gate now has 153 passing tests. Coverage is 97.07% statements, 91.93% branches,
+99.64% functions, and 96.99% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+
+Independent review found no Critical, High, or Medium issue. Two Low findings were corrected before
+handoff: symbol lease idempotency now treats ancestor collections as order-independent, and an
+unreachable resource-comparison fallback was removed. Follow-up tests also cover broader-resource
+retries, concurrent heartbeat/release serialization, and invalid non-finite versions. The guard's
+package suite now has 22 passing tests with 100% statements, functions, and lines, plus 94.73%
+branches.
+
 ## Current overall status (as of this writing)
 
-- Architecture milestones 1–7 of 10 are complete. That is roughly 70% by milestone count, not 70%
+- Architecture milestones 1–8 of 10 are complete. That is roughly 80% by milestone count, not 80%
   of total engineering effort: later runtime, persistence, Git, and agent-execution milestones are
   larger and riskier than several foundation milestones.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 125 tests,
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 153 tests,
   all passing.
-- Coverage is 96.95% statements, 91.92% branches, 99.60% functions, and 96.88% lines. Every enforced
+- Coverage is 97.07% statements, 91.93% branches, 99.64% functions, and 96.99% lines. Every enforced
   threshold is at least 90%.
 - `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.
 - Milestone 6's second correctness hardening and Milestone 7's implementation both passed independent
   review and follow-up review with no Critical, High, or Medium issue. The Scheduler's documented
   review findings were fixed and independently re-verified before this commit.
+- Milestone 8 Runtime Guard implementation is complete for the accepted process-local in-memory scope
+  and awaits independent review before it can be committed.
 
 ## What has NOT been implemented yet
 
-- Implement live lease acquire/heartbeat/stale/release storage and runtime write enforcement.
-- Persist orchestration runs so they can recover after restart.
+- First finalize the Scheduler event/snapshot replay contract, then persist orchestration runs,
+  leases, events, and decisions so they can recover after restart.
 - Create isolated Git workspaces, rebase and integrate task changes safely.
 - Invoke coding agents, monitor them, and verify their results.
 
 In short: **the orchestrator can now map a real TypeScript pnpm repository, predict task impact,
-compare conflicts, and deterministically decide what may start after an event. It still does not
-collect live events, run agents, grant write permission, or modify a repository.**
+compare conflicts, decide what may start after an event, and guard exclusive writes inside one process.
+It still does not observe real writes, coordinate multiple processes, persist recovery state, run
+agents, or modify a repository.**

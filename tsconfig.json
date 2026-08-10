@@ -23,6 +23,9 @@
     },
     {
       "path": "./libs/scheduler"
+    },
+    {
+      "path": "./libs/runtime-guard"
     }
   ]
 }

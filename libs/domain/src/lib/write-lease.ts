@@ -76,6 +76,7 @@ export interface WriteLease {
   readonly lastHeartbeatAt: Date;
   readonly releasedAt?: Date;
   readonly staleDetectedAt?: Date;
+  readonly staleEvidence?: string;
 }
 
 export type WriteLeaseResult =

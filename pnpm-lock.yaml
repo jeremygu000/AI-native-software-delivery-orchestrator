@@ -115,6 +115,12 @@ importers:
         specifier: 2.8.1
         version: 2.8.1
 
+  libs/runtime-guard:
+    dependencies:
+      '@ai-native-software-delivery-orchestrator/domain':
+        specifier: workspace:*
+        version: link:../domain
+
   libs/scheduler:
     dependencies:
       '@ai-native-software-delivery-orchestrator/dag':

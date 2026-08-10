@@ -7,7 +7,7 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–7 establish the deterministic analysis and dispatch core:
+Milestones 1–8 establish the deterministic analysis, dispatch, and in-process write-safety core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
 - pnpm workspaces for dependency management;
@@ -29,12 +29,14 @@ Milestones 1–7 establish the deterministic analysis and dispatch core:
 - deterministic event-driven dispatch respecting dependencies, producer direction, hard constraints,
   risk policy, priority, existing work, and maximum concurrency;
 - explanatory execution waves that never become a runtime barrier;
+- an in-memory, concurrency-safe exclusive Write Guard with versioned heartbeat, evidence-based stale
+  recovery, and idempotent release;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestone 7 implements deterministic Scheduler library behavior. It is not an execution runtime:
-the Scheduler neither starts agents nor acquires leases, collects runtime events, persists state,
-creates workspaces, or invokes Git. The CLI still exposes `plan` as a discoverable placeholder until
-there is a tested task-spec input path and end-to-end integration.
+Milestone 8 implements a process-local Write Guard. It does not persist leases, coordinate multiple
+processes, observe writes, create workspaces, or invoke Git. The Scheduler and Guard remain library
+APIs; the CLI still exposes `plan` as a discoverable placeholder until there is a tested task-spec
+input path and end-to-end integration.
 
 ## Requirements
 
@@ -64,6 +66,7 @@ libs/repository-analysis  pnpm project discovery plus TypeScript semantic analys
 libs/task-impact  Task selector resolution, impact expansion, shared-resource registry
 libs/conflict-engine  Hard constraints and explainable conflict scoring
 libs/scheduler  Event-driven deterministic dispatch decisions
+libs/runtime-guard  In-process exclusive lease acquisition and lifecycle
 docs/adr     Architecture decisions
 ```
 
@@ -75,6 +78,7 @@ Standalone training guides:
 - [RepositoryGraph Analysis](docs/repository-graph-analysis.en.md) / [中文](docs/repository-graph-analysis.zh.md)
 - [Task Impact and Conflict Analysis](docs/task-impact-analysis.en.md) / [中文](docs/task-impact-analysis.zh.md)
 - [Scheduler Dispatch](docs/scheduler-dispatch.en.md) / [中文](docs/scheduler-dispatch.zh.md)
+- [Runtime Guard and Write Leases](docs/runtime-guard.en.md) / [中文](docs/runtime-guard.zh.md)
 
 Continuation agents must read the [OpenCode engineering handover](docs/opencode-handover.md) before
 changing the current uncommitted milestone state.
