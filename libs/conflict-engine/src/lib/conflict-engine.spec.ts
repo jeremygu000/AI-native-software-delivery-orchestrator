@@ -216,6 +216,63 @@ describe('DeterministicConflictEngine', () => {
     expect(conflict.recommendedAction).toBe('guarded-parallel');
   });
 
+  it('turns one-way repository writes and reads into a directional hard constraint', () => {
+    const engine = new DeterministicConflictEngine(registry);
+
+    const conflict = engine.compare(
+      impact('z-producer', {
+        symbolsWritten: new Set(['core:file:Service.first']),
+        filesWritten: new Set(['core:file'])
+      }),
+      impact('a-consumer', {
+        symbolsRead: new Set(['core:file:Service.first']),
+        filesRead: new Set(['core:file'])
+      }),
+      graph
+    );
+
+    expect(conflict).toMatchObject({
+      severity: 'hard',
+      recommendedAction: 'stagger',
+      constraints: [
+        {
+          type: 'producer-consumer',
+          producerTaskId: 'z-producer',
+          consumerTaskId: 'a-consumer',
+          resourceIds: ['core:file', 'core:file:Service.first']
+        }
+      ]
+    });
+  });
+
+  it('keeps bidirectional repository reads and writes as an undirected scored risk', () => {
+    const engine = new DeterministicConflictEngine(registry);
+
+    const conflict = engine.compare(
+      impact('a', {
+        symbolsWritten: new Set(['core:file:Service.first']),
+        symbolsRead: new Set(['core:file:Service.second'])
+      }),
+      impact('b', {
+        symbolsWritten: new Set(['core:file:Service.second']),
+        symbolsRead: new Set(['core:file:Service.first'])
+      }),
+      graph
+    );
+
+    expect(conflict).toMatchObject({
+      severity: 'soft',
+      constraints: [],
+      recommendedAction: 'serialize'
+    });
+    expect(conflict.reasons).toContainEqual(
+      expect.objectContaining({
+        type: 'producer-consumer',
+        resourceIds: ['core:file:Service.first', 'core:file:Service.second']
+      })
+    );
+  });
+
   it('does not downgrade explicit whole-file ownership to sibling-symbol risk', () => {
     const engine = new DeterministicConflictEngine(registry);
     const conflict = engine.compare(
@@ -377,7 +434,18 @@ describe('DeterministicConflictEngine', () => {
       'public-api-touch',
       'upstream-downstream-project'
     ]);
-    expect(conflict.recommendedAction).toBe('serialize');
+    expect(conflict).toMatchObject({
+      severity: 'hard',
+      recommendedAction: 'stagger',
+      constraints: [
+        {
+          type: 'producer-consumer',
+          producerTaskId: 'producer',
+          consumerTaskId: 'consumer',
+          resourceIds: ['core:file:Service.first', 'core:generated']
+        }
+      ]
+    });
   });
 
   it('does not create pairwise risk from fan-out signals when the other task is independent', () => {

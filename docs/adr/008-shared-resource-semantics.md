@@ -30,6 +30,13 @@ implies this direction. Read/read access remains parallel. Two writers have no i
 therefore retain a nondirectional hard serialization constraint until an explicit producer policy
 provides one.
 
+The same directional rule applies to repository facts. When exactly one task predicts writes to
+symbols or files the other predicts reading, the Conflict Engine emits a directional
+`producer-consumer` scheduling constraint using that write/read evidence. If both tasks predict
+writing facts consumed by the other, the engine retains an undirected scored risk rather than
+inventing an arbitrary producer. The Scheduler validates the combined functional and directional
+ordering graph for cycles before dispatch.
+
 ## Consequences
 
 Planners may express both static access and a global coordination rule without the conflict engine

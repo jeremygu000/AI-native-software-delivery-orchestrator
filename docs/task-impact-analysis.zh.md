@@ -452,9 +452,10 @@ sibling-symbol。这能防止 broad authority 伪装成精确 symbol scope。
 
 ### Repository Facts 上的 Producer-Consumer Overlap
 
-当一个 task 预测写入某 file 或 symbol,另一个 task 预测读取它时,Engine 会增加一个有解释的
-`producer-consumer` scored reason。它不会重写 functional DAG,也不会单独虚构 hard direction。
-当前只有显式 producer-controlled resource policy 才会产生有方向的 hard constraint。
+当恰好一个 task 预测写入某 file 或 symbol、另一个 task 预测读取它时,Engine 会增加一个有解释的
+`producer-consumer` reason，并从 writer 到 reader 产生方向性 hard constraint。它不会重写 functional
+DAG；Scheduler 会消费这个独立 ordering constraint。如果双方都写入对方读取的事实，Engine 保留无方向
+scored risk，而不是猜测谁必须先生产。
 
 ### Generated Overlap
 
@@ -641,8 +642,8 @@ execution 和 verification 层。
 - project-to-file relationship 会在 impact expansion 和 conflict overlap 两处使用;任一表示
   改变时必须做一致性 Review;
 - `coordinate` 有意采用保守语义,不表示 producer direction;
-- Repository read/write overlap 产生 scored producer-consumer reason;目前只有显式
-  producer-controlled resource 才产生有方向的 hard constraint;
+- 双向 Repository read/write overlap 仍是无方向 scored risk，因为这些事实不能证明安全的 producer
+  direction；当 direction constraint 与 functional dependency 合起来形成 cycle 时，Scheduler 会拒绝它；
 - Observed impact collection 和 predicted-versus-observed reconciliation 尚未实现;
 - 还没有 incremental impact cache;
 - Policy configuration 当前由本地代码提供;面向用户的配置格式和 CLI integration 是未来工作。

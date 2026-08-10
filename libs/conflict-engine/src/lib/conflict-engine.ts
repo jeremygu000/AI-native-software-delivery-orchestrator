@@ -285,22 +285,42 @@ export class DeterministicConflictEngine implements ConflictAnalyzer {
       }
     }
 
-    const producerConsumerSymbols = [
+    const aProducesForB = [
       ...intersect(a.symbolsWritten, b.symbolsRead),
-      ...intersect(b.symbolsWritten, a.symbolsRead)
-    ];
-    const producerConsumerFiles = [
-      ...intersect(a.filesWritten, b.filesRead),
+      ...intersect(a.filesWritten, b.filesRead)
+    ].toSorted(compareStrings);
+    const bProducesForA = [
+      ...intersect(b.symbolsWritten, a.symbolsRead),
       ...intersect(b.filesWritten, a.filesRead)
-    ];
-    const producerConsumerResources = [...producerConsumerSymbols, ...producerConsumerFiles];
+    ].toSorted(compareStrings);
+    const producerConsumerResources = [...aProducesForB, ...bProducesForA];
     if (producerConsumerResources.length > 0) {
       addReason(reasons, {
         type: 'producer-consumer',
         score: this.#configuration.weights.producerConsumer,
-        detail: 'One task may write repository facts consumed by the other.',
+        detail:
+          aProducesForB.length > 0 && bProducesForA.length > 0
+            ? 'Both tasks may write repository facts consumed by the other.'
+            : `${aProducesForB.length > 0 ? a.taskId : b.taskId} may write repository facts consumed by ${aProducesForB.length > 0 ? b.taskId : a.taskId}.`,
         resourceIds: producerConsumerResources
       });
+      if (aProducesForB.length > 0 && bProducesForA.length === 0) {
+        constraints.push({
+          type: 'producer-consumer',
+          detail: `${a.taskId} produces repository facts for ${b.taskId}.`,
+          resourceIds: aProducesForB,
+          producerTaskId: a.taskId,
+          consumerTaskId: b.taskId
+        });
+      } else if (bProducesForA.length > 0 && aProducesForB.length === 0) {
+        constraints.push({
+          type: 'producer-consumer',
+          detail: `${b.taskId} produces repository facts for ${a.taskId}.`,
+          resourceIds: bProducesForA,
+          producerTaskId: b.taskId,
+          consumerTaskId: a.taskId
+        });
+      }
     }
 
     const generatedFiles = [

@@ -471,10 +471,11 @@ scope.
 
 ### Producer-consumer repository overlap
 
-When one task predicts a write to a file or symbol that the other predicts reading, the engine adds
-an explainable scored `producer-consumer` reason. It does not rewrite the functional DAG and does
-not by itself invent a hard direction. A directional hard constraint currently comes only from an
-explicit producer-controlled resource policy.
+When exactly one task predicts a write to a file or symbol that the other predicts reading, the
+engine adds an explainable `producer-consumer` reason and a directional hard constraint from the
+writer to the reader. It does not rewrite the functional DAG; the Scheduler consumes the separate
+ordering constraint. If both tasks write facts the other reads, the engine keeps an undirected scored
+risk rather than guessing which task should produce first.
 
 ### Generated overlap
 
@@ -663,8 +664,9 @@ agent-execution, and verification layers.
 - Project-to-file relationships are consulted in both impact expansion and conflict overlap logic;
   changes to either representation require a consistency review.
 - `coordinate` is intentionally conservative and does not imply producer direction.
-- Repository read/write overlap produces a scored producer-consumer reason, while only an explicit
-  producer-controlled resource currently creates a hard directional constraint.
+- Bidirectional repository read/write overlap remains an undirected scored risk because the facts do
+  not prove a safe producer direction; the Scheduler rejects an ordering cycle when directional
+  constraints and functional dependencies together form one.
 - Observed impact collection and predicted-versus-observed reconciliation are not implemented.
 - No incremental impact cache is exposed.
 - Configuration defines policy locally; a user-facing configuration format and CLI integration are
