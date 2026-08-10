@@ -158,6 +158,12 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
+  libs/workspace-git:
+    dependencies:
+      '@ai-native-software-delivery-orchestrator/domain':
+        specifier: workspace:*
+        version: link:../domain
+
 packages:
 
   '@babel/helper-string-parser@7.29.7':

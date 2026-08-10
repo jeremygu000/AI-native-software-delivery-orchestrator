@@ -82,6 +82,13 @@ const reevaluation = (sequence = 1): PersistedReevaluation => ({
       taskId: 'B',
       fromState: 'PENDING',
       toState: 'READY'
+    },
+    {
+      runId: 'run-1',
+      sequence,
+      taskId: 'B',
+      fromState: 'READY',
+      toState: 'RUNNING'
     }
   ],
   decision: {
@@ -197,7 +204,8 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         }
       ],
       transitions: [
-        { runId: 'run-1', sequence: 1, taskId: 'B', fromState: 'PENDING', toState: 'READY' }
+        { runId: 'run-1', sequence: 1, taskId: 'B', fromState: 'PENDING', toState: 'READY' },
+        { runId: 'run-1', sequence: 1, taskId: 'B', fromState: 'READY', toState: 'RUNNING' }
       ]
     });
     expect(recovered?.impacts[0]?.impact.predicted.projectsWritten).toEqual(new Set(['core']));
@@ -316,13 +324,77 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     await persistence.createRun(createRunRequest());
     await persistence.persistReevaluation(reevaluation());
 
-    await expect(persistence.persistReevaluation(reevaluation())).rejects.toThrow();
+    await expect(persistence.persistReevaluation(reevaluation())).resolves.toBeUndefined();
 
     const recovered = await persistence.recoverRun('run-1');
     expect(recovered?.events).toHaveLength(1);
-    expect(recovered?.transitions).toHaveLength(1);
+    expect(recovered?.transitions).toHaveLength(2);
     expect(recovered?.decisions).toHaveLength(1);
     persistence.close();
+  });
+
+  it.each([
+    {
+      label: 'wrong transition state',
+      transitions: [
+        {
+          runId: 'run-1',
+          sequence: 1,
+          taskId: 'B',
+          fromState: 'PENDING' as const,
+          toState: 'RUNNING' as const
+        }
+      ]
+    },
+    { label: 'missing transition', transitions: [] },
+    {
+      label: 'extra transition',
+      transitions: [
+        ...reevaluation().transitions,
+        {
+          runId: 'run-1',
+          sequence: 1,
+          taskId: 'A',
+          fromState: 'COMPLETED' as const,
+          toState: 'CANCELLED' as const
+        }
+      ]
+    }
+  ])('rejects $label that does not match decision transitions', async ({ transitions }) => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    await persistence.createRun(createRunRequest());
+
+    await expect(
+      persistence.persistReevaluation({ ...reevaluation(), transitions })
+    ).rejects.toThrow('Persisted transitions must match the scheduler decision');
+    expect((await persistence.recoverRun('run-1'))?.events).toEqual([]);
+    persistence.close();
+  });
+
+  it('detects transitions altered after a valid reevaluation was persisted', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'orchestration-persistence-'));
+    const filename = join(directory, 'corrupt-transition.sqlite');
+    try {
+      const writer = new DrizzleSqliteOrchestrationPersistence(filename);
+      await writer.createRun(createRunRequest());
+      await writer.persistReevaluation(reevaluation());
+      writer.close();
+      const sqlite = new Database(filename);
+      sqlite
+        .prepare(
+          "UPDATE task_transitions SET to_state = 'RUNNING' WHERE run_id = 'run-1' AND sequence = 1"
+        )
+        .run();
+      sqlite.close();
+
+      const reader = new DrizzleSqliteOrchestrationPersistence(filename);
+      await expect(reader.replayRun('run-1', new DeterministicScheduler())).rejects.toThrow(
+        PersistenceReplayError
+      );
+      reader.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('requires contiguous append-only event sequences and replays saved decisions', async () => {
@@ -339,37 +411,72 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     persistence.close();
   });
 
-  it('rejects a replay when persisted decision evidence is inconsistent', async () => {
+  it('accepts identical reevaluation retries and rejects different evidence at the same sequence', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
-    await persistence.createRun(createRunRequest());
-    await persistence.persistReevaluation({
-      ...reevaluation(),
-      decision: { ...reevaluation().decision, decision: { taskDecisions: [] } }
-    });
-
-    await expect(persistence.replayRun('run-1', new DeterministicScheduler())).rejects.toThrow(
-      PersistenceReplayError
-    );
-    persistence.close();
-  });
-
-  it('rolls back every reevaluation record when a later transition insert fails', async () => {
-    const persistence = new DrizzleSqliteOrchestrationPersistence();
-    await persistence.createRun(createRunRequest());
     const record = reevaluation();
-
+    await persistence.createRun(createRunRequest());
+    await persistence.persistReevaluation(record);
+    await expect(persistence.persistReevaluation(record)).resolves.toBeUndefined();
     await expect(
       persistence.persistReevaluation({
         ...record,
-        transitions: [...record.transitions, record.transitions[0]]
+        event: { ...record.event, occurredAt: '2026-08-11T00:02:00.000Z' }
       })
-    ).rejects.toThrow();
+    ).rejects.toThrow('Scheduler event sequence 1 already recorded with different evidence');
 
     const recovered = await persistence.recoverRun('run-1');
-    expect(recovered?.events).toEqual([]);
-    expect(recovered?.transitions).toEqual([]);
-    expect(recovered?.decisions).toEqual([]);
+    expect(recovered?.events).toHaveLength(1);
+    expect(recovered?.transitions).toHaveLength(2);
     persistence.close();
+  });
+
+  it('rejects a replay when persisted decision evidence is inconsistent', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'orchestration-persistence-'));
+    const filename = join(directory, 'corrupt-decision.sqlite');
+    try {
+      const writer = new DrizzleSqliteOrchestrationPersistence(filename);
+      await writer.createRun(createRunRequest());
+      await writer.persistReevaluation(reevaluation());
+      writer.close();
+      const sqlite = new Database(filename);
+      sqlite
+        .prepare(
+          "UPDATE scheduler_decisions SET decision_json = '{\"taskDecisions\":[]}' WHERE run_id = 'run-1'"
+        )
+        .run();
+      sqlite.close();
+
+      const reader = new DrizzleSqliteOrchestrationPersistence(filename);
+      await expect(reader.replayRun('run-1', new DeterministicScheduler())).rejects.toThrow(
+        PersistenceReplayError
+      );
+      reader.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back every reevaluation record when a later decision insert fails', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'orchestration-persistence-'));
+    const filename = join(directory, 'rollback.sqlite');
+    try {
+      const writer = new DrizzleSqliteOrchestrationPersistence(filename);
+      await writer.createRun(createRunRequest());
+      writer.close();
+      const sqlite = new Database(filename);
+      sqlite
+        .prepare(
+          "INSERT INTO scheduler_decisions (run_id, sequence, snapshot_json, decision_json) VALUES ('run-1', 1, '{}', '{}')"
+        )
+        .run();
+      sqlite.close();
+
+      const persistence = new DrizzleSqliteOrchestrationPersistence(filename);
+      await expect(persistence.persistReevaluation(reevaluation())).rejects.toThrow();
+      persistence.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('upserts current impact, conflict, and lease records while preserving their run identity', async () => {
@@ -408,6 +515,59 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     persistence.close();
   });
 
+  it.each([
+    {
+      label: 'impact task ID',
+      persist: (persistence: DrizzleSqliteOrchestrationPersistence) =>
+        persistence.persistImpact({ ...impactRecord(), taskId: 'B' }),
+      error: 'Task impact key must match payload task ID'
+    },
+    {
+      label: 'conflict task IDs',
+      persist: (persistence: DrizzleSqliteOrchestrationPersistence) =>
+        persistence.persistConflict({ ...conflictRecord(), taskA: 'B' }),
+      error: 'Task conflict keys must match payload task IDs'
+    },
+    {
+      label: 'lease run ID',
+      persist: (persistence: DrizzleSqliteOrchestrationPersistence) =>
+        persistence.persistLease({ ...leaseRecord(), runId: 'run-2' }),
+      error: 'Write lease run ID must match payload run ID'
+    }
+  ])('rejects mismatched persisted $label keys', async ({ persist, error }) => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    await persistence.createRun(createRunRequest());
+    await expect(persist(persistence)).rejects.toThrow(error);
+    persistence.close();
+  });
+
+  it('rejects lease version regression and accepts an identical lease retry', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const newest = { ...leaseRecord(), lease: { ...leaseRecord().lease, version: 4 } };
+    await persistence.createRun(createRunRequest());
+    await persistence.persistLease(newest);
+    await expect(persistence.persistLease(newest)).resolves.toBeUndefined();
+    await expect(
+      persistence.persistLease({ ...leaseRecord(), lease: { ...leaseRecord().lease, version: 3 } })
+    ).rejects.toThrow('Lease version regression rejected: stored version 4, incoming version 3');
+    await expect(
+      persistence.persistLease({
+        ...newest,
+        lease: { ...newest.lease, staleEvidence: 'Different evidence.' }
+      })
+    ).rejects.toThrow('Lease version already recorded with different evidence');
+    await expect(
+      persistence.persistLease({
+        ...newest,
+        lease: {
+          ...newest.lease,
+          lastHeartbeatAt: new Date('1999-01-01T00:00:00.000Z')
+        }
+      })
+    ).rejects.toThrow('Lease version already recorded with different evidence');
+    persistence.close();
+  });
+
   it('isolates current-record upserts by run ID and returns no-event replay for a new run', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     await persistence.createRun(createRunRequest('run-1'));
@@ -415,7 +575,11 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     await persistence.persistImpact(impactRecord());
     await persistence.persistImpact({ ...impactRecord(), runId: 'run-2' });
     await persistence.persistLease(leaseRecord());
-    await persistence.persistLease({ ...leaseRecord(), runId: 'run-2' });
+    await persistence.persistLease({
+      ...leaseRecord(),
+      runId: 'run-2',
+      lease: { ...leaseRecord().lease, runId: 'run-2' }
+    });
 
     const recoveredFirst = await persistence.recoverRun('run-1');
     const recoveredSecond = await persistence.recoverRun('run-2');
@@ -424,6 +588,42 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     expect(recoveredFirst?.leases[0]?.runId).toBe('run-1');
     expect(recoveredSecond?.leases[0]?.runId).toBe('run-2');
     await expect(persistence.replayRun('run-2', new DeterministicScheduler())).resolves.toEqual([]);
+    persistence.close();
+  });
+
+  it('recovers phase-aware integration workspace evidence', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    await persistence.createRun(createRunRequest());
+    await persistence.persistWorkspace({
+      runId: 'run-1',
+      workspace: {
+        id: 'workspace-1',
+        runId: 'run-1',
+        taskId: 'A',
+        repositoryPath: '/repository',
+        workspacePath: '/workspace',
+        branchName: 'orchestrator/run-1/A',
+        baseRef: 'main',
+        integrationRef: 'main',
+        phase: 'INTEGRATION_BLOCKED',
+        blocker: {
+          type: 'rebase-conflict',
+          detail: 'Rebase conflicted.',
+          conflictPaths: ['src/value.ts']
+        }
+      }
+    });
+
+    const recovered = await persistence.recoverRun('run-1');
+    expect(recovered?.workspaces).toEqual([
+      {
+        runId: 'run-1',
+        workspace: expect.objectContaining({
+          phase: 'INTEGRATION_BLOCKED',
+          blocker: expect.objectContaining({ conflictPaths: ['src/value.ts'] })
+        })
+      }
+    ]);
     persistence.close();
   });
 

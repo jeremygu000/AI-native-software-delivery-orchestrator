@@ -1174,6 +1174,12 @@ validates stored JSON rather than trusting arbitrary database text, then replays
 the Scheduler with its saved input snapshot. A replayed decision must exactly match the persisted
 decision or recovery reports an integrity failure.
 
+Follow-up persistence hardening verifies that saved transitions exactly match every non-deferred
+state-transition decision before write and again during replay. Same-sequence retries are idempotent
+only when all evidence matches; different evidence is rejected. Impact/conflict/lease relational keys
+must match their payload identities, and lease snapshots cannot regress to an older version or
+overwrite equal-version evidence with different content.
+
 The SQLite adapter is deliberately local. It does not provide multi-process write fencing, an agent
 runtime, filesystem observation, Git worktrees, migrations for deployed databases, automatic task
 execution, or a CLI command. Before an actual agent write is enforced, a later runtime must also use
@@ -1188,17 +1194,84 @@ The persistence tests cover complete recovery, SQLite file reopen, Set/date roun
 transition-decision atomicity, transaction rollback, append-only sequencing, decision replay mismatch,
 current-record upserts, and corrupted stored-state rejection.
 
-The full quality gate now has 175 passing tests. Coverage is 97.21% statements, 92.29% branches,
-99.42% functions, and 97.14% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 212 passing tests. Coverage is 97.38% statements, 92.32% branches,
+99.47% functions, and 97.32% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+
+## Stage 10: Workspace and Git Lifecycle
+
+The deterministic core can now give each task an isolated local Git worktree and safely integrate its
+completed branch into one local integration reference. This stage does not run an agent. It provides
+the workspace and Git lifecycle that a future outer runtime can use after task execution and
+verification are available.
+
+Creating a workspace takes a task branch from an explicit base ref and places it outside the
+integration repository directory. The task can commit independently without placing untracked
+worktree directories inside the integration checkout. Integration is intentionally conservative:
+
+```text
+task branch
+   |
+   v
+rebase onto integration ref
+   |
+   v
+fast-forward-only merge into integration ref
+```
+
+No implicit merge commit is created. Before merging, the integration repository must be clean and
+must successfully switch to the requested integration ref. A rebase conflict, dirty integration
+repository, or failed fast-forward creates a phase-aware `INTEGRATION_BLOCKED` workspace record with
+structured reason and conflict paths.
+
+Workspace integration state is deliberately separate from ordinary task execution state:
+
+```text
+READY_TO_INTEGRATE
+        |
+        +--> INTEGRATION_BLOCKED
+        |       |
+        |       +--> resumeIntegration after external repair
+        |       +--> abortIntegration
+        |
+        +--> INTEGRATED
+```
+
+This avoids the lossy historical shortcut `INTEGRATING -> BLOCKED -> READY`. A task that finished
+execution and verification remains integration work even if Git needs manual repair. Rebase blocks
+use `rebase --continue` or `rebase --abort`; dirty-repository and fast-forward blocks retry normal
+integration after their external cause is fixed.
+
+Workspace records are persisted by run ID and workspace ID, including blocked phase evidence. An
+explicit disposal call removes the worktree and task branch. Disposal protects uncommitted workspace
+changes by default: it returns stable dirty paths instead of deleting them. Discarding dirty work
+requires `force: true` and an explicit caller reason.
+
+The Git adapter is tested with real temporary Git repositories for create, rebase, fast-forward
+integration, conflict block/abort/resolve/resume, dirty repository blocking, dirty disposal, and
+cleanup. A narrow injectable Git command runner covers deterministic process-failure diagnostics
+without embedding Git process types in domain contracts.
+
+For a code-level teaching model, see [Workspace and Git Lifecycle](./workspace-git.en.md) and its
+[Chinese edition](./workspace-git.zh.md). The guides explain isolated worktrees, phase-aware Git
+integration blocking, rebase/resume/abort, fast-forward-only integration, persisted workspace
+evidence, and dirty-disposal protection.
+
+This stage still does not execute agents, observe actual filesystem writes, compare observed changes
+with predicted scope, acquire leases during writes, coordinate multiple repositories/processes, or
+automatically repair conflicts. Those require a future agent/runtime layer and ownership-generation
+write fencing.
+
+The full quality gate now has 212 passing tests. Coverage is 97.38% statements, 92.32% branches,
+99.47% functions, and 97.32% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Current overall status (as of this writing)
 
-- Architecture milestones 1–9 of 10 are complete. That is roughly 90% by milestone count, not 90%
-  of total engineering effort: workspace/Git and agent-execution work remains larger and riskier than
-  several foundation milestones.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 175 tests,
+- Architecture milestones 1–10 of 10 are implemented. This does not mean the full product is 100%
+  complete: agent execution, real write enforcement, provider integration, and CLI runtime work remain
+  substantial product capabilities outside the deterministic milestone plan.
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 212 tests,
   all passing.
-- Coverage is 97.21% statements, 92.29% branches, 99.42% functions, and 97.14% lines. Every enforced
+- Coverage is 97.38% statements, 92.32% branches, 99.47% functions, and 97.32% lines. Every enforced
   threshold is at least 90%.
 - `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.
@@ -1207,15 +1280,17 @@ The full quality gate now has 175 passing tests. Coverage is 97.21% statements, 
   review findings were fixed and independently re-verified before this commit.
 - Milestone 8 Runtime Guard implementation is complete for the accepted process-local in-memory scope
   and has passed independent review.
-- Milestone 9 Persistence implementation is complete for the accepted local SQLite scope and awaits
-  independent review before it can be committed.
+- Milestone 9 Persistence implementation is complete for the accepted local SQLite scope and has
+  passed independent review.
+- Milestone 10 Workspace/Git implementation is complete for the accepted local single-repository scope
+  and has passed independent review. The review also reproduced Date-aware lease idempotency and
+  verified clean-target task-branch collision handling.
 
 ## What has NOT been implemented yet
 
-- Create isolated Git workspaces, rebase and integrate task changes safely.
 - Invoke coding agents, monitor them, and verify their results.
 
 In short: **the orchestrator can now map a real TypeScript pnpm repository, predict task impact,
 compare conflicts, decide what may start after an event, guard exclusive writes inside one process,
-and recover verified local orchestration evidence from SQLite. It still does not observe real writes,
-coordinate multiple processes, run agents, or modify a repository.**
+recover verified local orchestration evidence from SQLite, and integrate one local task worktree with
+Git. It still does not observe real writes, coordinate multiple processes, or run agents.**

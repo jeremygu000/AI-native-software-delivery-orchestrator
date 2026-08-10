@@ -201,6 +201,10 @@ Plain Scheduler decision object 使用 canonical comparison：object key 会排�
 Scheduler 已输出 deterministic ordered decision/reason array。缺 decision 或 mismatch 会抛出
 `PersistenceReplayError`，不会继续使用 ambiguous history。
 
+Canonical comparison 在检查 object field 前把 lease `Date` 转成 ISO timestamp。因此 same-version lease retry
+即使只改变 `lastHeartbeatAt` 也会被拒绝，不会误判成 identical retry。该 comparator 有意只处理这里使用的
+evidence shape；`Set` 使用前述 explicit persistence encoding，而不是作为 arbitrary JavaScript object 比较。
+
 空 run 没有 event，replay 返回 `[]`。
 
 ## Restart example
@@ -239,8 +243,8 @@ boundary。当前 lease version 只 fence lifecycle operation。
 ## 验证与限制
 
 Persistence package 有 15 个测试通过，statements 97.63%、branches 94.36%、functions 98.33%、lines
-97.57%。Repository quality gate 有 175 个测试通过，全仓覆盖率为语句 97.21%、分支 92.29%、函数
-99.42%、行 97.14%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
+97.73%。Repository quality gate 有 212 个测试通过，全仓覆盖率为语句 97.38%、分支 92.32%、函数
+99.47%、行 97.32%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
 
 当前 O(n) next-sequence lookup 对 local run 可接受，且由 adapter mutex 串行化。未来 high-volume
 workload 只有在测量证明需要后，才以 run counter 或 `MAX(sequence)` query 替换。

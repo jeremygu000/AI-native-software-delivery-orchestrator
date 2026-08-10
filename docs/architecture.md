@@ -284,11 +284,14 @@ lease release, conflict changes, verification results, and observed scope expans
 decision. A wave is never a barrier that forces unrelated ready work to wait.
 
 Tasks move through `INTEGRATING` after verification and before completion. Each task executes in an
-isolated Git worktree. Observed writes are checked against predicted scope, leases, and repository
-ownership before integration. `lease-stale` is an explicit scheduler reevaluation event. The
-current state contract treats an integration conflict as failure or cancellation; before worktree
-integration is implemented, recoverable integration waiting needs a phase-aware blocking model
-rather than a lossy `INTEGRATING -> BLOCKED -> READY` shortcut. The feedback loop is:
+isolated Git worktree. Workspace integration now uses a separate persisted phase lifecycle:
+`READY_TO_INTEGRATE`, `INTEGRATION_BLOCKED`, and `INTEGRATED`. An integration block retains structured
+Git evidence and never converts completed execution work into ordinary `READY` work. The local Git
+adapter rebases the task branch onto the integration ref, then integrates through a fast-forward-only
+merge. Dirty integration repositories, rebase conflicts, and fast-forward failures remain explicit
+blocks that an outer runtime may resume or abort. Observed writes are still not implemented, so no
+current component claims to check them against predicted scope or leases before integration. The
+feedback loop is:
 
 ```text
 intent -> plan -> predicted impact -> conflicts -> dispatch
@@ -389,8 +392,9 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
    recovery, and idempotent release. **Complete for the in-memory scope.**
 9. **Persistence:** finalize scheduler event/snapshot replay semantics, then persist and replay
    recoverable runs, transitions, conflicts, decisions, observations, and leases in SQLite/Drizzle.
-   **Implemented for the local SQLite scope; independent review pending.**
+   **Complete for the local SQLite scope.**
 10. **Workspace and Git:** isolated worktrees, rebase, integration, and disposal behind ports.
+    **Implemented for the local single-repository Git scope; independent review pending.**
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
 non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before

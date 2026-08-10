@@ -10,6 +10,7 @@ import type {
 import type { TaskContract } from './task-contract.js';
 import type { TaskState } from './task-state.js';
 import type { WriteLease } from './write-lease.js';
+import type { TaskWorkspace } from './workspace.js';
 
 export type OrchestrationRunState = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
@@ -68,6 +69,11 @@ export interface PersistedWriteLease {
   readonly lease: WriteLease;
 }
 
+export interface PersistedTaskWorkspace {
+  readonly runId: string;
+  readonly workspace: TaskWorkspace;
+}
+
 export interface PersistedReevaluation {
   readonly event: PersistedSchedulerEvent;
   readonly transitions: readonly PersistedTaskTransition[];
@@ -86,6 +92,7 @@ export interface RecoveredRun {
   readonly impacts: readonly PersistedTaskImpact[];
   readonly conflicts: readonly PersistedTaskConflict[];
   readonly leases: readonly PersistedWriteLease[];
+  readonly workspaces: readonly PersistedTaskWorkspace[];
 }
 
 export interface OrchestrationPersistence {
@@ -94,6 +101,7 @@ export interface OrchestrationPersistence {
   persistImpact(impact: PersistedTaskImpact): Promise<void>;
   persistConflict(conflict: PersistedTaskConflict): Promise<void>;
   persistLease(lease: PersistedWriteLease): Promise<void>;
+  persistWorkspace(workspace: PersistedTaskWorkspace): Promise<void>;
   updateRunState(runId: string, state: OrchestrationRunState): Promise<void>;
   recoverRun(runId: string): Promise<RecoveredRun | undefined>;
   replayRun(runId: string, scheduler: Scheduler): Promise<readonly PersistedSchedulerDecision[]>;
