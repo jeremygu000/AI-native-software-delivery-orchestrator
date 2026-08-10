@@ -177,6 +177,7 @@ describe('RepositoryTaskImpactAnalyzer', () => {
       ],
       expectedWrites: [
         { type: 'symbol', value: 'Service.search' },
+        { type: 'file', value: 'packages/core/src/index.ts' },
         { type: 'glob', value: '**/generated/**' },
         { type: 'file', value: 'packages/core/package.json' }
       ],
@@ -190,6 +191,10 @@ describe('RepositoryTaskImpactAnalyzer', () => {
     expect([...impact.projectsWritten]).toEqual(['core']);
     expect([...impact.filesRead]).toEqual(['consumer:index']);
     expect([...impact.filesWritten]).toEqual(['core:generated', 'core:index']);
+    expect([...impact.explicitProjectsWritten]).toEqual([]);
+    expect([...impact.explicitFilesWritten]).toEqual(['core:index']);
+    expect([...impact.globFilesWritten]).toEqual(['core:generated']);
+    expect([...impact.symbolDerivedFilesWritten]).toEqual(['core:index']);
     expect([...impact.symbolsRead]).toEqual(['consumer:index:run']);
     expect([...impact.symbolsWritten]).toEqual(['core:index:Service.search']);
     expect([...impact.sharedResources]).toEqual(['generated-code', 'manifests', 'release-channel']);
@@ -275,6 +280,7 @@ describe('RepositoryTaskImpactAnalyzer', () => {
       'manifests',
       'migrations'
     ]);
+    expect([...projectImpact.explicitProjectsWritten]).toEqual(['core']);
     expect(projectImpact.filesWritten.size).toBe(0);
   });
 

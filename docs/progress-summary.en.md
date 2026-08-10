@@ -894,16 +894,21 @@ The test suite now directly proves that:
 - sibling symbols in one file are a soft risk, not automatically a hard conflict;
 - exclusive, ordered, and producer-controlled resources preserve different semantics;
 - producer-controlled read/read access may remain parallel;
+- producer-controlled write/read access preserves producer-to-consumer direction regardless of task
+  ID ordering, while write/write remains nondirectional serialization;
+- sibling-symbol treatment requires symbol-derived file writes on both sides and is disabled by
+  explicit project, file, or glob coverage;
+- zero score always recommends parallel even when `guardedParallel` is configured as zero;
 - registry-resolved `package.json` scope is not mislabeled as an unresolved TypeScript file;
 - independent projects produce a zero-score parallel recommendation.
 
-The full quality gate passes with 93 tests. Coverage is 96.69% statements, 91.10% branches, 99.50%
-functions, and 96.62% lines. `pnpm build` also passes. Self-analysis now reports 7 projects, 40
-TypeScript files, 462 symbols, 13 project dependencies, 62 file dependencies, 781 symbol references,
+The full quality gate passes with 99 tests. Coverage is 96.67% statements, 91.26% branches, 99.51%
+functions, and 96.60% lines. `pnpm build` also passes. Self-analysis now reports 7 projects, 40
+TypeScript files, 477 symbols, 13 project dependencies, 62 file dependencies, 811 symbol references,
 and 2 expected root-project diagnostics.
 
-The active research repository was analyzed again after the milestone: 3 projects, 965 files,
-7,276 symbols, 3 project dependencies, 3,442 file dependencies, 13,136 symbol references, and the
+The active research repository was analyzed again after the milestone: 3 projects, 968 files,
+7,309 symbols, 3 project dependencies, 3,446 file dependencies, 13,192 symbol references, and the
 same one `UNCOVERED_TYPESCRIPT_FILES` diagnostic covering 25 API scripts. This run is a regression
 check for the Repository Facts Layer. `forge analyze` still returns repository facts only; Task
 Impact and Conflict Engine are currently library APIs and have not yet been wired into a new CLI
@@ -938,28 +943,167 @@ iterates owned files separately from `recordFile`. If per-file behavior grows be
 extract a shared side-effect-free resource-discovery helper so project-level discovery cannot drift.
 No code change was made after acceptance solely for this cosmetic seam.
 
+#### Second correctness review: provenance, direction, and zero-score action
+
+A later ChatGPT review found three additional Milestone 6 correctness gaps. First, the conservative
+`filesWritten` union did not retain why a file was present. A task declaring both whole-file and
+symbol scope could be mistaken for safe sibling-symbol editing. Predicted impact now separately
+stores explicit project writes, explicit file writes, glob-expanded writes, and symbol-derived
+parent files. Sibling-symbol handling is allowed only when both sides are symbol-derived and no
+broader scope covers that file.
+
+Second, producer-controlled resources previously created only a symmetric non-concurrency
+constraint. One writer plus one reader now creates a machine-readable `producer-consumer`
+constraint containing the actual producer and consumer task IDs, independent of canonical pair
+ordering. Read/read remains parallel; writer/writer remains hard serialization without inventing a
+direction. The conflict edge remains symmetric, while this constraint supplies a separate ordering
+edge for the future Scheduler.
+
+Third, custom `guardedParallel: 0` could make a zero-score, `none`-severity conflict recommend
+guarded parallelism. Action calculation now returns `parallel` for score zero before consulting any
+threshold. Six regression cases cover whole-file provenance, project/glob coverage, producer IDs on
+both sides of canonical ordering, and zero-score behavior. Hard constraints remain independent of
+weights. This follow-up was intentionally limited to Milestone 6; no Scheduler work was included.
+
+The final independent review reran all 99 tests with coverage, TypeScript build, Oxlint, and
+whitespace validation, and manually derived the critical provenance, reversed task-ID ordering, and
+zero-threshold paths rather than relying only on assertions. It found no Critical, High, or Medium
+issue and approved closing Milestone 6. Two Low observations remain recorded for future review:
+
+- project-to-file overlap is evaluated both when task impact expands project selectors and when the
+  Conflict Engine compares explicit project scope with a written file. The current semantics agree;
+  if either representation changes, their consistency must be reviewed together;
+- `coordinate` on a producer-controlled resource is intentionally conservative. Because it is
+  coordination intent rather than a directional write, coordinate/read produces a nondirectional
+  hard serialization constraint rather than inventing a producer-consumer edge.
+
+Neither observation changes the accepted behavior or blocks Milestone 7.
+
+#### Standalone Task Impact training guide
+
+Milestone 6 now has a standalone bilingual training companion:
+[Task Impact and Conflict Analysis](./task-impact-analysis.en.md) and its
+[Chinese edition](./task-impact-analysis.zh.md). It is written for a reader without prior
+orchestration experience and uses ASCII flows and worked examples to explain the evidence layers,
+selector resolution, write provenance, shared-resource policies, downstream propagation, hard
+constraints versus scored risk, conflict edges versus ordering edges, current limitations, and the
+handoff into Milestone 7. The guide describes the accepted implementation rather than introducing
+new behavior.
+
+The independent documentation review found no Critical or High issue and confirmed that both
+editions have equivalent structure, examples, and conclusions. It identified one Medium teaching
+gap: ambiguity behavior was described only in the symbol section, and the exact-file exception for
+paths resolved solely through the shared-resource registry was implicit. Both editions now state
+that project, file, and symbol selectors report zero/multiple exact matches, while a zero graph-file
+match is not ambiguous when a registry path rule successfully resolves that non-graph resource.
+The first use of canonical task ordering also now explains that locale-independent task-ID sorting
+is independent of argument order. No implementation behavior changed.
+
+#### OpenCode continuation handover
+
+A detailed operational handover now exists at [OpenCode Engineering Handover](./opencode-handover.md).
+It records the exact Git and review state, protected uncommitted files, superseded Nx/npm choices,
+toolchain and package boundaries, accepted Milestones 1–6 behavior, real-repository baselines,
+known limitations, the user's review/commit/Obsidian workflow, and a contract-first Milestone 7
+implementation sequence with adversarial tests and acceptance criteria. It distinguishes mandatory
+architecture invariants from Scheduler policies that still require an explicit design decision, so
+a continuation agent does not accidentally turn a suggestion into product behavior.
+
+## Stage 7: Event-driven Scheduler
+
+The Scheduler is now a working library that decides which tasks may start after each runtime event.
+It does not run an AI agent or change files. Its purpose is narrower and deterministic: combine task
+dependencies, conflict facts, current task states, and the available concurrency limit into an
+explainable next-step decision.
+
+Before this stage, the Scheduler contract only contained event names and free-form reason strings.
+That was too weak for audit, persistence, or replay. The contract now uses structured event variants,
+runtime blocker records, task-state snapshots, and per-task decision reasons. For example, a lease
+release includes its exact lease ID, and a blocked task records which lease or runtime conflict it is
+waiting for. A release can therefore wake only the matching task instead of accidentally unblocking
+all work.
+
+The implementation follows a fixed greedy policy:
+
+```text
+completed functional dependencies
+        +
+completed directional producers
+        +
+priority, then stable task ID
+        +
+hard constraints and risk policy
+        +
+remaining concurrency
+        |
+        v
+ready / start / block / unblock / cancel / defer decisions
+```
+
+Hard constraints are never filtered by their explanatory score. `parallel` and
+`guarded-parallel` risks may run together because no Runtime Guard exists yet; the latter retains
+machine-readable audit evidence. `stagger` and `serialize` defer the later candidate. Directional
+producer/consumer constraints keep their actual writer-to-reader direction even when task IDs sort
+in the opposite direction.
+
+Terminal prerequisites no longer leave dependent work silently pending. A failure produces
+`dependency-failed` cancellation decisions for every nonterminal transitive functional dependant and
+every dependent created by a directional producer constraint. A pre-existing cancellation propagates
+with distinct `dependency-cancelled` evidence instead of pretending it was a failure. Runtime
+blocking is also explicit: only a running task can become blocked, and only a matching lease or
+runtime-conflict release can return it to ready.
+
+An initial wave plan is available as an explanation view, but it is not a runtime barrier. The tests
+prove that if A and B appear in preview wave 0, C depends only on A, and A completes while B still
+runs, C can start immediately when capacity and conflicts permit it.
+
+This stage added `libs/scheduler`, which depends only on `domain` and `dag`. It contains no LLM,
+pnpm, repository-provider, Git, workspace, persistence, or agent-runtime behavior. The Scheduler is
+not connected to `forge plan` yet because no tested task-spec input path or execution runtime exists.
+
+For a code-level teaching model, see [Scheduler Dispatch](./scheduler-dispatch.en.md) and its
+[Chinese edition](./scheduler-dispatch.zh.md). The guides explain the boundary between Task Impact,
+Conflict Engine, Scheduler, and future Runtime Guard; structured snapshots and events; selection and
+risk policy; producer direction; terminal propagation; exact runtime blocker release; the no-wave-
+barrier rule; and the deliberately unimplemented runtime boundaries.
+
+The adversarial suite covers invalid graphs and options, stable priority ordering, running capacity,
+zero-score hard constraints, same-symbol serialization, ordered and exclusive resources,
+sibling-symbol guarded risk, producer direction in both lexical orders, completion readiness, failure
+propagation, exact runtime blocker release, determinism, and the no-wave-barrier counterexample.
+
+The completed quality gate has 125 passing tests. Coverage is 96.95% statements, 91.92% branches,
+99.60% functions, and 96.88% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+
+Self-analysis after adding the Scheduler found 8 projects, 44 TypeScript files, 518 symbols, 16
+project dependencies, 66 file dependencies, 956 symbol references, and the same 2 expected root
+diagnostics. The active research repository still produced its single known 25-file uncovered-script
+diagnostic; its current 3 projects, 1,010 files, 7,617 symbols, 3 project dependencies, 3,592 file
+dependencies, and 13,893 symbol references are normal active-repository drift rather than a
+Repository Facts Layer regression.
+
 ## Current overall status (as of this writing)
 
-- Architecture milestones 1–6 of 10 are complete. That is roughly 60% by milestone count, not 60%
+- Architecture milestones 1–7 of 10 are complete. That is roughly 70% by milestone count, not 70%
   of total engineering effort: later runtime, persistence, Git, and agent-execution milestones are
   larger and riskier than several foundation milestones.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 93 tests,
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 125 tests,
   all passing.
-- Coverage is 96.69% statements, 91.10% branches, 99.50% functions, and 96.62% lines. Every enforced
+- Coverage is 96.95% statements, 91.92% branches, 99.60% functions, and 96.88% lines. Every enforced
   threshold is at least 90%.
-- `pnpm build` passes. `forge analyze` is real and verified on a 965-file repository; `forge plan`
+- `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.
+- Milestone 6's second correctness hardening and Milestone 7's implementation both passed independent
+  review and follow-up review with no Critical, High, or Medium issue. The Scheduler's documented
+  review findings were fixed and independently re-verified before this commit.
 
 ## What has NOT been implemented yet
 
-- Dispatch tasks event-by-event while respecting dependencies, hard constraints, and concurrency.
-- Replace thin scheduler events and string reasons with structured discriminated payloads before
-  implementing dispatch.
 - Implement live lease acquire/heartbeat/stale/release storage and runtime write enforcement.
 - Persist orchestration runs so they can recover after restart.
 - Create isolated Git workspaces, rebase and integrate task changes safely.
 - Invoke coding agents, monitor them, and verify their results.
 
-In short: **the orchestrator can now map a real TypeScript pnpm repository, resolve structured task
-intent into predicted impact, and compare task pairs deterministically. The next stage is the
-event-driven Scheduler; it still does not plan natural-language work or run agents.**
+In short: **the orchestrator can now map a real TypeScript pnpm repository, predict task impact,
+compare conflicts, and deterministically decide what may start after an event. It still does not
+collect live events, run agents, grant write permission, or modify a repository.**

@@ -26,8 +26,12 @@ export interface PredictedTaskImpact {
   readonly taskId: string;
   readonly projectsRead: ReadonlySet<ProjectId>;
   readonly projectsWritten: ReadonlySet<ProjectId>;
+  readonly explicitProjectsWritten: ReadonlySet<ProjectId>;
   readonly filesRead: ReadonlySet<FileId>;
   readonly filesWritten: ReadonlySet<FileId>;
+  readonly explicitFilesWritten: ReadonlySet<FileId>;
+  readonly globFilesWritten: ReadonlySet<FileId>;
+  readonly symbolDerivedFilesWritten: ReadonlySet<FileId>;
   readonly symbolsRead: ReadonlySet<SymbolId>;
   readonly symbolsWritten: ReadonlySet<SymbolId>;
   readonly sharedResources: ReadonlySet<ResourceId>;
@@ -78,15 +82,29 @@ export type ConflictSeverity = 'none' | 'soft' | 'hard';
 export type SchedulingConstraintType =
   | 'exclusive-resource'
   | 'ordered-resource'
+  | 'producer-consumer'
   | 'producer-controlled-resource'
   | 'same-symbol-write'
   | 'runtime-scope-expansion';
 
-export interface SchedulingConstraint {
-  readonly type: SchedulingConstraintType;
+interface SchedulingConstraintBase {
   readonly detail: string;
   readonly resourceIds: readonly string[];
 }
+
+export interface ProducerConsumerSchedulingConstraint extends SchedulingConstraintBase {
+  readonly type: 'producer-consumer';
+  readonly producerTaskId: string;
+  readonly consumerTaskId: string;
+}
+
+export interface StandardSchedulingConstraint extends SchedulingConstraintBase {
+  readonly type: Exclude<SchedulingConstraintType, 'producer-consumer'>;
+}
+
+export type SchedulingConstraint =
+  | ProducerConsumerSchedulingConstraint
+  | StandardSchedulingConstraint;
 
 interface TaskConflictBase {
   readonly taskA: string;

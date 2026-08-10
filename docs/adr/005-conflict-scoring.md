@@ -15,7 +15,9 @@ The score retained on a hard conflict is explanation metadata only; scheduler im
 not use it to filter, cap, or selectively enforce structural constraints.
 The default `guarded-parallel` threshold is intentionally 1: any detected nonzero risk receives at
 least runtime guarding. Deployments may tune the validated monotonic thresholds, but plain parallel
-is the default only for a zero-score pair.
+is the default only for a zero-score pair. Action selection checks `score === 0` before configurable
+thresholds, so even a custom `guardedParallel: 0` cannot produce the contradictory combination
+`severity: none` plus `recommendedAction: guarded-parallel`.
 
 ## Consequences
 

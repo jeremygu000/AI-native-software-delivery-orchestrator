@@ -115,6 +115,15 @@ importers:
         specifier: 2.8.1
         version: 2.8.1
 
+  libs/scheduler:
+    dependencies:
+      '@ai-native-software-delivery-orchestrator/dag':
+        specifier: workspace:*
+        version: link:../dag
+      '@ai-native-software-delivery-orchestrator/domain':
+        specifier: workspace:*
+        version: link:../domain
+
   libs/task-impact:
     dependencies:
       '@ai-native-software-delivery-orchestrator/domain':

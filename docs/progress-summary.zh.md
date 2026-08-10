@@ -790,15 +790,19 @@ public API touch 与 high fan-out 保持为可解释的 scored risk。显式但�
 - 同文件 sibling symbols 是 soft risk,不会自动变成 hard conflict;
 - exclusive、ordered、producer-controlled 保持三种不同语义;
 - producer-controlled 的 read/read 可以并行;
+- producer-controlled write/read 不受 task ID 排序影响,会保留 producer→consumer 方向;
+  write/write 仍是无方向 serialization;
+- sibling-symbol 只有两边都来自 symbol parent 且没有 project/file/glob 更宽 scope 时才成立;
+- 即使配置 `guardedParallel: 0`,零分仍然只能建议 parallel;
 - registry 已解析的 `package.json` 不会被误报成未解析 TypeScript 文件;
 - 独立项目得到 0 分和 parallel 建议。
 
-完整质量门已有 93 个测试通过。覆盖率为:语句 96.69%、分支 91.10%、函数 99.50%、行
-96.62%。`pnpm build` 也通过。项目自分析现在得到 7 个项目、40 个 TypeScript 文件、462 个
-符号、13 条项目依赖、62 条文件依赖、781 条符号引用和 2 条预期 root-project diagnostic。
+完整质量门已有 99 个测试通过。覆盖率为:语句 96.67%、分支 91.26%、函数 99.51%、行
+96.60%。`pnpm build` 也通过。项目自分析现在得到 7 个项目、40 个 TypeScript 文件、477 个
+符号、13 条项目依赖、62 条文件依赖、811 条符号引用和 2 条预期 root-project diagnostic。
 
-本阶段完成后再次分析活跃研究仓库:3 个项目、965 个文件、7,276 个符号、3 条项目依赖、
-3,442 条文件依赖、13,136 条符号引用,仍然只有一条覆盖 25 个 API scripts 的
+本阶段完成后再次分析活跃研究仓库:3 个项目、968 个文件、7,309 个符号、3 条项目依赖、
+3,446 条文件依赖、13,192 条符号引用,仍然只有一条覆盖 25 个 API scripts 的
 `UNCOVERED_TYPESCRIPT_FILES` diagnostic。这次运行是 Repository Facts Layer 的回归验证。
 `forge analyze` 仍然只返回仓库事实;Task Impact 与 Conflict Engine 当前是 library API,还没有
 接入新的 CLI command。
@@ -830,24 +834,146 @@ Follow-up Reviewer 独立重跑了 coverage、TypeScript build、Oxlint 与 whit
 resource-discovery helper,避免 project-level 路径漂移。本次不会仅为了这个 cosmetic seam 在验收
 以后继续改代码。
 
+#### 第二次正确性 Review:provenance、方向与零分动作
+
+后续 ChatGPT Review 又发现三项 Milestone 6 正确性缺口。第一,保守的 `filesWritten` union 没有
+保存文件为什么进入集合。一个同时声明 whole-file 与 symbol scope 的任务可能被误判成安全的
+sibling-symbol 编辑。Predicted impact 现在分别保存显式 project write、显式 file write、glob
+展开写入和 symbol-derived parent file。只有两边都是 symbol-derived,且没有更宽 scope 覆盖该
+文件时,才允许 sibling-symbol 处理。
+
+第二,producer-controlled resource 原来只有双向“不可并发”约束。现在一个 writer 加一个 reader
+会形成机器可读的 `producer-consumer` constraint,携带真实 producer/consumer task ID,不依赖
+canonical pair 排序。Read/read 仍可并行;writer/writer 仍为 hard serialization,不会虚构方向。
+Conflict edge 仍是双向关系,该 constraint 则为未来 Scheduler 单独提供 ordering edge。
+
+第三,自定义 `guardedParallel: 0` 可能让零分、`none` severity 的 conflict 建议 guarded parallel。
+现在 action calculation 会在读取 threshold 前先让零分返回 `parallel`。六个回归场景覆盖 whole-file
+provenance、project/glob coverage、canonical 排序两侧的 producer ID 和零分行为。Hard constraint
+仍然与权重无关。本次 follow-up 严格限制在 Milestone 6,没有包含 Scheduler 工作。
+
+最终独立 Review 重新运行了 99 个测试及覆盖率、TypeScript build、Oxlint 和 whitespace
+validation,并且不只依赖测试断言,还手工推导了 provenance、task ID 反向排序和零 threshold 的
+关键路径。Review 没有发现 Critical、High 或 Medium,并批准正式关闭 Milestone 6。保留两条供
+后续 Review 注意的 Low 观察:
+
+- project selector 展开影响时会处理一次 project-to-file 关系,Conflict Engine 用显式 project
+  scope 与写入文件比较时也会处理一次。当前两处语义一致;未来任一表示发生变化时,必须一起
+  检查一致性;
+- producer-controlled resource 上的 `coordinate` 有意采用保守语义。它表达协调意图而不是
+  有方向的 write,所以 coordinate/read 会形成无方向的 hard serialization constraint,不会虚构
+  producer-consumer edge。
+
+这两项都不改变已验收行为,也不阻塞 Milestone 7。
+
+#### 独立 Task Impact 培训文档
+
+Milestone 6 现在有独立的中英文培训补充文档:
+[Task Impact 与 Conflict Analysis](./task-impact-analysis.zh.md)及其
+[English edition](./task-impact-analysis.en.md)。文档面向没有编排器经验的读者,使用 ASCII
+流程图和完整例子解释三层证据、selector resolution、write provenance、shared-resource policy、
+downstream propagation、hard constraint 与 scored risk、conflict edge 与 ordering edge、当前
+限制以及怎样把结果交给 Milestone 7。文档只描述已经验收的实现,没有引入新行为。
+
+独立文档 Review 没有发现 Critical 或 High,并确认中英文结构、例子和结论等价。Review 发现一项
+Medium 教学缺口:ambiguity 行为只在 symbol 小节说明,而 exact file 仅通过 shared-resource
+registry path 解析时的例外仍是隐含的。两个版本现在都明确说明 project、file、symbol selector
+会报告零个或多个 exact match;如果 registry path rule 已成功解析 graph 之外的资源,零个 graph
+file match 则不算 ambiguous。Canonical task ordering 第一次出现时也补充说明了与 locale 无关的
+task ID 排序不受调用参数顺序影响。本次没有改变任何实现行为。
+
+#### OpenCode 接手文档
+
+详细的操作 handover 已保存为 [OpenCode Engineering Handover](./opencode-handover.md)。它记录了
+准确 Git 与 Review 状态、必须保护的未提交文件、已经废弃的 Nx/npm 选择、工具链与 package
+边界、Milestone 1–6 已验收行为、真实仓库基线、已知限制、用户要求的 Review/commit/Obsidian
+流程,以及 contract-first 的 Milestone 7 实现顺序、对抗测试和验收条件。文档明确区分强制架构
+不变量与仍需显式设计决定的 Scheduler policy,避免接手 Agent 把建议直接变成产品行为。
+
+## 阶段七:事件驱动 Scheduler
+
+Scheduler 现在已经是一个可工作的库:每次收到运行时事件后,它会决定哪些任务可以启动。它不会运行
+AI Agent,也不会修改文件。它的职责更窄且完全确定:把任务依赖、冲突事实、当前任务状态和剩余并发
+容量组合成下一步可解释的决定。
+
+在本阶段前,Scheduler contract 只有 event 名称和自由文本 reason。这样的信息不足以审计、持久化或
+replay。现在 contract 改为结构化 event variant、runtime blocker record、task-state snapshot 和逐任务
+decision reason。例如 lease release 会带准确的 lease ID;被阻塞任务会记录自己正在等待的 lease 或
+runtime conflict。因此 release 只会唤醒真正匹配的任务,不会错误地解除全部任务的阻塞。
+
+实现采用固定的 greedy policy:
+
+```text
+已完成的 functional dependency
+        +
+已完成的 directional producer
+        +
+priority,再按稳定 task ID
+        +
+hard constraint 与 risk policy
+        +
+剩余 concurrency
+        |
+        v
+ready / start / block / unblock / cancel / defer decision
+```
+
+Hard constraint 绝不会按解释用的 score 过滤。当前还没有 Runtime Guard,因此 `parallel` 与
+`guarded-parallel` risk 可以同时运行;后者仍会保留机器可读的审计证据。`stagger` 与 `serialize`
+会 defer 后一个 candidate。Directional producer/consumer constraint 保持真实 writer-to-reader
+方向,即使 task ID 的排序方向刚好相反也不会改变。
+
+终态 prerequisite 不再让 dependent work 静默留在 pending。失败会为全部仍未终态的传递 functional
+dependant 以及由 directional producer constraint 产生的 consumer 返回带 `dependency-failed` 的
+cancellation decision。snapshot 中已经 `CANCELLED` 的 prerequisite 也会传递取消,但使用独立的
+`dependency-cancelled` evidence,不会伪装成 failure。Runtime blocking 同样明确:只有 `RUNNING` task
+可以进入 blocked;只有 snapshot 中 blocker 对应的 lease 或 runtime conflict release 才能让它回到 ready。
+
+初始 wave plan 可以作为解释视图,但不会成为 runtime barrier。测试证明:A 和 B 同在 preview wave 0,
+C 只依赖 A;当 A 完成、B 仍在运行时,只要 capacity 和 conflict 允许,C 可以立刻启动。
+
+本阶段新增 `libs/scheduler`,它只依赖 `domain` 和 `dag`,不包含 LLM、pnpm、repository provider、Git、
+workspace、persistence 或 agent-runtime 行为。由于还没有经过测试的 task-spec 输入路径或 execution
+runtime,`forge plan` 仍然没有接入 Scheduler。
+
+更详细的代码级教学模型见 [Scheduler Dispatch](./scheduler-dispatch.zh.md) 及其
+[English edition](./scheduler-dispatch.en.md)。两份指南说明 Task Impact、Conflict Engine、Scheduler
+与未来 Runtime Guard 的边界、structured snapshot/event、selection/risk policy、producer direction、
+terminal propagation、exact runtime blocker release、no-wave-barrier rule，以及刻意未实现的 runtime
+边界。
+
+对抗测试覆盖 invalid graph/options、稳定 priority 排序、already-running capacity、零分 hard
+constraint、same-symbol serialization、ordered/exclusive resource、sibling-symbol guarded risk、两种
+字典序下的 producer direction、completion readiness、failure propagation、准确 runtime blocker release、
+determinism 和 no-wave-barrier counterexample。
+
+完整质量门有 125 个测试通过。覆盖率为:语句 96.95%、分支 91.92%、函数 99.60%、行 96.88%。
+`pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
+
+新增 Scheduler 后的本仓自分析得到 8 个 projects、44 个 TypeScript files、518 个 symbols、16 条
+project dependencies、66 条 file dependencies、956 条 symbol references,仍是 2 条预期 root
+diagnostic。活跃研究仓仍只有同一条已知的 25-file uncovered-script diagnostic;当前 3 个 projects、
+1,010 个 files、7,617 个 symbols、3 条 project dependencies、3,592 条 file dependencies 和
+13,893 条 symbol references 属于活跃仓库正常漂移,不是 Repository Facts Layer regression。
+
 ## 目前整体状态(截止到本文写作时)
 
-- 架构规划的 10 个里程碑中完成了 1–6,按里程碑数量约为 60%。这不代表总工程量恰好完成
-  一半:后面的运行时、持久化、Git 和 Agent 执行阶段比多个地基阶段更大、风险也更高。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 93 个测试全部通过。
-- 覆盖率为:语句 96.69%、分支 91.10%、函数 99.50%、行 96.62%;四项都达到至少 90% 的门槛。
-- `pnpm build` 通过。`forge analyze` 已在 965 个文件的真实仓库验证;`forge plan` 仍然刻意
+- 架构规划的 10 个里程碑中完成了 1–7,按里程碑数量约为 70%。这不代表总工程量恰好完成
+  70%:后面的运行时、持久化、Git 和 Agent 执行阶段比多个地基阶段更大、风险也更高。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 125 个测试全部通过。
+- 覆盖率为:语句 96.95%、分支 91.92%、函数 99.60%、行 96.88%;四项都达到至少 90% 的门槛。
+- `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
+- Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有
+  Critical、High 或 Medium。Scheduler 中记录的 review finding 已修复，并在提交前独立重新验证。
 
 ## 还没有实现的部分
 
-- 根据任务依赖、hard constraint 与并发限制,逐事件决定下一批可启动任务。
-- Scheduler 实现前,把过薄的 event 和字符串 reason 改成结构化判别 payload。
 - 实现活动租约的申请、heartbeat、stale 恢复、释放、存储和运行时写入强制检查。
 - 持久化编排运行,让程序重启后能恢复现场。
 - 创建隔离 Git 工作区,安全地 rebase 和集成各任务改动。
 - 真正调用编码 Agent、监控执行并验证结果。
 
-简单说:**编排器现在能为真实 TypeScript pnpm 仓库建立确定的结构地图,把结构化任务意图解析成
-预测影响,并确定地比较任务对。下一阶段是事件驱动 Scheduler;目前仍然不会规划自然语言任务或
-运行 Agent。**
+简单说:**编排器现在能为真实 TypeScript pnpm 仓库建立确定的结构地图,预测任务影响、比较冲突,
+并在事件发生后确定地决定哪些任务可以启动。它仍然不会采集 live event、运行 Agent、授予写入许可
+或修改仓库。**

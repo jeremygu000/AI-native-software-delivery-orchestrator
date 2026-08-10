@@ -1,91 +1,115 @@
 import { describe, expect, it } from 'vitest';
 
-import type { HardTaskConflict, RiskTaskConflict } from './conflict.js';
-import type { Scheduler, SchedulerEvent } from './execution.js';
-
-const hardConflict: HardTaskConflict = {
-  taskA: 'A',
-  taskB: 'B',
-  score: 1,
-  severity: 'hard',
-  reasons: [],
-  constraints: [
-    {
-      type: 'same-symbol-write',
-      detail: 'Both tasks write the same symbol',
-      resourceIds: ['catalog:product.ts:Product']
-    }
-  ],
-  recommendedAction: 'serialize'
-};
-
-const riskConflict: RiskTaskConflict = {
-  taskA: 'A',
-  taskB: 'C',
-  score: 40,
-  severity: 'soft',
-  reasons: [],
-  constraints: [],
-  recommendedAction: 'guarded-parallel'
-};
+import {
+  scheduleOptionsSchema,
+  schedulerDecisionReasonSchema,
+  schedulerEventSchema,
+  schedulerSnapshotSchema,
+  schedulerTaskDecisionSchema
+} from './execution.js';
 
 describe('scheduler contracts', () => {
-  it('keeps hard constraints separate from scored risk conflicts', () => {
-    const scheduler: Scheduler = {
-      createInitialPlan: (_tasks, hardConflicts, riskConflicts) => {
-        expect(hardConflicts).toEqual([hardConflict]);
-        expect(riskConflicts).toEqual([riskConflict]);
-        return { waves: [] };
-      },
-      reevaluate: (_event, _snapshot, _tasks, hardConflicts, riskConflicts) => {
-        expect(hardConflicts).toEqual([hardConflict]);
-        expect(riskConflicts).toEqual([riskConflict]);
-        return { startTaskIds: [], blockedTaskIds: [], reasons: [] };
-      }
-    };
-
-    scheduler.createInitialPlan([], [hardConflict], [riskConflict], { maxConcurrency: 2 });
-    scheduler.reevaluate(
-      { type: 'lease-stale', taskId: 'A' },
-      { taskStates: new Map(), runningTaskIds: new Set() },
-      [],
-      [hardConflict],
-      [riskConflict],
-      { maxConcurrency: 2 }
-    );
+  it('parses every supported scheduler event with replay evidence', () => {
+    expect(
+      [
+        { type: 'task-completed', taskId: 'A' },
+        { type: 'task-failed', taskId: 'A' },
+        { type: 'workspace-integrated', taskId: 'A' },
+        { type: 'verification-completed', taskId: 'A' },
+        { type: 'lease-blocked', taskId: 'A', leaseId: 'lease-1' },
+        { type: 'lease-released', taskId: 'A', leaseId: 'lease-1' },
+        { type: 'lease-stale', taskId: 'A', leaseId: 'lease-1' },
+        { type: 'runtime-conflict-discovered', taskId: 'A', conflictId: 'conflict-1' },
+        { type: 'runtime-conflict-resolved', taskId: 'A', conflictId: 'conflict-1' }
+      ].map((event) => schedulerEventSchema.parse(event))
+    ).toHaveLength(9);
   });
 
-  it('represents stale-lease reevaluation explicitly', () => {
-    const event: SchedulerEvent = { type: 'lease-stale', taskId: 'A' };
+  it('rejects runtime events without their blocker identity', () => {
+    expect(schedulerEventSchema.safeParse({ type: 'lease-released', taskId: 'A' }).success).toBe(
+      false
+    );
+    expect(
+      schedulerEventSchema.safeParse({ type: 'runtime-conflict-discovered', taskId: 'A' }).success
+    ).toBe(false);
+  });
 
-    expect(event).toEqual({ type: 'lease-stale', taskId: 'A' });
+  it('keeps snapshots serializable and associates blocked tasks with exact blockers', () => {
+    expect(
+      schedulerSnapshotSchema.parse({
+        taskStates: [
+          { taskId: 'A', state: 'COMPLETED' },
+          { taskId: 'B', state: 'BLOCKED' }
+        ],
+        runtimeBlocks: [
+          {
+            taskId: 'B',
+            blockers: [
+              { type: 'lease', leaseId: 'lease-1' },
+              { type: 'runtime-conflict', conflictId: 'conflict-1' }
+            ]
+          }
+        ]
+      })
+    ).toEqual({
+      taskStates: [
+        { taskId: 'A', state: 'COMPLETED' },
+        { taskId: 'B', state: 'BLOCKED' }
+      ],
+      runtimeBlocks: [
+        {
+          taskId: 'B',
+          blockers: [
+            { type: 'lease', leaseId: 'lease-1' },
+            { type: 'runtime-conflict', conflictId: 'conflict-1' }
+          ]
+        }
+      ]
+    });
+  });
+
+  it('uses structured per-task reasons and legal state-transition decisions', () => {
+    const reason = schedulerDecisionReasonSchema.parse({
+      type: 'producer-must-complete',
+      producerTaskIds: ['producer']
+    });
+    const decision = schedulerTaskDecisionSchema.parse({
+      taskId: 'consumer',
+      action: 'defer',
+      reasons: [reason]
+    });
+
+    expect(decision).toEqual({
+      taskId: 'consumer',
+      action: 'defer',
+      reasons: [{ type: 'producer-must-complete', producerTaskIds: ['producer'] }]
+    });
+    expect(
+      schedulerTaskDecisionSchema.safeParse({
+        taskId: 'A',
+        action: 'start',
+        fromState: 'PENDING',
+        toState: 'RUNNING',
+        reasons: [{ type: 'selected-by-priority', priority: 0 }]
+      }).success
+    ).toBe(false);
+  });
+
+  it('represents propagated cancellation independently from dependency failure', () => {
+    expect(
+      schedulerDecisionReasonSchema.parse({
+        type: 'dependency-cancelled',
+        cancelledTaskIds: ['cancelled-prerequisite']
+      })
+    ).toEqual({
+      type: 'dependency-cancelled',
+      cancelledTaskIds: ['cancelled-prerequisite']
+    });
+  });
+
+  it('requires a positive integer concurrency limit', () => {
+    expect(scheduleOptionsSchema.safeParse({ maxConcurrency: 1 }).success).toBe(true);
+    expect(scheduleOptionsSchema.safeParse({ maxConcurrency: 0 }).success).toBe(false);
+    expect(scheduleOptionsSchema.safeParse({ maxConcurrency: 1.5 }).success).toBe(false);
   });
 });
-
-const invalidHardConflict = {
-  taskA: 'A',
-  taskB: 'B',
-  score: 100,
-  severity: 'hard',
-  reasons: [],
-  // @ts-expect-error Hard conflicts must contain at least one structural scheduling constraint.
-  constraints: [],
-  recommendedAction: 'serialize'
-} satisfies HardTaskConflict;
-
-void invalidHardConflict;
-
-const invalidHardAction = {
-  ...hardConflict,
-  // @ts-expect-error Hard conflicts cannot recommend parallel execution.
-  recommendedAction: 'parallel'
-} satisfies HardTaskConflict;
-
-const invalidRiskConstraint = {
-  ...riskConflict,
-  // @ts-expect-error Scored risk conflicts cannot carry structural scheduling constraints.
-  constraints: hardConflict.constraints
-} satisfies RiskTaskConflict;
-
-void invalidHardAction;
-void invalidRiskConstraint;

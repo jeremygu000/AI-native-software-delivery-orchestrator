@@ -19,6 +19,8 @@ export interface TaskImpactAnalyzerOptions {
   readonly highFanOutProjectCount?: number;
 }
 
+type PredictedFileWriteSource = 'file-selector' | 'glob-selector' | 'symbol-parent';
+
 export type TaskImpactAnalysisErrorCode = 'UNKNOWN_SHARED_RESOURCE';
 
 export class TaskImpactAnalysisError extends Error {
@@ -36,8 +38,12 @@ export class TaskImpactAnalysisError extends Error {
 interface MutableImpact {
   readonly projectsRead: Set<ProjectId>;
   readonly projectsWritten: Set<ProjectId>;
+  readonly explicitProjectsWritten: Set<ProjectId>;
   readonly filesRead: Set<FileId>;
   readonly filesWritten: Set<FileId>;
+  readonly explicitFilesWritten: Set<FileId>;
+  readonly globFilesWritten: Set<FileId>;
+  readonly symbolDerivedFilesWritten: Set<FileId>;
   readonly symbolsRead: Set<SymbolId>;
   readonly symbolsWritten: Set<SymbolId>;
   readonly sharedResourceModes: Map<string, Set<SharedResourceAccessMode>>;
@@ -71,7 +77,8 @@ const recordFile = (
   graph: RepositoryGraph,
   fileId: FileId,
   mode: Extract<SharedResourceAccessMode, 'read' | 'write'>,
-  registry: SharedResourceRegistry
+  registry: SharedResourceRegistry,
+  writeSource?: PredictedFileWriteSource
 ): void => {
   const file = graph.files.get(fileId);
   if (file === undefined) {
@@ -83,6 +90,13 @@ const recordFile = (
   } else {
     impact.filesWritten.add(file.id);
     impact.projectsWritten.add(file.projectId);
+    if (writeSource === 'file-selector') {
+      impact.explicitFilesWritten.add(file.id);
+    } else if (writeSource === 'glob-selector') {
+      impact.globFilesWritten.add(file.id);
+    } else if (writeSource === 'symbol-parent') {
+      impact.symbolDerivedFilesWritten.add(file.id);
+    }
   }
   for (const resource of registry.matchingFile(file.path)) {
     recordSharedResource(impact, resource.id, mode);
@@ -105,7 +119,7 @@ const recordSymbol = (
   } else {
     impact.symbolsWritten.add(symbol.id);
   }
-  recordFile(impact, graph, symbol.fileId, mode, registry);
+  recordFile(impact, graph, symbol.fileId, mode, registry, 'symbol-parent');
 };
 
 const resolveDownstreamProjects = (
@@ -147,8 +161,12 @@ export class RepositoryTaskImpactAnalyzer implements TaskImpactAnalyzer {
     const impact: MutableImpact = {
       projectsRead: new Set(),
       projectsWritten: new Set(),
+      explicitProjectsWritten: new Set(),
       filesRead: new Set(),
       filesWritten: new Set(),
+      explicitFilesWritten: new Set(),
+      globFilesWritten: new Set(),
+      symbolDerivedFilesWritten: new Set(),
       symbolsRead: new Set(),
       symbolsWritten: new Set(),
       sharedResourceModes: new Map(),
@@ -206,8 +224,12 @@ export class RepositoryTaskImpactAnalyzer implements TaskImpactAnalyzer {
       taskId: task.id,
       projectsRead: stableSet(impact.projectsRead),
       projectsWritten,
+      explicitProjectsWritten: stableSet(impact.explicitProjectsWritten),
       filesRead: stableSet(impact.filesRead),
       filesWritten: stableSet(impact.filesWritten),
+      explicitFilesWritten: stableSet(impact.explicitFilesWritten),
+      globFilesWritten: stableSet(impact.globFilesWritten),
+      symbolDerivedFilesWritten: stableSet(impact.symbolDerivedFilesWritten),
       symbolsRead: stableSet(impact.symbolsRead),
       symbolsWritten: stableSet(impact.symbolsWritten),
       sharedResources: stableSet(impact.sharedResourceModes.keys()),
@@ -243,6 +265,7 @@ export class RepositoryTaskImpactAnalyzer implements TaskImpactAnalyzer {
           impact.projectsRead.add(project.id);
         } else {
           impact.projectsWritten.add(project.id);
+          impact.explicitProjectsWritten.add(project.id);
         }
         for (const resource of this.#registry.matchingFile(project.packageJsonPath)) {
           recordSharedResource(impact, resource.id, mode);
@@ -267,7 +290,14 @@ export class RepositoryTaskImpactAnalyzer implements TaskImpactAnalyzer {
           : file.id === selector.value || normalizeRepositoryPath(file.path) === normalizedValue
       );
       for (const file of files) {
-        recordFile(impact, graph, file.id, mode, this.#registry);
+        recordFile(
+          impact,
+          graph,
+          file.id,
+          mode,
+          this.#registry,
+          selector.type === 'glob' ? 'glob-selector' : 'file-selector'
+        );
       }
       const selectorResources =
         selector.type === 'glob'

@@ -94,8 +94,12 @@ const impact = (
   taskId,
   projectsRead: new Set(),
   projectsWritten: new Set(),
+  explicitProjectsWritten: new Set(),
   filesRead: new Set(),
   filesWritten: new Set(),
+  explicitFilesWritten: new Set(),
+  globFilesWritten: new Set(),
+  symbolDerivedFilesWritten: new Set(),
   symbolsRead: new Set(),
   symbolsWritten: new Set(),
   sharedResources: new Set(sharedResourceAccesses.map((access) => access.resourceId)),
@@ -191,11 +195,13 @@ describe('DeterministicConflictEngine', () => {
       impact('a', {
         projectsWritten: new Set(['core']),
         filesWritten: new Set(['core:file']),
+        symbolDerivedFilesWritten: new Set(['core:file']),
         symbolsWritten: new Set(['core:file:Service.first'])
       }),
       impact('b', {
         projectsWritten: new Set(['core']),
         filesWritten: new Set(['core:file']),
+        symbolDerivedFilesWritten: new Set(['core:file']),
         symbolsWritten: new Set(['core:file:Service.second'])
       }),
       graph
@@ -208,6 +214,66 @@ describe('DeterministicConflictEngine', () => {
       'same-project'
     ]);
     expect(conflict.recommendedAction).toBe('guarded-parallel');
+  });
+
+  it('does not downgrade explicit whole-file ownership to sibling-symbol risk', () => {
+    const engine = new DeterministicConflictEngine(registry);
+    const conflict = engine.compare(
+      impact('a', {
+        projectsWritten: new Set(['core']),
+        filesWritten: new Set(['core:file']),
+        explicitFilesWritten: new Set(['core:file']),
+        symbolDerivedFilesWritten: new Set(['core:file']),
+        symbolsWritten: new Set(['core:file:Service.first'])
+      }),
+      impact('b', {
+        projectsWritten: new Set(['core']),
+        filesWritten: new Set(['core:file']),
+        symbolDerivedFilesWritten: new Set(['core:file']),
+        symbolsWritten: new Set(['core:file:Service.second'])
+      }),
+      graph
+    );
+
+    expect(conflict.reasons.map((reason) => reason.type)).toContain('same-file');
+    expect(conflict.reasons.map((reason) => reason.type)).not.toContain(
+      'same-file-different-symbol'
+    );
+  });
+
+  it.each([
+    {
+      label: 'project selector',
+      broaderImpact: {
+        projectsWritten: new Set(['core']),
+        explicitProjectsWritten: new Set(['core'])
+      }
+    },
+    {
+      label: 'glob selector',
+      broaderImpact: {
+        projectsWritten: new Set(['core']),
+        filesWritten: new Set(['core:file']),
+        globFilesWritten: new Set(['core:file'])
+      }
+    }
+  ])('treats a $label covering a symbol file as whole-file conflict', ({ broaderImpact }) => {
+    const engine = new DeterministicConflictEngine(registry);
+    const conflict = engine.compare(
+      impact('broad', broaderImpact),
+      impact('symbol', {
+        projectsWritten: new Set(['core']),
+        filesWritten: new Set(['core:file']),
+        symbolDerivedFilesWritten: new Set(['core:file']),
+        symbolsWritten: new Set(['core:file:Service.second'])
+      }),
+      graph
+    );
+
+    expect(conflict.reasons.map((reason) => reason.type)).toContain('same-file');
+    expect(conflict.reasons.map((reason) => reason.type)).not.toContain(
+      'same-file-different-symbol'
+    );
   });
 
   it.each([
@@ -241,6 +307,34 @@ describe('DeterministicConflictEngine', () => {
     expect(conflict.score).toBe(70);
     expect(conflict.recommendedAction).toBe('stagger');
   });
+
+  it.each([
+    ['a-producer', 'z-consumer'],
+    ['z-producer', 'a-consumer']
+  ])(
+    'preserves producer %s to consumer %s direction independently of canonical pair order',
+    (producerTaskId, consumerTaskId) => {
+      const engine = new DeterministicConflictEngine(registry);
+      const writes = [{ resourceId: 'generated-code', modes: ['write'] as const }];
+      const reads = [{ resourceId: 'generated-code', modes: ['read'] as const }];
+
+      const conflict = engine.compare(
+        impact(producerTaskId, {}, writes),
+        impact(consumerTaskId, {}, reads),
+        graph
+      );
+
+      expect(conflict.severity).toBe('hard');
+      expect(conflict.constraints).toContainEqual({
+        type: 'producer-consumer',
+        detail: `${producerTaskId} produces generated-code for ${consumerTaskId}.`,
+        resourceIds: ['generated-code'],
+        producerTaskId,
+        consumerTaskId
+      });
+      expect(conflict.recommendedAction).toBe('stagger');
+    }
+  );
 
   it('enforces exclusive access even when both task contracts declare reads', () => {
     const engine = new DeterministicConflictEngine(registry);
@@ -331,5 +425,18 @@ describe('conflictEngineConfigSchema', () => {
         thresholds: { guardedParallel: 50, stagger: 40, serialize: 90 }
       })
     ).toThrow('monotonically increasing');
+  });
+
+  it('keeps a zero-score result parallel when guardedParallel is configured as zero', () => {
+    const engine = new DeterministicConflictEngine(registry, {
+      ...defaultConflictEngineConfig,
+      thresholds: { guardedParallel: 0, stagger: 60, serialize: 90 }
+    });
+
+    const conflict = engine.compare(impact('a'), impact('b'), graph);
+
+    expect(conflict.severity).toBe('none');
+    expect(conflict.score).toBe(0);
+    expect(conflict.recommendedAction).toBe('parallel');
   });
 });

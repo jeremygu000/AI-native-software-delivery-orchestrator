@@ -104,6 +104,9 @@ const recommendedRiskAction = (
   score: number,
   configuration: ConflictEngineConfig
 ): ConflictAction => {
+  if (score === 0) {
+    return 'parallel';
+  }
   if (score >= configuration.thresholds.serialize) {
     return 'serialize';
   }
@@ -116,15 +119,17 @@ const recommendedRiskAction = (
   return 'parallel';
 };
 
-const writtenFileIdsForSymbols = (
+const hasWholeFileWriteScope = (
   impact: PredictedTaskImpact,
+  fileId: string,
   graph: RepositoryGraph
-): ReadonlySet<string> =>
-  new Set(
-    [...impact.symbolsWritten]
-      .map((symbolId) => graph.symbols.get(symbolId)?.fileId)
-      .filter((fileId): fileId is string => fileId !== undefined)
-  );
+): boolean => {
+  if (impact.explicitFilesWritten.has(fileId) || impact.globFilesWritten.has(fileId)) {
+    return true;
+  }
+  const projectId = graph.files.get(fileId)?.projectId;
+  return projectId !== undefined && impact.explicitProjectsWritten.has(projectId);
+};
 
 const touchesProjects = (impact: PredictedTaskImpact): ReadonlySet<string> =>
   union(impact.projectsRead, impact.projectsWritten);
@@ -185,7 +190,8 @@ export class DeterministicConflictEngine implements ConflictAnalyzer {
         ...remainingConstraints
       ];
       const requiresSerialization = hardConstraints.some(
-        (constraint) => constraint.type !== 'ordered-resource'
+        (constraint) =>
+          constraint.type !== 'ordered-resource' && constraint.type !== 'producer-consumer'
       );
       const conflict: HardTaskConflict = {
         taskA: a.taskId,
@@ -233,30 +239,48 @@ export class DeterministicConflictEngine implements ConflictAnalyzer {
       });
     }
 
-    const sameFiles = intersect(a.filesWritten, b.filesWritten);
+    const projectScopeOverlaps = [
+      ...[...b.filesWritten].filter((fileId) => {
+        const projectId = graph.files.get(fileId)?.projectId;
+        return projectId !== undefined && a.explicitProjectsWritten.has(projectId);
+      }),
+      ...[...a.filesWritten].filter((fileId) => {
+        const projectId = graph.files.get(fileId)?.projectId;
+        return projectId !== undefined && b.explicitProjectsWritten.has(projectId);
+      })
+    ];
+    const sameFiles = [
+      ...new Set([...intersect(a.filesWritten, b.filesWritten), ...projectScopeOverlaps])
+    ].toSorted(compareStrings);
     if (sameFiles.length > 0) {
-      const symbolFileIdsA = writtenFileIdsForSymbols(a, graph);
-      const symbolFileIdsB = writtenFileIdsForSymbols(b, graph);
-      const explicitlySeparatedFiles = sameFiles.filter(
-        (fileId) => symbolFileIdsA.has(fileId) && symbolFileIdsB.has(fileId)
+      const sameSymbolFileIds = new Set(
+        sameSymbols
+          .map((symbolId) => graph.symbols.get(symbolId)?.fileId)
+          .filter((fileId): fileId is string => fileId !== undefined)
       );
-      const unscopedFiles = sameFiles.filter(
-        (fileId) => !explicitlySeparatedFiles.includes(fileId)
+      const siblingSymbolFiles = sameFiles.filter(
+        (fileId) =>
+          a.symbolDerivedFilesWritten.has(fileId) &&
+          b.symbolDerivedFilesWritten.has(fileId) &&
+          !hasWholeFileWriteScope(a, fileId, graph) &&
+          !hasWholeFileWriteScope(b, fileId, graph) &&
+          !sameSymbolFileIds.has(fileId)
       );
-      if (explicitlySeparatedFiles.length > 0 && sameSymbols.length === 0) {
+      const wholeFileConflicts = sameFiles.filter((fileId) => !siblingSymbolFiles.includes(fileId));
+      if (siblingSymbolFiles.length > 0) {
         addReason(reasons, {
           type: 'same-file-different-symbol',
           score: this.#configuration.weights.sameFileDifferentSymbol,
           detail: 'Both tasks may write distinct symbols in the same file.',
-          resourceIds: explicitlySeparatedFiles
+          resourceIds: siblingSymbolFiles
         });
       }
-      if (unscopedFiles.length > 0 || sameSymbols.length > 0) {
+      if (wholeFileConflicts.length > 0) {
         addReason(reasons, {
           type: 'same-file',
           score: this.#configuration.weights.sameFile,
-          detail: 'Both tasks may write the same file.',
-          resourceIds: unscopedFiles.length > 0 ? unscopedFiles : sameFiles
+          detail: 'At least one task may write the whole file scope.',
+          resourceIds: wholeFileConflicts
         });
       }
     }
@@ -314,15 +338,43 @@ export class DeterministicConflictEngine implements ConflictAnalyzer {
         continue;
       }
 
-      addReason(reasons, {
-        type:
-          definition?.concurrency === 'producer-controlled'
-            ? 'producer-consumer'
-            : 'shared-resource',
-        score:
-          definition?.concurrency === 'producer-controlled'
+      if (definition?.concurrency === 'producer-controlled') {
+        const aWrites = modesA.has('write');
+        const bWrites = modesB.has('write');
+        const directional =
+          aWrites !== bWrites &&
+          ((aWrites && modesB.has('read')) || (bWrites && modesA.has('read')));
+        addReason(reasons, {
+          type: directional ? 'producer-consumer' : 'shared-resource',
+          score: directional
             ? this.#configuration.weights.producerConsumer
             : this.#configuration.weights.sharedResource,
+          detail: directional
+            ? `A producer write must complete before the consumer reads ${resourceId}.`
+            : `Producer-controlled resource ${resourceId} has competing write or coordination intent.`,
+          resourceIds: [resourceId]
+        });
+        if (directional) {
+          constraints.push({
+            type: 'producer-consumer',
+            detail: `${aWrites ? a.taskId : b.taskId} produces ${resourceId} for ${aWrites ? b.taskId : a.taskId}.`,
+            resourceIds: [resourceId],
+            producerTaskId: aWrites ? a.taskId : b.taskId,
+            consumerTaskId: aWrites ? b.taskId : a.taskId
+          });
+        } else {
+          constraints.push({
+            type: 'producer-controlled-resource',
+            detail: `Competing writes to ${resourceId} must be serialized.`,
+            resourceIds: [resourceId]
+          });
+        }
+        continue;
+      }
+
+      addReason(reasons, {
+        type: 'shared-resource',
+        score: this.#configuration.weights.sharedResource,
         detail:
           definition === undefined
             ? `Both tasks coordinate through unregistered resource ${resourceId}.`
@@ -340,12 +392,6 @@ export class DeterministicConflictEngine implements ConflictAnalyzer {
         constraints.push({
           type: 'ordered-resource',
           detail: `Shared resource ${resourceId} must be accessed in task order.`,
-          resourceIds: [resourceId]
-        });
-      } else if (definition?.concurrency === 'producer-controlled') {
-        constraints.push({
-          type: 'producer-controlled-resource',
-          detail: `Writes to ${resourceId} must be coordinated by its producer.`,
           resourceIds: [resourceId]
         });
       }

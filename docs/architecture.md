@@ -9,8 +9,7 @@ transitions, or verification outcomes.
 
 The implemented foundation covers repository setup, domain models, the task dependency graph, a
 first-class Repository Facts Layer, TypeScript file/symbol analysis, predicted task impact, shared
-resource policies, and deterministic conflict analysis. Event-driven scheduling is the next
-implementation boundary.
+resource policies, deterministic conflict analysis, and event-driven scheduling decisions.
 
 ## Workspace structure
 
@@ -52,8 +51,9 @@ analysis, impact, conflict, scheduler, guard, persistence
        DAG ------------> Domain
 ```
 
-`domain` has no internal workspace dependencies. `dag` depends only on `domain`. Future engines
-may depend on `domain` and, where necessary, `dag`; domain code never imports an adapter. Git,
+`domain` has no internal workspace dependencies. `dag` depends only on `domain`. `scheduler` depends
+only on `domain` and `dag`. Future engines may depend on `domain` and, where necessary, `dag`; domain
+code never imports an adapter. Git,
 SQLite, package-manager parsers, TypeScript Compiler API, Commander, and model-provider details
 remain at the edges.
 
@@ -192,6 +192,13 @@ files. File and symbol selections automatically include their owning project. Wr
 the reverse project-dependency graph to every transitive downstream project. Sets, resource access
 modes, and diagnostics use locale-independent stable ordering.
 
+`filesWritten` is the conservative union, not sufficient provenance for deciding sibling-symbol
+parallelism. Predicted impact separately retains explicit project selectors, explicit file
+selectors, glob-expanded files, and symbol-derived parent files. Two different symbols in one file
+receive sibling-symbol treatment only when both file writes came from symbol parents and neither
+task has an explicit project, file, or glob scope covering that file. Any broader scope produces a
+whole-file conflict reason.
+
 Shared-resource rules are validated configuration owned by `task-impact`, not filename conditionals
 inside the scheduler. File rules and path patterns can attach resources even when a non-TypeScript
 file such as `package.json` is absent from the semantic file graph. Predicted impact retains
@@ -228,6 +235,13 @@ even when its weight is zero. Same-file sibling-symbol writes, same-project writ
 producer/consumer overlap, generated code, dependency direction, public API touch, and high fan-out
 remain explainable scored risks. Scores are capped at 100, and weights and action thresholds are
 validated engine configuration rather than domain constants.
+
+A conflict edge is pairwise and symmetric: it says two tasks must not execute concurrently. A
+producer-consumer constraint additionally carries `producerTaskId` and `consumerTaskId`, expressing
+an ordering edge independent of canonical pair order. One writer plus one reader of a
+producer-controlled resource produces this directional constraint; read/read remains parallel, and
+writer/writer remains a nondirectional hard serialization conflict. A future Scheduler may derive a
+functional ordering edge from the directional constraint, but Milestone 6 does not rewrite the DAG.
 
 ### Write leases
 
@@ -270,6 +284,51 @@ intent -> plan -> predicted impact -> conflicts -> dispatch
 explanation <- persisted events <- observed impact <- isolated execution
 ```
 
+### Scheduler
+
+`DeterministicScheduler` is a pure decision engine. It validates the task DAG and positive integer
+concurrency limit before selecting work. Its serializable snapshot contains every task state and the
+exact lease or runtime-conflict blockers for blocked tasks. Its input event and per-task output
+reasons are discriminated payloads, so a future persistence layer can replay decisions without
+parsing a human string or recovering hidden scheduler state.
+
+The selection sequence is:
+
+```text
+functional dependency completion
+        +
+directional producer completion
+        +
+priority descending, then locale-independent task ID
+        +
+hard constraints against running and selected work
+        +
+risk recommendation policy
+        +
+remaining maximum concurrency
+        |
+        v
+structured ready / start / block / unblock / cancel / defer decisions
+```
+
+All hard constraints apply regardless of `HardTaskConflict.score`. `parallel` and
+`guarded-parallel` risk recommendations may overlap; `stagger` and `serialize` defer the later
+candidate while its conflict peer remains active. Static capacity, priority, and conflict deferral
+do not fabricate a state transition. Only a runtime blocker event can request `RUNNING -> BLOCKED`,
+and only release evidence matching the snapshot's recorded blocker can request `BLOCKED -> READY`.
+
+Terminal prerequisite handling is explicit: a failed task cancels every nonterminal transitive
+functional dependant and directional producer consumer with `dependency-failed` evidence. A
+pre-existing cancelled prerequisite has the same propagation behavior with distinct
+`dependency-cancelled` evidence. The scheduler returns those legal transitions; an outer runtime
+must apply them. `createInitialPlan` creates an explanatory wave preview with the same policy but
+owns no runtime progress. A completion event can therefore start a true dependant while a task from
+an earlier preview wave is still running.
+
+The current Scheduler does not start agents, change the input snapshot, acquire or enforce a lease,
+collect events, write persistence records, run verification, create worktrees, or invoke Git. Those
+remain outer-runtime responsibilities.
+
 ## Persistence boundary
 
 Drizzle and SQLite are installed in the workspace but persistence is deferred until the core
@@ -301,8 +360,9 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
    **Complete.**
 6. **Impact and conflict:** predicted selector resolution, affected-package expansion,
    shared-resource registry, severity, hard constraints, and explainable scoring. **Complete.**
-7. **Scheduler:** event-driven dispatch respecting dependencies, hard constraints, priorities, and
-   max concurrency; waves remain a visualization only.
+7. **Scheduler:** event-driven dispatch respecting dependencies, producer direction, hard
+   constraints, explicit risk policy, priorities, existing work, and max concurrency; waves remain a
+   visualization only. **Complete.**
 8. **Runtime guard:** hierarchical lease acquisition, heartbeat, stale recovery, and release.
 9. **Persistence:** recoverable runs, transitions, conflicts, decisions, observations, and leases in
    SQLite/Drizzle.

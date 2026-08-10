@@ -24,6 +24,12 @@ impacts that bypass this validation. File and path rules are resolved centrally,
 non-TypeScript files that do not appear in the semantic file graph and files reached through symbol
 or whole-project selectors.
 
+For a producer-controlled resource, one writer and one reader produce a directional scheduling
+constraint containing the actual producer and consumer task IDs. Canonical pair ordering never
+implies this direction. Read/read access remains parallel. Two writers have no inferred order and
+therefore retain a nondirectional hard serialization constraint until an explicit producer policy
+provides one.
+
 ## Consequences
 
 Planners may express both static access and a global coordination rule without the conflict engine

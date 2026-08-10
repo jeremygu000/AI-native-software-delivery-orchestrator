@@ -7,7 +7,7 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–6 establish the deterministic analysis core:
+Milestones 1–7 establish the deterministic analysis and dispatch core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
 - pnpm workspaces for dependency management;
@@ -25,12 +25,16 @@ Milestones 1–6 establish the deterministic analysis core:
 - transitive downstream-project expansion and explicit `public-api-touch` risk reporting;
 - a configurable shared-resource registry with exclusive, ordered, and producer-controlled policies;
 - structurally separate hard conflicts and scored risks with explainable reasons and actions;
+- structured scheduler events, runtime blockers, snapshots, decisions, and reason evidence;
+- deterministic event-driven dispatch respecting dependencies, producer direction, hard constraints,
+  risk policy, priority, existing work, and maximum concurrency;
+- explanatory execution waves that never become a runtime barrier;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Event-driven scheduling is the next milestone. Before it starts, scheduler events and decision
-reasons will gain structured payloads for audit and replay. Live write leases, persistence, isolated
-workspaces, and agent execution remain later work. The CLI exposes `plan` as a discoverable
-placeholder until those engines are integrated.
+Milestone 7 implements deterministic Scheduler library behavior. It is not an execution runtime:
+the Scheduler neither starts agents nor acquires leases, collects runtime events, persists state,
+creates workspaces, or invokes Git. The CLI still exposes `plan` as a discoverable placeholder until
+there is a tested task-spec input path and end-to-end integration.
 
 ## Requirements
 
@@ -59,11 +63,21 @@ libs/dag     Functional dependency graph engine
 libs/repository-analysis  pnpm project discovery plus TypeScript semantic analysis
 libs/task-impact  Task selector resolution, impact expansion, shared-resource registry
 libs/conflict-engine  Hard constraints and explainable conflict scoring
+libs/scheduler  Event-driven deterministic dispatch decisions
 docs/adr     Architecture decisions
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the target architecture, dependency direction,
 models, and milestone plan.
+
+Standalone training guides:
+
+- [RepositoryGraph Analysis](docs/repository-graph-analysis.en.md) / [中文](docs/repository-graph-analysis.zh.md)
+- [Task Impact and Conflict Analysis](docs/task-impact-analysis.en.md) / [中文](docs/task-impact-analysis.zh.md)
+- [Scheduler Dispatch](docs/scheduler-dispatch.en.md) / [中文](docs/scheduler-dispatch.zh.md)
+
+Continuation agents must read the [OpenCode engineering handover](docs/opencode-handover.md) before
+changing the current uncommitted milestone state.
 
 ## Commands
 
