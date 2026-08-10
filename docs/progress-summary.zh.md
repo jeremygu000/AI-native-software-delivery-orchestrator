@@ -1036,6 +1036,11 @@ run-local key upsert。Event、transition、decision 是 append-only evidence。
 input snapshot 让 Scheduler replay 每个 event。Replayed decision 必须完全匹配 persisted decision，否则
 recovery 报告 integrity failure。
 
+Follow-up persistence hardening 会验证 saved transition 精确匹配每个 non-deferred state-transition
+decision，写入前和 replay 时都会验证。重复保存同一 sequence 只有全部 evidence 匹配才是 idempotent；
+不同 evidence 会被拒绝。Impact/conflict/lease 的 relational key 必须匹配 payload identity，persisted lease
+snapshot 不能 version regression，也不能用不同 evidence 覆盖同一 version。
+
 SQLite adapter 有意只做 local scope。它不提供 multi-process write fencing、agent runtime、filesystem
 observation、Git worktree、deployed database migration、automatic task execution 或 CLI command。实际 agent
 write 被 enforce 前，后续 runtime 还必须使用 ownership-generation fencing token，而不是普通 heartbeat
@@ -1050,27 +1055,90 @@ Persistence test 覆盖 complete recovery、SQLite file reopen、Set/date round-
 atomicity、transaction rollback、append-only sequence、decision replay mismatch、current-record upsert 以及
 corrupted stored-state rejection。
 
-完整质量门现在有 175 个测试通过。覆盖率为语句 97.21%、分支 92.29%、函数 99.42%、行 97.14%。
+完整质量门现在有 212 个测试通过。覆盖率为语句 97.38%、分支 92.32%、函数 99.47%、行 97.32%。
+`pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
+
+## 阶段十:Workspace 与 Git Lifecycle
+
+Deterministic core 现在可以为每个 task 提供 isolated local Git worktree，并把完成的 task branch 安全
+integrate 到一个 local integration ref。本阶段不运行 agent；它提供未来 outer runtime 在 task execution/
+verification 可用后所需的 workspace/Git lifecycle。
+
+创建 workspace 时，从 explicit base ref 创建 task branch，并把它放到 integration repository directory
+外。Task 可以独立 commit，不会把 untracked worktree directory 放进 integration checkout。Integration
+有意保守：
+
+```text
+task branch
+   |
+   v
+rebase onto integration ref
+   |
+   v
+fast-forward-only merge into integration ref
+```
+
+不会创建 implicit merge commit。Merge 前 integration repository 必须干净，并成功切换到指定
+integration ref。Rebase conflict、dirty integration repository 或 failed fast-forward 都会创建 phase-aware
+`INTEGRATION_BLOCKED` workspace record，保存 structured reason/conflict path。
+
+Workspace integration state 有意独立于普通 task execution state：
+
+```text
+READY_TO_INTEGRATE
+        |
+        +--> INTEGRATION_BLOCKED
+        |       |
+        |       +--> external repair 后 resumeIntegration
+        |       +--> abortIntegration
+        |
+        +--> INTEGRATED
+```
+
+这样不会使用有信息损失的 `INTEGRATING -> BLOCKED -> READY` shortcut。已经完成 execution/verification 的
+task 即使 Git 需要人工修复，仍是 integration work。Rebase block 使用 `rebase --continue`/`rebase --abort`；
+dirty-repository/fast-forward block 在外部原因修复后 retry normal integration。
+
+Workspace record 按 run ID/workspace ID persistence，包含 blocked phase evidence。Explicit dispose call 才会
+删除 worktree/task branch。默认 disposal 保护 uncommitted workspace change：返回 stable dirty path，而不是
+删除。丢弃 dirty work 必须 `force: true` 并由 caller 提供 explicit reason。
+
+Git adapter 用真实 temporary Git repository 测试 create、rebase、fast-forward integration、conflict
+block/abort/resolve/resume、dirty repository blocking、dirty disposal 和 cleanup。窄的 injectable Git command
+runner 用于 deterministic process-failure diagnostic，不让 Git process type 进入 domain contract。
+
+更详细的代码级教学模型见 [Workspace 与 Git Lifecycle](./workspace-git.zh.md) 及其
+[English edition](./workspace-git.en.md)。两份指南说明 isolated worktree、phase-aware Git integration
+blocking、rebase/resume/abort、fast-forward-only integration、persisted workspace evidence 和 dirty disposal
+protection。
+
+本阶段仍不 execute agent、不 observe filesystem write、不比较 observed/predicted scope、不在 write 时
+acquire lease、不协调 multiple repository/process，也不自动修复 conflict。这些需要未来 agent/runtime layer
+和 ownership-generation write fencing。
+
+完整质量门现在有 212 个测试通过。覆盖率为语句 97.38%、分支 92.32%、函数 99.47%、行 97.32%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 目前整体状态(截止到本文写作时)
 
-- 架构规划的 10 个里程碑中完成了 1–9,按里程碑数量约为 90%。这不代表总工程量恰好完成
-  90%:workspace/Git 和 Agent 执行阶段仍比多个地基阶段更大、风险也更高。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 175 个测试全部通过。
-- 覆盖率为:语句 97.21%、分支 92.29%、函数 99.42%、行 97.14%;四项都达到至少 90% 的门槛。
+- 架构规划的 10 个里程碑已全部实现。这不代表完整产品 100% 完成：agent execution、真实 write
+  enforcement、provider integration 和 CLI runtime 仍是 deterministic milestone 计划外的重要产品能力。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 212 个测试全部通过。
+- 覆盖率为:语句 97.38%、分支 92.32%、函数 99.47%、行 97.32%;四项都达到至少 90% 的门槛。
 - `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 - Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有
   Critical、High 或 Medium。Scheduler 中记录的 review finding 已修复，并在提交前独立重新验证。
 - Milestone 8 Runtime Guard 已完成接受的 process-local in-memory scope，并已通过独立 Review。
-- Milestone 9 Persistence 已完成接受的 local SQLite scope，正在等待独立 Review 后才能提交。
+- Milestone 9 Persistence 已完成接受的 local SQLite scope，并已通过独立 Review。
+- Milestone 10 Workspace/Git 已完成接受的 local single-repository scope，并已通过独立 Review。Review 还
+  重新验证 Date-aware lease idempotency 和 clean-target task-branch collision handling。
 
 ## 还没有实现的部分
 
-- 创建隔离 Git 工作区,安全地 rebase 和集成各任务改动。
 - 真正调用编码 Agent、监控执行并验证结果。
 
 简单说:**编排器现在能为真实 TypeScript pnpm 仓库建立确定的结构地图,预测任务影响、比较冲突,
-在事件发生后确定地决定哪些任务可以启动，在一个 process 内保护 exclusive write，并从 SQLite 恢复
-经过验证的 local orchestration evidence。它仍不会观察真实 write、协调多个 process、运行 Agent 或修改仓库。**
+在事件发生后确定地决定哪些任务可以启动，在一个 process 内保护 exclusive write，从 SQLite 恢复
+经过验证的 local orchestration evidence，并用 Git integrate 一个 local task worktree。它仍不会观察真实
+write、协调多个 process 或运行 Agent。**
