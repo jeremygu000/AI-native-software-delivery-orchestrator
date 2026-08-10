@@ -327,7 +327,20 @@ export class DeterministicScheduler implements Scheduler {
           ? { type: 'runtime-conflict' as const, conflictId: event.conflictId }
           : undefined;
     if (blocker !== undefined) {
-      if (states.get(event.taskId) !== 'RUNNING') {
+      const state = states.get(event.taskId);
+      if (state === 'BLOCKED') {
+        const taskBlockers = blocks.get(event.taskId);
+        if (taskBlockers === undefined) {
+          throw new SchedulerInputError(
+            `BLOCKED task is missing runtime blockers: ${event.taskId}`
+          );
+        }
+        if (!taskBlockers.some((taskBlocker) => sameRuntimeBlocker(taskBlocker, blocker))) {
+          blocks.set(event.taskId, [...taskBlockers, blocker]);
+        }
+        return;
+      }
+      if (state !== 'RUNNING') {
         throw new SchedulerInputError(`Runtime block requires RUNNING state: ${event.taskId}`);
       }
       states.set(event.taskId, 'BLOCKED');

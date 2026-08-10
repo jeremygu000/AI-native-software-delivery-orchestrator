@@ -522,6 +522,88 @@ describe('DeterministicScheduler', () => {
     });
   });
 
+  it('accumulates distinct blockers from successive runtime events without repeating a state transition', () => {
+    const tasks = [task('A')];
+    const leaseBlocked = scheduler.reevaluate(
+      { type: 'lease-blocked', taskId: 'A', leaseId: 'lease-1' },
+      snapshot({ A: 'RUNNING' }),
+      tasks,
+      [],
+      [],
+      { maxConcurrency: 1 }
+    );
+    const conflictBlocked = scheduler.reevaluate(
+      { type: 'runtime-conflict-discovered', taskId: 'A', conflictId: 'conflict-1' },
+      snapshot({ A: 'BLOCKED' }, [
+        { taskId: 'A', blockers: [{ type: 'lease', leaseId: 'lease-1' }] }
+      ]),
+      tasks,
+      [],
+      [],
+      { maxConcurrency: 1 }
+    );
+    const leaseReleased = scheduler.reevaluate(
+      { type: 'lease-released', taskId: 'A', leaseId: 'lease-1' },
+      snapshot({ A: 'BLOCKED' }, [
+        {
+          taskId: 'A',
+          blockers: [
+            { type: 'lease', leaseId: 'lease-1' },
+            { type: 'runtime-conflict', conflictId: 'conflict-1' }
+          ]
+        }
+      ]),
+      tasks,
+      [],
+      [],
+      { maxConcurrency: 1 }
+    );
+    const conflictReleased = scheduler.reevaluate(
+      { type: 'runtime-conflict-resolved', taskId: 'A', conflictId: 'conflict-1' },
+      snapshot({ A: 'BLOCKED' }, [
+        { taskId: 'A', blockers: [{ type: 'runtime-conflict', conflictId: 'conflict-1' }] }
+      ]),
+      tasks,
+      [],
+      [],
+      { maxConcurrency: 1 }
+    );
+
+    expect(leaseBlocked.taskDecisions).toContainEqual(
+      expect.objectContaining({ taskId: 'A', action: 'block' })
+    );
+    expect(conflictBlocked.taskDecisions).toEqual([
+      {
+        taskId: 'A',
+        action: 'defer',
+        reasons: [
+          {
+            type: 'runtime-blocked',
+            blockers: [
+              { type: 'lease', leaseId: 'lease-1' },
+              { type: 'runtime-conflict', conflictId: 'conflict-1' }
+            ]
+          }
+        ]
+      }
+    ]);
+    expect(leaseReleased.taskDecisions).toEqual([
+      {
+        taskId: 'A',
+        action: 'defer',
+        reasons: [
+          {
+            type: 'runtime-blocked',
+            blockers: [{ type: 'runtime-conflict', conflictId: 'conflict-1' }]
+          }
+        ]
+      }
+    ]);
+    expect(conflictReleased.taskDecisions).toContainEqual(
+      expect.objectContaining({ taskId: 'A', action: 'unblock' })
+    );
+  });
+
   it('starts a true dependant as soon as its only dependency completes without waiting for its preview wave peer', () => {
     const tasks = [task('A'), task('B'), task('C', ['A'])];
     const plan = scheduler.createInitialPlan(tasks, [], [], { maxConcurrency: 2 });
