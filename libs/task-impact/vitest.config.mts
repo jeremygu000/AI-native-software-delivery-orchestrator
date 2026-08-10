@@ -1,10 +1,17 @@
+import { resolve } from 'node:path';
+
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig(() => ({
   root: import.meta.dirname,
   cacheDir: '../../node_modules/.vite/libs/task-impact',
   resolve: {
-    conditions: ['@ai-native-software-delivery-orchestrator/source']
+    alias: {
+      '@ai-native-software-delivery-orchestrator/domain': resolve(
+        import.meta.dirname,
+        '../domain/src/index.ts'
+      )
+    }
   },
   test: {
     name: 'task-impact',

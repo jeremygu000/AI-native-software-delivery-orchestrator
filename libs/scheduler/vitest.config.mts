@@ -1,8 +1,22 @@
+import { resolve } from 'node:path';
+
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig(() => ({
   root: import.meta.dirname,
   cacheDir: '../../node_modules/.vite/libs/scheduler',
+  resolve: {
+    alias: {
+      '@ai-native-software-delivery-orchestrator/dag': resolve(
+        import.meta.dirname,
+        '../dag/src/index.ts'
+      ),
+      '@ai-native-software-delivery-orchestrator/domain': resolve(
+        import.meta.dirname,
+        '../domain/src/index.ts'
+      )
+    }
+  },
   test: {
     name: 'scheduler',
     watch: false,

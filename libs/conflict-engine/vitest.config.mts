@@ -7,12 +7,15 @@ export default defineConfig(() => ({
   cacheDir: '../../node_modules/.vite/libs/conflict-engine',
   resolve: {
     alias: {
+      '@ai-native-software-delivery-orchestrator/domain': resolve(
+        import.meta.dirname,
+        '../domain/src/index.ts'
+      ),
       '@ai-native-software-delivery-orchestrator/task-impact': resolve(
         import.meta.dirname,
         '../task-impact/src/index.ts'
       )
-    },
-    conditions: ['@ai-native-software-delivery-orchestrator/source']
+    }
   },
   test: {
     name: 'conflict-engine',
