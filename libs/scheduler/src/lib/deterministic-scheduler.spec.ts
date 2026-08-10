@@ -522,6 +522,19 @@ describe('DeterministicScheduler', () => {
     });
   });
 
+  it('rejects a task-failed event whose snapshot has not applied the FAILED state', () => {
+    expect(() =>
+      scheduler.reevaluate(
+        { type: 'task-failed', taskId: 'producer' },
+        snapshot({ producer: 'RUNNING', consumer: 'READY' }),
+        [task('producer'), task('consumer', ['producer'])],
+        [],
+        [],
+        { maxConcurrency: 2 }
+      )
+    ).toThrow('Task-failed event requires FAILED snapshot state: producer');
+  });
+
   it('accumulates distinct blockers from successive runtime events without repeating a state transition', () => {
     const tasks = [task('A')];
     const leaseBlocked = scheduler.reevaluate(

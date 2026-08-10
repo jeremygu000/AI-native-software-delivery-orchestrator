@@ -16,6 +16,13 @@ discriminated structured payloads. Events that block or release work carry the e
 conflict identity. A snapshot records each `BLOCKED` task's active blockers, so a release only moves
 matching tasks through `BLOCKED -> READY`; unrelated blocked work remains blocked.
 
+Except for runtime blocking events, the caller supplies a snapshot that already reflects the event's
+state transition. Events are auditable reasons to reevaluate, not a general state-transition command.
+For example, `task-failed` requires its task to already be `FAILED` in the snapshot or the Scheduler
+rejects the inconsistent input. `lease-blocked` and `runtime-conflict-discovered` are the explicit
+exceptions: they validate and apply `RUNNING -> BLOCKED` because their blocker identity becomes part
+of the Scheduler snapshot.
+
 The deterministic greedy selection order is task priority descending, then locale-independent task
 ID ordering. Functional dependencies must be `COMPLETED`. A directional
 `producer-consumer` constraint adds a separate completion requirement without mutating the original

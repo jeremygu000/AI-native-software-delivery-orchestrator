@@ -239,6 +239,11 @@ export class DeterministicScheduler implements Scheduler {
       throw new SchedulerInputError(`Unknown scheduler event task: ${parsedEvent.taskId}`);
     }
     this.#validateSnapshotTaskIds(states, inputs.taskById);
+    if (parsedEvent.type === 'task-failed' && states.get(parsedEvent.taskId) !== 'FAILED') {
+      throw new SchedulerInputError(
+        `Task-failed event requires FAILED snapshot state: ${parsedEvent.taskId}`
+      );
+    }
     this.#applyRuntimeEvent(parsedEvent, states, blocks, decisions);
     this.#cancelTerminalDependants(parsedEvent, states, inputs, decisions);
 
@@ -397,9 +402,6 @@ export class DeterministicScheduler implements Scheduler {
       if (state === 'FAILED' || state === 'CANCELLED') {
         terminalCauses.set(taskId, state);
       }
-    }
-    if (event.type === 'task-failed') {
-      terminalCauses.set(event.taskId, 'FAILED');
     }
     const dependents = dependentIdsByTask(inputs.taskById, inputs.hardConflicts);
     const terminalCausesByTask = new Map<string, Map<string, 'FAILED' | 'CANCELLED'>>();
