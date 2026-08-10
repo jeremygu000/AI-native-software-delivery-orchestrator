@@ -7,9 +7,17 @@ export default defineConfig(() => ({
   cacheDir: '../../node_modules/.vite/libs/persistence',
   resolve: {
     alias: {
+      '@ai-native-software-delivery-orchestrator/dag': resolve(
+        import.meta.dirname,
+        '../dag/src/index.ts'
+      ),
       '@ai-native-software-delivery-orchestrator/domain': resolve(
         import.meta.dirname,
         '../domain/src/index.ts'
+      ),
+      '@ai-native-software-delivery-orchestrator/scheduler': resolve(
+        import.meta.dirname,
+        '../scheduler/src/index.ts'
       )
     }
   },
