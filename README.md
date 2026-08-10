@@ -7,7 +7,7 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–8 establish the deterministic analysis, dispatch, and in-process write-safety core:
+Milestones 1–9 establish the deterministic analysis, dispatch, write-safety, and local recovery core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
 - pnpm workspaces for dependency management;
@@ -31,12 +31,14 @@ Milestones 1–8 establish the deterministic analysis, dispatch, and in-process 
 - explanatory execution waves that never become a runtime barrier;
 - an in-memory, concurrency-safe exclusive Write Guard with versioned heartbeat, evidence-based stale
   recovery, and idempotent release;
+- SQLite/Drizzle persistence for reconstructable runs, events, decisions, transitions, impacts,
+  conflicts, and leases, including verified Scheduler decision replay;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestone 8 implements a process-local Write Guard. It does not persist leases, coordinate multiple
-processes, observe writes, create workspaces, or invoke Git. The Scheduler and Guard remain library
-APIs; the CLI still exposes `plan` as a discoverable placeholder until there is a tested task-spec
-input path and end-to-end integration.
+Milestone 9 implements local SQLite persistence and Scheduler replay verification. It does not create
+workspaces, observe real writes, coordinate processes, or invoke Git. The Scheduler, Guard, and
+Persistence components remain library APIs; the CLI still exposes `plan` as a discoverable placeholder
+until there is a tested task-spec input path and end-to-end integration.
 
 ## Requirements
 
@@ -67,6 +69,7 @@ libs/task-impact  Task selector resolution, impact expansion, shared-resource re
 libs/conflict-engine  Hard constraints and explainable conflict scoring
 libs/scheduler  Event-driven deterministic dispatch decisions
 libs/runtime-guard  In-process exclusive lease acquisition and lifecycle
+libs/persistence  SQLite/Drizzle run evidence, recovery, and replay verification
 docs/adr     Architecture decisions
 ```
 
@@ -79,6 +82,7 @@ Standalone training guides:
 - [Task Impact and Conflict Analysis](docs/task-impact-analysis.en.md) / [中文](docs/task-impact-analysis.zh.md)
 - [Scheduler Dispatch](docs/scheduler-dispatch.en.md) / [中文](docs/scheduler-dispatch.zh.md)
 - [Runtime Guard and Write Leases](docs/runtime-guard.en.md) / [中文](docs/runtime-guard.zh.md)
+- [Persistence and Replay](docs/persistence-replay.en.md) / [中文](docs/persistence-replay.zh.md)
 
 Continuation agents must read the [OpenCode engineering handover](docs/opencode-handover.md) before
 changing the current uncommitted milestone state.

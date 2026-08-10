@@ -1142,14 +1142,63 @@ retries, concurrent heartbeat/release serialization, and invalid non-finite vers
 package suite now has 23 passing tests with 100% statements, functions, and lines, plus 96.15%
 branches.
 
+## Stage 9: Persistence and Replay
+
+This stage makes orchestration evidence survive a process restart. The new `libs/persistence` library
+uses SQLite through Drizzle and `better-sqlite3`, while keeping every SQLite, Drizzle, and native
+driver type inside that adapter. Domain contracts stay provider-neutral, so another database can later
+implement the same port.
+
+Before a table was created, the Scheduler replay contract was made explicit. Observation events now
+carry their required post-event task state: completion and workspace integration require `COMPLETED`,
+failure requires `FAILED`, and verification completion requires `INTEGRATING`. The Scheduler rejects
+an observation if the supplied input snapshot does not already match that state. Runtime blocker
+events remain different: they are evidence that the Scheduler itself applies to its input snapshot.
+
+Each persisted reevaluation is one SQLite transaction:
+
+```text
+event + input snapshot + requested task transitions + decision
+        |
+        v
+one positive run-local sequence number
+        |
+        v
+commit all records or roll back all records
+```
+
+Runs retain task contracts, hard and risk conflicts, and scheduling options. Current task impacts,
+conflicts, and leases are upserted by stable run-local keys. Events, transitions, and decisions are
+append-only evidence. Structured JSON preserves domain `Set` collections and lease dates. Recovery
+validates stored JSON rather than trusting arbitrary database text, then replays each event through
+the Scheduler with its saved input snapshot. A replayed decision must exactly match the persisted
+decision or recovery reports an integrity failure.
+
+The SQLite adapter is deliberately local. It does not provide multi-process write fencing, an agent
+runtime, filesystem observation, Git worktrees, migrations for deployed databases, automatic task
+execution, or a CLI command. Before an actual agent write is enforced, a later runtime must also use
+an ownership-generation fencing token rather than the ordinary heartbeat lifecycle version.
+
+For a code-level teaching model, see [Persistence and Replay](./persistence-replay.en.md) and its
+[Chinese edition](./persistence-replay.zh.md). The guides explain event meanings, input snapshots,
+atomic reevaluation evidence, SQLite recovery, domain schema validation, decision replay, and the
+deliberately unimplemented cross-process and agent-runtime boundaries.
+
+The persistence tests cover complete recovery, SQLite file reopen, Set/date round-trip, event-
+transition-decision atomicity, transaction rollback, append-only sequencing, decision replay mismatch,
+current-record upserts, and corrupted stored-state rejection.
+
+The full quality gate now has 175 passing tests. Coverage is 97.21% statements, 92.29% branches,
+99.42% functions, and 97.14% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+
 ## Current overall status (as of this writing)
 
-- Architecture milestones 1–8 of 10 are complete. That is roughly 80% by milestone count, not 80%
-  of total engineering effort: later runtime, persistence, Git, and agent-execution milestones are
-  larger and riskier than several foundation milestones.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 154 tests,
+- Architecture milestones 1–9 of 10 are complete. That is roughly 90% by milestone count, not 90%
+  of total engineering effort: workspace/Git and agent-execution work remains larger and riskier than
+  several foundation milestones.
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 175 tests,
   all passing.
-- Coverage is 97.07% statements, 92.04% branches, 99.64% functions, and 97.00% lines. Every enforced
+- Coverage is 97.21% statements, 92.29% branches, 99.42% functions, and 97.14% lines. Every enforced
   threshold is at least 90%.
 - `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.
@@ -1157,16 +1206,16 @@ branches.
   review and follow-up review with no Critical, High, or Medium issue. The Scheduler's documented
   review findings were fixed and independently re-verified before this commit.
 - Milestone 8 Runtime Guard implementation is complete for the accepted process-local in-memory scope
-  and awaits independent review before it can be committed.
+  and has passed independent review.
+- Milestone 9 Persistence implementation is complete for the accepted local SQLite scope and awaits
+  independent review before it can be committed.
 
 ## What has NOT been implemented yet
 
-- First finalize the Scheduler event/snapshot replay contract, then persist orchestration runs,
-  leases, events, and decisions so they can recover after restart.
 - Create isolated Git workspaces, rebase and integrate task changes safely.
 - Invoke coding agents, monitor them, and verify their results.
 
 In short: **the orchestrator can now map a real TypeScript pnpm repository, predict task impact,
-compare conflicts, decide what may start after an event, and guard exclusive writes inside one process.
-It still does not observe real writes, coordinate multiple processes, persist recovery state, run
-agents, or modify a repository.**
+compare conflicts, decide what may start after an event, guard exclusive writes inside one process,
+and recover verified local orchestration evidence from SQLite. It still does not observe real writes,
+coordinate multiple processes, run agents, or modify a repository.**

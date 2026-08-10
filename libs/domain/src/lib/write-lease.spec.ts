@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   areWritableResourcesConflicting,
   type WritableResource,
-  type WriteLease
+  type WriteLease,
+  writableResourceSchema,
+  writeLeaseSchema
 } from './write-lease.js';
 
 const project = (projectId: string): WritableResource => ({ type: 'project', projectId });
@@ -77,5 +79,24 @@ describe('WriteLease contract', () => {
     };
 
     expect(lease.staleEvidence).toContain('Agent process exited');
+  });
+
+  it('validates complete lease and writable resource recovery records', () => {
+    const lease = {
+      id: 'lease-1',
+      runId: 'run-1',
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      resource: file('catalog', 'product.ts'),
+      mode: 'exclusive',
+      version: 1,
+      state: 'ACTIVE',
+      acquiredAt: new Date('2026-08-11T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-11T00:00:00.000Z')
+    } as const;
+
+    expect(writeLeaseSchema.safeParse(lease).success).toBe(true);
+    expect(writeLeaseSchema.safeParse({ ...lease, mode: 'shared' }).success).toBe(false);
+    expect(writableResourceSchema.safeParse({ projectId: 'catalog' }).success).toBe(false);
   });
 });

@@ -23,6 +23,25 @@ export type WritableResource =
       readonly resourceId: string;
     };
 
+const nonEmptyStringSchema = z.string().trim().min(1);
+
+export const writableResourceSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('project'), projectId: nonEmptyStringSchema }),
+  z.object({
+    type: z.literal('file'),
+    projectId: nonEmptyStringSchema,
+    fileId: nonEmptyStringSchema
+  }),
+  z.object({
+    type: z.literal('symbol'),
+    projectId: nonEmptyStringSchema,
+    fileId: nonEmptyStringSchema,
+    symbolId: nonEmptyStringSchema,
+    ancestorSymbolIds: z.array(nonEmptyStringSchema)
+  }),
+  z.object({ type: z.literal('shared-resource'), resourceId: nonEmptyStringSchema })
+]);
+
 export const areWritableResourcesConflicting = (
   a: WritableResource,
   b: WritableResource
@@ -79,6 +98,22 @@ export interface WriteLease {
   readonly staleEvidence?: string;
 }
 
+export const writeLeaseSchema = z.object({
+  id: nonEmptyStringSchema,
+  runId: nonEmptyStringSchema,
+  agentId: nonEmptyStringSchema,
+  taskId: nonEmptyStringSchema,
+  resource: writableResourceSchema,
+  mode: z.literal('exclusive'),
+  version: z.number().int().positive(),
+  state: z.enum(['ACTIVE', 'RELEASED', 'STALE']),
+  acquiredAt: z.date(),
+  lastHeartbeatAt: z.date(),
+  releasedAt: z.date().optional(),
+  staleDetectedAt: z.date().optional(),
+  staleEvidence: z.string().optional()
+});
+
 export type WriteLeaseResult =
   | {
       readonly status: 'granted';
@@ -134,3 +169,4 @@ export interface WriteGuard {
   markStale(request: MarkWriteLeaseStaleRequest): Promise<MarkWriteLeaseStaleResult>;
   release(request: ReleaseWriteLeaseRequest): Promise<ReleaseWriteLeaseResult>;
 }
+import { z } from 'zod';

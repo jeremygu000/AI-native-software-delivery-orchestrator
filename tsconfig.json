@@ -26,6 +26,9 @@
     },
     {
       "path": "./libs/runtime-guard"
+    },
+    {
+      "path": "./libs/persistence"
     }
   ]
 }

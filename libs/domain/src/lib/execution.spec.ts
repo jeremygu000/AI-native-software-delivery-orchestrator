@@ -12,10 +12,10 @@ describe('scheduler contracts', () => {
   it('parses every supported scheduler event with replay evidence', () => {
     expect(
       [
-        { type: 'task-completed', taskId: 'A' },
-        { type: 'task-failed', taskId: 'A' },
-        { type: 'workspace-integrated', taskId: 'A' },
-        { type: 'verification-completed', taskId: 'A' },
+        { type: 'task-completed', taskId: 'A', state: 'COMPLETED' },
+        { type: 'task-failed', taskId: 'A', state: 'FAILED' },
+        { type: 'workspace-integrated', taskId: 'A', state: 'COMPLETED' },
+        { type: 'verification-completed', taskId: 'A', state: 'INTEGRATING' },
         { type: 'lease-blocked', taskId: 'A', leaseId: 'lease-1' },
         { type: 'lease-released', taskId: 'A', leaseId: 'lease-1' },
         { type: 'lease-stale', taskId: 'A', leaseId: 'lease-1' },
@@ -31,6 +31,19 @@ describe('scheduler contracts', () => {
     );
     expect(
       schedulerEventSchema.safeParse({ type: 'runtime-conflict-discovered', taskId: 'A' }).success
+    ).toBe(false);
+  });
+
+  it('requires every observation event to carry its deterministic post-state', () => {
+    expect(schedulerEventSchema.safeParse({ type: 'task-completed', taskId: 'A' }).success).toBe(
+      false
+    );
+    expect(
+      schedulerEventSchema.safeParse({
+        type: 'verification-completed',
+        taskId: 'A',
+        state: 'COMPLETED'
+      }).success
     ).toBe(false);
   });
 

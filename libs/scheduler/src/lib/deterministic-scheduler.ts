@@ -239,9 +239,9 @@ export class DeterministicScheduler implements Scheduler {
       throw new SchedulerInputError(`Unknown scheduler event task: ${parsedEvent.taskId}`);
     }
     this.#validateSnapshotTaskIds(states, inputs.taskById);
-    if (parsedEvent.type === 'task-failed' && states.get(parsedEvent.taskId) !== 'FAILED') {
+    if ('state' in parsedEvent && states.get(parsedEvent.taskId) !== parsedEvent.state) {
       throw new SchedulerInputError(
-        `Task-failed event requires FAILED snapshot state: ${parsedEvent.taskId}`
+        `${parsedEvent.type} event requires ${parsedEvent.state} snapshot state: ${parsedEvent.taskId}`
       );
     }
     this.#applyRuntimeEvent(parsedEvent, states, blocks, decisions);

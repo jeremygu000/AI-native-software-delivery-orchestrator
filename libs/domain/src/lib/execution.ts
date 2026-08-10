@@ -24,10 +24,16 @@ export type ScheduleOptions = z.infer<typeof scheduleOptionsSchema>;
 const taskEventSchema = z.object({ taskId: taskIdSchema });
 
 export const schedulerEventSchema = z.discriminatedUnion('type', [
-  taskEventSchema.extend({ type: z.literal('task-completed') }),
-  taskEventSchema.extend({ type: z.literal('task-failed') }),
-  taskEventSchema.extend({ type: z.literal('workspace-integrated') }),
-  taskEventSchema.extend({ type: z.literal('verification-completed') }),
+  taskEventSchema.extend({ type: z.literal('task-completed'), state: z.literal('COMPLETED') }),
+  taskEventSchema.extend({ type: z.literal('task-failed'), state: z.literal('FAILED') }),
+  taskEventSchema.extend({
+    type: z.literal('workspace-integrated'),
+    state: z.literal('COMPLETED')
+  }),
+  taskEventSchema.extend({
+    type: z.literal('verification-completed'),
+    state: z.literal('INTEGRATING')
+  }),
   taskEventSchema.extend({ type: z.literal('lease-blocked'), leaseId: taskIdSchema }),
   taskEventSchema.extend({ type: z.literal('lease-released'), leaseId: taskIdSchema }),
   taskEventSchema.extend({ type: z.literal('lease-stale'), leaseId: taskIdSchema }),

@@ -36,7 +36,12 @@ const snapshot = (
   runtimeBlocks
 });
 
-const event = (taskId = 'A'): SchedulerEvent => ({ type: 'task-completed', taskId });
+// A release with no matching blocker is a valid evidence-only reevaluation trigger.
+const event = (taskId = 'A'): SchedulerEvent => ({
+  type: 'lease-stale',
+  taskId,
+  leaseId: 'lease-trigger'
+});
 
 const hardConflict = (
   taskA: string,
@@ -375,7 +380,7 @@ describe('DeterministicScheduler', () => {
   it('cancels every functional and producer dependant after failure', () => {
     const tasks = [task('A'), task('B', ['A']), task('C', ['B']), task('D')];
     const decision = scheduler.reevaluate(
-      { type: 'task-failed', taskId: 'A' },
+      { type: 'task-failed', taskId: 'A', state: 'FAILED' },
       snapshot({ A: 'FAILED', B: 'READY', C: 'PENDING', D: 'READY' }),
       tasks,
       [],
@@ -403,7 +408,7 @@ describe('DeterministicScheduler', () => {
   it('cancels a directional consumer when its producer fails', () => {
     const tasks = [task('producer'), task('consumer')];
     const decision = scheduler.reevaluate(
-      { type: 'task-failed', taskId: 'producer' },
+      { type: 'task-failed', taskId: 'producer', state: 'FAILED' },
       snapshot({ producer: 'FAILED', consumer: 'READY' }),
       tasks,
       [producerConflict('producer', 'consumer')],
@@ -525,15 +530,39 @@ describe('DeterministicScheduler', () => {
   it('rejects a task-failed event whose snapshot has not applied the FAILED state', () => {
     expect(() =>
       scheduler.reevaluate(
-        { type: 'task-failed', taskId: 'producer' },
+        { type: 'task-failed', taskId: 'producer', state: 'FAILED' },
         snapshot({ producer: 'RUNNING', consumer: 'READY' }),
         [task('producer'), task('consumer', ['producer'])],
         [],
         [],
         { maxConcurrency: 2 }
       )
-    ).toThrow('Task-failed event requires FAILED snapshot state: producer');
+    ).toThrow('task-failed event requires FAILED snapshot state: producer');
   });
+
+  it.each([
+    { event: { type: 'task-completed', taskId: 'A', state: 'COMPLETED' }, actualState: 'READY' },
+    { event: { type: 'task-failed', taskId: 'A', state: 'FAILED' }, actualState: 'RUNNING' },
+    {
+      event: { type: 'verification-completed', taskId: 'A', state: 'INTEGRATING' },
+      actualState: 'VERIFYING'
+    },
+    {
+      event: { type: 'workspace-integrated', taskId: 'A', state: 'COMPLETED' },
+      actualState: 'INTEGRATING'
+    }
+  ] satisfies readonly { event: SchedulerEvent; actualState: TaskState }[])(
+    'rejects an observation whose snapshot does not reflect its post-state',
+    ({ event: observationEvent, actualState }) => {
+      expect(() =>
+        scheduler.reevaluate(observationEvent, snapshot({ A: actualState }), [task('A')], [], [], {
+          maxConcurrency: 1
+        })
+      ).toThrow(
+        `${observationEvent.type} event requires ${observationEvent.state} snapshot state: A`
+      );
+    }
+  );
 
   it('accumulates distinct blockers from successive runtime events without repeating a state transition', () => {
     const tasks = [task('A')];
@@ -785,7 +814,7 @@ describe('DeterministicScheduler', () => {
         ),
       () =>
         scheduler.reevaluate(
-          { type: 'task-completed', taskId: 'missing' },
+          { type: 'task-completed', taskId: 'missing', state: 'COMPLETED' },
           snapshot({ A: 'READY', B: 'READY' }),
           tasks,
           [],

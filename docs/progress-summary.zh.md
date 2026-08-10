@@ -1007,26 +1007,70 @@ idempotency 现在把 ancestor collection 当作与顺序无关；一个不可�
 invalid non-finite version。Guard package suite 现在有 22 个测试通过，statements/functions/lines 均为
 100%，branches 为 96.15%。
 
+## 阶段九:Persistence 与 Replay
+
+本阶段让 orchestration evidence 能够在 process restart 后恢复。新的 `libs/persistence` 使用 SQLite、
+Drizzle 和 `better-sqlite3`，但所有 SQLite、Drizzle 和 native driver type 都保留在 adapter 内。Domain
+contract 保持 provider-neutral，因此未来其他 database 可以实现同一个 port。
+
+建表之前，Scheduler replay contract 已经明确。Observation event 现在携带要求的 post-event task state：
+completion/workspace integration 要求 `COMPLETED`，failure 要求 `FAILED`，verification completion 要求
+`INTEGRATING`。如果提供的 input snapshot 未匹配，Scheduler 会拒绝 observation。Runtime blocker event
+仍不同：它们是 Scheduler 自己应用到 input snapshot 的 evidence。
+
+每次 persisted reevaluation 是一个 SQLite transaction：
+
+```text
+event + input snapshot + requested task transition + decision
+        |
+        v
+一个正的 run-local sequence number
+        |
+        v
+全部 commit 或全部 rollback
+```
+
+Run 保存 task contract、hard/risk conflict 和 schedule option。Current task impact/conflict/lease 按稳定
+run-local key upsert。Event、transition、decision 是 append-only evidence。Structured JSON 保留 domain
+`Set` collection 和 lease date。Recovery 会验证 stored JSON，而不是信任任意 database text，然后用保存的
+input snapshot 让 Scheduler replay 每个 event。Replayed decision 必须完全匹配 persisted decision，否则
+recovery 报告 integrity failure。
+
+SQLite adapter 有意只做 local scope。它不提供 multi-process write fencing、agent runtime、filesystem
+observation、Git worktree、deployed database migration、automatic task execution 或 CLI command。实际 agent
+write 被 enforce 前，后续 runtime 还必须使用 ownership-generation fencing token，而不是普通 heartbeat
+lifecycle version。
+
+更详细的代码级教学模型见 [Persistence 与 Replay](./persistence-replay.zh.md) 及其
+[English edition](./persistence-replay.en.md)。两份指南说明 event meaning、input snapshot、atomic
+reevaluation evidence、SQLite recovery、domain schema validation、decision replay，以及有意未实现的
+cross-process 和 agent-runtime boundary。
+
+Persistence test 覆盖 complete recovery、SQLite file reopen、Set/date round-trip、event-transition-decision
+atomicity、transaction rollback、append-only sequence、decision replay mismatch、current-record upsert 以及
+corrupted stored-state rejection。
+
+完整质量门现在有 175 个测试通过。覆盖率为语句 97.21%、分支 92.29%、函数 99.42%、行 97.14%。
+`pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
+
 ## 目前整体状态(截止到本文写作时)
 
-- 架构规划的 10 个里程碑中完成了 1–8,按里程碑数量约为 80%。这不代表总工程量恰好完成
-  80%:后面的持久化、Git 和 Agent 执行阶段比多个地基阶段更大、风险也更高。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 154 个测试全部通过。
-- 覆盖率为:语句 97.07%、分支 92.04%、函数 99.64%、行 97.00%;四项都达到至少 90% 的门槛。
+- 架构规划的 10 个里程碑中完成了 1–9,按里程碑数量约为 90%。这不代表总工程量恰好完成
+  90%:workspace/Git 和 Agent 执行阶段仍比多个地基阶段更大、风险也更高。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 175 个测试全部通过。
+- 覆盖率为:语句 97.21%、分支 92.29%、函数 99.42%、行 97.14%;四项都达到至少 90% 的门槛。
 - `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 - Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有
   Critical、High 或 Medium。Scheduler 中记录的 review finding 已修复，并在提交前独立重新验证。
-- Milestone 8 Runtime Guard 已完成接受的 process-local in-memory scope，正在等待独立 Review 后才能
-  提交。
+- Milestone 8 Runtime Guard 已完成接受的 process-local in-memory scope，并已通过独立 Review。
+- Milestone 9 Persistence 已完成接受的 local SQLite scope，正在等待独立 Review 后才能提交。
 
 ## 还没有实现的部分
 
-- 先完成 Scheduler event/snapshot replay contract，再持久化 orchestration run、lease、event 和
-  decision，让程序重启后能够恢复。
 - 创建隔离 Git 工作区,安全地 rebase 和集成各任务改动。
 - 真正调用编码 Agent、监控执行并验证结果。
 
 简单说:**编排器现在能为真实 TypeScript pnpm 仓库建立确定的结构地图,预测任务影响、比较冲突,
-在事件发生后确定地决定哪些任务可以启动，并在一个 process 内保护 exclusive write。它仍不会观察
-真实 write、协调多个 process、持久化 recovery state、运行 Agent 或修改仓库。**
+在事件发生后确定地决定哪些任务可以启动，在一个 process 内保护 exclusive write，并从 SQLite 恢复
+经过验证的 local orchestration evidence。它仍不会观察真实 write、协调多个 process、运行 Agent 或修改仓库。**

@@ -1,5 +1,6 @@
 import type { FileId, ProjectId, RepositoryGraph, SymbolId } from './repository-graph.js';
 import type { TaskContract } from './task-contract.js';
+import { z } from 'zod';
 
 export type ResourceId = string;
 
@@ -21,6 +22,59 @@ export interface SharedResourceAccess {
   readonly resourceId: ResourceId;
   readonly modes: readonly SharedResourceAccessMode[];
 }
+
+const stringSetSchema = z.set(z.string());
+
+export const sharedResourceAccessSchema = z.object({
+  resourceId: z.string(),
+  modes: z.array(z.enum(['read', 'write', 'coordinate']))
+});
+
+export const impactRiskSignalSchema = z.object({
+  type: z.enum([
+    'public-api-touch',
+    'public-api-signature-change',
+    'generated-artifact',
+    'high-fan-out',
+    'ambiguous-selector'
+  ]),
+  detail: z.string()
+});
+
+export const predictedTaskImpactSchema = z.object({
+  taskId: z.string(),
+  projectsRead: stringSetSchema,
+  projectsWritten: stringSetSchema,
+  explicitProjectsWritten: stringSetSchema,
+  filesRead: stringSetSchema,
+  filesWritten: stringSetSchema,
+  explicitFilesWritten: stringSetSchema,
+  globFilesWritten: stringSetSchema,
+  symbolDerivedFilesWritten: stringSetSchema,
+  symbolsRead: stringSetSchema,
+  symbolsWritten: stringSetSchema,
+  sharedResources: stringSetSchema,
+  sharedResourceAccesses: z.array(sharedResourceAccessSchema),
+  downstreamProjects: stringSetSchema,
+  riskSignals: z.array(impactRiskSignalSchema)
+});
+
+export const observedTaskImpactSchema = z.object({
+  taskId: z.string(),
+  filesRead: stringSetSchema,
+  filesCreated: stringSetSchema,
+  filesWritten: stringSetSchema,
+  filesDeleted: stringSetSchema,
+  symbolsWritten: stringSetSchema,
+  dependencyRequests: stringSetSchema,
+  manifestFilesChanged: stringSetSchema,
+  generatedFilesChanged: stringSetSchema
+});
+
+export const taskImpactSchema = z.object({
+  predicted: predictedTaskImpactSchema,
+  observed: observedTaskImpactSchema.optional()
+});
 
 export interface PredictedTaskImpact {
   readonly taskId: string;
@@ -76,6 +130,24 @@ export interface ConflictReason {
   readonly resourceIds: readonly string[];
 }
 
+export const conflictReasonSchema = z.object({
+  type: z.enum([
+    'same-symbol',
+    'same-file-different-symbol',
+    'same-file',
+    'same-project',
+    'shared-resource',
+    'producer-consumer',
+    'generated-code',
+    'upstream-downstream-project',
+    'public-api-touch',
+    'high-fan-out'
+  ]),
+  score: z.number().int().min(0).max(100),
+  detail: z.string(),
+  resourceIds: z.array(z.string())
+});
+
 export type ConflictAction = 'parallel' | 'guarded-parallel' | 'stagger' | 'serialize';
 export type HardConflictAction = Extract<ConflictAction, 'stagger' | 'serialize'>;
 export type ConflictSeverity = 'none' | 'soft' | 'hard';
@@ -106,6 +178,28 @@ export type SchedulingConstraint =
   | ProducerConsumerSchedulingConstraint
   | StandardSchedulingConstraint;
 
+const schedulingConstraintBaseSchema = z.object({
+  detail: z.string(),
+  resourceIds: z.array(z.string())
+});
+
+export const schedulingConstraintSchema = z.discriminatedUnion('type', [
+  schedulingConstraintBaseSchema.extend({
+    type: z.literal('producer-consumer'),
+    producerTaskId: z.string(),
+    consumerTaskId: z.string()
+  }),
+  schedulingConstraintBaseSchema.extend({
+    type: z.enum([
+      'exclusive-resource',
+      'ordered-resource',
+      'producer-controlled-resource',
+      'same-symbol-write',
+      'runtime-scope-expansion'
+    ])
+  })
+]);
+
 interface TaskConflictBase {
   readonly taskA: string;
   readonly taskB: string;
@@ -126,6 +220,26 @@ export interface RiskTaskConflict extends TaskConflictBase {
 }
 
 export type TaskConflict = HardTaskConflict | RiskTaskConflict;
+
+const taskConflictBaseSchema = z.object({
+  taskA: z.string(),
+  taskB: z.string(),
+  score: z.number().int().min(0).max(100),
+  reasons: z.array(conflictReasonSchema)
+});
+
+export const taskConflictSchema = z.discriminatedUnion('severity', [
+  taskConflictBaseSchema.extend({
+    severity: z.literal('hard'),
+    constraints: z.tuple([schedulingConstraintSchema]).rest(schedulingConstraintSchema),
+    recommendedAction: z.enum(['stagger', 'serialize'])
+  }),
+  taskConflictBaseSchema.extend({
+    severity: z.enum(['none', 'soft']),
+    constraints: z.tuple([]),
+    recommendedAction: z.enum(['parallel', 'guarded-parallel', 'stagger', 'serialize'])
+  })
+]);
 
 export interface TaskImpactAnalyzer {
   analyze(task: TaskContract, graph: RepositoryGraph): Promise<PredictedTaskImpact>;

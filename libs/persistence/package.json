@@ -1,0 +1,26 @@
+{
+  "name": "@ai-native-software-delivery-orchestrator/persistence",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
+    "better-sqlite3": "^13.0.3",
+    "drizzle-orm": "0.45.2"
+  },
+  "devDependencies": {
+    "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*",
+    "@types/better-sqlite3": "^9.6.0"
+  }
+}

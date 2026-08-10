@@ -342,29 +342,21 @@ The current Scheduler does not start agents, change the input snapshot, acquire 
 collect events, write persistence records, run verification, create worktrees, or invoke Git. Those
 remain outer-runtime responsibilities.
 
-The event contract has one documented non-blocking refinement before persistence work: ordinary
-observation events such as `task-completed`, `verification-completed`, and `workspace-integrated`
-currently request reevaluation but do not themselves verify that the supplied snapshot reflects a
-matching post-event task state. `task-failed` does verify `FAILED`, while runtime blocker events
-explicitly apply their own `RUNNING -> BLOCKED` transition. Before Milestone 9 persists and replays
-events, either add matching snapshot-state validation to all observation events or split the domain
-contract into state-observation and runtime-evidence event variants. Do not change this accepted
-Scheduler behavior incidentally during Runtime Guard work.
+Observation events now carry deterministic post-event states and require the Scheduler input snapshot
+to already contain that state: completion and workspace integration require `COMPLETED`, failure
+requires `FAILED`, and verification completion requires `INTEGRATING`. Runtime blocker evidence
+remains the explicit exception: the Scheduler validates and applies its blocker transition. Each
+persisted reevaluation stores the Scheduler input snapshot, event, transitions, and decision under
+one sequence number, then recovery replays the same call and verifies the saved decision. ADR-013
+defines this replay boundary.
 
 ## Persistence boundary
 
-Drizzle and SQLite are installed in the workspace but persistence is deferred until the core
-models, DAG, analyzers, conflict engine, scheduler, and guard are stable. Persistence repositories
-will store reconstructable orchestration state, not raw ASTs. PostgreSQL support must be addable by
-implementing the same repository ports.
-
-Before Milestone 9 stores or replays Scheduler events, it must close the event/snapshot contract
-refinement recorded above. The persistence design must classify each event as either a state
-observation whose supplied snapshot already contains the resulting state, or runtime evidence that
-the Scheduler itself applies to its reconstructable state. It must define matching post-event state
-validation for every observation event or replace the current union with separate event variants.
-Do not persist the current implicit `task-completed` / `verification-completed` /
-`workspace-integrated` convention as a permanent replay contract.
+`libs/persistence` implements an SQLite/Drizzle adapter using `better-sqlite3`. It persists only
+domain-shaped JSON plus relational run, sequence, and current-record keys; compiler AST objects and
+SQLite types remain outside the domain. It atomically writes each event reevaluation, validates data
+while recovering it, and verifies stored decisions by replaying immutable run inputs through the
+Scheduler. PostgreSQL support must remain addable by implementing the same domain port.
 
 ## Workspace tooling
 
@@ -395,8 +387,9 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
    visualization only. **Complete.**
 8. **Runtime guard:** process-local hierarchical lease acquisition, heartbeat, evidence-based stale
    recovery, and idempotent release. **Complete for the in-memory scope.**
-9. **Persistence:** first finalize the Scheduler event/snapshot replay contract, then persist
+9. **Persistence:** finalize scheduler event/snapshot replay semantics, then persist and replay
    recoverable runs, transitions, conflicts, decisions, observations, and leases in SQLite/Drizzle.
+   **Implemented for the local SQLite scope; independent review pending.**
 10. **Workspace and Git:** isolated worktrees, rebase, integration, and disposal behind ports.
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
