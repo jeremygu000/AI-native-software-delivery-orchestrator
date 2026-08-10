@@ -1055,7 +1055,7 @@ Persistence test 覆盖 complete recovery、SQLite file reopen、Set/date round-
 atomicity、transaction rollback、append-only sequence、decision replay mismatch、current-record upsert 以及
 corrupted stored-state rejection。
 
-完整质量门现在有 212 个测试通过。覆盖率为语句 97.38%、分支 92.32%、函数 99.47%、行 97.32%。
+完整质量门现在有 217 个测试通过。覆盖率为语句 97.41%、分支 92.38%、函数 99.47%、行 97.35%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 阶段十:Workspace 与 Git Lifecycle
@@ -1103,6 +1103,11 @@ Workspace record 按 run ID/workspace ID persistence，包含 blocked phase evid
 删除 worktree/task branch。默认 disposal 保护 uncommitted workspace change：返回 stable dirty path，而不是
 删除。丢弃 dirty work 必须 `force: true` 并由 caller 提供 explicit reason。
 
+Workspace record 还有 positive revision。Persistence 接受更高 revision 或 identical same-revision retry，拒绝
+stale/conflicting evidence。Create/disposal 能恢复最小 interrupted lifecycle：matching existing worktree 可以复用，
+removed worktree 但 branch 仍存在时可完成 disposal。Git command 是 asynchronous，NUL-delimited Git path output
+会保留 unusual filename。
+
 Git adapter 用真实 temporary Git repository 测试 create、rebase、fast-forward integration、conflict
 block/abort/resolve/resume、dirty repository blocking、dirty disposal 和 cleanup。窄的 injectable Git command
 runner 用于 deterministic process-failure diagnostic，不让 Git process type 进入 domain contract。
@@ -1116,15 +1121,15 @@ protection。
 acquire lease、不协调 multiple repository/process，也不自动修复 conflict。这些需要未来 agent/runtime layer
 和 ownership-generation write fencing。
 
-完整质量门现在有 212 个测试通过。覆盖率为语句 97.38%、分支 92.32%、函数 99.47%、行 97.32%。
+完整质量门现在有 217 个测试通过。覆盖率为语句 97.41%、分支 92.38%、函数 99.47%、行 97.35%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 目前整体状态(截止到本文写作时)
 
 - 架构规划的 10 个里程碑已全部实现。这不代表完整产品 100% 完成：agent execution、真实 write
   enforcement、provider integration 和 CLI runtime 仍是 deterministic milestone 计划外的重要产品能力。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 212 个测试全部通过。
-- 覆盖率为:语句 97.38%、分支 92.32%、函数 99.47%、行 97.32%;四项都达到至少 90% 的门槛。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 217 个测试全部通过。
+- 覆盖率为:语句 97.41%、分支 92.38%、函数 99.47%、行 97.35%;四项都达到至少 90% 的门槛。
 - `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 - Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有

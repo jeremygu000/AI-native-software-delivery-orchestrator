@@ -77,6 +77,7 @@ worktree path
 task branch name
 base ref
 integration ref
+positive revision
 integration phase
 optional integration commit/block evidence
 ```
@@ -109,6 +110,10 @@ INTEGRATING -> BLOCKED -> READY
 
 `INTEGRATION_BLOCKED` 保存当前是在修复 Git integration，而不是重新执行 task。
 
+每次返回 state-changing result 都递增 revision。SQLite persistence 只接受更高 revision，或同一 revision
+且完全相同的 retry；stale revision 和同 revision 的不同 evidence 都会拒绝。因此延迟到达的
+`READY_TO_INTEGRATE` record 不能覆盖已经 persistence 的 `INTEGRATED`/blocked workspace。
+
 ## Create
 
 Workspace creation 先验证两个 ref：
@@ -122,6 +127,10 @@ git checkout
 
 如果 checkout 在 Git 创建 worktree 后失败，manager 会移除 partial worktree 并删除新 task branch。失败的
 creation 不会留下隐藏 branch/directory。
+
+Process interruption 后 create 可以 retry。如果 target path 已是 requested branch 上的 valid Git worktree，且
+其 `HEAD` 与 integration repository 中该 branch 匹配，create 返回等价的 revision-1 workspace。不是该 exact
+worktree 的已存在路径仍是 collision，会被拒绝。
 
 ## Integration model
 
@@ -152,6 +161,10 @@ blocker.conflictPaths: changed path
 ```
 
 这保护 integration checkout 内无关的 manual work。
+
+该 checkout 不能是用户的 working directory。`repositoryPath` 必须是 orchestrator-owned integration checkout，
+例如 `.forge/integration/<repository-id>`，因为 integration 会 switch 到 integration ref。未来 application layer
+负责 provision 并 exclusive-own 这个 directory；没有 portable 的方式检测 editor/shell 是否正在使用 checkout。
 
 ## Rebase conflict handling
 
@@ -240,6 +253,12 @@ dispose({ workspace, force: true, reason: "..." })
 Adapter 会在 forced removal 前验证 reason non-empty。Reason 属于 caller audit layer；当前 local Git
 adapter 不自己 persistence audit event。
 
+Disposal 支持 retry。如果前一次 removal 已删除 worktree directory，manager 跳过 dirty check/worktree removal，
+并只在 task branch 仍存在时删除它。这样可完成 partial disposal，不会把 missing worktree 当成 error。
+
+所有 Git command 使用 asynchronous child-process execution。Dirty/conflict path query 请求 NUL-delimited Git
+output，保留包含 space、quote 或 line break 的 path。
+
 ## Milestone 10 没有实现什么
 
 它没有：
@@ -259,10 +278,10 @@ ownership、verification、persisted transition 和 actual write observation 协
 
 ## 验证与当前限制
 
-Workspace-git package 有 21 个测试通过，statements/functions/lines 均为 100%，branches 为 91.66%。
+Workspace-git package 有 24 个测试通过，statements/functions/lines 均为 100%，branches 为 93.33%。
 Test 使用 real temporary Git repository 验证 main lifecycle，使用 injectable command runner 验证 deterministic
-command-failure path。Repository quality gate 有 212 个测试通过，全仓覆盖率为语句 97.38%、分支 92.32%、
-函数 99.47%、行 97.32%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
+command-failure path。Repository quality gate 有 217 个测试通过，全仓覆盖率为语句 97.41%、分支 92.38%、
+函数 99.47%、行 97.35%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
 
 实现只在 local single-repository worktree 范围验证。声称适合 many concurrent worktree、network filesystem、
 remote repository 或 multi-process workspace ownership 前，必须重新测量和扩展。

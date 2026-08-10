@@ -249,8 +249,8 @@ authorization boundary. Current lease versions only fence lifecycle operations.
 ## Verification and limits
 
 The persistence package has 15 passing tests with 97.63% statements, 94.36% branches, 98.33%
-functions, and 97.73% lines. The repository quality gate has 212 passing tests with 97.38%
-statements, 92.32% branches, 99.47% functions, and 97.32% lines. `pnpm check`, `pnpm build`, and
+functions, and 97.82% lines. The repository quality gate has 217 passing tests with 97.41%
+statements, 92.38% branches, 99.47% functions, and 97.35% lines. `pnpm check`, `pnpm build`, and
 `git diff --check` pass.
 
 The O(n) next-sequence lookup is accepted for local runs and is protected by the adapter mutex. A

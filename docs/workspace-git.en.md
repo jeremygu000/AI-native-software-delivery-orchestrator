@@ -80,6 +80,7 @@ worktree path
 task branch name
 base ref
 integration ref
+positive revision
 integration phase
 optional integration commit or block evidence
 ```
@@ -113,6 +114,11 @@ INTEGRATING -> BLOCKED -> READY
 `INTEGRATION_BLOCKED` preserves whether the system is repairing Git integration rather than running
 the task again.
 
+Every state-changing result increments the revision. SQLite persistence accepts a higher revision or
+an exactly identical retry at the same revision; it rejects stale revisions and same-revision records
+with different evidence. A delayed `READY_TO_INTEGRATE` record therefore cannot overwrite a persisted
+`INTEGRATED` or blocked workspace.
+
 ## Create
 
 Workspace creation validates both refs before creating anything:
@@ -126,6 +132,11 @@ git checkout
 
 If checkout fails after Git creates the worktree, the manager removes the partially created worktree
 and deletes the new task branch. A failed creation does not leave a hidden branch or directory behind.
+
+Creation is retry-aware after a process interruption. If the target path is already a valid Git
+worktree on the requested branch and its `HEAD` matches that branch in the integration repository,
+creation returns the equivalent revision-1 workspace. A path that is not that exact worktree remains a
+collision and is rejected.
 
 ## Integration model
 
@@ -156,6 +167,11 @@ blocker.conflictPaths: changed paths
 ```
 
 This protects unrelated manual work in the integration checkout.
+
+The checkout is not a user's working directory. `repositoryPath` must be an orchestrator-owned
+integration checkout, such as `.forge/integration/<repository-id>`, because integration switches it
+to the integration ref. The future application layer is responsible for provisioning and exclusively
+owning this directory; portable detection of an editor or shell using a checkout is not available.
 
 ## Rebase conflict handling
 
@@ -244,6 +260,13 @@ dispose({ workspace, force: true, reason: "..." })
 The adapter validates that the reason is non-empty before a forced removal. The reason belongs to the
 caller's audit layer; the current local Git adapter does not persist an audit event itself.
 
+Disposal is retry-aware. If a previous removal already deleted the worktree directory, the manager
+skips the dirty check and worktree removal, then deletes the task branch only if it still exists. This
+finishes a partially completed disposal without treating a missing worktree as an error.
+
+All Git commands use asynchronous child-process execution. Dirty and conflict path queries request
+NUL-delimited Git output, preserving paths with spaces, quotes, or line breaks.
+
 ## What Milestone 10 does not do
 
 It does not:
@@ -264,10 +287,10 @@ observation.
 
 ## Verification and current limits
 
-The workspace-git package has 21 passing tests with 100% statements, 91.66% branches, 100%
+The workspace-git package has 24 passing tests with 100% statements, 93.33% branches, 100%
 functions, and 100% lines. Tests use real temporary Git repositories for the main lifecycle and an
 injectable command runner for deterministic command-failure paths. The repository quality gate has
-212 passing tests with 97.38% statements, 92.32% branches, 99.47% functions, and 97.32% lines.
+217 passing tests with 97.41% statements, 92.38% branches, 99.47% functions, and 97.35% lines.
 `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 The implementation is proven for local single-repository worktrees. It must be measured and extended

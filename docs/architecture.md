@@ -29,15 +29,16 @@ libs/
   scheduler/            Event-driven dependency- and conflict-aware dispatch
   runtime-guard/        Hierarchical write leases
   persistence/          Drizzle repositories backed by SQLite
-  workspace/            Isolated task workspace lifecycle
-  git/                  Native Git command abstraction
+   workspace-git/        Cohesive isolated-worktree and Git integration adapter
   verification/         Structured command verification
   agent-runtime/        Provider-neutral coding-agent execution
   provider/             Model-provider ports and adapters
 ```
 
 Libraries are introduced when they own meaningful behaviour. Domain concepts are grouped rather
-than split into one library per type.
+than split into one library per type. `workspace-git` owns the single cohesive boundary from isolated
+worktree creation through Git integration and disposal; it is not split into speculative `workspace`
+and `git` packages.
 
 ## Dependency direction
 
@@ -291,7 +292,28 @@ adapter rebases the task branch onto the integration ref, then integrates throug
 merge. Dirty integration repositories, rebase conflicts, and fast-forward failures remain explicit
 blocks that an outer runtime may resume or abort. Observed writes are still not implemented, so no
 current component claims to check them against predicted scope or leases before integration. The
-feedback loop is:
+workspace record carries a positive revision. Persistence accepts only a strictly newer revision, or
+an exactly matching retry at the same revision; an older workspace record cannot overwrite newer Git
+integration evidence. Git processes run asynchronously and use NUL-delimited path output, so a long
+rebase does not block the Node.js event loop and unusual filenames remain structured evidence.
+
+`repositoryPath` is an orchestrator-owned integration checkout, not a user's active checkout. A
+future caller must provision an exclusive directory, for example `.forge/integration/<repository-id>`,
+because integration deliberately switches it to the requested integration ref. A clean user checkout
+is not safe: switching it could move a user's current branch without leaving dirty-work evidence.
+
+### Missing application orchestration layer
+
+No formal application/orchestration layer is implemented yet. `apps/cli` is intentionally a thin
+entry point and must not become the location for cross-component lifecycle logic. Before a CLI command
+or agent runtime can execute work, an application layer must own the ordered workflow: obtain a
+Scheduler decision, acquire and renew Runtime Guard ownership, create or recover a WorkspaceManager
+worktree, persist each workspace revision and Scheduler evidence, invoke verification, integrate or
+repair Git state, and emit the next Scheduler event. It must also provision the dedicated integration
+checkout and coordinate recovery after process interruption. These responsibilities remain technical
+debt rather than an implicit contract of any current adapter.
+
+The feedback loop is:
 
 ```text
 intent -> plan -> predicted impact -> conflicts -> dispatch
@@ -394,7 +416,7 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
    recoverable runs, transitions, conflicts, decisions, observations, and leases in SQLite/Drizzle.
    **Complete for the local SQLite scope.**
 10. **Workspace and Git:** isolated worktrees, rebase, integration, and disposal behind ports.
-    **Implemented for the local single-repository Git scope; independent review pending.**
+    **Complete for the local single-repository Git scope.**
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
 non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before
