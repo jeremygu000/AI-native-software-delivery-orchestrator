@@ -319,6 +319,19 @@ describe('GitWorkspaceManager', () => {
     });
   });
 
+  it('preserves both paths from a renamed file', async () => {
+    const repositoryPath = createRepository();
+    const manager = new GitWorkspaceManager();
+    const workspace = await manager.create(request(repositoryPath));
+    git(workspace.workspacePath, ['mv', 'value.txt', 'renamed value.txt']);
+
+    await expect(manager.dispose({ workspace, force: false })).resolves.toEqual({
+      status: 'dirty',
+      paths: ['renamed value.txt', 'value.txt']
+    });
+    await manager.dispose({ workspace, force: true, reason: 'Test cleanup.' });
+  });
+
   it('records a rebase conflict without losing integration phase', async () => {
     const runner = new FakeGitRunner();
     runner.failures.set(['rebase', 'main'].join('\u0000'), 'conflict');

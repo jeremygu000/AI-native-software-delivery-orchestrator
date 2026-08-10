@@ -47,6 +47,11 @@ the integration phase needed for later resume or abort. A workspace is disposed 
 call. Disposal refuses a dirty worktree by default and returns its stable changed paths; any
 `force: true` disposal requires a non-empty caller reason before Git removal runs.
 
+Workspace creation can reuse only a matching interrupted revision-1 worktree. The retry path does not
+recover a later persisted revision; callers must recover that record through persistence rather than
+call `create` again. If they do call `create`, workspace revision compare-and-swap rejects the stale
+revision-1 view instead of overwriting later integration evidence.
+
 ## Consequences
 
 The implementation is a local Git adapter, not an agent runtime. It does not execute task code,

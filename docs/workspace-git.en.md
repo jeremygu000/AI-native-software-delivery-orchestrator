@@ -138,6 +138,11 @@ worktree on the requested branch and its `HEAD` matches that branch in the integ
 creation returns the equivalent revision-1 workspace. A path that is not that exact worktree remains a
 collision and is rejected.
 
+This reuse path is only for an interruption before the first successful persistence. It cannot recover
+a later workspace revision; recovery must load that record from persistence. Retrying `create` against
+a later persisted workspace produces revision 1, which persistence rejects through revision CAS rather
+than allowing it to overwrite newer integration evidence.
+
 ## Integration model
 
 Integration has two deliberate steps:
@@ -287,10 +292,10 @@ observation.
 
 ## Verification and current limits
 
-The workspace-git package has 24 passing tests with 100% statements, 93.33% branches, 100%
-functions, and 100% lines. Tests use real temporary Git repositories for the main lifecycle and an
+The workspace-git package has 25 passing tests with 99.07% statements, 94.44% branches, 100%
+functions, and 99.05% lines. Tests use real temporary Git repositories for the main lifecycle and an
 injectable command runner for deterministic command-failure paths. The repository quality gate has
-217 passing tests with 97.41% statements, 92.38% branches, 99.47% functions, and 97.35% lines.
+218 passing tests with 97.37% statements, 92.46% branches, 99.47% functions, and 97.31% lines.
 `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 The implementation is proven for local single-repository worktrees. It must be measured and extended

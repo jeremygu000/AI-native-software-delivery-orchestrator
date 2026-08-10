@@ -132,6 +132,10 @@ Process interruption 后 create 可以 retry。如果 target path 已是 request
 其 `HEAD` 与 integration repository 中该 branch 匹配，create 返回等价的 revision-1 workspace。不是该 exact
 worktree 的已存在路径仍是 collision，会被拒绝。
 
+此 reuse path 只用于首次 successful persistence 前的 interruption，不能恢复之后的 workspace revision；recovery
+必须从 persistence 加载该 record。对已有更高 revision 的 workspace retry `create` 会产生 revision 1，随后由
+persistence revision CAS 拒绝，不能覆盖较新的 integration evidence。
+
 ## Integration model
 
 Integration 有两个刻意步骤：
@@ -278,10 +282,10 @@ ownership、verification、persisted transition 和 actual write observation 协
 
 ## 验证与当前限制
 
-Workspace-git package 有 24 个测试通过，statements/functions/lines 均为 100%，branches 为 93.33%。
+Workspace-git package 有 25 个测试通过，statements 99.07%、branches 94.44%、functions 100%、lines 99.05%。
 Test 使用 real temporary Git repository 验证 main lifecycle，使用 injectable command runner 验证 deterministic
-command-failure path。Repository quality gate 有 217 个测试通过，全仓覆盖率为语句 97.41%、分支 92.38%、
-函数 99.47%、行 97.35%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
+command-failure path。Repository quality gate 有 218 个测试通过，全仓覆盖率为语句 97.37%、分支 92.46%、
+函数 99.47%、行 97.31%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
 
 实现只在 local single-repository worktree 范围验证。声称适合 many concurrent worktree、network filesystem、
 remote repository 或 multi-process workspace ownership 前，必须重新测量和扩展。

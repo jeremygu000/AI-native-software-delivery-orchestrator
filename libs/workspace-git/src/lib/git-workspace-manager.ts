@@ -339,11 +339,25 @@ export class GitWorkspaceManager implements WorkspaceManager {
   }
 
   async #dirtyPaths(workspacePath: string): Promise<readonly string[]> {
-    return (await this.#git(workspacePath, ['status', '--porcelain=v1', '-z'])).stdout
+    const entries = (await this.#git(workspacePath, ['status', '--porcelain=v1', '-z'])).stdout
       .split('\0')
-      .filter((entry) => entry.length > 3)
-      .map((entry) => entry.slice(3))
-      .toSorted(comparePaths);
+      .filter(Boolean);
+    const paths: string[] = [];
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (entry === undefined || entry.length < 4) {
+        continue;
+      }
+      paths.push(entry.slice(3));
+      if (entry[0] === 'R' || entry[1] === 'R' || entry[0] === 'C' || entry[1] === 'C') {
+        const previousPath = entries[index + 1];
+        if (previousPath !== undefined) {
+          paths.push(previousPath);
+          index += 1;
+        }
+      }
+    }
+    return paths.toSorted(comparePaths);
   }
 
   async #conflictPaths(workspacePath: string): Promise<readonly string[]> {
