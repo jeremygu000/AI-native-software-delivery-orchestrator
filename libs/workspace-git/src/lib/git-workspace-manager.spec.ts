@@ -48,6 +48,7 @@ const fixtureWorkspace = {
   branchName: 'orchestrator/run-1/task-1',
   baseRef: 'main',
   integrationRef: 'main',
+  revision: 1,
   phase: 'READY_TO_INTEGRATE'
 } as const;
 
@@ -272,6 +273,7 @@ describe('GitWorkspaceManager', () => {
       status: 'blocked',
       workspace: {
         ...fixtureWorkspace,
+        revision: 2,
         phase: 'INTEGRATION_BLOCKED',
         blocker: {
           type: 'rebase-conflict',
@@ -323,7 +325,10 @@ describe('GitWorkspaceManager', () => {
       workspace: { integrationCommit: 'commit-1' }
     });
     expect(runner.calls.some(({ args }) => args.includes('--continue'))).toBe(false);
-    await expect(manager.abortIntegration(blocked)).resolves.toEqual(fixtureWorkspace);
+    await expect(manager.abortIntegration(blocked)).resolves.toEqual({
+      ...fixtureWorkspace,
+      revision: 2
+    });
   });
 
   it('keeps an unresolved rebase conflict phase-aware when continue fails', async () => {

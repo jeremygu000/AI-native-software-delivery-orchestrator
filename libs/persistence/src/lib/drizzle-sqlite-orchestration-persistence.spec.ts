@@ -605,6 +605,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         branchName: 'orchestrator/run-1/A',
         baseRef: 'main',
         integrationRef: 'main',
+        revision: 2,
         phase: 'INTEGRATION_BLOCKED',
         blocker: {
           type: 'rebase-conflict',
@@ -624,6 +625,48 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         })
       }
     ]);
+    persistence.close();
+  });
+
+  it('rejects workspace revision regression and conflicting same-revision evidence', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const newest = {
+      runId: 'run-1',
+      workspace: {
+        id: 'workspace-1',
+        runId: 'run-1',
+        taskId: 'A',
+        repositoryPath: '/repository',
+        workspacePath: '/workspace',
+        branchName: 'orchestrator/run-1/A',
+        baseRef: 'main',
+        integrationRef: 'main',
+        revision: 2,
+        phase: 'INTEGRATED' as const,
+        integrationCommit: 'commit-2'
+      }
+    };
+    await persistence.createRun(createRunRequest());
+    await persistence.persistWorkspace(newest);
+    await expect(persistence.persistWorkspace(newest)).resolves.toBeUndefined();
+    await expect(
+      persistence.persistWorkspace({
+        ...newest,
+        workspace: { ...newest.workspace, revision: 1, phase: 'READY_TO_INTEGRATE' }
+      })
+    ).rejects.toThrow(
+      'Workspace revision regression rejected: stored revision 2, incoming revision 1'
+    );
+    await expect(
+      persistence.persistWorkspace({
+        ...newest,
+        workspace: {
+          ...newest.workspace,
+          phase: 'INTEGRATION_BLOCKED',
+          blocker: { type: 'fast-forward-failed', detail: 'Different evidence.', conflictPaths: [] }
+        }
+      })
+    ).rejects.toThrow('Workspace revision already recorded with different evidence');
     persistence.close();
   });
 

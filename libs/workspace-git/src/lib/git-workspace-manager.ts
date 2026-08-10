@@ -100,6 +100,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
       ...parsed,
       repositoryPath,
       workspacePath,
+      revision: 1,
       phase: 'READY_TO_INTEGRATE'
     };
   }
@@ -117,7 +118,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
       );
     }
     if (parsed.blocker.type !== 'rebase-conflict') {
-      return this.#integrate(this.#readyWorkspace(parsed));
+      return this.#integrate(this.#readyWorkspace(parsed, false));
     }
     const rebaseResult = this.#tryGit(parsed.workspacePath, [
       '-c',
@@ -128,7 +129,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     if (rebaseResult === undefined) {
       return this.#blockedWorkspace(parsed, 'rebase-conflict', 'Rebase remains blocked.');
     }
-    return this.#fastForwardIntegration(this.#readyWorkspace(parsed));
+    return this.#fastForwardIntegration(this.#readyWorkspace(parsed, false));
   }
 
   async abortIntegration(workspace: TaskWorkspace): Promise<TaskWorkspace> {
@@ -191,6 +192,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
           branchName: workspace.branchName,
           baseRef: workspace.baseRef,
           integrationRef: workspace.integrationRef,
+          revision: workspace.revision + 1,
           phase: 'INTEGRATION_BLOCKED',
           blocker: {
             type: 'repository-dirty',
@@ -235,6 +237,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
         branchName: workspace.branchName,
         baseRef: workspace.baseRef,
         integrationRef: workspace.integrationRef,
+        revision: workspace.revision + 1,
         phase: 'INTEGRATED',
         integrationCommit
       }
@@ -257,6 +260,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
         branchName: workspace.branchName,
         baseRef: workspace.baseRef,
         integrationRef: workspace.integrationRef,
+        revision: workspace.revision + 1,
         phase: 'INTEGRATION_BLOCKED',
         blocker: { type, detail, conflictPaths: [...this.#conflictPaths(workspace.workspacePath)] }
       }
@@ -267,7 +271,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     return workspace.repositoryPath;
   }
 
-  #readyWorkspace(workspace: TaskWorkspace): TaskWorkspace {
+  #readyWorkspace(workspace: TaskWorkspace, advanceRevision = true): TaskWorkspace {
     return {
       id: workspace.id,
       runId: workspace.runId,
@@ -277,6 +281,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
       branchName: workspace.branchName,
       baseRef: workspace.baseRef,
       integrationRef: workspace.integrationRef,
+      revision: workspace.revision + (advanceRevision ? 1 : 0),
       phase: 'READY_TO_INTEGRATE'
     };
   }

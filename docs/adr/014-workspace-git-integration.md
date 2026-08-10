@@ -13,6 +13,14 @@ The implementation never creates an implicit merge commit. Creation rejects both
 path and an existing task branch through the stable Git adapter error; a branch collision must not
 silently reuse a previous task's branch.
 
+`repositoryPath` is an orchestrator-owned integration checkout, not a user's active working directory.
+The caller must provision it separately, for example under `.forge/integration/<repository-id>`, and
+must not pass a checkout a user may have open on another branch. The Git adapter switches this checkout
+to the requested integration ref before fast-forwarding, so accepting a user-active checkout would
+silently move that user's branch even when the directory is clean. Detecting shell or editor use is not
+portable; exclusive checkout ownership is therefore a caller responsibility until an application layer
+provisions and manages these directories.
+
 Workspace integration uses its own phase-aware lifecycle rather than overloading `TaskState`:
 
 ```text

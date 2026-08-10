@@ -26,7 +26,8 @@ const taskWorkspaceBaseSchema = z.object({
   workspacePath: nonEmptyStringSchema,
   branchName: nonEmptyStringSchema,
   baseRef: nonEmptyStringSchema,
-  integrationRef: nonEmptyStringSchema
+  integrationRef: nonEmptyStringSchema,
+  revision: z.int().positive()
 });
 
 export const taskWorkspaceSchema = z.discriminatedUnion('phase', [

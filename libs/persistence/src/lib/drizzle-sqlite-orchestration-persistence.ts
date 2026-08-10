@@ -505,6 +505,35 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
     taskWorkspaceSchema.parse(record.workspace);
     this.#sqlite.transaction(() => {
       this.#assertRunExists(record.runId);
+      const existing = this.#db
+        .select()
+        .from(taskWorkspaces)
+        .where(
+          and(
+            eq(taskWorkspaces.runId, record.runId),
+            eq(taskWorkspaces.workspaceId, record.workspace.id)
+          )
+        )
+        .get();
+      if (existing !== undefined) {
+        const stored = decode(existing.workspaceJson, isTaskWorkspace, 'task workspace');
+        if (record.workspace.revision < stored.revision) {
+          throw new PersistenceInputError(
+            `Workspace revision regression rejected: stored revision ${stored.revision}, incoming revision ${record.workspace.revision}`
+          );
+        }
+        if (
+          record.workspace.revision === stored.revision &&
+          canonicalPlainStringify(record.workspace) !== canonicalPlainStringify(stored)
+        ) {
+          throw new PersistenceInputError(
+            'Workspace revision already recorded with different evidence'
+          );
+        }
+        if (record.workspace.revision === stored.revision) {
+          return;
+        }
+      }
       this.#db
         .insert(taskWorkspaces)
         .values({
