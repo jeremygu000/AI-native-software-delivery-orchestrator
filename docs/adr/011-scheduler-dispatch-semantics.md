@@ -16,6 +16,13 @@ discriminated structured payloads. Events that block or release work carry the e
 conflict identity. A snapshot records each `BLOCKED` task's active blockers, so a release only moves
 matching tasks through `BLOCKED -> READY`; unrelated blocked work remains blocked.
 
+Release events use blocker identity as a broadcast wake-up signal. Their `taskId` identifies the task
+that reports or triggers the lease release, stale recovery, or runtime-conflict resolution; it does
+not identify a task that must be awakened. Every blocked task whose recorded blocker matches the
+released `leaseId` or `conflictId` has that blocker removed. If no blockers remain, each such task
+receives `BLOCKED -> READY` and competes normally in the next selection. This allows several waiters
+for one released resource to reenter scheduling without inventing one preferred waiter.
+
 Except for runtime blocking events, the caller supplies a snapshot that already reflects the event's
 state transition. Events are auditable reasons to reevaluate, not a general state-transition command.
 For example, `task-failed` requires its task to already be `FAILED` in the snapshot or the Scheduler

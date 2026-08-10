@@ -617,6 +617,31 @@ describe('DeterministicScheduler', () => {
     );
   });
 
+  it('broadcasts a released blocker to every blocked waiter while retaining the reporting task identity', () => {
+    const tasks = [task('owner'), task('waiter-a'), task('waiter-b')];
+    const decision = scheduler.reevaluate(
+      { type: 'lease-released', taskId: 'owner', leaseId: 'lease-1' },
+      snapshot({ owner: 'COMPLETED', 'waiter-a': 'BLOCKED', 'waiter-b': 'BLOCKED' }, [
+        { taskId: 'waiter-a', blockers: [{ type: 'lease', leaseId: 'lease-1' }] },
+        { taskId: 'waiter-b', blockers: [{ type: 'lease', leaseId: 'lease-1' }] }
+      ]),
+      tasks,
+      [],
+      [],
+      { maxConcurrency: 2 }
+    );
+
+    expect(decision.taskDecisions).toContainEqual(
+      expect.objectContaining({ taskId: 'waiter-a', action: 'unblock' })
+    );
+    expect(decision.taskDecisions).toContainEqual(
+      expect.objectContaining({ taskId: 'waiter-b', action: 'unblock' })
+    );
+    expect(decision.taskDecisions).not.toContainEqual(
+      expect.objectContaining({ taskId: 'owner', action: 'unblock' })
+    );
+  });
+
   it('starts a true dependant as soon as its only dependency completes without waiting for its preview wave peer', () => {
     const tasks = [task('A'), task('B'), task('C', ['A'])];
     const plan = scheduler.createInitialPlan(tasks, [], [], { maxConcurrency: 2 });
