@@ -38,5 +38,10 @@ leaving storage, cross-process atomicity, recovery, event persistence, and repla
 does not inspect files, resolve repository identities, authorize a real filesystem write, change
 scheduler state, run agents, or invoke Git. The outer runtime must resolve resources before
 requesting a lease and must apply resulting block/release events to the Scheduler. Before an agent
-runtime performs a real write, a later milestone must carry a lease version as a true fencing token
-to the write authorization boundary; the current version only protects guard lifecycle operations.
+runtime performs a real write, a later milestone must carry a distinct ownership-generation fencing
+token to the write authorization boundary. The current lifecycle `version` protects guard operations
+only: it changes on ordinary heartbeats as well as ownership-changing transitions, so using it to
+fence writes would allow a holder's own later heartbeat to reject its earlier legitimate write
+request. A future fencing token must change when ownership is granted or transferred, not when the
+current owner merely proves liveness. Milestone 9 and the future agent runtime must model the two
+values separately before enforcing writes.
