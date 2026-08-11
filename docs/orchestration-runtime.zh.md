@@ -25,6 +25,10 @@ invocation。Runner 在 attempt 变为 `RUNNING` 前通过 `onStarted` 提供 op
 Restart 时 unresolved `STARTING`/`RUNNING` attempt 变为 `UNKNOWN`；local fake backend 不猜测 external process
 是否存在。Attempt 使用 revision CAS，拒绝 stale evidence 和 same-revision conflicting evidence。
 
+Recovery 可以安全地 re-enqueue `PREPARING` attempt，因为 external agent invocation 尚未发生。如果 runner 在
+`onStarted` 前 throw，attempt/task 变为 `FAILED`；在 `onStarted` 后 throw，attempt 变为 `UNKNOWN`。两种情况 run
+都会标记为 `FAILED`，lease 尽可能 release，且不会进入 verification/integration。
+
 ## Lease plan
 
 每个 binding 使用 `TaskLeasePlan`，不是单一 resource。Resource 按 canonical order acquire：project、file、
@@ -117,6 +121,9 @@ reclaim stale lease，也不 create integration checkout。这些需要未来 du
 - cross-process lease 和 ownership-generation write fencing；
 - automatic rebase conflict repair 或 blocked integration resume；
 - CLI `forge run` input 和 integration-checkout provisioning。
+
+Attempt schema 已验证代表性的 valid/invalid state combination，但尚未穷举所有 optional-field combination。未来
+Pi backend 必须增加 backend-specific attempt/session invariant test，不能弱化 provider-neutral boundary。
 
 未来应在 runtime 添加这些 workflow，不能加入 `apps/cli` 或隐藏在既有 infrastructure adapter 中。
 

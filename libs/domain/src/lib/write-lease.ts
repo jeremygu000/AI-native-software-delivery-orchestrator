@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 export type RepositoryWritableResource =
   | {
       readonly type: 'project';
@@ -89,33 +91,24 @@ export const taskLeasePlanFromPredictedImpact = (impact: {
   readonly taskId: string;
   readonly projectsWritten: ReadonlySet<string>;
   readonly filesWritten: ReadonlySet<string>;
+  readonly symbolDerivedFilesWritten: ReadonlySet<string>;
   readonly symbolsWritten: ReadonlySet<string>;
   readonly sharedResources: ReadonlySet<string>;
 }): TaskLeasePlan => {
-  const symbolFiles = [...impact.symbolsWritten].map((symbolId) => {
-    const [projectId, filePart] = symbolId.split(':', 2);
-    return {
-      type: 'file' as const,
-      projectId,
-      fileId: `${projectId}:${filePart}`
-    };
-  });
-  const files = [...impact.filesWritten, ...symbolFiles.map((file) => file.fileId)]
+  const files = [...impact.filesWritten, ...impact.symbolDerivedFilesWritten]
     .map((fileId) => {
       const [projectId] = fileId.split(':', 1);
       return { type: 'file' as const, projectId, fileId };
     })
     .filter(
       (file, index, allFiles) =>
-        allFiles.findIndex((candidate) => candidate.fileId === file.fileId) === index
+        allFiles.findIndex((candidate) => candidate.fileId === file.fileId) === index &&
+        !impact.projectsWritten.has(file.projectId)
     );
-  const projects = [...impact.projectsWritten]
-    .filter(
-      (projectId) =>
-        !files.some((file) => file.projectId === projectId) &&
-        !symbolFiles.some((file) => file.projectId === projectId)
-    )
-    .map((projectId) => ({ type: 'project' as const, projectId }));
+  const projects = [...impact.projectsWritten].map((projectId) => ({
+    type: 'project' as const,
+    projectId
+  }));
   const resources: WritableResource[] = [
     ...projects,
     ...files,
@@ -285,4 +278,3 @@ export interface WriteGuard {
   markStale(request: MarkWriteLeaseStaleRequest): Promise<MarkWriteLeaseStaleResult>;
   release(request: ReleaseWriteLeaseRequest): Promise<ReleaseWriteLeaseResult>;
 }
-import { z } from 'zod';

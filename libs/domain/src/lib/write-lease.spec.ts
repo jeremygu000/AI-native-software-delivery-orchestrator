@@ -70,17 +70,14 @@ describe('WriteLease contract', () => {
       taskId: 'task-1',
       projectsWritten: new Set(['core', 'web']),
       filesWritten: new Set(['core:index']),
+      symbolDerivedFilesWritten: new Set(['core:index']),
       symbolsWritten: new Set(['core:index:Service.run']),
       sharedResources: new Set(['lockfile'])
     });
 
     expect(plan.predictedResources).toEqual([
+      { type: 'project', projectId: 'core' },
       { type: 'project', projectId: 'web' },
-      {
-        type: 'file',
-        projectId: 'core',
-        fileId: 'core:index'
-      },
       { type: 'shared-resource', resourceId: 'lockfile' }
     ]);
     expect(
@@ -92,6 +89,37 @@ describe('WriteLease contract', () => {
     expect(canonicalTaskLeaseResources(plan.predictedResources.toReversed())).toEqual(
       plan.predictedResources
     );
+  });
+
+  it('keeps sibling file leases when no project-wide write dominates them', () => {
+    const plan = taskLeasePlanFromPredictedImpact({
+      taskId: 'task-1',
+      projectsWritten: new Set(),
+      filesWritten: new Set(['core:a', 'core:b']),
+      symbolDerivedFilesWritten: new Set(),
+      symbolsWritten: new Set(),
+      sharedResources: new Set()
+    });
+
+    expect(plan.predictedResources).toEqual([
+      { type: 'file', projectId: 'core', fileId: 'core:a' },
+      { type: 'file', projectId: 'core', fileId: 'core:b' }
+    ]);
+  });
+
+  it('uses symbol-derived file IDs without parsing colon-containing symbol paths', () => {
+    const plan = taskLeasePlanFromPredictedImpact({
+      taskId: 'task-1',
+      projectsWritten: new Set(),
+      filesWritten: new Set(),
+      symbolDerivedFilesWritten: new Set(['core:src/http:client.ts']),
+      symbolsWritten: new Set(['core:src/http:client.ts:Client.request']),
+      sharedResources: new Set()
+    });
+
+    expect(plan.predictedResources).toEqual([
+      { type: 'file', projectId: 'core', fileId: 'core:src/http:client.ts' }
+    ]);
   });
 
   it('retains evidence used to mark a lease stale', () => {

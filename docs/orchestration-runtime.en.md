@@ -29,6 +29,11 @@ session evidence before the attempt becomes `RUNNING`. On restart, unresolved `S
 attempts become `UNKNOWN`; the local fake backend does not guess whether an external process exists.
 Attempts use revision CAS: stale evidence and same-revision conflicting evidence are rejected.
 
+Recovery safely re-enqueues `PREPARING` attempts because no external agent invocation has occurred.
+If a runner throws before `onStarted`, the attempt and task become `FAILED`; after `onStarted`, the
+attempt becomes `UNKNOWN`. In both cases the run is marked `FAILED`, leases are released where possible,
+and verification/integration do not run.
+
 ## Lease plans
 
 Each binding has a `TaskLeasePlan`, not one resource. Resources acquire in canonical order: project,
@@ -127,6 +132,10 @@ provisioning policies.
 - cross-process leases and ownership-generation write fencing;
 - automatic rebase conflict repair or blocked integration resume;
 - CLI `forge run` input and integration-checkout provisioning.
+
+The attempt schema validates representative valid and invalid state combinations, but does not yet
+exhaustively enumerate every optional-field combination. A future Pi backend must add backend-specific
+attempt/session invariant tests rather than weakening the provider-neutral boundary.
 
 The runtime is the future location for these workflows. They must not be added to `apps/cli` or hidden
 inside the existing infrastructure adapters.

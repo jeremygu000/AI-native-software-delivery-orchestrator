@@ -147,6 +147,7 @@ export class OrchestrationRuntime {
           ...attempt,
           state: 'UNKNOWN',
           revision: attempt.revision + 1,
+          completedAt: this.#now(),
           failure: {
             type: 'unknown-outcome',
             detail: 'Process restarted during external agent execution.'
@@ -166,6 +167,40 @@ export class OrchestrationRuntime {
       leases: current.leases,
       attempts: current.attempts
     };
+  }
+
+  async recoverAndResumeRun(
+    request: StartRuntimeRunRequest
+  ): Promise<RecoveredRuntimeRun | undefined> {
+    const recovered = await this.recoverRun(request.run.id);
+    if (recovered === undefined) {
+      return undefined;
+    }
+    const bindings = this.#bindingsByTask(request);
+    const evidence = await this.#persistence.recoverRun(request.run.id);
+    if (evidence === undefined) {
+      throw new OrchestrationRuntimeInputError(
+        `Run disappeared during recovery: ${request.run.id}`
+      );
+    }
+    const state: RuntimeState = {
+      request,
+      bindings,
+      tasksById: new Map(request.tasks.map((task) => [task.id, task])),
+      attemptsByTask: new Map(recovered.attempts.map(({ attempt }) => [attempt.taskId, attempt])),
+      snapshot: recovered.snapshot,
+      nextSequence: evidence.events.length + 1,
+      pendingTaskIds: recovered.attempts
+        .filter(
+          ({ attempt }) =>
+            attempt.state === 'PREPARING' &&
+            this.#stateFor(recovered.snapshot, attempt.taskId) === 'RUNNING'
+        )
+        .map(({ attempt }) => attempt.taskId)
+        .toSorted(compareIds)
+    };
+    await this.#drain(state);
+    return this.#recoveredState(state.snapshot, request.run.id);
   }
 
   #bindingsByTask(request: StartRuntimeRunRequest): ReadonlyMap<string, RuntimeTaskBinding> {
@@ -247,21 +282,57 @@ export class OrchestrationRuntime {
     state.attemptsByTask.set(taskId, starting);
     await this.#persistence.persistAttempt({ runId: state.request.run.id, attempt: starting });
     let executionEstablished = false;
-    const agentResult = await this.#agentRunner.run({
-      attempt: starting,
-      runId: state.request.run.id,
-      taskId,
-      task,
-      workspace,
-      instructions: task.goal,
-      onStarted: async ({ sessionRef }) => {
-        if (executionEstablished) {
-          throw new OrchestrationRuntimeInputError(`Agent execution started twice: ${taskId}`);
+    let agentResult: Awaited<ReturnType<AgentRunner['run']>>;
+    try {
+      agentResult = await this.#agentRunner.run({
+        attempt: starting,
+        runId: state.request.run.id,
+        taskId,
+        task,
+        workspace,
+        instructions: task.goal,
+        onStarted: async ({ sessionRef }) => {
+          if (executionEstablished) {
+            throw new OrchestrationRuntimeInputError(`Agent execution started twice: ${taskId}`);
+          }
+          executionEstablished = true;
+          await this.#persistAttempt(state, taskId, { state: 'RUNNING', sessionRef });
         }
-        executionEstablished = true;
-        await this.#persistAttempt(state, taskId, { state: 'RUNNING', sessionRef });
+      });
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : 'Agent runner threw a non-error value.';
+      await this.#persistAttempt(state, taskId, {
+        state: executionEstablished ? 'UNKNOWN' : 'FAILED',
+        completedAt: this.#now(),
+        failure: {
+          type: executionEstablished ? 'unknown-outcome' : 'execution-failed',
+          detail
+        }
+      });
+      if (!executionEstablished) {
+        this.#setState(state, taskId, 'FAILED');
+        await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
       }
-    });
+      const released = await this.#releaseLeasePlan(acquisition.leases);
+      if (released.status === 'released') {
+        for (const lease of released.leases) {
+          await this.#persistence.persistLease({ runId: state.request.run.id, lease });
+          await this.#recordEvent(state, { type: 'lease-released', taskId, leaseId: lease.id });
+        }
+      } else {
+        for (const lease of released.leases) {
+          await this.#persistence.persistLease({ runId: state.request.run.id, lease });
+        }
+        await this.#recordEvent(state, {
+          type: 'lease-release-failed',
+          taskId,
+          leaseId: released.leaseId
+        });
+      }
+      await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+      throw new OrchestrationRuntimeInputError(`Agent runner failed for task ${taskId}: ${detail}`);
+    }
     if (agentResult.status === 'failed') {
       await this.#persistAttempt(state, taskId, {
         state: 'FAILED',

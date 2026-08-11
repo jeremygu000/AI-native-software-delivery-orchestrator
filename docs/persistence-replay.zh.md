@@ -243,8 +243,8 @@ boundary。当前 lease version 只 fence lifecycle operation。
 ## 验证与限制
 
 Persistence package 有 15 个测试通过，statements 97.63%、branches 94.36%、functions 98.33%、lines
-97.78%。Repository quality gate 有 242 个测试通过，全仓覆盖率为语句 96.83%、分支 91.77%、函数
-99.12%、行 96.80%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
+97.78%。Repository quality gate 有 248 个测试通过，全仓覆盖率为语句 96.76%、分支 91.86%、函数
+99.13%、行 96.73%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
 
 当前 O(n) next-sequence lookup 对 local run 可接受，且由 adapter mutex 串行化。未来 high-volume
 workload 只有在测量证明需要后，才以 run counter 或 `MAX(sequence)` query 替换。

@@ -9,6 +9,7 @@ import type {
   PersistedWriteLease,
   RecoveredRun,
   TaskContract,
+  TaskVerifier,
   TaskWorkspace,
   WorkspaceManager,
   WriteGuard
@@ -292,8 +293,8 @@ const createRuntime = (
   persistence = new MemoryPersistence(),
   workspaceManager = new MemoryWorkspaceManager(),
   writeGuard = new MemoryWriteGuard(),
-  agentRunner = new FakeAgentRunner(),
-  verifier = new FakeTaskVerifier()
+  agentRunner: AgentRunner = new FakeAgentRunner(),
+  verifier: TaskVerifier = new FakeTaskVerifier()
 ): OrchestrationRuntime =>
   new OrchestrationRuntime({
     scheduler: new DeterministicScheduler(),
@@ -420,6 +421,118 @@ describe('OrchestrationRuntime', () => {
           }
         }
       ]
+    });
+  });
+
+  it('resumes a PREPARING attempt after recovery without duplicating dispatch evidence', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(request([task('A')]));
+    await persistence.persistDispatch({
+      reevaluation: {
+        event: {
+          runId: 'run-1',
+          sequence: 1,
+          occurredAt: '2026-08-12T00:00:00.000Z',
+          event: { type: 'run-started' }
+        },
+        transitions: [
+          { runId: 'run-1', sequence: 1, taskId: 'A', fromState: 'PENDING', toState: 'READY' },
+          { runId: 'run-1', sequence: 1, taskId: 'A', fromState: 'READY', toState: 'RUNNING' }
+        ],
+        decision: {
+          runId: 'run-1',
+          sequence: 1,
+          inputSnapshot: { taskStates: [{ taskId: 'A', state: 'PENDING' }], runtimeBlocks: [] },
+          decision: {
+            taskDecisions: [
+              {
+                taskId: 'A',
+                action: 'ready',
+                fromState: 'PENDING',
+                toState: 'READY',
+                reasons: [{ type: 'dependencies-completed', dependencyTaskIds: [] }]
+              },
+              {
+                taskId: 'A',
+                action: 'start',
+                fromState: 'READY',
+                toState: 'RUNNING',
+                reasons: [{ type: 'selected-by-priority', priority: 0 }]
+              }
+            ]
+          }
+        }
+      },
+      attempts: [
+        {
+          runId: 'run-1',
+          attempt: {
+            id: 'attempt-A',
+            runId: 'run-1',
+            taskId: 'A',
+            agentId: 'agent-A',
+            workspaceId: 'workspace-A',
+            state: 'PREPARING',
+            revision: 1
+          }
+        }
+      ]
+    });
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard: new MemoryWriteGuard(),
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      now: () => new Date('2026-08-12T00:00:00.000Z')
+    });
+
+    await expect(runtime.recoverAndResumeRun(request([task('A')]))).resolves.toMatchObject({
+      snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] },
+      attempts: [{ attempt: { state: 'COMPLETED', revision: 4 } }]
+    });
+    expect(persistence.reevaluations[0]?.event.sequence).toBe(1);
+  });
+
+  it('records a definite agent failure when runner throws before onStarted', async () => {
+    const persistence = new MemoryPersistence();
+    const throwingAgent: AgentRunner = {
+      run: async () => {
+        throw new Error('Provider unavailable.');
+      }
+    };
+    const runtime = createRuntime(persistence, undefined, undefined, throwingAgent);
+
+    await expect(runtime.startRun(request([task('A')]))).rejects.toThrow(
+      'Agent runner failed for task A: Provider unavailable.'
+    );
+    await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
+      run: { state: 'FAILED' },
+      snapshot: { taskStates: [{ taskId: 'A', state: 'FAILED' }] },
+      attempts: [{ attempt: { state: 'FAILED', failure: { type: 'execution-failed' } } }],
+      leases: [{ lease: { state: 'RELEASED' } }]
+    });
+  });
+
+  it('records an unknown outcome when runner throws after onStarted', async () => {
+    const persistence = new MemoryPersistence();
+    const throwingAgent: AgentRunner = {
+      run: async (agentRequest) => {
+        await agentRequest.onStarted({ sessionRef: { backend: 'fake', value: 'session-A' } });
+        throw new Error('Provider connection lost.');
+      }
+    };
+    const runtime = createRuntime(persistence, undefined, undefined, throwingAgent);
+
+    await expect(runtime.startRun(request([task('A')]))).rejects.toThrow(
+      'Agent runner failed for task A: Provider connection lost.'
+    );
+    await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
+      run: { state: 'FAILED' },
+      snapshot: { taskStates: [{ taskId: 'A', state: 'RUNNING' }] },
+      attempts: [{ attempt: { state: 'UNKNOWN', failure: { type: 'unknown-outcome' } } }],
+      leases: [{ lease: { state: 'RELEASED' } }]
     });
   });
 

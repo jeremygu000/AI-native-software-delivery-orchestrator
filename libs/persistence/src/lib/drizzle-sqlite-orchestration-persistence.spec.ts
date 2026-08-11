@@ -697,7 +697,12 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     await expect(
       persistence.persistAttempt({
         runId: 'run-1',
-        attempt: { ...dispatch.attempts[0].attempt, state: 'STARTING', revision: 2 }
+        attempt: {
+          ...dispatch.attempts[0].attempt,
+          state: 'STARTING',
+          revision: 2,
+          startedAt: new Date('2026-08-13T00:00:00.000Z')
+        }
       })
     ).resolves.toBeUndefined();
     await expect(
@@ -711,7 +716,12 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     await expect(
       persistence.persistAttempt({
         runId: 'run-1',
-        attempt: { ...dispatch.attempts[0].attempt, state: 'RUNNING', revision: 2 }
+        attempt: {
+          ...dispatch.attempts[0].attempt,
+          state: 'RUNNING',
+          revision: 2,
+          startedAt: new Date('2026-08-13T00:00:00.000Z')
+        }
       })
     ).rejects.toThrow('Agent execution attempt revision already recorded with different evidence');
     await expect(persistence.persistDispatch({ ...dispatch, attempts: [] })).rejects.toThrow(
