@@ -34,6 +34,7 @@ export interface RuntimeTaskBinding {
   readonly leasePlan: TaskLeasePlan;
   readonly impact?: TaskImpact;
   readonly commandPolicy?: Parameters<AgentRunner['run']>[0]['commandPolicy'];
+  readonly trustedCommandPath?: string;
   readonly workspace: Parameters<WorkspaceManager['create']>[0];
 }
 
@@ -302,6 +303,7 @@ export class OrchestrationRuntime {
         impact: binding.impact ?? { predicted: this.#emptyPredictedImpact(taskId) },
         leases: acquisition.leases,
         commandPolicy: binding.commandPolicy,
+        trustedCommandPath: binding.trustedCommandPath,
         workspace,
         instructions: task.goal,
         onStarted: async ({ sessionRef }) => {
@@ -485,6 +487,7 @@ export class OrchestrationRuntime {
           workspaceId: binding.workspace.id,
           leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
           commandPolicyFingerprint: agentCommandPolicyFingerprint(binding.commandPolicy),
+          trustedCommandPath: binding.trustedCommandPath,
           state: 'PREPARING',
           revision: 1
         };
@@ -531,6 +534,7 @@ export class OrchestrationRuntime {
       | 'revision'
       | 'leasePlanFingerprint'
       | 'commandPolicyFingerprint'
+      | 'trustedCommandPath'
     >
   ): Promise<void> {
     const current = state.attemptsByTask.get(taskId);
@@ -594,7 +598,8 @@ export class OrchestrationRuntime {
         binding.workspace.id !== attempt.workspaceId ||
         taskLeasePlanFingerprint(binding.leasePlan) !== attempt.leasePlanFingerprint ||
         attempt.commandPolicyFingerprint === undefined ||
-        agentCommandPolicyFingerprint(binding.commandPolicy) !== attempt.commandPolicyFingerprint
+        agentCommandPolicyFingerprint(binding.commandPolicy) !== attempt.commandPolicyFingerprint ||
+        binding.trustedCommandPath !== attempt.trustedCommandPath
       ) {
         throw new OrchestrationRuntimeInputError(
           `Recovery binding does not match durable attempt: ${attempt.taskId}`

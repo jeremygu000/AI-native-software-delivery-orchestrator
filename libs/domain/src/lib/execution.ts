@@ -216,6 +216,7 @@ export interface AgentRunRequest {
   readonly impact?: TaskImpact;
   readonly leases?: readonly WriteLease[];
   readonly commandPolicy?: AgentCommandPolicy;
+  readonly trustedCommandPath?: string;
   readonly workspace: TaskWorkspace;
   readonly instructions: string;
   readonly onStarted: (evidence: { readonly sessionRef?: AgentSessionRef }) => Promise<void>;

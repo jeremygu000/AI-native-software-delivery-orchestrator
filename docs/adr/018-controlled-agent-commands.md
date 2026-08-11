@@ -22,9 +22,10 @@ access, control descendants after the direct child exits, filter file descriptor
 isolation. The runtime leaves command capability disabled unless a task binding explicitly supplies a
 policy. Pi built-in `bash` remains disabled.
 
-The canonical command-policy fingerprint is persisted with the execution attempt. PREPARING recovery
-rejects a binding whose policy differs from the durable attempt, preventing a resumed execution from
-gaining different command authority.
+The canonical command-policy fingerprint and trusted command path are persisted with the execution
+attempt. PREPARING recovery rejects a binding whose policy or trusted resolution differs from the durable
+attempt, and explicitly rejects legacy attempts without command authority identity. This prevents a
+resumed execution from gaining different command authority.
 
 `validation` is a policy assertion, not proof that the executable has no filesystem side effects. A
 future `workspace-write` command effect must acquire matching write authority, execute in a sandboxed

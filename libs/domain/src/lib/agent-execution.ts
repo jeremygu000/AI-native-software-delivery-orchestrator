@@ -37,6 +37,7 @@ export const agentExecutionAttemptSchema = z
     workspaceId: nonEmptyStringSchema,
     leasePlanFingerprint: nonEmptyStringSchema,
     commandPolicyFingerprint: nonEmptyStringSchema.optional(),
+    trustedCommandPath: nonEmptyStringSchema.optional(),
     state: agentExecutionAttemptStateSchema,
     revision: z.int().positive(),
     sessionRef: agentSessionRefSchema.optional(),

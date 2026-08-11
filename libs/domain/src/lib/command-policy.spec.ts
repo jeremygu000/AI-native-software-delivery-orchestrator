@@ -85,6 +85,36 @@ describe('AgentCommandPolicy', () => {
     expect(agentCommandPolicyFingerprint(undefined)).not.toBe(agentCommandPolicyFingerprint(first));
   });
 
+  it('normalizes omitted validation effect and caller property order', () => {
+    const implicit = {
+      commands: [
+        {
+          id: 'check-types',
+          executable: 'pnpm',
+          args: ['typecheck'],
+          timeoutMs: 30_000,
+          maxOutputBytes: 10_000
+        }
+      ],
+      environment: {}
+    };
+    const explicit = {
+      commands: [
+        {
+          maxOutputBytes: 10_000,
+          timeoutMs: 30_000,
+          effect: 'validation' as const,
+          args: ['typecheck'],
+          executable: 'pnpm',
+          id: 'check-types'
+        }
+      ],
+      environment: {}
+    };
+
+    expect(agentCommandPolicyFingerprint(implicit)).toBe(agentCommandPolicyFingerprint(explicit));
+  });
+
   it('rejects a shell-like executable', () => {
     expect(
       agentCommandPolicySchema.safeParse({

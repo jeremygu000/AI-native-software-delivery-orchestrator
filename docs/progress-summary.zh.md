@@ -1113,10 +1113,11 @@ Concrete local executor 在 task workspace 内用 `shell: false` 运行固定 co
 `SIGKILL`，同时报告 sanitized startup failure。
 没有 command policy 时，Pi session 根本不启用 `forge_command`；Pi built-in `bash` 仍保持 disabled。
 
-Command authority 是 durable execution identity 的一部分：canonical command-policy fingerprint 会随每个 attempt
-保存，PREPARING recovery 会拒绝 changed policy。Executor 接收 constructor-injected trusted path，而不是 ambient host
-`PATH`。当前 command definition 只声明 `validation`；这是一项 policy assertion，不是没有 side effect 的证明。Workspace-
-writing command 需要未来的 sandbox、matching lease 和基于 diff 的 observed-impact reconciliation。
+Command authority 是 durable execution identity 的一部分：canonical command-policy fingerprint 和 trusted path 会随
+每个 attempt 保存，PREPARING recovery 会拒绝 changed authority 或缺少 identity 的 legacy attempt。Executor 接收
+constructor-injected trusted path，而不是 ambient host `PATH`。当前 command definition 只声明 `validation`；这是一项
+policy assertion，不是没有 side effect 的证明。Workspace-writing command 需要未来的 sandbox、matching lease 和基于 diff
+的 observed-impact reconciliation。
 
 这是 policy boundary，不是 operating-system sandbox。它不 isolate network access、secrets、filesystem permission、
 process descendant、CPU 或 memory。这些控制需要后续 sandbox adapter，并且必须在允许 arbitrary command 或 concurrent
@@ -1125,7 +1126,8 @@ production agent 前完成设计。
 详细代码教学见 [Controlled Agent Commands](./controlled-agent-commands.zh.md) 和其
 [English edition](./controlled-agent-commands.en.md)。
 
-完整质量门现在有 316 个测试通过。覆盖率由 `pnpm check` 验证；`pnpm build` 和 `git diff --check` 也通过。
+完整质量门现在有 320 个测试通过。覆盖率为语句 96.72%、分支 91.74%、函数 98.69%、行 96.68%。
+`pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 阶段十:Workspace 与 Git Lifecycle
 

@@ -420,6 +420,7 @@ describe('OrchestrationRuntime', () => {
             workspaceId: 'workspace-A',
             leasePlanFingerprint,
             commandPolicyFingerprint: agentCommandPolicyFingerprint(commandPolicy),
+            trustedCommandPath: '/toolchain-v1/bin',
             state: 'PREPARING',
             revision: 1
           }
@@ -615,7 +616,7 @@ describe('OrchestrationRuntime', () => {
     });
   });
 
-  it('rejects PREPARING recovery when durable attempt identity differs from binding intent', async () => {
+  const prepareRecoveryIdentity = async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(request([task('A')]));
     const commandPolicy = {
@@ -678,24 +679,34 @@ describe('OrchestrationRuntime', () => {
             workspaceId: 'workspace-A',
             leasePlanFingerprint,
             commandPolicyFingerprint: agentCommandPolicyFingerprint(commandPolicy),
+            trustedCommandPath: '/toolchain-v1/bin',
             state: 'PREPARING',
             revision: 1
           }
         }
       ]
     });
-    const runtime = createRuntime(persistence);
     const run = request([task('A')]);
     const binding = run.taskBindings[0];
+    return { persistence, run, binding, commandPolicy };
+  };
 
+  it('rejects PREPARING recovery when durable agent identity differs', async () => {
+    const { persistence, run, binding, commandPolicy } = await prepareRecoveryIdentity();
     await expect(
-      runtime.recoverAndResumeRun({
+      createRuntime(persistence).recoverAndResumeRun({
         ...run,
-        taskBindings: [{ ...binding, commandPolicy, agentId: 'agent-B' }]
+        taskBindings: [
+          { ...binding, commandPolicy, trustedCommandPath: '/toolchain-v1/bin', agentId: 'agent-B' }
+        ]
       })
     ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+  });
+
+  it('rejects PREPARING recovery when command policy differs', async () => {
+    const { persistence, run, binding } = await prepareRecoveryIdentity();
     await expect(
-      runtime.recoverAndResumeRun({
+      createRuntime(persistence).recoverAndResumeRun({
         ...run,
         taskBindings: [
           {
@@ -717,8 +728,12 @@ describe('OrchestrationRuntime', () => {
         ]
       })
     ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+  });
+
+  it('rejects PREPARING recovery when command environment differs', async () => {
+    const { persistence, run, binding, commandPolicy } = await prepareRecoveryIdentity();
     await expect(
-      runtime.recoverAndResumeRun({
+      createRuntime(persistence).recoverAndResumeRun({
         ...run,
         taskBindings: [
           {
@@ -731,21 +746,35 @@ describe('OrchestrationRuntime', () => {
         ]
       })
     ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+  });
+
+  it('rejects PREPARING recovery when workspace identity differs', async () => {
+    const { persistence, run, binding, commandPolicy } = await prepareRecoveryIdentity();
     await expect(
-      runtime.recoverAndResumeRun({
-        ...run,
-        taskBindings: [
-          { ...binding, commandPolicy, workspace: { ...binding.workspace, id: 'workspace-B' } }
-        ]
-      })
-    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
-    await expect(
-      runtime.recoverAndResumeRun({
+      createRuntime(persistence).recoverAndResumeRun({
         ...run,
         taskBindings: [
           {
             ...binding,
             commandPolicy,
+            trustedCommandPath: '/toolchain-v1/bin',
+            workspace: { ...binding.workspace, id: 'workspace-B' }
+          }
+        ]
+      })
+    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+  });
+
+  it('rejects PREPARING recovery when lease plan differs', async () => {
+    const { persistence, run, binding, commandPolicy } = await prepareRecoveryIdentity();
+    await expect(
+      createRuntime(persistence).recoverAndResumeRun({
+        ...run,
+        taskBindings: [
+          {
+            ...binding,
+            commandPolicy,
+            trustedCommandPath: '/toolchain-v1/bin',
             leasePlan: {
               ...binding.leasePlan,
               source: 'runtime-derived'
@@ -754,11 +783,24 @@ describe('OrchestrationRuntime', () => {
         ]
       })
     ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+  });
 
+  it('rejects PREPARING recovery when trusted command path differs', async () => {
+    const { persistence, run, binding, commandPolicy } = await prepareRecoveryIdentity();
     await expect(
-      runtime.recoverAndResumeRun({
+      createRuntime(persistence).recoverAndResumeRun({
         ...run,
-        taskBindings: [{ ...binding, commandPolicy }]
+        taskBindings: [{ ...binding, commandPolicy, trustedCommandPath: '/toolchain-v2/bin' }]
+      })
+    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+  });
+
+  it('resumes PREPARING recovery when durable identity matches', async () => {
+    const { persistence, run, binding, commandPolicy } = await prepareRecoveryIdentity();
+    await expect(
+      createRuntime(persistence).recoverAndResumeRun({
+        ...run,
+        taskBindings: [{ ...binding, commandPolicy, trustedCommandPath: '/toolchain-v1/bin' }]
       })
     ).resolves.toMatchObject({ snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] } });
   });

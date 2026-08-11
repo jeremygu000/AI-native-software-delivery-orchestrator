@@ -62,7 +62,14 @@ export const agentCommandPolicyFingerprint = (policy: AgentCommandPolicy | undef
       ? null
       : {
           commands: [...policy.commands]
-            .map((command) => ({ ...command, args: [...command.args] }))
+            .map((command) => ({
+              id: command.id,
+              executable: command.executable,
+              args: [...command.args],
+              effect: command.effect ?? 'validation',
+              timeoutMs: command.timeoutMs,
+              maxOutputBytes: command.maxOutputBytes
+            }))
             .toSorted((a, b) => compareText(a.id, b.id)),
           environment: Object.fromEntries(
             Object.entries(policy.environment).toSorted(([a], [b]) => compareText(a, b))

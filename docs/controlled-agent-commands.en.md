@@ -53,8 +53,9 @@ in every session.
 Commands declared to write a workspace need a future sandbox, matching write leases, and diff-based observed
 impact reconciliation before they may be admitted.
 
-The canonical policy fingerprint is persisted with each execution attempt. A PREPARING attempt cannot
-resume after recovery if the caller supplies different command authority.
+The canonical policy fingerprint and trusted command path are persisted with each execution attempt. A
+PREPARING attempt cannot resume after recovery if the caller supplies different command authority. Legacy
+attempts without command authority identity are explicitly refused.
 
 ## Limits
 

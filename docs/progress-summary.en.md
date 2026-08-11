@@ -1262,11 +1262,12 @@ captures bounded standard output and error, returns nonzero exits as tool errors
 bounded-grace `SIGKILL` on timeout or cancellation, and reports a sanitized startup failure. No command policy means Pi does not
 receive the `forge_command` tool at all; Pi built-in `bash` remains disabled.
 
-Command authority is part of durable execution identity: a canonical command-policy fingerprint is stored
-with every attempt, and PREPARING recovery rejects a changed policy. The executor receives a constructor-
-injected trusted path rather than ambient host `PATH`. Command definitions currently declare only
-`validation`; this is a policy assertion rather than proof of no side effects. Workspace-writing commands
-need a future sandbox, matching leases, and diff-based observed-impact reconciliation.
+Command authority is part of durable execution identity: a canonical command-policy fingerprint and
+trusted path are stored with every attempt, and PREPARING recovery rejects changed authority or legacy
+attempts without identity. The executor receives a constructor-injected trusted path rather than ambient
+host `PATH`. Command definitions currently declare only `validation`; this is a policy assertion rather
+than proof of no side effects. Workspace-writing commands need a future sandbox, matching leases, and
+diff-based observed-impact reconciliation.
 
 This is a policy boundary, not an operating-system sandbox. It does not isolate network access, secrets,
 filesystem permissions, process descendants, CPU, or memory. These controls need a later sandbox adapter
@@ -1275,8 +1276,8 @@ and must be designed before arbitrary commands or concurrent production agents a
 For a code-level teaching model, see [Controlled Agent Commands](./controlled-agent-commands.en.md) and
 its [Chinese edition](./controlled-agent-commands.zh.md).
 
-The full quality gate now has 316 passing tests. Coverage is verified by `pnpm check`; `pnpm build` and
-`git diff --check` also pass.
+The full quality gate now has 320 passing tests. Coverage is 96.72% statements, 91.74% branches,
+98.69% functions, and 96.68% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 10: Workspace and Git Lifecycle
 

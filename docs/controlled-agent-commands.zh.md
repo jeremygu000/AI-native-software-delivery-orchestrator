@@ -47,8 +47,9 @@ timeout、cancellation、output-limit 和 startup failure 都作为 Pi tool erro
 `validation` 是 orchestrator 的 policy assertion，不是命令没有 filesystem side effect 的证明。声明为 workspace-write
 的 command 需要未来的 sandbox、matching write lease 和基于 diff 的 observed impact reconciliation 后才能允许。
 
-Canonical policy fingerprint 会随每个 execution attempt persistence。PREPARING attempt 在 recovery 后如果 caller
-提供不同 command authority，就不能 resume。
+Canonical policy fingerprint 和 trusted command path 会随每个 execution attempt persistence。PREPARING attempt 在
+recovery 后如果 caller 提供不同 command authority，就不能 resume。缺少 command authority identity 的 legacy attempt
+会被显式拒绝。
 
 ## 限制
 
