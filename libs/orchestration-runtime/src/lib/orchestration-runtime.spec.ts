@@ -431,6 +431,37 @@ describe('OrchestrationRuntime', () => {
     expect(started).toContain('B');
   });
 
+  it('waits for started concurrent agents to settle before returning a fatal error', async () => {
+    const persistence = new MemoryPersistence();
+    let releaseB: (() => void) | undefined;
+    const bFinished = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    let runSettled = false;
+    const agent: AgentRunner = {
+      run: async (agentRequest) => {
+        if (agentRequest.taskId === 'A') {
+          throw new Error('Agent A failed.');
+        }
+        await agentRequest.onStarted({ sessionRef: { backend: 'fake', value: 'session-B' } });
+        await bFinished;
+        return { status: 'completed' };
+      }
+    };
+    const runtime = createRuntime(persistence, undefined, undefined, agent);
+    const run = request([task('A'), task('B')]);
+    const execution = runtime
+      .startRun({ ...run, scheduleOptions: { maxConcurrency: 2 } })
+      .finally(() => {
+        runSettled = true;
+      });
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(runSettled).toBe(false);
+    releaseB?.();
+    await expect(execution).rejects.toThrow('Agent runner failed for task A: Agent A failed.');
+  });
+
   it('releases the lifecycle queue after workspace preparation throws', async () => {
     const persistence = new MemoryPersistence();
     const started: string[] = [];

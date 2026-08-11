@@ -45,6 +45,11 @@ fast-forward integration remain the current ordering boundary. Concurrent task a
 worktrees, but the runtime serializes verification, commit, and integration through its lifecycle queue
 rather than extending execution leases or allowing simultaneous integration operations.
 
+If one concurrent task fails fatally, the runtime stops launching new work and waits for all already-started
+task pipelines to reach a durable settled state before returning the fatal error. It does not yet cancel
+those sibling agents; cancellation wiring is a later capability. Only the first fatal error is currently
+returned to the caller; sibling failure aggregation remains future observability work.
+
 ## Consequences
 
 The runtime can distinguish dispatch authorization from durable external execution evidence and can

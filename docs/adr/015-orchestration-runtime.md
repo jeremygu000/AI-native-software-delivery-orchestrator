@@ -27,6 +27,15 @@ isolated worktrees while preserving deterministic persistence evidence and preve
 of the integration reference. Lease contention blocks a task before its agent starts; normal lease release
 then allows Scheduler unblock/retry evidence to dispatch it later.
 
+Concurrent execution is fail-stop structured concurrency: after the first fatal task error, the runtime
+does not dispatch additional pending work but waits for every already-started task pipeline to settle before
+returning that fatal error. This prevents detached agents from persisting or integrating work after the
+caller believes the run has ended.
+
+The caller currently receives only the first fatal error. Later sibling failures are awaited for lifecycle
+ownership but are not aggregated into the returned error; multi-failure diagnostic aggregation is future
+observability work.
+
 The concurrent runtime passed independent review. Its current contention regression uses a deterministic
 guard double to assert pre-dispatch blocking; an additional real-resource overlap integration scenario is
 future test hardening and does not change the local runtime's current lease enforcement contract.

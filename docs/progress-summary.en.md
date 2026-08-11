@@ -1314,11 +1314,16 @@ This keeps the shared integration reference safe and maintains deterministic per
 while letting real agent work overlap. `forge_edit` now acquires write authority before reading the file,
 closing its former read-modify-write race before parallel execution is enabled.
 
+Parallel execution uses fail-stop structured concurrency. A fatal task error stops dispatching new pending
+tasks, but `startRun()` waits for all already-started task pipelines to settle before returning the first
+fatal error. This prevents detached agent work from continuing after the caller receives a run failure.
+Later sibling failures are currently settled but not aggregated into the returned diagnostic.
+
 Cross-process coordination, integration reservation, agent cancellation, unknown-attempt resume, and
 writable-command side-effect reconciliation remain future work.
 
-The full quality gate now has 342 passing tests. Coverage is 96.71% statements, 91.57% branches,
-98.62% functions, and 96.71% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 343 passing tests. Coverage is 96.62% statements, 91.39% branches,
+98.62% functions, and 96.61% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 10: Workspace and Git Lifecycle
 

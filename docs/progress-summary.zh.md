@@ -1160,10 +1160,15 @@ transition、Scheduler event、verification、commit 和 Git integration。这�
 integration ref，并维护 deterministic persistence/replay evidence。`forge_edit` 现在会在 read file 前 acquire write
 authority，关闭原有 read-modify-write race。
 
+并行执行使用 fail-stop structured concurrency。一个 fatal task error 会停止 dispatch 新 pending task，但
+`startRun()` 会等待所有已启动 task pipeline settle 后才返回第一个 fatal error。这防止 caller 收到 run failure 后仍有
+detached agent work 继续运行。
+后续 sibling failure 当前会 settle，但不会 aggregate 到返回的 diagnostic 中。
+
 Cross-process coordination、integration reservation、agent cancellation、unknown-attempt resume 和 writable-command
 side-effect reconciliation 仍是未来工作。
 
-完整质量门现在有 342 个测试通过。覆盖率为语句 96.71%、分支 91.57%、函数 98.62%、行 96.71%。
+完整质量门现在有 343 个测试通过。覆盖率为语句 96.62%、分支 91.39%、函数 98.62%、行 96.61%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 阶段十:Workspace 与 Git Lifecycle

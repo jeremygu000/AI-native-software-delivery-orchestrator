@@ -245,22 +245,42 @@ export class OrchestrationRuntime {
   }
 
   async #drain(state: RuntimeState): Promise<void> {
-    const executing = new Set<Promise<void>>();
+    const executing = new Set<Promise<{ readonly error?: unknown }>>();
+    let fatalError: Error | undefined;
+    let stopDispatch = false;
     while (state.pendingTaskIds.length > 0 || executing.size > 0) {
       while (
         state.pendingTaskIds.length > 0 &&
         executing.size < state.request.scheduleOptions.maxConcurrency
       ) {
+        if (stopDispatch) {
+          break;
+        }
         const taskId = state.pendingTaskIds.shift();
         if (taskId === undefined || this.#stateFor(state.snapshot, taskId) !== 'RUNNING') {
           continue;
         }
-        const execution = this.#runTask(state, taskId).finally(() => executing.delete(execution));
+        const execution = this.#runTask(state, taskId)
+          .then(() => ({}))
+          .catch((error: unknown) => ({ error }))
+          .finally(() => executing.delete(execution));
         executing.add(execution);
       }
       if (executing.size > 0) {
-        await Promise.race(executing);
+        const settled = await Promise.race(executing);
+        if (!stopDispatch && settled.error !== undefined) {
+          fatalError =
+            settled.error instanceof Error
+              ? settled.error
+              : new OrchestrationRuntimeInputError('Task execution rejected a non-error value.');
+          stopDispatch = true;
+        }
+      } else if (stopDispatch) {
+        break;
       }
+    }
+    if (fatalError !== undefined) {
+      throw new OrchestrationRuntimeInputError(fatalError.message);
     }
   }
 
