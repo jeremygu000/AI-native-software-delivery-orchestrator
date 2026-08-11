@@ -28,12 +28,19 @@ const createRepository = (): string => {
   return directory;
 };
 
-const request = (repositoryPath: string, taskId = 'task-1'): CreateTaskWorkspaceRequest => ({
+const request = (
+  integrationRepositoryPath: string,
+  taskId = 'task-1'
+): CreateTaskWorkspaceRequest => ({
   id: `workspace-${taskId}`,
   runId: 'run-1',
   taskId,
-  repositoryPath,
-  workspacePath: join(repositoryPath, '..', `${basename(repositoryPath)}-${taskId}-workspace`),
+  integrationRepositoryPath,
+  workspacePath: join(
+    integrationRepositoryPath,
+    '..',
+    `${basename(integrationRepositoryPath)}-${taskId}-workspace`
+  ),
   branchName: `orchestrator/run-1/${taskId}`,
   baseRef: 'main',
   integrationRef: 'main'
@@ -43,7 +50,7 @@ const fixtureWorkspace = {
   id: 'workspace-1',
   runId: 'run-1',
   taskId: 'task-1',
-  repositoryPath: '/repository',
+  integrationRepositoryPath: '/repository',
   workspacePath: '/workspace',
   branchName: 'orchestrator/run-1/task-1',
   baseRef: 'main',

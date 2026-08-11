@@ -172,7 +172,7 @@ blocker.conflictPaths: changed paths
 
 This protects unrelated manual work in the integration checkout.
 
-The checkout is not a user's working directory. `repositoryPath` must be an orchestrator-owned
+The checkout is not a user's working directory. `integrationRepositoryPath` must be an orchestrator-owned
 integration checkout, such as `.forge/integration/<repository-id>`, because integration switches it
 to the integration ref. The future application layer is responsible for provisioning and exclusively
 owning this directory; portable detection of an editor or shell using a checkout is not available.
@@ -291,10 +291,10 @@ observation.
 
 ## Verification and current limits
 
-The workspace-git package has 25 passing tests with 99.07% statements, 94.44% branches, 100%
-functions, and 99.05% lines. Tests use real temporary Git repositories for the main lifecycle and an
+The workspace-git package has 26 passing tests with 99.02% statements, 94.44% branches, 100%
+functions, and 99% lines. Tests use real temporary Git repositories for the main lifecycle and an
 injectable command runner for deterministic command-failure paths. The repository quality gate has
-218 passing tests with 97.37% statements, 92.46% branches, 99.47% functions, and 97.31% lines.
+219 passing tests with 97.36% statements, 92.46% branches, 99.47% functions, and 97.30% lines.
 `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 The implementation is proven for local single-repository worktrees. It must be measured and extended

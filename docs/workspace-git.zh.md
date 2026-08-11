@@ -165,7 +165,7 @@ blocker.conflictPaths: changed path
 
 这保护 integration checkout 内无关的 manual work。
 
-该 checkout 不能是用户的 working directory。`repositoryPath` 必须是 orchestrator-owned integration checkout，
+该 checkout 不能是用户的 working directory。`integrationRepositoryPath` 必须是 orchestrator-owned integration checkout，
 例如 `.forge/integration/<repository-id>`，因为 integration 会 switch 到 integration ref。未来 application layer
 负责 provision 并 exclusive-own 这个 directory；没有 portable 的方式检测 editor/shell 是否正在使用 checkout。
 
@@ -281,10 +281,10 @@ ownership、verification、persisted transition 和 actual write observation 协
 
 ## 验证与当前限制
 
-Workspace-git package 有 25 个测试通过，statements 99.07%、branches 94.44%、functions 100%、lines 99.05%。
+Workspace-git package 有 26 个测试通过，statements 99.02%、branches 94.44%、functions 100%、lines 99%。
 Test 使用 real temporary Git repository 验证 main lifecycle，使用 injectable command runner 验证 deterministic
-command-failure path。Repository quality gate 有 218 个测试通过，全仓覆盖率为语句 97.37%、分支 92.46%、
-函数 99.47%、行 97.31%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
+command-failure path。Repository quality gate 有 219 个测试通过，全仓覆盖率为语句 97.36%、分支 92.46%、
+函数 99.47%、行 97.30%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
 
 实现只在 local single-repository worktree 范围验证。声称适合 many concurrent worktree、network filesystem、
 remote repository 或 multi-process workspace ownership 前，必须重新测量和扩展。

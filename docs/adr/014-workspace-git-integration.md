@@ -15,7 +15,8 @@ separate `--no-checkout` to be reconciled after a process interruption. Creation
 path and an existing task branch through the stable Git adapter error; a branch collision must not
 silently reuse a previous task's branch.
 
-`repositoryPath` is an orchestrator-owned integration checkout, not a user's active working directory.
+`integrationRepositoryPath` is an orchestrator-owned integration checkout, not a user's active working
+directory.
 The caller must provision it separately, for example under `.forge/integration/<repository-id>`, and
 must not pass a checkout a user may have open on another branch. The Git adapter switches this checkout
 to the requested integration ref before fast-forwarding, so accepting a user-active checkout would

@@ -10,7 +10,7 @@ const workspace = {
   id: 'workspace-1',
   runId: 'run-1',
   taskId: 'task-1',
-  repositoryPath: '/repository',
+  integrationRepositoryPath: '/repository',
   workspacePath: '/workspaces/task-1',
   branchName: 'orchestrator/run-1/task-1',
   baseRef: 'main',
@@ -26,7 +26,7 @@ describe('workspace contracts', () => {
       id: workspace.id,
       runId: workspace.runId,
       taskId: workspace.taskId,
-      repositoryPath: workspace.repositoryPath,
+      integrationRepositoryPath: workspace.integrationRepositoryPath,
       workspacePath: workspace.workspacePath,
       branchName: workspace.branchName,
       baseRef: workspace.baseRef,
@@ -52,6 +52,13 @@ describe('workspace contracts', () => {
 
   it('requires a positive workspace revision', () => {
     expect(taskWorkspaceSchema.safeParse({ ...workspace, revision: 0 }).success).toBe(false);
+  });
+
+  it('requires an explicit integration checkout path', () => {
+    const { integrationRepositoryPath: _integrationRepositoryPath, ...legacyWorkspace } = workspace;
+    expect(
+      taskWorkspaceSchema.safeParse({ ...legacyWorkspace, repositoryPath: '/repository' }).success
+    ).toBe(false);
   });
 
   it('defaults disposal to protecting dirty workspaces', () => {

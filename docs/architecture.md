@@ -297,7 +297,7 @@ an exactly matching retry at the same revision; an older workspace record cannot
 integration evidence. Git processes run asynchronously and use NUL-delimited path output, so a long
 rebase does not block the Node.js event loop and unusual filenames remain structured evidence.
 
-`repositoryPath` is an orchestrator-owned integration checkout, not a user's active checkout. A
+`integrationRepositoryPath` is an orchestrator-owned integration checkout, not a user's active checkout. A
 future caller must provision an exclusive directory, for example `.forge/integration/<repository-id>`,
 because integration deliberately switches it to the requested integration ref. A clean user checkout
 is not safe: switching it could move a user's current branch without leaving dirty-work evidence.

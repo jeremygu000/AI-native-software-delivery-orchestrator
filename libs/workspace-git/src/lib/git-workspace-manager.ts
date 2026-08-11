@@ -62,13 +62,15 @@ export class GitWorkspaceManager implements WorkspaceManager {
 
   async create(request: CreateTaskWorkspaceRequest): Promise<TaskWorkspace> {
     const parsed = createTaskWorkspaceRequestSchema.parse(request);
-    const repositoryPath = resolve(parsed.repositoryPath);
+    const integrationRepositoryPath = resolve(parsed.integrationRepositoryPath);
     const workspacePath = resolve(parsed.workspacePath);
     if (this.#workspacePathExists(workspacePath)) {
-      if (await this.#isMatchingWorktree(repositoryPath, workspacePath, parsed.branchName)) {
+      if (
+        await this.#isMatchingWorktree(integrationRepositoryPath, workspacePath, parsed.branchName)
+      ) {
         return {
           ...parsed,
-          repositoryPath,
+          integrationRepositoryPath,
           workspacePath,
           revision: 1,
           phase: 'READY_TO_INTEGRATE'
@@ -79,9 +81,9 @@ export class GitWorkspaceManager implements WorkspaceManager {
         'Workspace path already exists.'
       );
     }
-    await this.#git(repositoryPath, ['rev-parse', '--verify', parsed.baseRef]);
-    await this.#git(repositoryPath, ['rev-parse', '--verify', parsed.integrationRef]);
-    await this.#git(repositoryPath, [
+    await this.#git(integrationRepositoryPath, ['rev-parse', '--verify', parsed.baseRef]);
+    await this.#git(integrationRepositoryPath, ['rev-parse', '--verify', parsed.integrationRef]);
+    await this.#git(integrationRepositoryPath, [
       'worktree',
       'add',
       '-b',
@@ -91,7 +93,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     ]);
     return {
       ...parsed,
-      repositoryPath,
+      integrationRepositoryPath,
       workspacePath,
       revision: 1,
       phase: 'READY_TO_INTEGRATE'
@@ -143,15 +145,20 @@ export class GitWorkspaceManager implements WorkspaceManager {
       if (dirtyPaths.length > 0 && !parsed.force) {
         return { status: 'dirty', paths: dirtyPaths };
       }
-      await this.#git(parsed.workspace.repositoryPath, [
+      await this.#git(parsed.workspace.integrationRepositoryPath, [
         'worktree',
         'remove',
         ...(parsed.force ? ['--force'] : []),
         parsed.workspace.workspacePath
       ]);
     }
-    if (await this.#branchExists(parsed.workspace.repositoryPath, parsed.workspace.branchName)) {
-      await this.#git(parsed.workspace.repositoryPath, [
+    if (
+      await this.#branchExists(
+        parsed.workspace.integrationRepositoryPath,
+        parsed.workspace.branchName
+      )
+    ) {
+      await this.#git(parsed.workspace.integrationRepositoryPath, [
         'branch',
         '-D',
         parsed.workspace.branchName
@@ -191,7 +198,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
           id: workspace.id,
           runId: workspace.runId,
           taskId: workspace.taskId,
-          repositoryPath: workspace.repositoryPath,
+          integrationRepositoryPath: workspace.integrationRepositoryPath,
           workspacePath: workspace.workspacePath,
           branchName: workspace.branchName,
           baseRef: workspace.baseRef,
@@ -238,7 +245,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
         id: workspace.id,
         runId: workspace.runId,
         taskId: workspace.taskId,
-        repositoryPath: workspace.repositoryPath,
+        integrationRepositoryPath: workspace.integrationRepositoryPath,
         workspacePath: workspace.workspacePath,
         branchName: workspace.branchName,
         baseRef: workspace.baseRef,
@@ -261,7 +268,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
         id: workspace.id,
         runId: workspace.runId,
         taskId: workspace.taskId,
-        repositoryPath: workspace.repositoryPath,
+        integrationRepositoryPath: workspace.integrationRepositoryPath,
         workspacePath: workspace.workspacePath,
         branchName: workspace.branchName,
         baseRef: workspace.baseRef,
@@ -278,18 +285,22 @@ export class GitWorkspaceManager implements WorkspaceManager {
   }
 
   #integrationRepositoryPath(workspace: TaskWorkspace): string {
-    return workspace.repositoryPath;
+    return workspace.integrationRepositoryPath;
   }
 
   async #isMatchingWorktree(
-    repositoryPath: string,
+    integrationRepositoryPath: string,
     workspacePath: string,
     branchName: string
   ): Promise<boolean> {
     const worktree = await this.#tryGit(workspacePath, ['rev-parse', '--is-inside-work-tree']);
     const branch = await this.#tryGit(workspacePath, ['branch', '--show-current']);
     const head = await this.#tryGit(workspacePath, ['rev-parse', 'HEAD']);
-    const expectedHead = await this.#tryGit(repositoryPath, ['rev-parse', '--verify', branchName]);
+    const expectedHead = await this.#tryGit(integrationRepositoryPath, [
+      'rev-parse',
+      '--verify',
+      branchName
+    ]);
     if (
       worktree?.stdout.trim() !== 'true' ||
       branch?.stdout.trim() !== branchName ||
@@ -301,9 +312,9 @@ export class GitWorkspaceManager implements WorkspaceManager {
     return head.stdout.trim() === expectedHead.stdout.trim();
   }
 
-  async #branchExists(repositoryPath: string, branchName: string): Promise<boolean> {
+  async #branchExists(integrationRepositoryPath: string, branchName: string): Promise<boolean> {
     return (
-      (await this.#tryGit(repositoryPath, [
+      (await this.#tryGit(integrationRepositoryPath, [
         'rev-parse',
         '--verify',
         `refs/heads/${branchName}`
@@ -320,7 +331,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
       id: workspace.id,
       runId: workspace.runId,
       taskId: workspace.taskId,
-      repositoryPath: workspace.repositoryPath,
+      integrationRepositoryPath: workspace.integrationRepositoryPath,
       workspacePath: workspace.workspacePath,
       branchName: workspace.branchName,
       baseRef: workspace.baseRef,
