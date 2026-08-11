@@ -32,6 +32,9 @@
     },
     {
       "path": "./libs/workspace-git"
+    },
+    {
+      "path": "./libs/orchestration-runtime"
     }
   ]
 }

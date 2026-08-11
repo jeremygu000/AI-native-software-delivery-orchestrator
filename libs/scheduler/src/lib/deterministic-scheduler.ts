@@ -235,11 +235,15 @@ export class DeterministicScheduler implements Scheduler {
     const blocks = toRuntimeBlockMap(parsedSnapshot, states);
     const decisions: SchedulerTaskDecision[] = [];
 
-    if (!inputs.taskById.has(parsedEvent.taskId)) {
+    if ('taskId' in parsedEvent && !inputs.taskById.has(parsedEvent.taskId)) {
       throw new SchedulerInputError(`Unknown scheduler event task: ${parsedEvent.taskId}`);
     }
     this.#validateSnapshotTaskIds(states, inputs.taskById);
-    if ('state' in parsedEvent && states.get(parsedEvent.taskId) !== parsedEvent.state) {
+    if (
+      'taskId' in parsedEvent &&
+      'state' in parsedEvent &&
+      states.get(parsedEvent.taskId) !== parsedEvent.state
+    ) {
       throw new SchedulerInputError(
         `${parsedEvent.type} event requires ${parsedEvent.state} snapshot state: ${parsedEvent.taskId}`
       );
@@ -325,6 +329,9 @@ export class DeterministicScheduler implements Scheduler {
     blocks: Map<string, SchedulerRuntimeBlocker[]>,
     decisions: SchedulerTaskDecision[]
   ): void {
+    if (!('taskId' in event)) {
+      return;
+    }
     const blocker =
       event.type === 'lease-blocked'
         ? { type: 'lease' as const, leaseId: event.leaseId }

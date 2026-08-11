@@ -1194,8 +1194,8 @@ The persistence tests cover complete recovery, SQLite file reopen, Set/date roun
 transition-decision atomicity, transaction rollback, append-only sequencing, decision replay mismatch,
 current-record upserts, and corrupted stored-state rejection.
 
-The full quality gate now has 219 passing tests. Coverage is 97.36% statements, 92.46% branches,
-99.47% functions, and 97.30% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 234 passing tests. Coverage is 97.31% statements, 92.48% branches,
+99.04% functions, and 97.29% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 10: Workspace and Git Lifecycle
 
@@ -1267,17 +1267,54 @@ with predicted scope, acquire leases during writes, coordinate multiple reposito
 automatically repair conflicts. Those require a future agent/runtime layer and ownership-generation
 write fencing.
 
-The full quality gate now has 219 passing tests. Coverage is 97.36% statements, 92.46% branches,
-99.47% functions, and 97.30% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 234 passing tests. Coverage is 97.31% statements, 92.48% branches,
+99.04% functions, and 97.29% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+
+## Stage 11: Orchestration Runtime
+
+The deterministic libraries now have one local application layer that can demonstrate their combined
+lifecycle. `OrchestrationRuntime` remains separate from the CLI. It receives domain ports for the
+Scheduler, persistence, WorkspaceManager, WriteGuard, AgentRunner, and TaskVerifier, so none of those
+components needs to import or trigger another infrastructure adapter.
+
+The first runtime intentionally accepts `maxConcurrency: 1`. This makes a Scheduler `RUNNING` state
+match one actual serial fake-agent execution rather than treating a queued task as already running. A
+run begins with a persisted `run-started` event. For each Scheduler start decision, the runtime creates
+and persists a workspace, acquires and persists a lease, invokes the provider-neutral fake agent,
+persists the agent outcome, releases and persists the lease, verifies, then integrates Git. Every Scheduler event persists the
+input snapshot, event, decision, and non-deferred transitions before the runtime updates its current
+snapshot.
+
+Task observations preserve the existing replay rule: agent completion first records `VERIFYING`,
+verification completion first records `INTEGRATING`, and successful integration first records
+`COMPLETED`. Agent or verification failure records `FAILED`, allowing the Scheduler to cancel dependent
+tasks. If lease release then fails, the runtime persists `lease-release-failed`, marks the run `FAILED`,
+and stops before verification or integration. Lease contention records a runtime blocker but has no
+automatic retry in this first serial scope. Integration blocks persist the newer workspace
+revision and leave the task in `INTEGRATING` for a later recovery policy; this first runtime does not
+auto-repair or resume Git conflicts.
+
+Recovery rebuilds the latest snapshot from persisted event and decision evidence, including lease
+blocker projection, and returns current workspace and lease records. It deliberately does not restart
+an unknown in-flight agent or reclaim a lease: safe recovery of those actions needs durable agent
+identity and ownership-generation write fencing beyond this stage.
+
+For a code-level teaching model, see [Orchestration Runtime](./orchestration-runtime.en.md) and its
+[Chinese edition](./orchestration-runtime.zh.md). Tests cover the success path through a dependency
+chain, agent failure, verification failure, same-run and external-run lease blocking, lease-release failure evidence, blocked Git
+integration, eventless recovery, current evidence recovery, invalid bindings, and real SQLite replay.
+
+The full quality gate now has 234 passing tests. Coverage is 97.31% statements, 92.48% branches,
+99.04% functions, and 97.29% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Current overall status (as of this writing)
 
-- Architecture milestones 1–10 of 10 are implemented. This does not mean the full product is 100%
-  complete: agent execution, real write enforcement, provider integration, and CLI runtime work remain
-  substantial product capabilities outside the deterministic milestone plan.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 219 tests,
+- Architecture milestones 1–11 of 11 are implemented. This does not mean the full product is 100%
+  complete: real agent execution, real write enforcement, concurrent dispatch, provider integration,
+  and CLI runtime commands remain substantial product capabilities outside the current milestone plan.
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 234 tests,
   all passing.
-- Coverage is 97.36% statements, 92.46% branches, 99.47% functions, and 97.30% lines. Every enforced
+- Coverage is 97.31% statements, 92.48% branches, 99.04% functions, and 97.29% lines. Every enforced
   threshold is at least 90%.
 - `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.
@@ -1291,12 +1328,16 @@ The full quality gate now has 219 passing tests. Coverage is 97.36% statements, 
 - Milestone 10 Workspace/Git implementation is complete for the accepted local single-repository scope
   and has passed independent review. The review also reproduced Date-aware lease idempotency and
   verified clean-target task-branch collision handling.
+- Milestone 11 Orchestration Runtime is complete for the accepted local serial fake-agent scope and
+  awaits independent review before it can be committed.
 
 ## What has NOT been implemented yet
 
-- Invoke coding agents, monitor them, and verify their results.
+- Invoke and monitor real coding agents or verification commands.
+- Dispatch more than one agent concurrently, recover unknown in-flight agents, or coordinate processes.
 
 In short: **the orchestrator can now map a real TypeScript pnpm repository, predict task impact,
 compare conflicts, decide what may start after an event, guard exclusive writes inside one process,
-recover verified local orchestration evidence from SQLite, and integrate one local task worktree with
-Git. It still does not observe real writes, coordinate multiple processes, or run agents.**
+recover verified local orchestration evidence from SQLite, integrate one local task worktree with Git,
+and exercise those ports with a serial fake-agent runtime. It still does not observe real writes,
+coordinate multiple processes, or run a real coding agent.**

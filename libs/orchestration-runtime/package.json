@@ -1,0 +1,26 @@
+{
+  "name": "@ai-native-software-delivery-orchestrator/orchestration-runtime",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@ai-native-software-delivery-orchestrator/domain": "workspace:*"
+  },
+  "devDependencies": {
+    "@ai-native-software-delivery-orchestrator/persistence": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/runtime-guard": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/workspace-git": "workspace:*"
+  }
+}

@@ -12,17 +12,20 @@ describe('scheduler contracts', () => {
   it('parses every supported scheduler event with replay evidence', () => {
     expect(
       [
+        { type: 'run-started' },
+        { type: 'agent-completed', taskId: 'A', state: 'VERIFYING' },
         { type: 'task-completed', taskId: 'A', state: 'COMPLETED' },
         { type: 'task-failed', taskId: 'A', state: 'FAILED' },
         { type: 'workspace-integrated', taskId: 'A', state: 'COMPLETED' },
         { type: 'verification-completed', taskId: 'A', state: 'INTEGRATING' },
         { type: 'lease-blocked', taskId: 'A', leaseId: 'lease-1' },
         { type: 'lease-released', taskId: 'A', leaseId: 'lease-1' },
+        { type: 'lease-release-failed', taskId: 'A', leaseId: 'lease-1' },
         { type: 'lease-stale', taskId: 'A', leaseId: 'lease-1' },
         { type: 'runtime-conflict-discovered', taskId: 'A', conflictId: 'conflict-1' },
         { type: 'runtime-conflict-resolved', taskId: 'A', conflictId: 'conflict-1' }
       ].map((event) => schedulerEventSchema.parse(event))
-    ).toHaveLength(9);
+    ).toHaveLength(12);
   });
 
   it('rejects runtime events without their blocker identity', () => {
@@ -38,6 +41,13 @@ describe('scheduler contracts', () => {
     expect(schedulerEventSchema.safeParse({ type: 'task-completed', taskId: 'A' }).success).toBe(
       false
     );
+    expect(
+      schedulerEventSchema.safeParse({
+        type: 'agent-completed',
+        taskId: 'A',
+        state: 'RUNNING'
+      }).success
+    ).toBe(false);
     expect(
       schedulerEventSchema.safeParse({
         type: 'verification-completed',

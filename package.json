@@ -7,7 +7,7 @@
   "scripts": {
     "build": "pnpm build:packages && pnpm build:cli",
     "build:cli": "esbuild apps/cli/src/main.ts --bundle --packages=external --platform=node --target=node24 --format=esm --sourcemap --outfile=apps/cli/dist/main.js",
-    "build:packages": "tsc -b libs/domain/tsconfig.lib.json libs/dag/tsconfig.lib.json libs/repository-analysis/tsconfig.lib.json libs/task-impact/tsconfig.lib.json libs/conflict-engine/tsconfig.lib.json libs/scheduler/tsconfig.lib.json libs/runtime-guard/tsconfig.lib.json libs/persistence/tsconfig.lib.json libs/workspace-git/tsconfig.lib.json --force",
+    "build:packages": "tsc -b libs/domain/tsconfig.lib.json libs/dag/tsconfig.lib.json libs/repository-analysis/tsconfig.lib.json libs/task-impact/tsconfig.lib.json libs/conflict-engine/tsconfig.lib.json libs/scheduler/tsconfig.lib.json libs/runtime-guard/tsconfig.lib.json libs/persistence/tsconfig.lib.json libs/workspace-git/tsconfig.lib.json libs/orchestration-runtime/tsconfig.lib.json --force",
     "check": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test:coverage",
     "format": "oxfmt --ignore-path=.oxfmtignore --write .",
     "format:check": "oxfmt --ignore-path=.oxfmtignore --check .",

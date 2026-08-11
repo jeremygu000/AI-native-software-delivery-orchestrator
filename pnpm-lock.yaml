@@ -94,6 +94,25 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
+  libs/orchestration-runtime:
+    dependencies:
+      '@ai-native-software-delivery-orchestrator/domain':
+        specifier: workspace:*
+        version: link:../domain
+    devDependencies:
+      '@ai-native-software-delivery-orchestrator/persistence':
+        specifier: workspace:*
+        version: link:../persistence
+      '@ai-native-software-delivery-orchestrator/runtime-guard':
+        specifier: workspace:*
+        version: link:../runtime-guard
+      '@ai-native-software-delivery-orchestrator/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
+      '@ai-native-software-delivery-orchestrator/workspace-git':
+        specifier: workspace:*
+        version: link:../workspace-git
+
   libs/persistence:
     dependencies:
       '@ai-native-software-delivery-orchestrator/domain':

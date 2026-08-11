@@ -283,8 +283,8 @@ ownership、verification、persisted transition 和 actual write observation 协
 
 Workspace-git package 有 26 个测试通过，statements 99.02%、branches 94.44%、functions 100%、lines 99%。
 Test 使用 real temporary Git repository 验证 main lifecycle，使用 injectable command runner 验证 deterministic
-command-failure path。Repository quality gate 有 219 个测试通过，全仓覆盖率为语句 97.36%、分支 92.46%、
-函数 99.47%、行 97.30%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
+command-failure path。Repository quality gate 有 234 个测试通过，全仓覆盖率为语句 97.31%、分支 92.48%、
+函数 99.04%、行 97.29%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
 
 实现只在 local single-repository worktree 范围验证。声称适合 many concurrent worktree、network filesystem、
 remote repository 或 multi-process workspace ownership 前，必须重新测量和扩展。

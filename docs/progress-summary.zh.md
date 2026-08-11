@@ -1055,7 +1055,7 @@ Persistence test 覆盖 complete recovery、SQLite file reopen、Set/date round-
 atomicity、transaction rollback、append-only sequence、decision replay mismatch、current-record upsert 以及
 corrupted stored-state rejection。
 
-完整质量门现在有 219 个测试通过。覆盖率为语句 97.36%、分支 92.46%、函数 99.47%、行 97.30%。
+完整质量门现在有 234 个测试通过。覆盖率为语句 97.31%、分支 92.48%、函数 99.04%、行 97.29%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 阶段十:Workspace 与 Git Lifecycle
@@ -1121,15 +1121,47 @@ protection。
 acquire lease、不协调 multiple repository/process，也不自动修复 conflict。这些需要未来 agent/runtime layer
 和 ownership-generation write fencing。
 
-完整质量门现在有 219 个测试通过。覆盖率为语句 97.36%、分支 92.46%、函数 99.47%、行 97.30%。
+完整质量门现在有 234 个测试通过。覆盖率为语句 97.31%、分支 92.48%、函数 99.04%、行 97.29%。
+
+## 阶段十一:Orchestration Runtime
+
+Deterministic library 现在有一个 local application layer，可以演示它们组合后的 lifecycle。
+`OrchestrationRuntime` 与 CLI 分开。它接收 Scheduler、persistence、WorkspaceManager、WriteGuard、
+AgentRunner 和 TaskVerifier 的 domain port，因此这些 component 都不需要 import 或 trigger 另一个
+infrastructure adapter。
+
+第一版 runtime 有意只接受 `maxConcurrency: 1`。这样 Scheduler 的 `RUNNING` state 对应一个实际 serial
+fake-agent execution，不会把 queued task 当作已经 running。Run 由 persisted `run-started` event 开始。每个
+Scheduler start decision，runtime create/persist workspace、acquire/persist lease、调用 provider-neutral
+fake agent、persistence agent outcome、release/persist lease、verify，最后 Git integrate。每个 Scheduler event 都会先 persistence input
+snapshot、event、decision 和 non-deferred transition，之后 runtime 才更新 current snapshot。
+
+Task observation 保留既有 replay rule：agent completion 先记录 `VERIFYING`，verification completion 先记录
+`INTEGRATING`，successful integration 先记录 `COMPLETED`。Agent/verification failure 记录 `FAILED`，让
+Scheduler cancel dependent task。如果随后 lease release 失败，runtime persistence `lease-release-failed`、把 run 标记为
+`FAILED`，并在 verification/integration 前停止。Lease contention 记录 runtime blocker，但第一版 serial scope 没有
+automatic retry。Integration block persistence 更新后的
+workspace revision，并让 task 保持 `INTEGRATING` 以等待后续 recovery policy；第一版不 auto-repair/resume Git
+conflict。
+
+Recovery 从 persisted event/decision evidence 重建 latest snapshot，包括 lease blocker projection，并返回 current
+workspace/lease record。它有意不 restart unknown in-flight agent 或 reclaim lease：安全恢复这些 action 需要本阶段
+之外的 durable agent identity 和 ownership-generation write fencing。
+
+详细代码教学见 [Orchestration Runtime](./orchestration-runtime.zh.md) 和其
+[English edition](./orchestration-runtime.en.md)。Test 覆盖 dependency chain success、agent failure、verification
+failure、same-run/external-run lease blocking、lease-release failure evidence、blocked Git integration、eventless recovery、current evidence recovery、
+invalid binding 和 real SQLite replay。
+
+完整质量门现在有 234 个测试通过。覆盖率为语句 97.31%、分支 92.48%、函数 99.04%、行 97.29%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 目前整体状态(截止到本文写作时)
 
-- 架构规划的 10 个里程碑已全部实现。这不代表完整产品 100% 完成：agent execution、真实 write
-  enforcement、provider integration 和 CLI runtime 仍是 deterministic milestone 计划外的重要产品能力。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 219 个测试全部通过。
-- 覆盖率为:语句 97.36%、分支 92.46%、函数 99.47%、行 97.30%;四项都达到至少 90% 的门槛。
+- 架构规划的 11 个里程碑已全部实现。这不代表完整产品 100% 完成：real agent execution、真实 write
+  enforcement、concurrent dispatch、provider integration 和 CLI runtime command 仍是当前 milestone 计划外的重要能力。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 234 个测试全部通过。
+- 覆盖率为:语句 97.31%、分支 92.48%、函数 99.04%、行 97.29%;四项都达到至少 90% 的门槛。
 - `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 - Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有
@@ -1138,12 +1170,14 @@ acquire lease、不协调 multiple repository/process，也不自动修复 confl
 - Milestone 9 Persistence 已完成接受的 local SQLite scope，并已通过独立 Review。
 - Milestone 10 Workspace/Git 已完成接受的 local single-repository scope，并已通过独立 Review。Review 还
   重新验证 Date-aware lease idempotency 和 clean-target task-branch collision handling。
+- Milestone 11 Orchestration Runtime 已完成接受的 local serial fake-agent scope，正在等待独立 Review 后才能提交。
 
 ## 还没有实现的部分
 
-- 真正调用编码 Agent、监控执行并验证结果。
+- 真正调用/监控 coding agent 或 verification command。
+- Dispatch 多个 concurrent agent、recovery unknown in-flight agent 或协调多个 process。
 
 简单说:**编排器现在能为真实 TypeScript pnpm 仓库建立确定的结构地图,预测任务影响、比较冲突,
 在事件发生后确定地决定哪些任务可以启动，在一个 process 内保护 exclusive write，从 SQLite 恢复
-经过验证的 local orchestration evidence，并用 Git integrate 一个 local task worktree。它仍不会观察真实
-write、协调多个 process 或运行 Agent。**
+经过验证的 local orchestration evidence，用 Git integrate 一个 local task worktree，并用 serial fake-agent
+runtime 运行这些 port。它仍不会观察真实 write、协调多个 process 或运行 real coding agent。**

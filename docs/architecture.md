@@ -302,16 +302,17 @@ future caller must provision an exclusive directory, for example `.forge/integra
 because integration deliberately switches it to the requested integration ref. A clean user checkout
 is not safe: switching it could move a user's current branch without leaving dirty-work evidence.
 
-### Missing application orchestration layer
+### Application orchestration layer
 
-No formal application/orchestration layer is implemented yet. `apps/cli` is intentionally a thin
-entry point and must not become the location for cross-component lifecycle logic. Before a CLI command
-or agent runtime can execute work, an application layer must own the ordered workflow: obtain a
-Scheduler decision, acquire and renew Runtime Guard ownership, create or recover a WorkspaceManager
-worktree, persist each workspace revision and Scheduler evidence, invoke verification, integrate or
-repair Git state, and emit the next Scheduler event. It must also provision the dedicated integration
-checkout and coordinate recovery after process interruption. These responsibilities remain technical
-debt rather than an implicit contract of any current adapter.
+`libs/orchestration-runtime` now owns the first local application workflow and keeps `apps/cli` thin.
+It persists Scheduler evidence, creates and persists workspaces, acquires/releases leases, runs a
+provider-neutral fake agent, verifies it, integrates Git work, and reconstructs a recovery snapshot.
+Its production package depends only on Domain ports; local Scheduler, SQLite, Guard, and Workspace/Git
+implementations are injected by integration tests rather than imported as application dependencies.
+Its accepted scope is serial `maxConcurrency: 1`; it does not provision dedicated integration checkouts,
+run real agents or verification commands, coordinate processes, resume unknown in-flight agents, or
+automatically repair Git conflicts. Those workflows remain runtime extensions and must not be placed in
+the CLI or hidden inside infrastructure adapters.
 
 The feedback loop is:
 
@@ -417,6 +418,9 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
    **Complete for the local SQLite scope.**
 10. **Workspace and Git:** isolated worktrees, rebase, integration, and disposal behind ports.
     **Complete for the local single-repository Git scope.**
+11. **Orchestration runtime:** a local application layer that composes Scheduler, WorkspaceManager,
+    WriteGuard, persistence, verification, and a provider-neutral fake agent. The first runtime is
+    serial and recovery-only for in-flight work; it does not run a real coding agent. **In progress.**
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
 non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before

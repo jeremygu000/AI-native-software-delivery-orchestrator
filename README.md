@@ -7,7 +7,7 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–10 establish the deterministic analysis, dispatch, write-safety, recovery, and local
+Milestones 1–11 establish the deterministic analysis, dispatch, write-safety, recovery, local
 Git workspace core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
@@ -36,12 +36,14 @@ Git workspace core:
   conflicts, and leases, including verified Scheduler decision replay;
 - isolated Git worktrees with phase-aware integration blocking, rebase, fast-forward-only integration,
   explicit resume/abort, and dirty-workspace disposal protection;
+- a serial application orchestration runtime that coordinates Scheduler, workspaces, leases,
+  persistence, verification, and provider-neutral fake agents;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestone 10 implements a local single-repository Git workspace lifecycle. It does not execute agents,
-observe real writes, coordinate processes, acquire runtime leases, or automate conflict repair. The
-Scheduler, Guard, Persistence, and Workspace/Git components remain library APIs; the CLI still exposes
-`plan` as a discoverable placeholder until there is a tested task-spec input path and end-to-end runtime.
+Milestone 11 implements a local serial runtime with fake agents. It does not execute real agents,
+observe real writes, coordinate processes, provision integration checkouts, or automate conflict
+repair. The CLI still exposes `plan` as a discoverable placeholder until there is a tested task-spec
+input path and end-to-end runtime command.
 
 ## Requirements
 
@@ -74,6 +76,7 @@ libs/scheduler  Event-driven deterministic dispatch decisions
 libs/runtime-guard  In-process exclusive lease acquisition and lifecycle
 libs/persistence  SQLite/Drizzle run evidence, recovery, and replay verification
 libs/workspace-git  Local isolated Git worktree and integration lifecycle
+libs/orchestration-runtime  Serial application layer for deterministic runtime choreography
 docs/adr     Architecture decisions
 ```
 
@@ -88,6 +91,7 @@ Standalone training guides:
 - [Runtime Guard and Write Leases](docs/runtime-guard.en.md) / [中文](docs/runtime-guard.zh.md)
 - [Persistence and Replay](docs/persistence-replay.en.md) / [中文](docs/persistence-replay.zh.md)
 - [Workspace and Git Lifecycle](docs/workspace-git.en.md) / [中文](docs/workspace-git.zh.md)
+- [Orchestration Runtime](docs/orchestration-runtime.en.md) / [中文](docs/orchestration-runtime.zh.md)
 
 Continuation agents must read the [OpenCode engineering handover](docs/opencode-handover.md) before
 changing the current uncommitted milestone state.

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { HardTaskConflict, RiskTaskConflict } from './conflict.js';
 import type { TaskContract } from './task-contract.js';
 import { taskStateSchema } from './task-state.js';
+import type { TaskWorkspace } from './workspace.js';
 
 const taskIdSchema = z.string().trim().min(1);
 
@@ -24,6 +25,8 @@ export type ScheduleOptions = z.infer<typeof scheduleOptionsSchema>;
 const taskEventSchema = z.object({ taskId: taskIdSchema });
 
 export const schedulerEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('run-started') }),
+  taskEventSchema.extend({ type: z.literal('agent-completed'), state: z.literal('VERIFYING') }),
   taskEventSchema.extend({ type: z.literal('task-completed'), state: z.literal('COMPLETED') }),
   taskEventSchema.extend({ type: z.literal('task-failed'), state: z.literal('FAILED') }),
   taskEventSchema.extend({
@@ -36,6 +39,7 @@ export const schedulerEventSchema = z.discriminatedUnion('type', [
   }),
   taskEventSchema.extend({ type: z.literal('lease-blocked'), leaseId: taskIdSchema }),
   taskEventSchema.extend({ type: z.literal('lease-released'), leaseId: taskIdSchema }),
+  taskEventSchema.extend({ type: z.literal('lease-release-failed'), leaseId: taskIdSchema }),
   taskEventSchema.extend({ type: z.literal('lease-stale'), leaseId: taskIdSchema }),
   taskEventSchema.extend({
     type: z.literal('runtime-conflict-discovered'),
@@ -194,4 +198,32 @@ export interface Scheduler {
     riskConflicts: readonly RiskTaskConflict[],
     options: ScheduleOptions
   ): SchedulerDecision;
+}
+
+export interface AgentRunRequest {
+  readonly runId: string;
+  readonly task: TaskContract;
+  readonly workspace: TaskWorkspace;
+}
+
+export type AgentRunResult =
+  | { readonly status: 'completed' }
+  | { readonly status: 'failed'; readonly detail: string };
+
+export interface AgentRunner {
+  run(request: AgentRunRequest): Promise<AgentRunResult>;
+}
+
+export interface TaskVerificationRequest {
+  readonly runId: string;
+  readonly task: TaskContract;
+  readonly workspace: TaskWorkspace;
+}
+
+export type TaskVerificationResult =
+  | { readonly status: 'passed' }
+  | { readonly status: 'failed'; readonly detail: string };
+
+export interface TaskVerifier {
+  verify(request: TaskVerificationRequest): Promise<TaskVerificationResult>;
 }
