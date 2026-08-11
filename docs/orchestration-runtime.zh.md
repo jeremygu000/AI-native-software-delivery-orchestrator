@@ -9,6 +9,32 @@ Scheduler、Workspace/Git、Write Guard 和 persistence adapter 直接互相调�
 `TaskVerifier` port。`FakeAgentRunner`/`FakeTaskVerifier` 证明 state machine，不启动 model、shell command 或
 real coding agent。
 
+## Durable attempt
+
+`TaskState.RUNNING` 表示 Scheduler 已授权 dispatch，不证明 external agent 正在运行。Runtime 在同一 SQLite
+transaction 内 persistence 每个 Scheduler start decision 与独立、revisioned 的 `AgentExecutionAttempt`：
+
+```text
+PREPARING -> STARTING -> RUNNING -> COMPLETED | FAILED
+                         |
+restart -----------------> UNKNOWN
+```
+
+`PREPARING` 是 workspace/lease preparation 必须 reconcile 的 durable evidence。`STARTING` 表示已发出 runner
+invocation。Runner 在 attempt 变为 `RUNNING` 前通过 `onStarted` 提供 optional provider-neutral session evidence。
+Restart 时 unresolved `STARTING`/`RUNNING` attempt 变为 `UNKNOWN`；local fake backend 不猜测 external process
+是否存在。Attempt 使用 revision CAS，拒绝 stale evidence 和 same-revision conflicting evidence。
+
+## Lease plan
+
+每个 binding 使用 `TaskLeasePlan`，不是单一 resource。Resource 按 canonical order acquire：project、file、
+symbol、shared resource；每种类型内使用 stable identity order。某次 acquire blocked 时，会按 reverse order release
+此前 lease，并 persistence 这些 release 后发出 `lease-blocked`。
+
+从 predicted impact 得到的 plan 使用 project/file/shared-resource write，并把 symbol write 保守转换为 file lease。
+Predicted symbol impact 没有安全 precise symbol lease 所需的 complete ancestor path。未来 runtime-derived plan 只有在
+repository knowledge 提供完整 containment evidence 时才能使用 symbol lease。
+
 ## Runtime flow
 
 ```text
@@ -72,6 +98,10 @@ persistence。Agent/verification failure 发出 `task-failed`，让 Scheduler de
 `BLOCKED` 且有 persisted lease blocker。未来 runtime event loop 必须观察 owner release 并调用明确 retry policy；
 不能推断 unsafe retry。
 
+Execution write lease 保护 active agent mutation。它在 agent outcome evidence 后、verification 前 release。它不是
+integration reservation：Git rebase/fast-forward 仍是当前 integration ordering boundary。未来 concurrent runtime 如果
+需要在 Git conflict handling 之外保护 ordering，必须添加 explicit integration reservation。
+
 `recoverRun` 从 persisted Scheduler event/decision 重建最新 runtime snapshot，包括 lease blocker projection，
 并返回 current workspace/lease record。它有意不 restart unknown in-flight agent、不 repair Git conflict、不
 reclaim stale lease，也不 create integration checkout。这些需要未来 durable agent identity、ownership fencing
@@ -83,14 +113,25 @@ reclaim stale lease，也不 create integration checkout。这些需要未来 du
 - subprocess command verification；
 - observed filesystem impact 与 scope enforcement；
 - concurrent dispatch 或 `maxConcurrency > 1`；
+- Pi adapter、unrestricted agent tool 或 filesystem mutation tool；
 - cross-process lease 和 ownership-generation write fencing；
 - automatic rebase conflict repair 或 blocked integration resume；
 - CLI `forge run` input 和 integration-checkout provisioning。
 
 未来应在 runtime 添加这些 workflow，不能加入 `apps/cli` 或隐藏在既有 infrastructure adapter 中。
 
+## 下一步 backend
+
+Pi 尚未集成。未来 `PiAgentRunner` 必须实现现有 provider-neutral `AgentRunner` port，通过 `onStarted` 提供
+durable session evidence，并保持在 runtime 的 attempt、lease、workspace、persistence、verification 和 Git
+lifecycle policy 之后。Pi 不能获得 unrestricted `bash`、`edit` 或 `write` tool。未来所有 mutation 必须经过
+orchestrator-controlled `AgentToolRuntime`，由它负责 workspace scope、resource resolution、lease enforcement
+和 durable observed-impact evidence。
+
 ## 验证
 
 Runtime test 覆盖 successful dependency execution、fake-agent failure、verification failure、lease blocking、
-lease-release failure、blocked integration、eventless recovery、persisted SQLite replay 和 invalid task binding。
-SQLite integration test 使用 real persistence adapter、in-memory guard 和 provider-neutral workspace port。
+lease-release failure、blocked integration、eventless recovery、persisted SQLite replay、unknown-attempt recovery、
+multi-resource rollback 和 invalid task binding。Vertical integration test 使用 real SQLite persistence、
+InMemoryWriteGuard、GitWorkspaceManager、temporary Git repository 和 deterministic writing agent，证明 committed
+workspace edit 到达 integration branch。

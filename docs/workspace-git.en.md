@@ -294,7 +294,7 @@ observation.
 The workspace-git package has 26 passing tests with 99.02% statements, 94.44% branches, 100%
 functions, and 99% lines. Tests use real temporary Git repositories for the main lifecycle and an
 injectable command runner for deterministic command-failure paths. The repository quality gate has
-234 passing tests with 97.31% statements, 92.48% branches, 99.04% functions, and 97.29% lines.
+242 passing tests with 96.83% statements, 91.77% branches, 99.12% functions, and 96.80% lines.
 `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 The implementation is proven for local single-repository worktrees. It must be measured and extended

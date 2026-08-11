@@ -23,6 +23,14 @@ export type WritableResource =
       readonly resourceId: string;
     };
 
+export type TaskLeasePlanSource = 'predicted-impact' | 'manual' | 'runtime-derived';
+
+export interface TaskLeasePlan {
+  readonly taskId: string;
+  readonly predictedResources: readonly WritableResource[];
+  readonly source: TaskLeasePlanSource;
+}
+
 const nonEmptyStringSchema = z.string().trim().min(1);
 
 export const writableResourceSchema = z.discriminatedUnion('type', [
@@ -41,6 +49,114 @@ export const writableResourceSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('shared-resource'), resourceId: nonEmptyStringSchema })
 ]);
+
+const resourceTypeRanks = {
+  project: 0,
+  file: 1,
+  symbol: 2,
+  'shared-resource': 3
+} as const satisfies Record<WritableResource['type'], number>;
+
+export const writableResourceIdentity = (resource: WritableResource): string => {
+  switch (resource.type) {
+    case 'project':
+      return resource.projectId;
+    case 'file':
+      return `${resource.projectId}\u0000${resource.fileId}`;
+    case 'symbol':
+      return `${resource.projectId}\u0000${resource.fileId}\u0000${resource.symbolId}`;
+    case 'shared-resource':
+      return resource.resourceId;
+  }
+  return '';
+};
+
+export const compareWritableResources = (a: WritableResource, b: WritableResource): number => {
+  const rankDifference = resourceTypeRanks[a.type] - resourceTypeRanks[b.type];
+  if (rankDifference !== 0) {
+    return rankDifference;
+  }
+  const left = writableResourceIdentity(a);
+  const right = writableResourceIdentity(b);
+  return left < right ? -1 : left > right ? 1 : 0;
+};
+
+export const canonicalTaskLeaseResources = (
+  resources: readonly WritableResource[]
+): readonly WritableResource[] => [...resources].toSorted(compareWritableResources);
+
+export const taskLeasePlanFromPredictedImpact = (impact: {
+  readonly taskId: string;
+  readonly projectsWritten: ReadonlySet<string>;
+  readonly filesWritten: ReadonlySet<string>;
+  readonly symbolsWritten: ReadonlySet<string>;
+  readonly sharedResources: ReadonlySet<string>;
+}): TaskLeasePlan => {
+  const symbolFiles = [...impact.symbolsWritten].map((symbolId) => {
+    const [projectId, filePart] = symbolId.split(':', 2);
+    return {
+      type: 'file' as const,
+      projectId,
+      fileId: `${projectId}:${filePart}`
+    };
+  });
+  const files = [...impact.filesWritten, ...symbolFiles.map((file) => file.fileId)]
+    .map((fileId) => {
+      const [projectId] = fileId.split(':', 1);
+      return { type: 'file' as const, projectId, fileId };
+    })
+    .filter(
+      (file, index, allFiles) =>
+        allFiles.findIndex((candidate) => candidate.fileId === file.fileId) === index
+    );
+  const projects = [...impact.projectsWritten]
+    .filter(
+      (projectId) =>
+        !files.some((file) => file.projectId === projectId) &&
+        !symbolFiles.some((file) => file.projectId === projectId)
+    )
+    .map((projectId) => ({ type: 'project' as const, projectId }));
+  const resources: WritableResource[] = [
+    ...projects,
+    ...files,
+    ...[...impact.sharedResources].map((resourceId) => ({
+      type: 'shared-resource' as const,
+      resourceId
+    }))
+  ];
+  const unique = new Map(
+    resources.map((resource) => [
+      `${resource.type}\u0000${writableResourceIdentity(resource)}`,
+      resource
+    ])
+  );
+  return {
+    taskId: impact.taskId,
+    predictedResources: canonicalTaskLeaseResources([...unique.values()]),
+    source: 'predicted-impact'
+  };
+};
+
+export const taskLeasePlanSchema = z
+  .object({
+    taskId: nonEmptyStringSchema,
+    predictedResources: z.array(writableResourceSchema).min(1),
+    source: z.enum(['predicted-impact', 'manual', 'runtime-derived'])
+  })
+  .superRefine((plan, context) => {
+    const identities = new Set<string>();
+    for (const [index, resource] of plan.predictedResources.entries()) {
+      const identity = `${resource.type}\u0000${writableResourceIdentity(resource)}`;
+      if (identities.has(identity)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Task lease plan resources must be unique',
+          path: ['predictedResources', index]
+        });
+      }
+      identities.add(identity);
+    }
+  });
 
 export const areWritableResourcesConflicting = (
   a: WritableResource,

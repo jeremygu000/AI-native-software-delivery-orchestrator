@@ -1055,7 +1055,7 @@ Persistence test 覆盖 complete recovery、SQLite file reopen、Set/date round-
 atomicity、transaction rollback、append-only sequence、decision replay mismatch、current-record upsert 以及
 corrupted stored-state rejection。
 
-完整质量门现在有 234 个测试通过。覆盖率为语句 97.31%、分支 92.48%、函数 99.04%、行 97.29%。
+完整质量门现在有 242 个测试通过。覆盖率为语句 96.83%、分支 91.77%、函数 99.12%、行 96.80%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 阶段十:Workspace 与 Git Lifecycle
@@ -1121,7 +1121,7 @@ protection。
 acquire lease、不协调 multiple repository/process，也不自动修复 conflict。这些需要未来 agent/runtime layer
 和 ownership-generation write fencing。
 
-完整质量门现在有 234 个测试通过。覆盖率为语句 97.31%、分支 92.48%、函数 99.04%、行 97.29%。
+完整质量门现在有 242 个测试通过。覆盖率为语句 96.83%、分支 91.77%、函数 99.12%、行 96.80%。
 
 ## 阶段十一:Orchestration Runtime
 
@@ -1144,24 +1144,35 @@ automatic retry。Integration block persistence 更新后的
 workspace revision，并让 task 保持 `INTEGRATING` 以等待后续 recovery policy；第一版不 auto-repair/resume Git
 conflict。
 
+接入 real coding-agent backend 前，本阶段完成了 hardening。Scheduler `RUNNING` 现在只表示 dispatch
+authorization；atomically persisted、revisioned 的 `AgentExecutionAttempt` 记录 external execution 是
+`PREPARING`、`STARTING`、`RUNNING`、terminal 或 `UNKNOWN`。Restart 会把 unresolved start/run 变成 `UNKNOWN`，
+不会假设 agent 存在。Task binding 现在包含 canonical multi-resource `TaskLeasePlan`。Runtime 以 deterministic
+order acquire resource；如果后续 acquire blocked，会按 reverse order release 先前 lease，不留下 partial ownership。
+Predicted-impact conversion 在没有完整 symbol ancestor evidence 时保守地把 symbol write 提升为 file lease。
+
+新增 vertical test 组合 real SQLite persistence、InMemoryWriteGuard、GitWorkspaceManager、temporary integration
+repository 和 deterministic writing agent。它证明 committed worktree edit fast-forward 到 integration branch，
+durable attempt/workspace/lease evidence 可 recovery，并且 Scheduler replay 保持 deterministic。
+
 Recovery 从 persisted event/decision evidence 重建 latest snapshot，包括 lease blocker projection，并返回 current
 workspace/lease record。它有意不 restart unknown in-flight agent 或 reclaim lease：安全恢复这些 action 需要本阶段
 之外的 durable agent identity 和 ownership-generation write fencing。
 
 详细代码教学见 [Orchestration Runtime](./orchestration-runtime.zh.md) 和其
 [English edition](./orchestration-runtime.en.md)。Test 覆盖 dependency chain success、agent failure、verification
-failure、same-run/external-run lease blocking、lease-release failure evidence、blocked Git integration、eventless recovery、current evidence recovery、
+failure、same-run/external-run lease blocking、lease-release failure evidence、durable attempt recovery、multi-resource rollback、real Git vertical integration、blocked Git integration、eventless recovery、current evidence recovery、
 invalid binding 和 real SQLite replay。
 
-完整质量门现在有 234 个测试通过。覆盖率为语句 97.31%、分支 92.48%、函数 99.04%、行 97.29%。
+完整质量门现在有 242 个测试通过。覆盖率为语句 96.83%、分支 91.77%、函数 99.12%、行 96.80%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 目前整体状态(截止到本文写作时)
 
 - 架构规划的 11 个里程碑已全部实现。这不代表完整产品 100% 完成：real agent execution、真实 write
   enforcement、concurrent dispatch、provider integration 和 CLI runtime command 仍是当前 milestone 计划外的重要能力。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 234 个测试全部通过。
-- 覆盖率为:语句 97.31%、分支 92.48%、函数 99.04%、行 97.29%;四项都达到至少 90% 的门槛。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 242 个测试全部通过。
+- 覆盖率为:语句 96.83%、分支 91.77%、函数 99.12%、行 96.80%;四项都达到至少 90% 的门槛。
 - `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 - Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有
@@ -1171,6 +1182,8 @@ invalid binding 和 real SQLite replay。
 - Milestone 10 Workspace/Git 已完成接受的 local single-repository scope，并已通过独立 Review。Review 还
   重新验证 Date-aware lease idempotency 和 clean-target task-branch collision handling。
 - Milestone 11 Orchestration Runtime 已完成接受的 local serial fake-agent scope，正在等待独立 Review 后才能提交。
+- Pi 有意尚未集成。下一 backend stage 只能把它作为 `AgentRunner` adapter，置于 orchestrator-controlled tool
+  和 durable attempt/session evidence 之后。
 
 ## 还没有实现的部分
 

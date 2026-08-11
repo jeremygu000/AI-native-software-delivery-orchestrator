@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { HardTaskConflict, RiskTaskConflict } from './conflict.js';
+import type { AgentExecutionAttempt, AgentSessionRef } from './agent-execution.js';
 import type { TaskContract } from './task-contract.js';
 import { taskStateSchema } from './task-state.js';
 import type { TaskWorkspace } from './workspace.js';
@@ -201,13 +202,17 @@ export interface Scheduler {
 }
 
 export interface AgentRunRequest {
+  readonly attempt: AgentExecutionAttempt;
   readonly runId: string;
+  readonly taskId: string;
   readonly task: TaskContract;
   readonly workspace: TaskWorkspace;
+  readonly instructions: string;
+  readonly onStarted: (evidence: { readonly sessionRef?: AgentSessionRef }) => Promise<void>;
 }
 
 export type AgentRunResult =
-  | { readonly status: 'completed' }
+  | { readonly status: 'completed'; readonly sessionRef?: AgentSessionRef }
   | { readonly status: 'failed'; readonly detail: string };
 
 export interface AgentRunner {

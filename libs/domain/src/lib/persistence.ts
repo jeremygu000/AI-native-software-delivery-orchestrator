@@ -1,4 +1,5 @@
 import type { TaskConflict, TaskImpact } from './conflict.js';
+import type { AgentExecutionAttempt } from './agent-execution.js';
 import type {
   ScheduleOptions,
   SchedulerDecision,
@@ -74,10 +75,20 @@ export interface PersistedTaskWorkspace {
   readonly workspace: TaskWorkspace;
 }
 
+export interface PersistedAgentExecutionAttempt {
+  readonly runId: string;
+  readonly attempt: AgentExecutionAttempt;
+}
+
 export interface PersistedReevaluation {
   readonly event: PersistedSchedulerEvent;
   readonly transitions: readonly PersistedTaskTransition[];
   readonly decision: PersistedSchedulerDecision;
+}
+
+export interface PersistedDispatch {
+  readonly reevaluation: PersistedReevaluation;
+  readonly attempts: readonly PersistedAgentExecutionAttempt[];
 }
 
 export interface RecoveredRun {
@@ -93,15 +104,18 @@ export interface RecoveredRun {
   readonly conflicts: readonly PersistedTaskConflict[];
   readonly leases: readonly PersistedWriteLease[];
   readonly workspaces: readonly PersistedTaskWorkspace[];
+  readonly attempts: readonly PersistedAgentExecutionAttempt[];
 }
 
 export interface OrchestrationPersistence {
   createRun(request: CreatePersistedRunRequest): Promise<void>;
   persistReevaluation(reevaluation: PersistedReevaluation): Promise<void>;
+  persistDispatch(dispatch: PersistedDispatch): Promise<void>;
   persistImpact(impact: PersistedTaskImpact): Promise<void>;
   persistConflict(conflict: PersistedTaskConflict): Promise<void>;
   persistLease(lease: PersistedWriteLease): Promise<void>;
   persistWorkspace(workspace: PersistedTaskWorkspace): Promise<void>;
+  persistAttempt(attempt: PersistedAgentExecutionAttempt): Promise<void>;
   updateRunState(runId: string, state: OrchestrationRunState): Promise<void>;
   recoverRun(runId: string): Promise<RecoveredRun | undefined>;
   replayRun(runId: string, scheduler: Scheduler): Promise<readonly PersistedSchedulerDecision[]>;

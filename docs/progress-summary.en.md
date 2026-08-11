@@ -1194,8 +1194,8 @@ The persistence tests cover complete recovery, SQLite file reopen, Set/date roun
 transition-decision atomicity, transaction rollback, append-only sequencing, decision replay mismatch,
 current-record upserts, and corrupted stored-state rejection.
 
-The full quality gate now has 234 passing tests. Coverage is 97.31% statements, 92.48% branches,
-99.04% functions, and 97.29% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 242 passing tests. Coverage is 96.83% statements, 91.77% branches,
+99.12% functions, and 96.80% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 10: Workspace and Git Lifecycle
 
@@ -1267,8 +1267,8 @@ with predicted scope, acquire leases during writes, coordinate multiple reposito
 automatically repair conflicts. Those require a future agent/runtime layer and ownership-generation
 write fencing.
 
-The full quality gate now has 234 passing tests. Coverage is 97.31% statements, 92.48% branches,
-99.04% functions, and 97.29% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 242 passing tests. Coverage is 96.83% statements, 91.77% branches,
+99.12% functions, and 96.80% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 11: Orchestration Runtime
 
@@ -1294,6 +1294,20 @@ automatic retry in this first serial scope. Integration blocks persist the newer
 revision and leave the task in `INTEGRATING` for a later recovery policy; this first runtime does not
 auto-repair or resume Git conflicts.
 
+The stage was hardened before admitting a real coding-agent backend. Scheduler `RUNNING` is now only
+dispatch authorization; an atomically persisted revisioned `AgentExecutionAttempt` records whether
+external execution is `PREPARING`, `STARTING`, `RUNNING`, terminal, or `UNKNOWN`. A restart turns
+unresolved starts/runs into `UNKNOWN` rather than assuming an agent exists. Task bindings now contain a
+canonical multi-resource `TaskLeasePlan`. The runtime acquires resources in deterministic order and
+releases earlier leases in reverse order if a later acquire blocks, leaving no partial ownership. The
+predicted-impact conversion conservatively promotes symbol writes to file leases until full symbol
+ancestor evidence is available.
+
+A vertical test now combines real SQLite persistence, InMemoryWriteGuard, GitWorkspaceManager, a
+temporary integration repository, and a deterministic writing agent. It proves a committed worktree
+edit fast-forwards into the integration branch, durable attempt/workspace/lease evidence recovers, and
+Scheduler replay remains deterministic.
+
 Recovery rebuilds the latest snapshot from persisted event and decision evidence, including lease
 blocker projection, and returns current workspace and lease records. It deliberately does not restart
 an unknown in-flight agent or reclaim a lease: safe recovery of those actions needs durable agent
@@ -1301,20 +1315,20 @@ identity and ownership-generation write fencing beyond this stage.
 
 For a code-level teaching model, see [Orchestration Runtime](./orchestration-runtime.en.md) and its
 [Chinese edition](./orchestration-runtime.zh.md). Tests cover the success path through a dependency
-chain, agent failure, verification failure, same-run and external-run lease blocking, lease-release failure evidence, blocked Git
+chain, agent failure, verification failure, same-run and external-run lease blocking, lease-release failure evidence, durable attempt recovery, multi-resource rollback, real Git vertical integration, blocked Git
 integration, eventless recovery, current evidence recovery, invalid bindings, and real SQLite replay.
 
-The full quality gate now has 234 passing tests. Coverage is 97.31% statements, 92.48% branches,
-99.04% functions, and 97.29% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 242 passing tests. Coverage is 96.83% statements, 91.77% branches,
+99.12% functions, and 96.80% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Current overall status (as of this writing)
 
 - Architecture milestones 1–11 of 11 are implemented. This does not mean the full product is 100%
   complete: real agent execution, real write enforcement, concurrent dispatch, provider integration,
   and CLI runtime commands remain substantial product capabilities outside the current milestone plan.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 234 tests,
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 242 tests,
   all passing.
-- Coverage is 97.31% statements, 92.48% branches, 99.04% functions, and 97.29% lines. Every enforced
+- Coverage is 96.83% statements, 91.77% branches, 99.12% functions, and 96.80% lines. Every enforced
   threshold is at least 90%.
 - `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.
@@ -1330,6 +1344,8 @@ The full quality gate now has 234 passing tests. Coverage is 97.31% statements, 
   verified clean-target task-branch collision handling.
 - Milestone 11 Orchestration Runtime is complete for the accepted local serial fake-agent scope and
   awaits independent review before it can be committed.
+- Pi is deliberately not integrated. The next backend stage must add it only as an `AgentRunner` adapter
+  behind orchestrator-controlled tools and durable attempt/session evidence.
 
 ## What has NOT been implemented yet
 

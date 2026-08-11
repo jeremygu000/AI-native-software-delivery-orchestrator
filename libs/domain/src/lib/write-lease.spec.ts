@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   areWritableResourcesConflicting,
+  canonicalTaskLeaseResources,
+  taskLeasePlanFromPredictedImpact,
+  taskLeasePlanSchema,
   type WritableResource,
   type WriteLease,
   writableResourceSchema,
@@ -62,6 +65,35 @@ describe('areWritableResourcesConflicting', () => {
 });
 
 describe('WriteLease contract', () => {
+  it('builds a canonical least-granular lease plan from predicted impact', () => {
+    const plan = taskLeasePlanFromPredictedImpact({
+      taskId: 'task-1',
+      projectsWritten: new Set(['core', 'web']),
+      filesWritten: new Set(['core:index']),
+      symbolsWritten: new Set(['core:index:Service.run']),
+      sharedResources: new Set(['lockfile'])
+    });
+
+    expect(plan.predictedResources).toEqual([
+      { type: 'project', projectId: 'web' },
+      {
+        type: 'file',
+        projectId: 'core',
+        fileId: 'core:index'
+      },
+      { type: 'shared-resource', resourceId: 'lockfile' }
+    ]);
+    expect(
+      taskLeasePlanSchema.safeParse({
+        ...plan,
+        predictedResources: [...plan.predictedResources, plan.predictedResources[0]]
+      }).success
+    ).toBe(false);
+    expect(canonicalTaskLeaseResources(plan.predictedResources.toReversed())).toEqual(
+      plan.predictedResources
+    );
+  });
+
   it('retains evidence used to mark a lease stale', () => {
     const lease: WriteLease = {
       id: 'lease-1',

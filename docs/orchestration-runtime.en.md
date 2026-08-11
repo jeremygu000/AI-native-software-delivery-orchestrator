@@ -11,6 +11,35 @@ uses provider-neutral `AgentRunner` and `TaskVerifier` ports. `FakeAgentRunner` 
 `FakeTaskVerifier` prove the state machine without starting a model, shell command, or real coding
 agent.
 
+## Durable attempts
+
+`TaskState.RUNNING` means Scheduler authorization for dispatch. It does not prove an external agent is
+running. The runtime persists each Scheduler start decision with a separate revisioned
+`AgentExecutionAttempt` in the same SQLite transaction:
+
+```text
+PREPARING -> STARTING -> RUNNING -> COMPLETED | FAILED
+                         |
+restart -----------------> UNKNOWN
+```
+
+`PREPARING` is durable evidence that workspace and lease preparation must be reconciled. `STARTING`
+means the runner invocation was issued. A runner calls `onStarted` with optional provider-neutral
+session evidence before the attempt becomes `RUNNING`. On restart, unresolved `STARTING` or `RUNNING`
+attempts become `UNKNOWN`; the local fake backend does not guess whether an external process exists.
+Attempts use revision CAS: stale evidence and same-revision conflicting evidence are rejected.
+
+## Lease plans
+
+Each binding has a `TaskLeasePlan`, not one resource. Resources acquire in canonical order: project,
+file, symbol, then shared resource, with stable identity ordering within each type. A blocked acquire
+releases earlier leases in reverse order and persists those releases before emitting `lease-blocked`.
+
+Plans derived from predicted impact use project, file, shared-resource writes, and conservatively turn
+symbol writes into file leases. Predicted symbol impact lacks the complete ancestor path needed to issue
+a safe precise symbol lease. A future runtime-derived plan may use symbol leases only when repository
+knowledge supplies full containment evidence.
+
 ## Runtime flow
 
 ```text
@@ -77,6 +106,11 @@ The first serial runtime has no retry entry point for a task blocked by a lease 
 It returns with that task `BLOCKED` and its persisted lease blocker. A future runtime event loop must
 observe that owner's release and invoke a deliberate retry policy; it must not infer an unsafe retry.
 
+Execution write leases protect an active agent's mutations. They are released after agent outcome
+evidence and before verification. They are not integration reservations: Git rebase and fast-forward
+remain the current integration ordering boundary. A future concurrent runtime needs an explicit
+integration reservation if that ordering must be protected beyond Git conflict handling.
+
 `recoverRun` reconstructs the latest runtime snapshot from persisted Scheduler events and decisions,
 including lease blocker projection, and returns current workspace and lease records. It intentionally
 does not restart an unknown in-flight agent, repair a Git conflict, reclaim a stale lease, or create an
@@ -89,6 +123,7 @@ provisioning policies.
 - subprocess command verification;
 - observed filesystem impact and scope enforcement;
 - concurrent dispatch or `maxConcurrency > 1`;
+- a Pi adapter, unrestricted agent tools, or filesystem mutation tools;
 - cross-process leases and ownership-generation write fencing;
 - automatic rebase conflict repair or blocked integration resume;
 - CLI `forge run` input and integration-checkout provisioning.
@@ -96,9 +131,19 @@ provisioning policies.
 The runtime is the future location for these workflows. They must not be added to `apps/cli` or hidden
 inside the existing infrastructure adapters.
 
+## Next backend
+
+Pi is not integrated. A future `PiAgentRunner` must implement the existing provider-neutral
+`AgentRunner` port, call `onStarted` with durable session evidence, and remain behind the runtime's
+attempt, lease, workspace, persistence, verification, and Git lifecycle policies. Pi must not receive
+unrestricted `bash`, `edit`, or `write` tools. Future mutations must pass through an
+orchestrator-controlled `AgentToolRuntime` that owns workspace scoping, resource resolution, lease
+enforcement, and durable observed-impact evidence.
+
 ## Verification
 
 The runtime tests cover successful dependency execution, fake-agent failure, verification failure,
 lease blocking, lease-release failure, blocked integration, eventless recovery, persisted SQLite replay,
-and invalid task bindings. The SQLite integration test uses the real persistence adapter together with
-the in-memory guard and a provider-neutral workspace port.
+unknown-attempt recovery, multi-resource rollback, and invalid task bindings. A vertical integration
+test uses real SQLite persistence, InMemoryWriteGuard, GitWorkspaceManager, a temporary Git repository,
+and a deterministic writing agent to prove a committed workspace edit reaches the integration branch.

@@ -37,13 +37,19 @@ Git workspace core:
 - isolated Git worktrees with phase-aware integration blocking, rebase, fast-forward-only integration,
   explicit resume/abort, and dirty-workspace disposal protection;
 - a serial application orchestration runtime that coordinates Scheduler, workspaces, leases,
-  persistence, verification, and provider-neutral fake agents;
+  persistence, verification, and provider-neutral fake agents, with durable agent attempts and
+  deterministic multi-resource lease plans;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
 Milestone 11 implements a local serial runtime with fake agents. It does not execute real agents,
-observe real writes, coordinate processes, provision integration checkouts, or automate conflict
+observe real writes, coordinate processes, provision integration checkouts, integrate Pi, or automate conflict
 repair. The CLI still exposes `plan` as a discoverable placeholder until there is a tested task-spec
 input path and end-to-end runtime command.
+
+The next agent-backend stage may add Pi through a provider-neutral `PiAgentRunner`. Pi must remain a
+coding-agent engine behind the runtime: it cannot own scheduling, leases, workspaces, persistence, Git
+integration, final verification, or recovery. Filesystem mutation tools and unrestricted shell access
+remain disabled until an orchestrator-controlled `AgentToolRuntime` enforcement boundary exists.
 
 ## Requirements
 

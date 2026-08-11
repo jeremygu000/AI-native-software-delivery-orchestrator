@@ -1,7 +1,10 @@
 import type {
+  AgentRunner,
   CreatePersistedRunRequest,
   OrchestrationPersistence,
   PersistedReevaluation,
+  PersistedDispatch,
+  PersistedAgentExecutionAttempt,
   PersistedTaskWorkspace,
   PersistedWriteLease,
   RecoveredRun,
@@ -13,7 +16,12 @@ import type {
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
-import { describe, expect, it } from 'vitest';
+import { GitWorkspaceManager } from '@ai-native-software-delivery-orchestrator/workspace-git';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   FakeAgentRunner,
@@ -35,12 +43,37 @@ const task = (id: string, dependencies: readonly string[] = []): TaskContract =>
   verification: []
 });
 
+const directories: string[] = [];
+
+const git = (cwd: string, args: readonly string[]): string =>
+  execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+
+const createRepository = (): string => {
+  const directory = mkdtempSync(join(tmpdir(), 'orchestration-runtime-'));
+  directories.push(directory);
+  git(directory, ['init', '--initial-branch=main']);
+  git(directory, ['config', 'user.email', 'test@example.com']);
+  git(directory, ['config', 'user.name', 'Test User']);
+  writeFileSync(join(directory, 'value.txt'), 'base\n');
+  git(directory, ['add', 'value.txt']);
+  git(directory, ['commit', '-m', 'base']);
+  return directory;
+};
+
+afterEach(() => {
+  for (const directory of directories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+    rmSync(`${directory}-workspace-A`, { recursive: true, force: true });
+  }
+});
+
 class MemoryPersistence implements OrchestrationPersistence {
   request: CreatePersistedRunRequest | undefined;
   state: RecoveredRun['run']['state'] = 'ACTIVE';
   readonly reevaluations: PersistedReevaluation[] = [];
   readonly workspaces: PersistedTaskWorkspace[] = [];
   readonly leases: PersistedWriteLease[] = [];
+  readonly attempts: PersistedAgentExecutionAttempt[] = [];
 
   async createRun(request: CreatePersistedRunRequest): Promise<void> {
     this.request = request;
@@ -48,6 +81,13 @@ class MemoryPersistence implements OrchestrationPersistence {
 
   async persistReevaluation(reevaluation: PersistedReevaluation): Promise<void> {
     this.reevaluations.push(reevaluation);
+  }
+
+  async persistDispatch(dispatch: PersistedDispatch): Promise<void> {
+    await this.persistReevaluation(dispatch.reevaluation);
+    for (const attempt of dispatch.attempts) {
+      await this.persistAttempt(attempt);
+    }
   }
 
   async persistImpact(): Promise<void> {}
@@ -72,6 +112,15 @@ class MemoryPersistence implements OrchestrationPersistence {
     this.workspaces.push(record);
   }
 
+  async persistAttempt(record: PersistedAgentExecutionAttempt): Promise<void> {
+    const index = this.attempts.findIndex((entry) => entry.attempt.id === record.attempt.id);
+    if (index >= 0) {
+      this.attempts[index] = record;
+      return;
+    }
+    this.attempts.push(record);
+  }
+
   async updateRunState(_runId: string, state: RecoveredRun['run']['state']): Promise<void> {
     this.state = state;
   }
@@ -92,7 +141,8 @@ class MemoryPersistence implements OrchestrationPersistence {
       impacts: [],
       conflicts: [],
       leases: this.leases,
-      workspaces: this.workspaces
+      workspaces: this.workspaces,
+      attempts: this.attempts
     };
   }
 
@@ -207,7 +257,11 @@ const bindings = (taskIds: readonly string[]): readonly RuntimeTaskBinding[] =>
   taskIds.map((taskId) => ({
     taskId,
     agentId: `agent-${taskId}`,
-    resource: { type: 'project', projectId: `project-${taskId}` },
+    leasePlan: {
+      taskId,
+      predictedResources: [{ type: 'project', projectId: `project-${taskId}` }],
+      source: 'manual'
+    },
     workspace: {
       id: `workspace-${taskId}`,
       runId: 'run-1',
@@ -267,6 +321,12 @@ describe('OrchestrationRuntime', () => {
       'INTEGRATED'
     ]);
     expect(recovered.leases.map(({ lease }) => lease.state)).toEqual(['RELEASED', 'RELEASED']);
+    expect(
+      recovered.attempts.map(({ attempt }) => [attempt.taskId, attempt.state, attempt.revision])
+    ).toEqual([
+      ['A', 'COMPLETED', 4],
+      ['B', 'COMPLETED', 4]
+    ]);
     expect(persistence.reevaluations.map(({ event }) => event.event.type)).toEqual([
       'run-started',
       'agent-completed',
@@ -278,6 +338,348 @@ describe('OrchestrationRuntime', () => {
       'verification-completed',
       'workspace-integrated'
     ]);
+  });
+
+  it('marks an interrupted external attempt unknown during recovery', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(request([task('A')]));
+    await persistence.persistDispatch({
+      reevaluation: {
+        event: {
+          runId: 'run-1',
+          sequence: 1,
+          occurredAt: '2026-08-12T00:00:00.000Z',
+          event: { type: 'run-started' }
+        },
+        transitions: [
+          { runId: 'run-1', sequence: 1, taskId: 'A', fromState: 'PENDING', toState: 'READY' },
+          { runId: 'run-1', sequence: 1, taskId: 'A', fromState: 'READY', toState: 'RUNNING' }
+        ],
+        decision: {
+          runId: 'run-1',
+          sequence: 1,
+          inputSnapshot: { taskStates: [{ taskId: 'A', state: 'PENDING' }], runtimeBlocks: [] },
+          decision: {
+            taskDecisions: [
+              {
+                taskId: 'A',
+                action: 'ready',
+                fromState: 'PENDING',
+                toState: 'READY',
+                reasons: [{ type: 'dependencies-completed', dependencyTaskIds: [] }]
+              },
+              {
+                taskId: 'A',
+                action: 'start',
+                fromState: 'READY',
+                toState: 'RUNNING',
+                reasons: [{ type: 'selected-by-priority', priority: 0 }]
+              }
+            ]
+          }
+        }
+      },
+      attempts: [
+        {
+          runId: 'run-1',
+          attempt: {
+            id: 'attempt-A',
+            runId: 'run-1',
+            taskId: 'A',
+            agentId: 'agent-A',
+            workspaceId: 'workspace-A',
+            state: 'PREPARING',
+            revision: 1
+          }
+        }
+      ]
+    });
+    await persistence.persistAttempt({
+      runId: 'run-1',
+      attempt: {
+        id: 'attempt-A',
+        runId: 'run-1',
+        taskId: 'A',
+        agentId: 'agent-A',
+        workspaceId: 'workspace-A',
+        state: 'STARTING',
+        revision: 2,
+        startedAt: new Date('2026-08-12T00:00:00.000Z')
+      }
+    });
+    const runtime = createRuntime(persistence);
+
+    await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
+      snapshot: { taskStates: [{ taskId: 'A', state: 'RUNNING' }] },
+      attempts: [
+        {
+          attempt: {
+            state: 'UNKNOWN',
+            revision: 3,
+            failure: { type: 'unknown-outcome' }
+          }
+        }
+      ]
+    });
+  });
+
+  it('releases earlier leases when a later canonical lease is blocked', async () => {
+    const persistence = new MemoryPersistence();
+    const writeGuard = new InMemoryWriteGuard({
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+      createLeaseId: (() => {
+        let number = 1;
+        return () => `lease-${number++}`;
+      })()
+    });
+    await writeGuard.acquire({
+      runId: 'other-run',
+      agentId: 'other-agent',
+      taskId: 'other-task',
+      resource: { type: 'shared-resource', resourceId: 'lockfile' },
+      mode: 'exclusive'
+    });
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard,
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+      createAttemptId: () => 'attempt-A'
+    });
+    const run = request([task('A')]);
+    const binding = run.taskBindings[0];
+
+    await expect(
+      runtime.startRun({
+        ...run,
+        taskBindings: [
+          {
+            ...binding,
+            leasePlan: {
+              taskId: 'A',
+              predictedResources: [
+                { type: 'project', projectId: 'core' },
+                { type: 'shared-resource', resourceId: 'lockfile' }
+              ],
+              source: 'manual'
+            }
+          }
+        ]
+      })
+    ).resolves.toMatchObject({ snapshot: { taskStates: [{ taskId: 'A', state: 'BLOCKED' }] } });
+    expect(persistence.leases).toMatchObject([{ lease: { id: 'lease-2', state: 'RELEASED' } }]);
+    expect(persistence.attempts).toMatchObject([{ attempt: { state: 'PREPARING', revision: 1 } }]);
+  });
+
+  it('releases multiple acquired leases in reverse canonical order when a later lease is blocked', async () => {
+    const persistence = new MemoryPersistence();
+    const calls: string[] = [];
+    const writeGuard: WriteGuard = {
+      acquire: async (acquireRequest) => {
+        calls.push(`acquire:${acquireRequest.resource.type}`);
+        if (acquireRequest.resource.type === 'shared-resource') {
+          return { status: 'blocked', conflictingLeaseIds: ['other-lease'] };
+        }
+        const lease = {
+          id: `lease-${acquireRequest.resource.type}`,
+          runId: acquireRequest.runId,
+          agentId: acquireRequest.agentId,
+          taskId: acquireRequest.taskId,
+          resource: acquireRequest.resource,
+          mode: 'exclusive' as const,
+          version: 1,
+          state: 'ACTIVE' as const,
+          acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+          lastHeartbeatAt: new Date('2026-08-12T00:00:00.000Z')
+        };
+        return { status: 'granted', lease };
+      },
+      release: async (releaseRequest) => {
+        calls.push(`release:${releaseRequest.leaseId}`);
+        const type = releaseRequest.leaseId.replace('lease-', '');
+        return {
+          status: 'released' as const,
+          lease: {
+            id: releaseRequest.leaseId,
+            runId: 'run-1',
+            agentId: 'agent-A',
+            taskId: 'A',
+            resource:
+              type === 'project'
+                ? { type: 'project' as const, projectId: 'core' }
+                : { type: 'file' as const, projectId: 'core', fileId: 'core:index' },
+            mode: 'exclusive' as const,
+            version: 2,
+            state: 'RELEASED' as const,
+            acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+            lastHeartbeatAt: new Date('2026-08-12T00:00:00.000Z'),
+            releasedAt: new Date('2026-08-12T00:01:00.000Z')
+          }
+        };
+      },
+      heartbeat: async () => ({ status: 'not-found' }),
+      markStale: async () => ({ status: 'not-found' })
+    };
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard,
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+      createAttemptId: () => 'attempt-A'
+    });
+    const run = request([task('A')]);
+    const binding = run.taskBindings[0];
+
+    await expect(
+      runtime.startRun({
+        ...run,
+        taskBindings: [
+          {
+            ...binding,
+            leasePlan: {
+              taskId: 'A',
+              predictedResources: [
+                { type: 'shared-resource', resourceId: 'lockfile' },
+                { type: 'file', projectId: 'core', fileId: 'core:index' },
+                { type: 'project', projectId: 'core' }
+              ],
+              source: 'manual'
+            }
+          }
+        ]
+      })
+    ).resolves.toMatchObject({ snapshot: { taskStates: [{ taskId: 'A', state: 'BLOCKED' }] } });
+    expect(calls).toEqual([
+      'acquire:project',
+      'acquire:file',
+      'acquire:shared-resource',
+      'release:lease-file',
+      'release:lease-project'
+    ]);
+    expect(persistence.leases.map(({ lease }) => [lease.id, lease.state])).toEqual([
+      ['lease-project', 'RELEASED'],
+      ['lease-file', 'RELEASED']
+    ]);
+  });
+
+  it('fails safely when an earlier lease cannot be rolled back after a later lease is blocked', async () => {
+    const persistence = new MemoryPersistence();
+    const writeGuard = new InMemoryWriteGuard({
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+      createLeaseId: (() => {
+        let number = 1;
+        return () => `lease-${number++}`;
+      })()
+    });
+    await writeGuard.acquire({
+      runId: 'other-run',
+      agentId: 'other-agent',
+      taskId: 'other-task',
+      resource: { type: 'shared-resource', resourceId: 'lockfile' },
+      mode: 'exclusive'
+    });
+    writeGuard.release = async () => ({ status: 'not-found' });
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard,
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+      createAttemptId: () => 'attempt-A'
+    });
+    const run = request([task('A')]);
+    const binding = run.taskBindings[0];
+
+    await expect(
+      runtime.startRun({
+        ...run,
+        taskBindings: [
+          {
+            ...binding,
+            leasePlan: {
+              taskId: 'A',
+              predictedResources: [
+                { type: 'project', projectId: 'core' },
+                { type: 'shared-resource', resourceId: 'lockfile' }
+              ],
+              source: 'manual'
+            }
+          }
+        ]
+      })
+    ).rejects.toThrow('Lease rollback failed for task A: not-found');
+    expect(persistence.reevaluations.map(({ event }) => event.event.type)).toEqual([
+      'run-started',
+      'lease-release-failed'
+    ]);
+    expect(persistence.leases).toMatchObject([{ lease: { id: 'lease-2', state: 'ACTIVE' } }]);
+    await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
+      run: { state: 'FAILED' },
+      leases: [{ lease: { id: 'lease-2', state: 'ACTIVE' } }]
+    });
+  });
+
+  it('recovers an ACTIVE orphaned lease from real SQLite after rollback failure', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const writeGuard = new InMemoryWriteGuard({
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+      createLeaseId: (() => {
+        let number = 1;
+        return () => `lease-${number++}`;
+      })()
+    });
+    await writeGuard.acquire({
+      runId: 'other-run',
+      agentId: 'other-agent',
+      taskId: 'other-task',
+      resource: { type: 'shared-resource', resourceId: 'lockfile' },
+      mode: 'exclusive'
+    });
+    writeGuard.release = async () => ({ status: 'not-found' });
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard,
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+      createAttemptId: () => 'attempt-A'
+    });
+    const run = request([task('A')]);
+    const binding = run.taskBindings[0];
+
+    await expect(
+      runtime.startRun({
+        ...run,
+        taskBindings: [
+          {
+            ...binding,
+            leasePlan: {
+              taskId: 'A',
+              predictedResources: [
+                { type: 'project', projectId: 'core' },
+                { type: 'shared-resource', resourceId: 'lockfile' }
+              ],
+              source: 'manual'
+            }
+          }
+        ]
+      })
+    ).rejects.toThrow('Lease rollback failed for task A: not-found');
+    await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
+      run: { state: 'FAILED' },
+      leases: [{ lease: { id: 'lease-2', state: 'ACTIVE', resource: { type: 'project' } } }]
+    });
+    persistence.close();
   });
 
   it('fails a task and lets the scheduler cancel its dependent after an agent failure', async () => {
@@ -489,6 +891,60 @@ describe('OrchestrationRuntime', () => {
     persistence.close();
   });
 
+  it('integrates a real Git workspace edit with SQLite recovery and released leases', async () => {
+    const integrationRepositoryPath = createRepository();
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const writingAgent: AgentRunner = {
+      run: async (agentRequest) => {
+        await agentRequest.onStarted({ sessionRef: { backend: 'fake', value: 'session-A' } });
+        writeFileSync(join(agentRequest.workspace.workspacePath, 'value.txt'), 'changed\n');
+        git(agentRequest.workspace.workspacePath, ['add', 'value.txt']);
+        git(agentRequest.workspace.workspacePath, ['commit', '-m', 'task change']);
+        return { status: 'completed', sessionRef: { backend: 'fake', value: 'session-A' } };
+      }
+    };
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new GitWorkspaceManager(),
+      writeGuard: new InMemoryWriteGuard({
+        now: () => new Date('2026-08-12T00:00:00.000Z')
+      }),
+      agentRunner: writingAgent,
+      verifier: new FakeTaskVerifier(),
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+      createAttemptId: () => 'attempt-A'
+    });
+    const run = request([task('A')]);
+    const binding = run.taskBindings[0];
+
+    const recovered = await runtime.startRun({
+      ...run,
+      taskBindings: [
+        {
+          ...binding,
+          workspace: {
+            ...binding.workspace,
+            integrationRepositoryPath,
+            workspacePath: `${integrationRepositoryPath}-workspace-A`
+          }
+        }
+      ]
+    });
+
+    expect(readFileSync(join(integrationRepositoryPath, 'value.txt'), 'utf8')).toBe('changed\n');
+    expect(recovered).toMatchObject({
+      snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] },
+      workspaces: [{ workspace: { phase: 'INTEGRATED', revision: 2 } }],
+      leases: [{ lease: { state: 'RELEASED' } }],
+      attempts: [{ attempt: { state: 'COMPLETED', sessionRef: { value: 'session-A' } } }]
+    });
+    await expect(
+      persistence.replayRun('run-1', new DeterministicScheduler())
+    ).resolves.toHaveLength(5);
+    persistence.close();
+  });
+
   it('fails safely when a granted lease cannot be released', async () => {
     const persistence = new MemoryPersistence();
     const writeGuard = new MemoryWriteGuard();
@@ -566,7 +1022,25 @@ describe('OrchestrationRuntime', () => {
     const fakeAgent = new FakeAgentRunner(new Map([['A', 'Agent failure.']]));
     const fakeVerifier = new FakeTaskVerifier(new Map([['A', 'Verification failure.']]));
 
-    await expect(fakeAgent.run({ runId: 'run-1', task: task('A'), workspace })).resolves.toEqual({
+    await expect(
+      fakeAgent.run({
+        attempt: {
+          id: 'attempt-1',
+          runId: 'run-1',
+          taskId: 'A',
+          agentId: 'agent-A',
+          workspaceId: workspace.id,
+          state: 'STARTING',
+          revision: 2
+        },
+        runId: 'run-1',
+        taskId: 'A',
+        task: task('A'),
+        workspace,
+        instructions: 'Complete A',
+        onStarted: async () => {}
+      })
+    ).resolves.toEqual({
       status: 'failed',
       detail: 'Agent failure.'
     });

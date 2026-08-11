@@ -4,6 +4,7 @@ import type {
   PersistedTaskConflict,
   PersistedTaskImpact,
   PersistedWriteLease,
+  PersistedAgentExecutionAttempt,
   TaskContract
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
@@ -667,6 +668,58 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         }
       })
     ).rejects.toThrow('Workspace revision already recorded with different evidence');
+    persistence.close();
+  });
+
+  it('persists dispatch attempts atomically and protects attempt revisions', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    await persistence.createRun(createRunRequest());
+    const dispatch = {
+      reevaluation: reevaluation(),
+      attempts: [
+        {
+          runId: 'run-1',
+          attempt: {
+            id: 'attempt-1',
+            runId: 'run-1',
+            taskId: 'B',
+            agentId: 'agent-B',
+            workspaceId: 'workspace-B',
+            state: 'PREPARING' as const,
+            revision: 1
+          }
+        }
+      ] satisfies readonly PersistedAgentExecutionAttempt[]
+    };
+
+    await persistence.persistDispatch(dispatch);
+    await expect(persistence.persistDispatch(dispatch)).resolves.toBeUndefined();
+    await expect(
+      persistence.persistAttempt({
+        runId: 'run-1',
+        attempt: { ...dispatch.attempts[0].attempt, state: 'STARTING', revision: 2 }
+      })
+    ).resolves.toBeUndefined();
+    await expect(
+      persistence.persistAttempt({
+        runId: 'run-1',
+        attempt: { ...dispatch.attempts[0].attempt, revision: 1 }
+      })
+    ).rejects.toThrow(
+      'Agent execution attempt revision regression rejected: stored revision 2, incoming revision 1'
+    );
+    await expect(
+      persistence.persistAttempt({
+        runId: 'run-1',
+        attempt: { ...dispatch.attempts[0].attempt, state: 'RUNNING', revision: 2 }
+      })
+    ).rejects.toThrow('Agent execution attempt revision already recorded with different evidence');
+    await expect(persistence.persistDispatch({ ...dispatch, attempts: [] })).rejects.toThrow(
+      'Dispatch attempts must exactly match scheduler starts as revision 1 PREPARING evidence'
+    );
+    const recovered = await persistence.recoverRun('run-1');
+    expect(recovered?.events).toHaveLength(1);
+    expect(recovered?.attempts).toMatchObject([{ attempt: { state: 'STARTING', revision: 2 } }]);
     persistence.close();
   });
 

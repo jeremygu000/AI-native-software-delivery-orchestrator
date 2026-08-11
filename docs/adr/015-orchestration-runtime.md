@@ -17,8 +17,8 @@ application workflow to a local adapter.
 
 The first runtime is intentionally local, single-process, and serial. It uses a provider-neutral
 `AgentRunner` port and a deterministic `FakeAgentRunner` test implementation rather than a coding-agent
-SDK. A task binding supplies its isolated workspace request and the one write resource that must be
-leased during fake-agent execution.
+SDK. Durable external dispatch, attempt recovery, and multi-resource lease-plan policy are defined by
+ADR-016. Pi remains a future backend implementation of this port and cannot own orchestration policy.
 
 For every runtime event, the runtime persists the Scheduler input snapshot, event, Scheduler decision,
 and non-deferred decision transitions atomically through `OrchestrationPersistence`. The runtime applies

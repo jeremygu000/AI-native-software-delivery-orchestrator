@@ -11,6 +11,8 @@ import type {
   PersistedTaskImpact,
   PersistedWriteLease,
   PersistedTaskWorkspace,
+  PersistedAgentExecutionAttempt,
+  PersistedDispatch,
   RecoveredRun,
   PersistedSchedulerDecision,
   SchedulerDecision,
@@ -32,7 +34,8 @@ import {
   taskContractSchema,
   taskStateSchema,
   writeLeaseSchema,
-  taskWorkspaceSchema
+  taskWorkspaceSchema,
+  agentExecutionAttemptSchema
 } from '@ai-native-software-delivery-orchestrator/domain';
 
 const runs = sqliteTable('orchestration_runs', {
@@ -94,6 +97,12 @@ const taskWorkspaces = sqliteTable('task_workspaces', {
   workspaceJson: text('workspace_json').notNull()
 });
 
+const agentExecutionAttempts = sqliteTable('agent_execution_attempts', {
+  runId: text('run_id').notNull(),
+  attemptId: text('attempt_id').notNull(),
+  attemptJson: text('attempt_json').notNull()
+});
+
 const jsonReplacer = (_key: string, value: unknown): unknown => {
   if (value instanceof Set) {
     return { $set: [...value] };
@@ -103,7 +112,14 @@ const jsonReplacer = (_key: string, value: unknown): unknown => {
 
 const jsonReviver = (key: string, value: unknown): unknown => {
   if (
-    ['acquiredAt', 'lastHeartbeatAt', 'releasedAt', 'staleDetectedAt'].includes(key) &&
+    [
+      'acquiredAt',
+      'lastHeartbeatAt',
+      'releasedAt',
+      'staleDetectedAt',
+      'startedAt',
+      'completedAt'
+    ].includes(key) &&
     typeof value === 'string'
   ) {
     return new Date(value);
@@ -157,6 +173,11 @@ const isWriteLease = (value: unknown): value is PersistedWriteLease['lease'] =>
 
 const isTaskWorkspace = (value: unknown): value is PersistedTaskWorkspace['workspace'] =>
   taskWorkspaceSchema.safeParse(value).success;
+
+const isAgentExecutionAttempt = (
+  value: unknown
+): value is PersistedAgentExecutionAttempt['attempt'] =>
+  agentExecutionAttemptSchema.safeParse(value).success;
 
 const canonicalize = (value: unknown): unknown => {
   if (value instanceof Date) {
@@ -297,6 +318,12 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
         workspace_json TEXT NOT NULL,
         PRIMARY KEY (run_id, workspace_id)
       );
+      CREATE TABLE IF NOT EXISTS agent_execution_attempts (
+        run_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        attempt_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, attempt_id)
+      );
     `);
   }
 
@@ -324,6 +351,45 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
   }
 
   async persistReevaluation(reevaluation: PersistedReevaluation): Promise<void> {
+    this.#assertReevaluation(reevaluation);
+    await this.#exclusiveReevaluation(() =>
+      this.#sqlite.transaction(() => {
+        this.#persistReevaluationInTransaction(reevaluation);
+      })()
+    );
+  }
+
+  async persistDispatch(dispatch: PersistedDispatch): Promise<void> {
+    const { reevaluation, attempts } = dispatch;
+    this.#assertReevaluation(reevaluation);
+    for (const attempt of attempts) {
+      this.#assertAttempt(attempt);
+    }
+    const startTaskIds = reevaluation.decision.decision.taskDecisions
+      .filter((decision) => decision.action === 'start')
+      .map((decision) => decision.taskId)
+      .toSorted();
+    const attemptTaskIds = attempts.map(({ attempt }) => attempt.taskId).toSorted();
+    if (
+      startTaskIds.length !== attemptTaskIds.length ||
+      startTaskIds.some((taskId, index) => taskId !== attemptTaskIds[index]) ||
+      attempts.some(({ attempt }) => attempt.state !== 'PREPARING' || attempt.revision !== 1)
+    ) {
+      throw new PersistenceInputError(
+        'Dispatch attempts must exactly match scheduler starts as revision 1 PREPARING evidence'
+      );
+    }
+    await this.#exclusiveReevaluation(() =>
+      this.#sqlite.transaction(() => {
+        this.#persistReevaluationInTransaction(reevaluation);
+        for (const attempt of attempts) {
+          this.#persistAttemptInTransaction(attempt);
+        }
+      })()
+    );
+  }
+
+  #assertReevaluation(reevaluation: PersistedReevaluation): void {
     this.#assertSequence(reevaluation.event.sequence);
     schedulerEventSchema.parse(reevaluation.event.event);
     schedulerSnapshotSchema.parse(reevaluation.decision.inputSnapshot);
@@ -349,57 +415,56 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
     ) {
       throw new PersistenceInputError('Reevaluation records must share a run ID and sequence');
     }
-    await this.#exclusiveReevaluation(() =>
-      this.#sqlite.transaction(() => {
-        this.#assertRunExists(reevaluation.event.runId);
-        const expectedSequence =
-          this.#db
-            .select({ sequence: schedulerEvents.sequence })
-            .from(schedulerEvents)
-            .where(eq(schedulerEvents.runId, reevaluation.event.runId))
-            .all().length + 1;
-        if (reevaluation.event.sequence > expectedSequence) {
-          throw new PersistenceInputError(
-            `Scheduler event sequence must be ${expectedSequence}: ${reevaluation.event.runId}`
-          );
-        }
-        if (reevaluation.event.sequence < expectedSequence) {
-          this.#assertIdempotentReevaluation(reevaluation);
-          return;
-        }
-        this.#db
-          .insert(schedulerEvents)
-          .values({
-            runId: reevaluation.event.runId,
-            sequence: reevaluation.event.sequence,
-            occurredAt: reevaluation.event.occurredAt,
-            eventJson: stringify(reevaluation.event.event)
-          })
-          .run();
-        for (const [ordinal, transition] of reevaluation.transitions.entries()) {
-          this.#db
-            .insert(taskTransitions)
-            .values({
-              runId: transition.runId,
-              sequence: transition.sequence,
-              ordinal,
-              taskId: transition.taskId,
-              fromState: transition.fromState,
-              toState: transition.toState
-            })
-            .run();
-        }
-        this.#db
-          .insert(schedulerDecisions)
-          .values({
-            runId: reevaluation.decision.runId,
-            sequence: reevaluation.decision.sequence,
-            snapshotJson: stringify(reevaluation.decision.inputSnapshot),
-            decisionJson: stringify(reevaluation.decision.decision)
-          })
-          .run();
-      })()
-    );
+  }
+
+  #persistReevaluationInTransaction(reevaluation: PersistedReevaluation): void {
+    this.#assertRunExists(reevaluation.event.runId);
+    const expectedSequence =
+      this.#db
+        .select({ sequence: schedulerEvents.sequence })
+        .from(schedulerEvents)
+        .where(eq(schedulerEvents.runId, reevaluation.event.runId))
+        .all().length + 1;
+    if (reevaluation.event.sequence > expectedSequence) {
+      throw new PersistenceInputError(
+        `Scheduler event sequence must be ${expectedSequence}: ${reevaluation.event.runId}`
+      );
+    }
+    if (reevaluation.event.sequence < expectedSequence) {
+      this.#assertIdempotentReevaluation(reevaluation);
+      return;
+    }
+    this.#db
+      .insert(schedulerEvents)
+      .values({
+        runId: reevaluation.event.runId,
+        sequence: reevaluation.event.sequence,
+        occurredAt: reevaluation.event.occurredAt,
+        eventJson: stringify(reevaluation.event.event)
+      })
+      .run();
+    for (const [ordinal, transition] of reevaluation.transitions.entries()) {
+      this.#db
+        .insert(taskTransitions)
+        .values({
+          runId: transition.runId,
+          sequence: transition.sequence,
+          ordinal,
+          taskId: transition.taskId,
+          fromState: transition.fromState,
+          toState: transition.toState
+        })
+        .run();
+    }
+    this.#db
+      .insert(schedulerDecisions)
+      .values({
+        runId: reevaluation.decision.runId,
+        sequence: reevaluation.decision.sequence,
+        snapshotJson: stringify(reevaluation.decision.inputSnapshot),
+        decisionJson: stringify(reevaluation.decision.decision)
+      })
+      .run();
   }
 
   async persistImpact(record: PersistedTaskImpact): Promise<void> {
@@ -549,6 +614,13 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
     })();
   }
 
+  async persistAttempt(record: PersistedAgentExecutionAttempt): Promise<void> {
+    this.#assertAttempt(record);
+    this.#sqlite.transaction(() => {
+      this.#persistAttemptInTransaction(record);
+    })();
+  }
+
   async updateRunState(runId: string, state: OrchestrationRunState): Promise<void> {
     this.#assertRunId(runId);
     this.#sqlite.transaction(() => {
@@ -606,6 +678,12 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
       .from(taskWorkspaces)
       .where(eq(taskWorkspaces.runId, runId))
       .orderBy(asc(taskWorkspaces.workspaceId))
+      .all();
+    const attempts = this.#db
+      .select()
+      .from(agentExecutionAttempts)
+      .where(eq(agentExecutionAttempts.runId, runId))
+      .orderBy(asc(agentExecutionAttempts.attemptId))
       .all();
     return {
       run: {
@@ -673,6 +751,10 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
       workspaces: workspaces.map((workspace) => ({
         runId: workspace.runId,
         workspace: decode(workspace.workspaceJson, isTaskWorkspace, 'task workspace')
+      })),
+      attempts: attempts.map((attempt) => ({
+        runId: attempt.runId,
+        attempt: decode(attempt.attemptJson, isAgentExecutionAttempt, 'agent execution attempt')
       }))
     };
   }
@@ -740,6 +822,65 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
     if (this.#db.select().from(runs).where(eq(runs.id, runId)).get() === undefined) {
       throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
     }
+  }
+
+  #assertAttempt(record: PersistedAgentExecutionAttempt): void {
+    this.#assertRunId(record.runId);
+    if (record.runId !== record.attempt.runId) {
+      throw new PersistenceInputError(
+        'Agent execution attempt run ID must match persistence run ID'
+      );
+    }
+    agentExecutionAttemptSchema.parse(record.attempt);
+  }
+
+  #persistAttemptInTransaction(record: PersistedAgentExecutionAttempt): void {
+    this.#assertRunExists(record.runId);
+    const existing = this.#db
+      .select()
+      .from(agentExecutionAttempts)
+      .where(
+        and(
+          eq(agentExecutionAttempts.runId, record.runId),
+          eq(agentExecutionAttempts.attemptId, record.attempt.id)
+        )
+      )
+      .get();
+    if (existing !== undefined) {
+      const stored = decode(
+        existing.attemptJson,
+        isAgentExecutionAttempt,
+        'agent execution attempt'
+      );
+      if (record.attempt.revision < stored.revision) {
+        throw new PersistenceInputError(
+          `Agent execution attempt revision regression rejected: stored revision ${stored.revision}, incoming revision ${record.attempt.revision}`
+        );
+      }
+      if (
+        record.attempt.revision === stored.revision &&
+        canonicalPlainStringify(record.attempt) !== canonicalPlainStringify(stored)
+      ) {
+        throw new PersistenceInputError(
+          'Agent execution attempt revision already recorded with different evidence'
+        );
+      }
+      if (record.attempt.revision === stored.revision) {
+        return;
+      }
+    }
+    this.#db
+      .insert(agentExecutionAttempts)
+      .values({
+        runId: record.runId,
+        attemptId: record.attempt.id,
+        attemptJson: stringify(record.attempt)
+      })
+      .onConflictDoUpdate({
+        target: [agentExecutionAttempts.runId, agentExecutionAttempts.attemptId],
+        set: { attemptJson: stringify(record.attempt) }
+      })
+      .run();
   }
 
   #assertIdempotentReevaluation(reevaluation: PersistedReevaluation): void {

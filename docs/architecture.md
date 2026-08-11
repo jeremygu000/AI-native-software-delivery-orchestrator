@@ -314,6 +314,20 @@ run real agents or verification commands, coordinate processes, resume unknown i
 automatically repair Git conflicts. Those workflows remain runtime extensions and must not be placed in
 the CLI or hidden inside infrastructure adapters.
 
+Scheduler `RUNNING` means dispatch is authorized, while a separate revisioned `AgentExecutionAttempt`
+records external execution preparation, startup, durable session establishment, completion, failure, or
+unknown restart outcome. The start decision and `PREPARING` attempt persist atomically. A task binding
+uses a canonical multi-resource `TaskLeasePlan`; blocked acquisition rolls back earlier leases rather
+than retaining partial ownership. Current execution leases end before verification and Git integration,
+which is intentionally not an integration reservation policy. ADR-016 records these durable execution
+and lease-plan boundaries. Pi and controlled agent tools remain future adapters, not current runtime
+dependencies.
+
+Agent execution hardening remains deliberately backend-neutral. A real agent backend such as Pi must
+implement `AgentRunner`, establish a provider-neutral session reference through the attempt lifecycle,
+and eventually use orchestrator-controlled tools. It must not create worktrees, bypass lease plans,
+mutate persistence directly, decide scheduling, or claim final verification.
+
 The feedback loop is:
 
 ```text
