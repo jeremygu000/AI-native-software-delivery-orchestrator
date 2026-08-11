@@ -1055,7 +1055,42 @@ Persistence test 覆盖 complete recovery、SQLite file reopen、Set/date round-
 atomicity、transaction rollback、append-only sequence、decision replay mismatch、current-record upsert 以及
 corrupted stored-state rejection。
 
-完整质量门现在有 250 个测试通过。覆盖率为语句 96.78%、分支 91.83%、函数 99.14%、行 96.75%。
+完整质量门现在有 275 个测试通过。覆盖率为语句 96.67%、分支 91.84%、函数 98.60%、行 96.64%。
+`pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
+
+## 阶段十二:Pi Agent Adapter
+
+Orchestrator 现在有第一个 real coding-agent backend seam。`libs/agent-runtime` 通过 private gateway 使用
+`@mariozechner/pi-coding-agent` 实现 `PiAgentRunner`。Pi 保持在 provider-neutral `AgentRunner` port 之后：
+Pi session object、message、tool definition 和 provider detail 不会进入 domain contract 或 orchestration runtime。
+
+Pi gateway 创建 session 后调用带 provider-neutral session ref 的 `onStarted`。只有此时 durable attempt 才变为
+`RUNNING`。Adapter 把 task goal 作为 Pi prompt，但 Pi 不能选择 scheduling、lease、workspace、persistence、
+verification、Git integration 或 recovery policy。
+
+Pi 使用 `noTools: "all"` 启动。唯一可用 tool 是 `forge_read`、`forge_list`、`forge_find`、`forge_edit` 和
+`forge_write`。Mutation tool 经过 `AgentToolRuntime`：它把 path 限制在 task workspace 内，把 file resolve 成
+resource，acquire/persist write lease，并记录 observed file write。冲突 tool write 不修改文件，返回 runtime
+blocker，不允许 unsafe retry。没有 unrestricted shell、Pi built-in edit/write 或 agent-controlled Git lifecycle。
+
+Pi test 使用 deterministic session gateway，不调用 paid model。Vertical scenario 组合 mock Pi tool request、
+real SQLite persistence、InMemoryWriteGuard、GitWorkspaceManager、verifier 和 fast-forward integration，证明从
+Pi intent 到 integrated repository change 和 durable evidence 的完整 controlled write path。
+
+详细代码教学见 [Pi Agent Adapter](./pi-agent-adapter.zh.md) 和其
+[English edition](./pi-agent-adapter.en.md)。
+
+本阶段没有提供 authenticated production model setup、command sandbox、timeout/cancellation policy、
+network/environment/secrets policy、automatic external-blocker retry、observed scope replanning 或 concurrent
+execution。这些是后续 runtime hardening stage。
+
+Pi SDK 使用 `noTools: "all"` 配置；只有 orchestrator 的 custom `forge_*` tool 会被注册。CI 不启动
+production Pi session。Injected session factory 验证 SDK tool configuration；deterministic test 会执行每个
+custom tool definition，并覆盖 controlled call 和 error-result mapping。Runner 会拒绝乱序的 pre-establishment
+tool call，避免它 acquire lease 或修改 workspace。真实 solution-style repository-analysis regression test 现在使用
+scoped 30-second timeout，因为 full-workspace TypeScript analysis 在 load 下可能合理地超过 Vitest 默认 five-second limit。
+
+完整质量门现在有 275 个测试通过。覆盖率为语句 96.67%、分支 91.84%、函数 98.60%、行 96.64%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 阶段十:Workspace 与 Git Lifecycle
@@ -1121,7 +1156,7 @@ protection。
 acquire lease、不协调 multiple repository/process，也不自动修复 conflict。这些需要未来 agent/runtime layer
 和 ownership-generation write fencing。
 
-完整质量门现在有 250 个测试通过。覆盖率为语句 96.78%、分支 91.83%、函数 99.14%、行 96.75%。
+完整质量门现在有 275 个测试通过。覆盖率为语句 96.67%、分支 91.84%、函数 98.60%、行 96.64%。
 
 ## 阶段十一:Orchestration Runtime
 
@@ -1171,15 +1206,16 @@ workspace/lease record。它有意不 restart unknown in-flight agent 或 reclai
 failure、same-run/external-run lease blocking、lease-release failure evidence、pre-start/post-start runner throw、completed-without-onStarted protocol failure、identity-validated durable attempt recovery/resume、multi-resource rollback、real Git vertical integration、blocked Git integration、eventless recovery、current evidence recovery、
 invalid binding 和 real SQLite replay。
 
-完整质量门现在有 250 个测试通过。覆盖率为语句 96.78%、分支 91.83%、函数 99.14%、行 96.75%。
+完整质量门现在有 275 个测试通过。覆盖率为语句 96.67%、分支 91.84%、函数 98.60%、行 96.64%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 目前整体状态(截止到本文写作时)
 
-- 架构规划的 11 个里程碑已全部实现。这不代表完整产品 100% 完成：real agent execution、真实 write
-  enforcement、concurrent dispatch、provider integration 和 CLI runtime command 仍是当前 milestone 计划外的重要能力。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 250 个测试全部通过。
-- 覆盖率为:语句 96.78%、分支 91.83%、函数 99.14%、行 96.75%;四项都达到至少 90% 的门槛。
+- 架构规划的 12 个里程碑已全部实现。这不代表完整产品 100% 完成：authenticated model setup、command
+  sandboxing、observed-scope enforcement、concurrent dispatch、provider routing 和 CLI runtime command 仍是
+  当前 milestone 计划外的重要能力。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 275 个测试全部通过。
+- 覆盖率为:语句 96.67%、分支 91.84%、函数 98.60%、行 96.64%;四项都达到至少 90% 的门槛。
 - `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 - Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有
@@ -1189,15 +1225,18 @@ invalid binding 和 real SQLite replay。
 - Milestone 10 Workspace/Git 已完成接受的 local single-repository scope，并已通过独立 Review。Review 还
   重新验证 Date-aware lease idempotency 和 clean-target task-branch collision handling。
 - Milestone 11 Orchestration Runtime 已完成接受的 local serial fake-agent scope，正在等待独立 Review 后才能提交。
-- Pi 有意尚未集成。下一 backend stage 只能把它作为 `AgentRunner` adapter，置于 orchestrator-controlled tool
-  和 durable attempt/session evidence 之后。
+- Milestone 12 Pi Agent Adapter 已完成接受的 mock-gateway 和 controlled-tool scope，并已通过 independent review，
+  包含 defensive session ordering、retained partial-write evidence、out-of-order tool call 的 explicit no-lease verification，
+  以及 self-analysis CI timeout hardening。
 
 ## 还没有实现的部分
 
-- 真正调用/监控 coding agent 或 verification command。
+- 调用 authenticated production Pi model 或 verification command。
+- 在 sandbox policy boundary 内执行 arbitrary command。
 - Dispatch 多个 concurrent agent、recovery unknown in-flight agent 或协调多个 process。
 
 简单说:**编排器现在能为真实 TypeScript pnpm 仓库建立确定的结构地图,预测任务影响、比较冲突,
 在事件发生后确定地决定哪些任务可以启动，在一个 process 内保护 exclusive write，从 SQLite 恢复
-经过验证的 local orchestration evidence，用 Git integrate 一个 local task worktree，并用 serial fake-agent
-runtime 运行这些 port。它仍不会观察真实 write、协调多个 process 或运行 real coding agent。**
+经过验证的 local orchestration evidence，用 Git integrate 一个 local task worktree，并把 mock Pi tool intent
+经过 controlled lease 和 workspace write。它仍不会运行 authenticated production coding agent、观察完整 real-write
+scope 或协调多个 process。**

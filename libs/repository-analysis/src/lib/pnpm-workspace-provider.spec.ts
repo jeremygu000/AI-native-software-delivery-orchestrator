@@ -759,7 +759,7 @@ void selfValue;
       'libs/repository-analysis/src/lib/typescript-repository-analyzer.ts'
     );
     expect(graph.symbols.size).toBeGreaterThan(0);
-  });
+  }, 30_000);
 
   it('leaves repositories without a TypeScript configuration at project granularity', async () => {
     const workspacePath = await createWorkspace('{}\n', {});

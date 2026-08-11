@@ -4,17 +4,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig(() => ({
   root: import.meta.dirname,
-  cacheDir: '../../node_modules/.vite/libs/orchestration-runtime',
+  cacheDir: '../../node_modules/.vite/libs/agent-runtime',
   resolve: {
     alias: {
-      '@ai-native-software-delivery-orchestrator/agent-runtime': resolve(
-        import.meta.dirname,
-        '../agent-runtime/src/index.ts'
-      ),
-      '@ai-native-software-delivery-orchestrator/dag': resolve(
-        import.meta.dirname,
-        '../dag/src/index.ts'
-      ),
       '@ai-native-software-delivery-orchestrator/domain': resolve(
         import.meta.dirname,
         '../domain/src/index.ts'
@@ -26,19 +18,11 @@ export default defineConfig(() => ({
       '@ai-native-software-delivery-orchestrator/runtime-guard': resolve(
         import.meta.dirname,
         '../runtime-guard/src/index.ts'
-      ),
-      '@ai-native-software-delivery-orchestrator/scheduler': resolve(
-        import.meta.dirname,
-        '../scheduler/src/index.ts'
-      ),
-      '@ai-native-software-delivery-orchestrator/workspace-git': resolve(
-        import.meta.dirname,
-        '../workspace-git/src/index.ts'
       )
     }
   },
   test: {
-    name: 'orchestration-runtime',
+    name: 'agent-runtime',
     watch: false,
     globals: true,
     environment: 'node',

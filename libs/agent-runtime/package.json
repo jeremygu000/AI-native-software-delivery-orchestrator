@@ -1,5 +1,5 @@
 {
-  "name": "@ai-native-software-delivery-orchestrator/orchestration-runtime",
+  "name": "@ai-native-software-delivery-orchestrator/agent-runtime",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -15,13 +15,12 @@
     }
   },
   "dependencies": {
-    "@ai-native-software-delivery-orchestrator/domain": "workspace:*"
+    "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
+    "@mariozechner/pi-coding-agent": "0.73.1",
+    "typebox": "^1.3.11"
   },
   "devDependencies": {
-    "@ai-native-software-delivery-orchestrator/agent-runtime": "workspace:*",
     "@ai-native-software-delivery-orchestrator/persistence": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/runtime-guard": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/workspace-git": "workspace:*"
+    "@ai-native-software-delivery-orchestrator/runtime-guard": "workspace:*"
   }
 }

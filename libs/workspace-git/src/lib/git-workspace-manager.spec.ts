@@ -93,8 +93,7 @@ describe('GitWorkspaceManager', () => {
     const workspace = await manager.create(request(repositoryPath));
 
     writeFileSync(join(workspace.workspacePath, 'task.txt'), 'task output\n');
-    git(workspace.workspacePath, ['add', 'task.txt']);
-    git(workspace.workspacePath, ['commit', '-m', 'task change']);
+    await manager.commit({ workspace, message: 'task change' });
 
     const integration = await manager.integrate(workspace);
 
@@ -109,6 +108,16 @@ describe('GitWorkspaceManager', () => {
     ).resolves.toEqual({
       status: 'disposed'
     });
+  });
+
+  it('does not create an empty commit for a clean workspace', async () => {
+    const repositoryPath = createRepository();
+    const manager = new GitWorkspaceManager();
+    const workspace = await manager.create(request(repositoryPath));
+
+    await expect(manager.commit({ workspace, message: 'no changes' })).resolves.toEqual(workspace);
+    expect(git(workspace.workspacePath, ['log', '--oneline'])).toContain('base');
+    await manager.dispose({ workspace, force: true, reason: 'Test cleanup.' });
   });
 
   it('preserves integration phase through rebase conflict, abort, resolve, and resume', async () => {

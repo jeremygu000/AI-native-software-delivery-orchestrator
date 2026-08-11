@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type {
   CreateTaskWorkspaceRequest,
+  CommitTaskWorkspaceRequest,
   DisposeTaskWorkspaceRequest,
   DisposeTaskWorkspaceResult,
   IntegrateTaskWorkspaceResult,
@@ -102,6 +103,20 @@ export class GitWorkspaceManager implements WorkspaceManager {
 
   async integrate(workspace: TaskWorkspace): Promise<IntegrateTaskWorkspaceResult> {
     return this.#integrate(taskWorkspaceSchema.parse(workspace));
+  }
+
+  async commit(request: CommitTaskWorkspaceRequest): Promise<TaskWorkspace> {
+    const workspace = taskWorkspaceSchema.parse(request.workspace);
+    if (request.message.trim().length === 0) {
+      throw new GitWorkspaceError(['commit'], 'Workspace commit message must not be empty.');
+    }
+    await this.#git(workspace.workspacePath, ['add', '--all']);
+    const status = await this.#git(workspace.workspacePath, ['status', '--porcelain=v1', '-z']);
+    if (status.stdout.length === 0) {
+      return workspace;
+    }
+    await this.#git(workspace.workspacePath, ['commit', '-m', request.message]);
+    return workspace;
   }
 
   async resumeIntegration(workspace: TaskWorkspace): Promise<IntegrateTaskWorkspaceResult> {

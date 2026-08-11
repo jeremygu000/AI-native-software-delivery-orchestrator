@@ -14,6 +14,11 @@ import type {
   WorkspaceManager,
   WriteGuard
 } from '@ai-native-software-delivery-orchestrator/domain';
+import {
+  AgentToolRuntime,
+  PiAgentRunner,
+  type PiSessionGateway
+} from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
@@ -170,6 +175,10 @@ class MemoryWorkspaceManager implements WorkspaceManager {
     const workspace: TaskWorkspace = { ...request, revision: 1, phase: 'READY_TO_INTEGRATE' };
     this.created.push(workspace);
     return workspace;
+  }
+
+  async commit(request: Parameters<WorkspaceManager['commit']>[0]): Promise<TaskWorkspace> {
+    return request.workspace;
   }
 
   async integrate(workspace: TaskWorkspace) {
@@ -1125,8 +1134,6 @@ describe('OrchestrationRuntime', () => {
       run: async (agentRequest) => {
         await agentRequest.onStarted({ sessionRef: { backend: 'fake', value: 'session-A' } });
         writeFileSync(join(agentRequest.workspace.workspacePath, 'value.txt'), 'changed\n');
-        git(agentRequest.workspace.workspacePath, ['add', 'value.txt']);
-        git(agentRequest.workspace.workspacePath, ['commit', '-m', 'task change']);
         return { status: 'completed', sessionRef: { backend: 'fake', value: 'session-A' } };
       }
     };
@@ -1170,6 +1177,162 @@ describe('OrchestrationRuntime', () => {
       persistence.replayRun('run-1', new DeterministicScheduler())
     ).resolves.toHaveLength(5);
     persistence.close();
+  });
+
+  it('integrates a guarded Pi custom edit through SQLite, verifier, and real Git', async () => {
+    const integrationRepositoryPath = createRepository();
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const guard = new InMemoryWriteGuard({
+      now: () => new Date('2026-08-14T00:00:00.000Z')
+    });
+    const gateway: PiSessionGateway = {
+      start: async ({ executeTool, onStarted }) => {
+        await onStarted('pi-session-1');
+        await executeTool({
+          name: 'forge_edit',
+          path: 'value.txt',
+          expected: 'base',
+          replacement: 'pi'
+        });
+        return { sessionId: 'pi-session-1' };
+      }
+    };
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new GitWorkspaceManager(),
+      writeGuard: guard,
+      agentRunner: new PiAgentRunner({
+        gateway,
+        createTools: (agentRequest) =>
+          new AgentToolRuntime({
+            runId: agentRequest.runId,
+            taskId: agentRequest.taskId,
+            attemptId: agentRequest.attempt.id,
+            agentId: agentRequest.attempt.agentId,
+            workspacePath: agentRequest.workspace.workspacePath,
+            writeGuard: guard,
+            persistence,
+            resolveResource: (path) => ({
+              type: 'file',
+              projectId: 'core',
+              fileId: `core:${path}`
+            }),
+            resolveFileId: (path) => `core:${path}`
+          })
+      }),
+      verifier: new FakeTaskVerifier(),
+      now: () => new Date('2026-08-14T00:00:00.000Z'),
+      createAttemptId: () => 'attempt-A'
+    });
+    const run = request([task('A')]);
+    const binding = run.taskBindings[0];
+    const impact = {
+      predicted: {
+        taskId: 'A',
+        projectsRead: new Set<string>(),
+        projectsWritten: new Set<string>(),
+        explicitProjectsWritten: new Set<string>(),
+        filesRead: new Set<string>(),
+        filesWritten: new Set(['core:value.txt']),
+        explicitFilesWritten: new Set(['core:value.txt']),
+        globFilesWritten: new Set<string>(),
+        symbolDerivedFilesWritten: new Set<string>(),
+        symbolsRead: new Set<string>(),
+        symbolsWritten: new Set<string>(),
+        sharedResources: new Set<string>(),
+        sharedResourceAccesses: [],
+        downstreamProjects: new Set<string>(),
+        riskSignals: []
+      }
+    };
+
+    const recovered = await runtime.startRun({
+      ...run,
+      taskBindings: [
+        {
+          ...binding,
+          impact,
+          workspace: {
+            ...binding.workspace,
+            integrationRepositoryPath,
+            workspacePath: `${integrationRepositoryPath}-workspace-A`
+          }
+        }
+      ]
+    });
+
+    expect(readFileSync(join(integrationRepositoryPath, 'value.txt'), 'utf8')).toBe('pi\n');
+    expect(recovered).toMatchObject({
+      snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] },
+      attempts: [{ attempt: { sessionRef: { backend: 'pi', value: 'pi-session-1' } } }]
+    });
+    expect((await persistence.recoverRun('run-1'))?.impacts).toMatchObject([
+      { impact: { observed: { filesWritten: new Set(['core:value.txt']) } } }
+    ]);
+    persistence.close();
+  });
+
+  it('blocks a Pi conflicting write without modifying the workspace', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'pi-blocked-'));
+    directories.push(workspacePath);
+    writeFileSync(join(workspacePath, 'value.txt'), 'base\n');
+    const persistence = new MemoryPersistence();
+    const guard = new InMemoryWriteGuard();
+    await guard.acquire({
+      runId: 'other-run',
+      agentId: 'other-agent',
+      taskId: 'other-task',
+      resource: { type: 'file', projectId: 'core', fileId: 'core:value.txt' },
+      mode: 'exclusive'
+    });
+    const gateway: PiSessionGateway = {
+      start: async ({ executeTool, onStarted }) => {
+        await onStarted('pi-session-1');
+        await executeTool({ name: 'forge_write', path: 'value.txt', content: 'changed\n' });
+        return { sessionId: 'pi-session-1' };
+      }
+    };
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard: guard,
+      agentRunner: new PiAgentRunner({
+        gateway,
+        createTools: (agentRequest) =>
+          new AgentToolRuntime({
+            runId: agentRequest.runId,
+            taskId: agentRequest.taskId,
+            attemptId: agentRequest.attempt.id,
+            agentId: agentRequest.attempt.agentId,
+            workspacePath: agentRequest.workspace.workspacePath,
+            writeGuard: guard,
+            persistence,
+            resolveResource: (path) => ({
+              type: 'file',
+              projectId: 'core',
+              fileId: `core:${path}`
+            }),
+            resolveFileId: (path) => `core:${path}`
+          })
+      }),
+      verifier: new FakeTaskVerifier(),
+      now: () => new Date('2026-08-14T00:00:00.000Z')
+    });
+    const run = request([task('A')]);
+    const binding = run.taskBindings[0];
+
+    await expect(
+      runtime.startRun({
+        ...run,
+        taskBindings: [{ ...binding, workspace: { ...binding.workspace, workspacePath } }]
+      })
+    ).resolves.toMatchObject({ snapshot: { taskStates: [{ taskId: 'A', state: 'BLOCKED' }] } });
+    expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('base\n');
+    expect(persistence.reevaluations.map(({ event }) => event.event.type)).toContain(
+      'lease-blocked'
+    );
   });
 
   it('fails safely when a granted lease cannot be released', async () => {

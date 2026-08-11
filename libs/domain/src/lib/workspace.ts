@@ -83,8 +83,14 @@ export type DisposeTaskWorkspaceResult =
   | { readonly status: 'disposed' }
   | { readonly status: 'dirty'; readonly paths: readonly string[] };
 
+export interface CommitTaskWorkspaceRequest {
+  readonly workspace: TaskWorkspace;
+  readonly message: string;
+}
+
 export interface WorkspaceManager {
   create(request: CreateTaskWorkspaceRequest): Promise<TaskWorkspace>;
+  commit(request: CommitTaskWorkspaceRequest): Promise<TaskWorkspace>;
   integrate(workspace: TaskWorkspace): Promise<IntegrateTaskWorkspaceResult>;
   resumeIntegration(workspace: TaskWorkspace): Promise<IntegrateTaskWorkspaceResult>;
   abortIntegration(workspace: TaskWorkspace): Promise<TaskWorkspace>;

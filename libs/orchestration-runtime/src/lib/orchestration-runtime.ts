@@ -16,6 +16,7 @@ import type {
   SchedulerSnapshot,
   SchedulerTaskDecision,
   TaskContract,
+  TaskImpact,
   TaskVerifier,
   TaskLeasePlan,
   WriteLease,
@@ -29,6 +30,7 @@ export interface RuntimeTaskBinding {
   readonly taskId: string;
   readonly agentId: string;
   readonly leasePlan: TaskLeasePlan;
+  readonly impact?: TaskImpact;
   readonly workspace: Parameters<WorkspaceManager['create']>[0];
 }
 
@@ -327,7 +329,7 @@ export class OrchestrationRuntime {
       });
       this.#setState(state, taskId, 'FAILED');
       await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
-    } else {
+    } else if (agentResult.status === 'completed') {
       if (!executionEstablished) {
         const detail = 'Agent runner completed without calling onStarted.';
         await this.#failBeforeExecutionEstablished(state, taskId, acquisition.leases, detail);
@@ -341,7 +343,12 @@ export class OrchestrationRuntime {
       this.#setState(state, taskId, 'VERIFYING');
       await this.#recordEvent(state, { type: 'agent-completed', taskId, state: 'VERIFYING' });
     }
-    const released = await this.#releaseLeasePlan(acquisition.leases);
+    const released = await this.#releaseLeasePlan([
+      ...acquisition.leases,
+      ...(agentResult.status === 'completed' || agentResult.status === 'blocked'
+        ? (agentResult.additionalLeases ?? [])
+        : [])
+    ]);
     if (released.status !== 'released') {
       for (const lease of released.leases) {
         await this.#persistence.persistLease({ runId: state.request.run.id, lease });
@@ -363,6 +370,32 @@ export class OrchestrationRuntime {
     if (agentResult.status === 'failed') {
       return;
     }
+    if (agentResult.status === 'blocked') {
+      if (agentResult.observedImpact !== undefined && binding.impact !== undefined) {
+        await this.#persistence.persistImpact({
+          runId: state.request.run.id,
+          taskId,
+          impact: { ...binding.impact, observed: agentResult.observedImpact }
+        });
+      }
+      await this.#persistAttempt(state, taskId, {
+        state: 'COMPLETED',
+        completedAt: this.#now()
+      });
+      await this.#recordEvent(state, {
+        type: 'lease-blocked',
+        taskId,
+        leaseId: agentResult.leaseId
+      });
+      return;
+    }
+    if (agentResult.observedImpact !== undefined && binding.impact !== undefined) {
+      await this.#persistence.persistImpact({
+        runId: state.request.run.id,
+        taskId,
+        impact: { ...binding.impact, observed: agentResult.observedImpact }
+      });
+    }
     const verification = await this.#verifier.verify({
       runId: state.request.run.id,
       task,
@@ -373,6 +406,10 @@ export class OrchestrationRuntime {
       await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
       return;
     }
+    await this.#workspaceManager.commit({
+      workspace,
+      message: `forge: ${task.id}`
+    });
     this.#setState(state, taskId, 'INTEGRATING');
     await this.#recordEvent(state, {
       type: 'verification-completed',
@@ -602,7 +639,8 @@ export class OrchestrationRuntime {
       }
   > {
     const released: WriteLease[] = [];
-    for (const lease of leases.toReversed()) {
+    const uniqueLeases = new Map(leases.map((lease) => [lease.id, lease]));
+    for (const lease of [...uniqueLeases.values()].toReversed()) {
       const result = await this.#writeGuard.release({
         leaseId: lease.id,
         expectedVersion: lease.version

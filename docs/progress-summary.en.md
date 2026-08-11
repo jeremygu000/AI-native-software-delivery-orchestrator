@@ -1194,8 +1194,50 @@ The persistence tests cover complete recovery, SQLite file reopen, Set/date roun
 transition-decision atomicity, transaction rollback, append-only sequencing, decision replay mismatch,
 current-record upserts, and corrupted stored-state rejection.
 
-The full quality gate now has 250 passing tests. Coverage is 96.78% statements, 91.83% branches,
-99.14% functions, and 96.75% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 275 passing tests. Coverage is 96.67% statements, 91.84% branches,
+98.60% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+
+## Stage 12: Pi Agent Adapter
+
+The orchestrator now has its first real coding-agent backend seam. `libs/agent-runtime` implements
+`PiAgentRunner` using `@mariozechner/pi-coding-agent` through a private gateway. Pi remains behind the
+provider-neutral `AgentRunner` port: its session objects, messages, tool definitions, and provider
+details do not enter domain contracts or the orchestration runtime.
+
+When the Pi gateway creates a session, it calls `onStarted` with a provider-neutral session reference.
+Only then does the durable attempt become `RUNNING`. The adapter passes the task goal as Pi's prompt
+but does not allow Pi to choose scheduling, leases, workspaces, persistence, verification, Git
+integration, or recovery policy.
+
+Pi starts with `noTools: "all"`. The only available tools are `forge_read`, `forge_list`,
+`forge_find`, `forge_edit`, and `forge_write`. The mutation tools go through `AgentToolRuntime`, which
+keeps paths inside the task workspace, resolves files to resources, acquires and persists write leases,
+and records observed file writes. A conflicting tool write leaves the file unchanged and returns a
+runtime blocker rather than allowing an unsafe retry. There is no unrestricted shell, built-in Pi
+edit/write tool, or agent-controlled Git lifecycle.
+
+The Pi tests use a deterministic session gateway rather than a paid model. The vertical scenario
+combines a mock Pi tool request, real SQLite persistence, InMemoryWriteGuard, GitWorkspaceManager,
+verifier, and fast-forward integration. It proves the complete controlled write path from Pi intent to
+integrated repository change and durable evidence.
+
+For a code-level teaching model, see [Pi Agent Adapter](./pi-agent-adapter.en.md) and its
+[Chinese edition](./pi-agent-adapter.zh.md).
+
+This stage does not provide an authenticated production model setup, a command sandbox, timeout or
+cancellation policy, network/environment/secrets policy, automatic external-blocker retry, observed
+scope replanning, or concurrent execution. Those are later runtime hardening stages.
+
+The Pi SDK is configured with `noTools: "all"`; only the orchestrator's custom `forge_*` tools are
+registered. Production Pi sessions are not started in CI. An injected session factory verifies the SDK
+tool configuration, while deterministic tests execute each custom tool definition and cover its
+controlled call and error-result mapping. The runner rejects an out-of-order pre-establishment tool
+call before it can acquire a lease or modify a workspace. The real solution-style repository-analysis
+regression test now has a scoped 30-second timeout because full-workspace TypeScript analysis can
+legitimately exceed Vitest's default five-second limit under load.
+
+The full quality gate now has 275 passing tests. Coverage is 96.67% statements, 91.84% branches,
+98.60% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 10: Workspace and Git Lifecycle
 
@@ -1267,8 +1309,8 @@ with predicted scope, acquire leases during writes, coordinate multiple reposito
 automatically repair conflicts. Those require a future agent/runtime layer and ownership-generation
 write fencing.
 
-The full quality gate now has 250 passing tests. Coverage is 96.78% statements, 91.83% branches,
-99.14% functions, and 96.75% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 275 passing tests. Coverage is 96.67% statements, 91.84% branches,
+98.60% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 11: Orchestration Runtime
 
@@ -1326,17 +1368,18 @@ For a code-level teaching model, see [Orchestration Runtime](./orchestration-run
 chain, agent failure, verification failure, same-run and external-run lease blocking, lease-release failure evidence, pre-start and post-start runner throws, completed-without-onStarted protocol failure, durable attempt recovery/resume with identity validation, multi-resource rollback, real Git vertical integration, blocked Git
 integration, eventless recovery, current evidence recovery, invalid bindings, and real SQLite replay.
 
-The full quality gate now has 250 passing tests. Coverage is 96.78% statements, 91.83% branches,
-99.14% functions, and 96.75% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 275 passing tests. Coverage is 96.67% statements, 91.84% branches,
+98.60% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Current overall status (as of this writing)
 
-- Architecture milestones 1–11 of 11 are implemented. This does not mean the full product is 100%
-  complete: real agent execution, real write enforcement, concurrent dispatch, provider integration,
-  and CLI runtime commands remain substantial product capabilities outside the current milestone plan.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 250 tests,
+- Architecture milestones 1–12 of 12 are implemented. This does not mean the full product is 100%
+  complete: authenticated model setup, command sandboxing, observed-scope enforcement, concurrent
+  dispatch, provider routing, and CLI runtime commands remain substantial capabilities outside the
+  current milestone plan.
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 275 tests,
   all passing.
-- Coverage is 96.78% statements, 91.83% branches, 99.14% functions, and 96.75% lines. Every enforced
+- Coverage is 96.67% statements, 91.84% branches, 98.60% functions, and 96.64% lines. Every enforced
   threshold is at least 90%.
 - `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.
@@ -1352,16 +1395,19 @@ The full quality gate now has 250 passing tests. Coverage is 96.78% statements, 
   verified clean-target task-branch collision handling.
 - Milestone 11 Orchestration Runtime is complete for the accepted local serial fake-agent scope and
   awaits independent review before it can be committed.
-- Pi is deliberately not integrated. The next backend stage must add it only as an `AgentRunner` adapter
-  behind orchestrator-controlled tools and durable attempt/session evidence.
+- Milestone 12 Pi Agent Adapter is complete for the accepted mock-gateway and controlled-tool scope and
+  has passed independent review, including defensive session ordering, retained partial-write evidence,
+  explicit no-lease verification for out-of-order tool calls, and self-analysis CI timeout hardening.
 
 ## What has NOT been implemented yet
 
-- Invoke and monitor real coding agents or verification commands.
+- Invoke an authenticated production Pi model or run verification commands.
+- Execute arbitrary commands in a sandboxed policy boundary.
 - Dispatch more than one agent concurrently, recover unknown in-flight agents, or coordinate processes.
 
 In short: **the orchestrator can now map a real TypeScript pnpm repository, predict task impact,
 compare conflicts, decide what may start after an event, guard exclusive writes inside one process,
 recover verified local orchestration evidence from SQLite, integrate one local task worktree with Git,
-and exercise those ports with a serial fake-agent runtime. It still does not observe real writes,
-coordinate multiple processes, or run a real coding agent.**
+and route mock Pi tool intent through controlled leases and workspace writes. It still does not run an
+authenticated production coding agent, observe complete real-write scope, or coordinate multiple
+processes.**

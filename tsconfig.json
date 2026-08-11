@@ -35,6 +35,9 @@
     },
     {
       "path": "./libs/orchestration-runtime"
+    },
+    {
+      "path": "./libs/agent-runtime"
     }
   ]
 }

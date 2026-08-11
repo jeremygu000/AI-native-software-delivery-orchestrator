@@ -39,12 +39,15 @@ Git workspace core:
 - a serial application orchestration runtime that coordinates Scheduler, workspaces, leases,
   persistence, verification, and provider-neutral fake agents, with durable agent attempts and
   deterministic multi-resource lease plans;
+- a Pi-backed `AgentRunner` with a controlled custom-tool surface; Pi built-in mutation and shell
+  tools are disabled;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestone 11 implements a local serial runtime with fake agents. It does not execute real agents,
-observe real writes, coordinate processes, provision integration checkouts, integrate Pi, or automate conflict
-repair. The CLI still exposes `plan` as a discoverable placeholder until there is a tested task-spec
-input path and end-to-end runtime command.
+Milestone 12 adds a Pi adapter behind the runtime's provider-neutral `AgentRunner` port. It does not
+yet execute an authenticated production model by default, provide unrestricted shell access, run a
+command sandbox, coordinate processes, provision integration checkouts, or automate conflict repair.
+The CLI still exposes `plan` as a discoverable placeholder until there is a tested task-spec input
+path and end-to-end runtime command.
 
 The next agent-backend stage may add Pi through a provider-neutral `PiAgentRunner`. Pi must remain a
 coding-agent engine behind the runtime: it cannot own scheduling, leases, workspaces, persistence, Git
@@ -83,6 +86,7 @@ libs/runtime-guard  In-process exclusive lease acquisition and lifecycle
 libs/persistence  SQLite/Drizzle run evidence, recovery, and replay verification
 libs/workspace-git  Local isolated Git worktree and integration lifecycle
 libs/orchestration-runtime  Serial application layer for deterministic runtime choreography
+libs/agent-runtime  Pi adapter and orchestrator-controlled read/write tool runtime
 docs/adr     Architecture decisions
 ```
 

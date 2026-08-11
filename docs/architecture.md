@@ -328,6 +328,13 @@ implement `AgentRunner`, establish a provider-neutral session reference through 
 and eventually use orchestrator-controlled tools. It must not create worktrees, bypass lease plans,
 mutate persistence directly, decide scheduling, or claim final verification.
 
+`libs/agent-runtime` now provides the first backend implementation. `PiAgentRunner` uses a private Pi
+session gateway and exposes only `forge_read`, `forge_list`, `forge_find`, `forge_edit`, and
+`forge_write`. Pi sessions start with `noTools: "all"`: there is no built-in Pi `bash`, `edit`, or
+`write` capability. Mutation routes through `AgentToolRuntime`, which scopes paths to one workspace,
+acquires/persists write leases, and returns observed file evidence. The gateway maps Pi SDK types only
+inside `agent-runtime`; domain and orchestration runtime remain provider-neutral.
+
 The feedback loop is:
 
 ```text

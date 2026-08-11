@@ -1,7 +1,9 @@
 import { z } from 'zod';
 
 import type { HardTaskConflict, RiskTaskConflict } from './conflict.js';
+import type { ObservedTaskImpact } from './conflict.js';
 import type { AgentExecutionAttempt, AgentSessionRef } from './agent-execution.js';
+import type { WriteLease } from './write-lease.js';
 import type { TaskContract } from './task-contract.js';
 import { taskStateSchema } from './task-state.js';
 import type { TaskWorkspace } from './workspace.js';
@@ -212,7 +214,19 @@ export interface AgentRunRequest {
 }
 
 export type AgentRunResult =
-  | { readonly status: 'completed'; readonly sessionRef?: AgentSessionRef }
+  | {
+      readonly status: 'completed';
+      readonly sessionRef?: AgentSessionRef;
+      readonly observedImpact?: ObservedTaskImpact;
+      readonly additionalLeases?: readonly WriteLease[];
+    }
+  | {
+      readonly status: 'blocked';
+      readonly leaseId: string;
+      readonly detail: string;
+      readonly observedImpact?: ObservedTaskImpact;
+      readonly additionalLeases?: readonly WriteLease[];
+    }
   | { readonly status: 'failed'; readonly detail: string };
 
 export interface AgentRunner {
