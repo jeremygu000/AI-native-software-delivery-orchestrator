@@ -121,12 +121,11 @@ Workspace creation 先验证两个 ref：
 ```text
 git rev-parse --verify <base ref>
 git rev-parse --verify <integration ref>
-git worktree add --no-checkout -b <task branch> <workspace path> <base ref>
-git checkout
+git worktree add -b <task branch> <workspace path> <base ref>
 ```
 
-如果 checkout 在 Git 创建 worktree 后失败，manager 会移除 partial worktree 并删除新 task branch。失败的
-creation 不会留下隐藏 branch/directory。
+Git 在一个 operation 内创建 branch 并 materialize checkout。不存在单独的 `--no-checkout` phase，因此 process
+interruption 后 retry 不会把未 checkout 的 directory 误认为 ready workspace。
 
 Process interruption 后 create 可以 retry。如果 target path 已是 requested branch 上的 valid Git worktree，且
 其 `HEAD` 与 integration repository 中该 branch 匹配，create 返回等价的 revision-1 workspace。不是该 exact
@@ -166,7 +165,7 @@ blocker.conflictPaths: changed path
 
 这保护 integration checkout 内无关的 manual work。
 
-该 checkout 不能是用户的 working directory。`repositoryPath` 必须是 orchestrator-owned integration checkout，
+该 checkout 不能是用户的 working directory。`integrationRepositoryPath` 必须是 orchestrator-owned integration checkout，
 例如 `.forge/integration/<repository-id>`，因为 integration 会 switch 到 integration ref。未来 application layer
 负责 provision 并 exclusive-own 这个 directory；没有 portable 的方式检测 editor/shell 是否正在使用 checkout。
 
@@ -282,10 +281,10 @@ ownership、verification、persisted transition 和 actual write observation 协
 
 ## 验证与当前限制
 
-Workspace-git package 有 25 个测试通过，statements 99.07%、branches 94.44%、functions 100%、lines 99.05%。
+Workspace-git package 有 26 个测试通过，statements 99.02%、branches 94.44%、functions 100%、lines 99%。
 Test 使用 real temporary Git repository 验证 main lifecycle，使用 injectable command runner 验证 deterministic
-command-failure path。Repository quality gate 有 218 个测试通过，全仓覆盖率为语句 97.37%、分支 92.46%、
-函数 99.47%、行 97.31%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
+command-failure path。Repository quality gate 有 219 个测试通过，全仓覆盖率为语句 97.36%、分支 92.46%、
+函数 99.47%、行 97.30%。`pnpm check`、`pnpm build` 和 `git diff --check` 通过。
 
 实现只在 local single-repository worktree 范围验证。声称适合 many concurrent worktree、network filesystem、
 remote repository 或 multi-process workspace ownership 前，必须重新测量和扩展。

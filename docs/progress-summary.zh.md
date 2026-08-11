@@ -1055,7 +1055,7 @@ Persistence test 覆盖 complete recovery、SQLite file reopen、Set/date round-
 atomicity、transaction rollback、append-only sequence、decision replay mismatch、current-record upsert 以及
 corrupted stored-state rejection。
 
-完整质量门现在有 218 个测试通过。覆盖率为语句 97.37%、分支 92.46%、函数 99.47%、行 97.31%。
+完整质量门现在有 219 个测试通过。覆盖率为语句 97.36%、分支 92.46%、函数 99.47%、行 97.30%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 阶段十:Workspace 与 Git Lifecycle
@@ -1121,15 +1121,15 @@ protection。
 acquire lease、不协调 multiple repository/process，也不自动修复 conflict。这些需要未来 agent/runtime layer
 和 ownership-generation write fencing。
 
-完整质量门现在有 218 个测试通过。覆盖率为语句 97.37%、分支 92.46%、函数 99.47%、行 97.31%。
+完整质量门现在有 219 个测试通过。覆盖率为语句 97.36%、分支 92.46%、函数 99.47%、行 97.30%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 目前整体状态(截止到本文写作时)
 
 - 架构规划的 10 个里程碑已全部实现。这不代表完整产品 100% 完成：agent execution、真实 write
   enforcement、provider integration 和 CLI runtime 仍是 deterministic milestone 计划外的重要产品能力。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 218 个测试全部通过。
-- 覆盖率为:语句 97.37%、分支 92.46%、函数 99.47%、行 97.31%;四项都达到至少 90% 的门槛。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 219 个测试全部通过。
+- 覆盖率为:语句 97.36%、分支 92.46%、函数 99.47%、行 97.30%;四项都达到至少 90% 的门槛。
 - `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 - Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有

@@ -1194,8 +1194,8 @@ The persistence tests cover complete recovery, SQLite file reopen, Set/date roun
 transition-decision atomicity, transaction rollback, append-only sequencing, decision replay mismatch,
 current-record upserts, and corrupted stored-state rejection.
 
-The full quality gate now has 218 passing tests. Coverage is 97.37% statements, 92.46% branches,
-99.47% functions, and 97.31% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 219 passing tests. Coverage is 97.36% statements, 92.46% branches,
+99.47% functions, and 97.30% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 10: Workspace and Git Lifecycle
 
@@ -1267,17 +1267,17 @@ with predicted scope, acquire leases during writes, coordinate multiple reposito
 automatically repair conflicts. Those require a future agent/runtime layer and ownership-generation
 write fencing.
 
-The full quality gate now has 218 passing tests. Coverage is 97.37% statements, 92.46% branches,
-99.47% functions, and 97.31% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 219 passing tests. Coverage is 97.36% statements, 92.46% branches,
+99.47% functions, and 97.30% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Current overall status (as of this writing)
 
 - Architecture milestones 1–10 of 10 are implemented. This does not mean the full product is 100%
   complete: agent execution, real write enforcement, provider integration, and CLI runtime work remain
   substantial product capabilities outside the deterministic milestone plan.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 218 tests,
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 219 tests,
   all passing.
-- Coverage is 97.37% statements, 92.46% branches, 99.47% functions, and 97.31% lines. Every enforced
+- Coverage is 97.36% statements, 92.46% branches, 99.47% functions, and 97.30% lines. Every enforced
   threshold is at least 90%.
 - `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.

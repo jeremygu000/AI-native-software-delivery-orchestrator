@@ -28,12 +28,19 @@ const createRepository = (): string => {
   return directory;
 };
 
-const request = (repositoryPath: string, taskId = 'task-1'): CreateTaskWorkspaceRequest => ({
+const request = (
+  integrationRepositoryPath: string,
+  taskId = 'task-1'
+): CreateTaskWorkspaceRequest => ({
   id: `workspace-${taskId}`,
   runId: 'run-1',
   taskId,
-  repositoryPath,
-  workspacePath: join(repositoryPath, '..', `${basename(repositoryPath)}-${taskId}-workspace`),
+  integrationRepositoryPath,
+  workspacePath: join(
+    integrationRepositoryPath,
+    '..',
+    `${basename(integrationRepositoryPath)}-${taskId}-workspace`
+  ),
   branchName: `orchestrator/run-1/${taskId}`,
   baseRef: 'main',
   integrationRef: 'main'
@@ -43,7 +50,7 @@ const fixtureWorkspace = {
   id: 'workspace-1',
   runId: 'run-1',
   taskId: 'task-1',
-  repositoryPath: '/repository',
+  integrationRepositoryPath: '/repository',
   workspacePath: '/workspace',
   branchName: 'orchestrator/run-1/task-1',
   baseRef: 'main',
@@ -214,26 +221,27 @@ describe('GitWorkspaceManager', () => {
     await manager.dispose({ workspace: first, force: true, reason: 'Test cleanup.' });
   });
 
-  it('cleans a partially created worktree when checkout fails', async () => {
+  it('creates a materialized worktree in one Git command', async () => {
     const runner = new FakeGitRunner();
     runner.outputs.set(['rev-parse', '--verify', 'main'].join('\u0000'), 'commit\n');
-    runner.failures.set(['checkout'].join('\u0000'), 'checkout failed');
     const manager = new GitWorkspaceManager(runner);
     const workspaceRequest = request('/repository');
     runner.missingWorkspacePaths.add(workspaceRequest.workspacePath);
 
-    await expect(manager.create(workspaceRequest)).rejects.toThrow('checkout failed');
+    await expect(manager.create(workspaceRequest)).resolves.toMatchObject({
+      workspacePath: workspaceRequest.workspacePath,
+      revision: 1
+    });
     expect(runner.calls.map(({ args }) => args)).toContainEqual([
       'worktree',
-      'remove',
-      '--force',
-      workspaceRequest.workspacePath
+      'add',
+      '-b',
+      workspaceRequest.branchName,
+      workspaceRequest.workspacePath,
+      workspaceRequest.baseRef
     ]);
-    expect(runner.calls.map(({ args }) => args)).toContainEqual([
-      'branch',
-      '-D',
-      'orchestrator/run-1/task-1'
-    ]);
+    expect(runner.calls.some(({ args }) => args.includes('--no-checkout'))).toBe(false);
+    expect(runner.calls.some(({ args }) => args[0] === 'checkout')).toBe(false);
   });
 
   it('wraps native Git process failures in a stable adapter error', async () => {
