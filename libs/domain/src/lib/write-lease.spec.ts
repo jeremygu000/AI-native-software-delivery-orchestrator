@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   areWritableResourcesConflicting,
   canonicalTaskLeaseResources,
+  isWritableResourceCoveredBy,
   taskLeasePlanFromPredictedImpact,
   taskLeasePlanSchema,
   type WritableResource,
@@ -61,6 +62,23 @@ describe('areWritableResourcesConflicting', () => {
   ])('allows independent resources', (a, b) => {
     expect(areWritableResourcesConflicting(a, b)).toBe(false);
     expect(areWritableResourcesConflicting(b, a)).toBe(false);
+  });
+});
+
+describe('isWritableResourceCoveredBy', () => {
+  it('recognizes ownership from broader to narrower resources only', () => {
+    const projectResource = project('catalog');
+    const fileResource = file('catalog', 'product.ts');
+    const parentSymbol = symbol('catalog', 'product.ts', 'ProductService');
+    const childSymbol = symbol('catalog', 'product.ts', 'ProductService.search', [
+      'ProductService'
+    ]);
+
+    expect(isWritableResourceCoveredBy(projectResource, fileResource)).toBe(true);
+    expect(isWritableResourceCoveredBy(fileResource, childSymbol)).toBe(true);
+    expect(isWritableResourceCoveredBy(parentSymbol, childSymbol)).toBe(true);
+    expect(isWritableResourceCoveredBy(childSymbol, parentSymbol)).toBe(false);
+    expect(isWritableResourceCoveredBy(fileResource, projectResource)).toBe(false);
   });
 });
 

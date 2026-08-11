@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
-import type { HardTaskConflict, RiskTaskConflict } from './conflict.js';
-import type { ObservedTaskImpact } from './conflict.js';
+import type {
+  HardTaskConflict,
+  ObservedTaskImpact,
+  RiskTaskConflict,
+  TaskImpact
+} from './conflict.js';
 import type { AgentExecutionAttempt, AgentSessionRef } from './agent-execution.js';
 import type { WriteLease } from './write-lease.js';
 import type { TaskContract } from './task-contract.js';
@@ -208,6 +212,8 @@ export interface AgentRunRequest {
   readonly runId: string;
   readonly taskId: string;
   readonly task: TaskContract;
+  readonly impact?: TaskImpact;
+  readonly leases?: readonly WriteLease[];
   readonly workspace: TaskWorkspace;
   readonly instructions: string;
   readonly onStarted: (evidence: { readonly sessionRef?: AgentSessionRef }) => Promise<void>;

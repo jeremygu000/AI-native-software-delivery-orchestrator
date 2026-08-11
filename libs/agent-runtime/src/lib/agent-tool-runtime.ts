@@ -1,5 +1,5 @@
-import { readFile, readdir, writeFile } from 'node:fs/promises';
-import { relative, resolve, sep } from 'node:path';
+import { readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { dirname, relative, resolve, sep } from 'node:path';
 import type {
   OrchestrationPersistence,
   TaskImpact,
@@ -7,6 +7,7 @@ import type {
   WriteLease,
   WritableResource
 } from '@ai-native-software-delivery-orchestrator/domain';
+import { isWritableResourceCoveredBy as resourceIsCoveredBy } from '@ai-native-software-delivery-orchestrator/domain';
 
 const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -23,6 +24,8 @@ export interface AgentToolRuntimeContext {
   readonly attemptId: string;
   readonly agentId: string;
   readonly workspacePath: string;
+  readonly impact?: TaskImpact;
+  readonly initialLeases?: readonly WriteLease[];
   readonly resolveResource: (workspaceRelativePath: string) => WritableResource;
   readonly resolveFileId: (workspaceRelativePath: string) => string;
   readonly persistence: OrchestrationPersistence;
@@ -37,17 +40,29 @@ export class AgentToolRuntime {
   readonly #context: AgentToolRuntimeContext;
   readonly #leasesByResource = new Map<string, WriteLease>();
   readonly #writtenFileIds = new Set<string>();
+  #impact: TaskImpact | undefined;
+  #initialLeases: readonly WriteLease[] | undefined;
 
   constructor(context: AgentToolRuntimeContext) {
     this.#context = context;
+    this.#impact = context.impact;
+    this.#initialLeases = context.initialLeases;
+  }
+
+  bindRuntimeAuthority(
+    impact: TaskImpact | undefined,
+    leases: readonly WriteLease[] | undefined
+  ): void {
+    this.#impact = impact;
+    this.#initialLeases = leases;
   }
 
   async read(path: string): Promise<string> {
-    return readFile(this.#resolve(path), 'utf8');
+    return readFile(await this.#resolve(path), 'utf8');
   }
 
   async list(path = '.'): Promise<readonly string[]> {
-    const directory = this.#resolve(path, true);
+    const directory = await this.#resolve(path, true);
     return (await readdir(directory, { withFileTypes: true }))
       .map((entry) => entry.name)
       .toSorted(compareText);
@@ -63,12 +78,11 @@ export class AgentToolRuntime {
   }
 
   async write(path: string, content: string): Promise<AgentToolWriteResult> {
-    const absolutePath = this.#resolve(path);
+    const absolutePath = await this.#resolve(path);
     const workspaceRelativePath = this.#relative(absolutePath);
     const resource = this.#context.resolveResource(workspaceRelativePath);
     const resourceKey = JSON.stringify(resource);
-    const existing = this.#leasesByResource.get(resourceKey);
-    if (existing === undefined) {
+    if (!this.#isAuthorized(resource)) {
       const acquired = await this.#context.writeGuard.acquire({
         runId: this.#context.runId,
         agentId: this.#context.agentId,
@@ -91,6 +105,11 @@ export class AgentToolRuntime {
     }
     await writeFile(absolutePath, content, 'utf8');
     this.#writtenFileIds.add(this.#context.resolveFileId(workspaceRelativePath));
+    await this.#context.persistence.persistImpact({
+      runId: this.#context.runId,
+      taskId: this.#context.taskId,
+      impact: { ...this.#currentImpact(), observed: this.observedImpact() }
+    });
     return { status: 'written', path: workspaceRelativePath };
   }
 
@@ -131,14 +150,66 @@ export class AgentToolRuntime {
     return [...this.#leasesByResource.values()];
   }
 
-  #resolve(path: string, allowWorkspaceRoot = false): string {
+  #isAuthorized(resource: WritableResource): boolean {
+    return [...(this.#initialLeases ?? []), ...this.#leasesByResource.values()].some(
+      (lease) => lease.state === 'ACTIVE' && resourceIsCoveredBy(lease.resource, resource)
+    );
+  }
+
+  #currentImpact(): TaskImpact {
+    return (
+      this.#impact ?? {
+        predicted: {
+          taskId: this.#context.taskId,
+          projectsRead: new Set(),
+          projectsWritten: new Set(),
+          explicitProjectsWritten: new Set(),
+          filesRead: new Set(),
+          filesWritten: new Set(),
+          explicitFilesWritten: new Set(),
+          globFilesWritten: new Set(),
+          symbolDerivedFilesWritten: new Set(),
+          symbolsRead: new Set(),
+          symbolsWritten: new Set(),
+          sharedResources: new Set(),
+          sharedResourceAccesses: [],
+          downstreamProjects: new Set(),
+          riskSignals: []
+        }
+      }
+    );
+  }
+
+  async #resolve(path: string, allowWorkspaceRoot = false): Promise<string> {
     const absolutePath = resolve(this.#context.workspacePath, path);
     this.#relative(absolutePath, allowWorkspaceRoot);
+    const workspaceRealPath = await realpath(this.#context.workspacePath);
+    let targetRealPath: string;
+    try {
+      targetRealPath = await realpath(absolutePath);
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+        targetRealPath = await realpath(dirname(absolutePath));
+      } else {
+        throw new AgentToolDeniedError(
+          'Agent tool path cannot be resolved inside the task workspace'
+        );
+      }
+    }
+    this.#relativeToWorkspace(workspaceRealPath, targetRealPath, allowWorkspaceRoot);
     return absolutePath;
   }
 
   #relative(absolutePath: string, allowWorkspaceRoot = false): string {
-    const workspaceRelativePath = relative(this.#context.workspacePath, absolutePath);
+    return this.#relativeToWorkspace(this.#context.workspacePath, absolutePath, allowWorkspaceRoot);
+  }
+
+  #relativeToWorkspace(
+    workspacePath: string,
+    absolutePath: string,
+    allowWorkspaceRoot: boolean
+  ): string {
+    const workspaceRelativePath = relative(workspacePath, absolutePath);
     if (
       (!allowWorkspaceRoot && workspaceRelativePath.length === 0) ||
       workspaceRelativePath === '..' ||

@@ -39,6 +39,9 @@ value: <Pi session ID>
 
 The runner rejects a tool call received before this durable callback completes. This defensive check
 keeps a future gateway implementation from mutating the workspace out of order.
+After this callback, an unexpected Pi gateway or tool failure is rethrown so the orchestration runtime
+records `UNKNOWN` and retains ACTIVE leases. A post-start connection loss is not treated as a safe
+agent failure because Pi may still mutate the workspace.
 
 ## Tool policy
 
@@ -60,6 +63,17 @@ workspace, resolves it to a `WritableResource`, acquires and persists a lease, t
 A conflicting lease returns structured blocked evidence and does not modify the file. Tool-acquired
 leases and observed file writes return through `PiAgentRunner` to the orchestration runtime, which
 releases the leases and persists observed impact after the agent outcome is durable.
+
+An ACTIVE task lease that already covers the requested resource authorizes the write directly: for
+example, a project lease covers a child file. The runtime therefore does not acquire a conflicting
+duplicate child lease. Each successful write immediately persists cumulative observed impact. Paths are
+checked lexically and by real filesystem path, so a symlink cannot escape the task workspace.
+`PiAgentRunner.bindRuntimeAuthority` supplies the runtime's impact and initial leases after every tool
+factory creates its `AgentToolRuntime`, so a factory cannot accidentally omit broader lease authority.
+
+This realpath check does not eliminate a time-of-check/time-of-use race: a concurrent malicious actor
+could replace a checked filesystem component before the subsequent I/O. Descriptor-relative sandboxed
+I/O is a later hardening stage.
 
 If a later tool write is blocked, already successful writes are not rolled back. Their observed impact
 and acquired leases remain durable evidence, while the task becomes `BLOCKED` before verification or
@@ -84,8 +98,9 @@ The complete solution-style repository-analysis regression test has a scoped 30-
 opens this repository's full TypeScript workspace and can legitimately exceed Vitest's default
 five-second timeout under load; the larger timeout does not affect ordinary test cases.
 
-The accepted mock-gateway and controlled-tool scope passed independent review after these defensive
-ordering, blocked-write, and CI-stability checks.
+The initial mock-gateway and controlled-tool scope passed independent review. The current follow-up
+safety hardening for `UNKNOWN` outcomes, lease authority, symlink confinement, and immediate observed
+impact persistence awaits independent review.
 
 ## Current limits
 
@@ -94,3 +109,4 @@ ordering, blocked-write, and CI-stability checks.
 - no sandbox, timeout, cancellation, network, environment-variable, or secrets policy;
 - no automatic retry for externally owned lease blockers;
 - no observed-scope replanning or concurrent agent dispatch.
+- no descriptor-relative filesystem operations to eliminate realpath TOCTOU races.

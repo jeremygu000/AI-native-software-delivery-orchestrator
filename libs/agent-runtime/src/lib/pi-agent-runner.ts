@@ -20,6 +20,7 @@ export class PiAgentRunner implements AgentRunner {
     let sessionEstablished = false;
     try {
       const tools = this.#createTools(request);
+      tools.bindRuntimeAuthority(request.impact, request.leases);
       const session = await this.#gateway.start({
         cwd: request.workspace.workspacePath,
         prompt: request.instructions,
@@ -62,6 +63,9 @@ export class PiAgentRunner implements AgentRunner {
         additionalLeases: tools.leases()
       };
     } catch (error) {
+      if (sessionEstablished) {
+        throw error;
+      }
       return {
         status: 'failed' as const,
         detail: error instanceof Error ? error.message : 'Pi agent runner failed.'

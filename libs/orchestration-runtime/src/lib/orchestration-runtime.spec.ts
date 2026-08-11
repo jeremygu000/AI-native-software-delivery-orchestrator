@@ -27,7 +27,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   FakeAgentRunner,
@@ -550,6 +550,51 @@ describe('OrchestrationRuntime', () => {
       run: { state: 'FAILED' },
       snapshot: { taskStates: [{ taskId: 'A', state: 'RUNNING' }] },
       attempts: [{ attempt: { state: 'UNKNOWN', failure: { type: 'unknown-outcome' } } }],
+      leases: [{ lease: { state: 'ACTIVE' } }]
+    });
+  });
+
+  it('records an unknown outcome when Pi disconnects after onStarted', async () => {
+    const persistence = new MemoryPersistence();
+    const gateway: PiSessionGateway = {
+      start: async ({ onStarted }) => {
+        await onStarted('pi-session-1');
+        throw new Error('Pi connection lost.');
+      }
+    };
+    const runtime = createRuntime(
+      persistence,
+      undefined,
+      undefined,
+      new PiAgentRunner({
+        gateway,
+        createTools: (agentRequest) =>
+          new AgentToolRuntime({
+            runId: agentRequest.runId,
+            taskId: agentRequest.taskId,
+            attemptId: agentRequest.attempt.id,
+            agentId: agentRequest.attempt.agentId,
+            workspacePath: agentRequest.workspace.workspacePath,
+            writeGuard: new InMemoryWriteGuard(),
+            persistence,
+            resolveResource: (path) => ({
+              type: 'file',
+              projectId: 'core',
+              fileId: `core:${path}`
+            }),
+            resolveFileId: (path) => `core:${path}`
+          })
+      })
+    );
+
+    await expect(runtime.startRun(request([task('A')]))).rejects.toThrow(
+      'Agent runner failed for task A: Pi connection lost.'
+    );
+    await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
+      snapshot: { taskStates: [{ taskId: 'A', state: 'RUNNING' }] },
+      attempts: [
+        { attempt: { state: 'UNKNOWN', sessionRef: { backend: 'pi', value: 'pi-session-1' } } }
+      ],
       leases: [{ lease: { state: 'ACTIVE' } }]
     });
   });
@@ -1185,6 +1230,7 @@ describe('OrchestrationRuntime', () => {
     const guard = new InMemoryWriteGuard({
       now: () => new Date('2026-08-14T00:00:00.000Z')
     });
+    const acquire = vi.spyOn(guard, 'acquire');
     const gateway: PiSessionGateway = {
       start: async ({ executeTool, onStarted }) => {
         await onStarted('pi-session-1');
@@ -1253,6 +1299,11 @@ describe('OrchestrationRuntime', () => {
         {
           ...binding,
           impact,
+          leasePlan: {
+            taskId: 'A',
+            predictedResources: [{ type: 'project', projectId: 'core' }],
+            source: 'manual'
+          },
           workspace: {
             ...binding.workspace,
             integrationRepositoryPath,
@@ -1263,6 +1314,7 @@ describe('OrchestrationRuntime', () => {
     });
 
     expect(readFileSync(join(integrationRepositoryPath, 'value.txt'), 'utf8')).toBe('pi\n');
+    expect(acquire).toHaveBeenCalledTimes(1);
     expect(recovered).toMatchObject({
       snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] },
       attempts: [{ attempt: { sessionRef: { backend: 'pi', value: 'pi-session-1' } } }]

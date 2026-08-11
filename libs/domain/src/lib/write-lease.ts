@@ -192,6 +192,36 @@ export const areWritableResourcesConflicting = (
   );
 };
 
+export const isWritableResourceCoveredBy = (
+  covering: WritableResource,
+  requested: WritableResource
+): boolean => {
+  if (covering.type === 'shared-resource' || requested.type === 'shared-resource') {
+    return (
+      covering.type === 'shared-resource' &&
+      requested.type === 'shared-resource' &&
+      covering.resourceId === requested.resourceId
+    );
+  }
+  if (covering.projectId !== requested.projectId) {
+    return false;
+  }
+  if (covering.type === 'project') {
+    return true;
+  }
+  if (requested.type === 'project' || covering.fileId !== requested.fileId) {
+    return false;
+  }
+  if (covering.type === 'file') {
+    return true;
+  }
+  return (
+    requested.type === 'symbol' &&
+    (covering.symbolId === requested.symbolId ||
+      requested.ancestorSymbolIds.includes(covering.symbolId))
+  );
+};
+
 export interface WriteLeaseRequest {
   readonly runId: string;
   readonly agentId: string;

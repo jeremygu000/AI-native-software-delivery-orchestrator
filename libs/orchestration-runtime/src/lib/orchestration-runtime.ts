@@ -293,6 +293,8 @@ export class OrchestrationRuntime {
         runId: state.request.run.id,
         taskId,
         task,
+        impact: binding.impact ?? { predicted: this.#emptyPredictedImpact(taskId) },
+        leases: acquisition.leases,
         workspace,
         instructions: task.goal,
         onStarted: async ({ sessionRef }) => {
@@ -371,11 +373,14 @@ export class OrchestrationRuntime {
       return;
     }
     if (agentResult.status === 'blocked') {
-      if (agentResult.observedImpact !== undefined && binding.impact !== undefined) {
+      if (agentResult.observedImpact !== undefined) {
         await this.#persistence.persistImpact({
           runId: state.request.run.id,
           taskId,
-          impact: { ...binding.impact, observed: agentResult.observedImpact }
+          impact: {
+            predicted: binding.impact?.predicted ?? this.#emptyPredictedImpact(taskId),
+            observed: agentResult.observedImpact
+          }
         });
       }
       await this.#persistAttempt(state, taskId, {
@@ -389,11 +394,14 @@ export class OrchestrationRuntime {
       });
       return;
     }
-    if (agentResult.observedImpact !== undefined && binding.impact !== undefined) {
+    if (agentResult.observedImpact !== undefined) {
       await this.#persistence.persistImpact({
         runId: state.request.run.id,
         taskId,
-        impact: { ...binding.impact, observed: agentResult.observedImpact }
+        impact: {
+          predicted: binding.impact?.predicted ?? this.#emptyPredictedImpact(taskId),
+          observed: agentResult.observedImpact
+        }
       });
     }
     const verification = await this.#verifier.verify({
@@ -709,6 +717,26 @@ export class OrchestrationRuntime {
       taskStates: state.snapshot.taskStates.map((entry) =>
         entry.taskId === taskId ? { ...entry, state: taskState } : entry
       )
+    };
+  }
+
+  #emptyPredictedImpact(taskId: string): TaskImpact['predicted'] {
+    return {
+      taskId,
+      projectsRead: new Set(),
+      projectsWritten: new Set(),
+      explicitProjectsWritten: new Set(),
+      filesRead: new Set(),
+      filesWritten: new Set(),
+      explicitFilesWritten: new Set(),
+      globFilesWritten: new Set(),
+      symbolDerivedFilesWritten: new Set(),
+      symbolsRead: new Set(),
+      symbolsWritten: new Set(),
+      sharedResources: new Set(),
+      sharedResourceAccesses: [],
+      downstreamProjects: new Set(),
+      riskSignals: []
     };
   }
 

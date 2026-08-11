@@ -16,6 +16,10 @@ a durable provider-neutral session reference. The orchestrator continues to own 
 leases, workspace lifecycle, persistence, verification, integration, recovery, and model routing.
 The runner rejects a tool call received before that callback completes, preventing a future gateway
 implementation from mutating a workspace before durable attempt establishment.
+After durable establishment, an unexpected gateway or controlled-tool failure is rethrown to
+`OrchestrationRuntime`. The runtime records an `UNKNOWN` attempt and retains ACTIVE leases because the
+external Pi session may still mutate the workspace; it must never downgrade that condition to a safe
+failure and release ownership.
 
 Pi receives a minimal custom tool surface:
 
@@ -32,6 +36,14 @@ attempt, agent, and workspace identity. Mutation first resolves a workspace-rela
 `WritableResource`, then acquires a WriteGuard lease, persists that lease, writes the file, and
 persists observed-impact evidence. Tool blocking returns structured `AgentToolBlocked` evidence rather
 than allowing the agent to retry an unsafe mutation blindly.
+Before acquiring a dynamic lease, the tool runtime accepts an ACTIVE task lease that already covers the
+requested resource, such as a project lease covering a child file. Each successful tool write
+immediately persists the cumulative observed impact rather than waiting for Pi session completion.
+Workspace paths are checked both lexically and against real filesystem paths, rejecting symlink targets
+outside the workspace.
+This is a best-effort confinement check, not a file-descriptor-based sandbox: a malicious concurrent
+filesystem actor could replace a checked path between `realpath` validation and I/O. Eliminating that
+TOCTOU window requires platform-specific descriptor-relative operations and remains future hardening.
 When a later tool call is blocked, earlier successful writes remain in the isolated workspace and are
 reported as observed impact with their acquired leases. The runtime marks the task `BLOCKED` before
 verification or Git integration; a later scheduling/recovery policy decides whether to resume or

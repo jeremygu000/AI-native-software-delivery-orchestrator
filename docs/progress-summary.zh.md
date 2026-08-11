@@ -1055,7 +1055,7 @@ Persistence test 覆盖 complete recovery、SQLite file reopen、Set/date round-
 atomicity、transaction rollback、append-only sequence、decision replay mismatch、current-record upsert 以及
 corrupted stored-state rejection。
 
-完整质量门现在有 275 个测试通过。覆盖率为语句 96.67%、分支 91.84%、函数 98.60%、行 96.64%。
+完整质量门现在有 281 个测试通过。覆盖率为语句 96.68%、分支 91.63%、函数 98.61%、行 96.64%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 阶段十二:Pi Agent Adapter
@@ -1090,7 +1090,15 @@ custom tool definition，并覆盖 controlled call 和 error-result mapping。Ru
 tool call，避免它 acquire lease 或修改 workspace。真实 solution-style repository-analysis regression test 现在使用
 scoped 30-second timeout，因为 full-workspace TypeScript analysis 在 load 下可能合理地超过 Vitest 默认 five-second limit。
 
-完整质量门现在有 275 个测试通过。覆盖率为语句 96.67%、分支 91.84%、函数 98.60%、行 96.64%。
+后续 safety hardening 让 post-establishment Pi gateway 或 tool failure 重新 throw 给 runtime；runtime 会记录
+`UNKNOWN` 并保留 ACTIVE lease，而不会把可能仍在运行的 Pi session 当作 safe failure。Tool write 会复用已经覆盖
+目标的 task lease，立即 persistence cumulative observed impact，并拒绝 real target 逃出 task workspace 的 symlink path。
+`PiAgentRunner.bindRuntimeAuthority` 会在每个 tool factory 创建 `AgentToolRuntime` 后提供 runtime 的 initial
+impact 和 lease，避免某个 factory 意外遗漏复用 broader task lease 所需的 authority。
+这个 realpath check 是 best effort，不能消除 concurrent filesystem TOCTOU replacement；descriptor-relative
+sandboxed I/O 仍是后续 hardening。
+
+完整质量门现在有 281 个测试通过。覆盖率为语句 96.68%、分支 91.63%、函数 98.61%、行 96.64%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 阶段十:Workspace 与 Git Lifecycle
@@ -1156,7 +1164,7 @@ protection。
 acquire lease、不协调 multiple repository/process，也不自动修复 conflict。这些需要未来 agent/runtime layer
 和 ownership-generation write fencing。
 
-完整质量门现在有 275 个测试通过。覆盖率为语句 96.67%、分支 91.84%、函数 98.60%、行 96.64%。
+完整质量门现在有 281 个测试通过。覆盖率为语句 96.68%、分支 91.63%、函数 98.61%、行 96.64%。
 
 ## 阶段十一:Orchestration Runtime
 
@@ -1206,7 +1214,7 @@ workspace/lease record。它有意不 restart unknown in-flight agent 或 reclai
 failure、same-run/external-run lease blocking、lease-release failure evidence、pre-start/post-start runner throw、completed-without-onStarted protocol failure、identity-validated durable attempt recovery/resume、multi-resource rollback、real Git vertical integration、blocked Git integration、eventless recovery、current evidence recovery、
 invalid binding 和 real SQLite replay。
 
-完整质量门现在有 275 个测试通过。覆盖率为语句 96.67%、分支 91.84%、函数 98.60%、行 96.64%。
+完整质量门现在有 281 个测试通过。覆盖率为语句 96.68%、分支 91.63%、函数 98.61%、行 96.64%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 目前整体状态(截止到本文写作时)
@@ -1214,8 +1222,8 @@ invalid binding 和 real SQLite replay。
 - 架构规划的 12 个里程碑已全部实现。这不代表完整产品 100% 完成：authenticated model setup、command
   sandboxing、observed-scope enforcement、concurrent dispatch、provider routing 和 CLI runtime command 仍是
   当前 milestone 计划外的重要能力。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 275 个测试全部通过。
-- 覆盖率为:语句 96.67%、分支 91.84%、函数 98.60%、行 96.64%;四项都达到至少 90% 的门槛。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 281 个测试全部通过。
+- 覆盖率为:语句 96.68%、分支 91.63%、函数 98.61%、行 96.64%;四项都达到至少 90% 的门槛。
 - `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 - Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有
@@ -1225,9 +1233,9 @@ invalid binding 和 real SQLite replay。
 - Milestone 10 Workspace/Git 已完成接受的 local single-repository scope，并已通过独立 Review。Review 还
   重新验证 Date-aware lease idempotency 和 clean-target task-branch collision handling。
 - Milestone 11 Orchestration Runtime 已完成接受的 local serial fake-agent scope，正在等待独立 Review 后才能提交。
-- Milestone 12 Pi Agent Adapter 已完成接受的 mock-gateway 和 controlled-tool scope，并已通过 independent review，
-  包含 defensive session ordering、retained partial-write evidence、out-of-order tool call 的 explicit no-lease verification，
-  以及 self-analysis CI timeout hardening。
+- Milestone 12 Pi Agent Adapter 已完成接受的 mock-gateway 和 controlled-tool scope。Independent review 发现
+  post-start `UNKNOWN` safety、broader lease authority、symlink confinement 和 immediate observed-impact durability
+  hardening；follow-up implementation 正在等待 review。
 
 ## 还没有实现的部分
 

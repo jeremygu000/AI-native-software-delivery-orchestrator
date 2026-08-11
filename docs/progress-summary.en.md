@@ -1194,8 +1194,8 @@ The persistence tests cover complete recovery, SQLite file reopen, Set/date roun
 transition-decision atomicity, transaction rollback, append-only sequencing, decision replay mismatch,
 current-record upserts, and corrupted stored-state rejection.
 
-The full quality gate now has 275 passing tests. Coverage is 96.67% statements, 91.84% branches,
-98.60% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 281 passing tests. Coverage is 96.68% statements, 91.63% branches,
+98.61% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 12: Pi Agent Adapter
 
@@ -1236,8 +1236,18 @@ call before it can acquire a lease or modify a workspace. The real solution-styl
 regression test now has a scoped 30-second timeout because full-workspace TypeScript analysis can
 legitimately exceed Vitest's default five-second limit under load.
 
-The full quality gate now has 275 passing tests. Coverage is 96.67% statements, 91.84% branches,
-98.60% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+Follow-up safety hardening makes a post-establishment Pi gateway or tool failure rethrow to the runtime,
+which records `UNKNOWN` and retains ACTIVE leases rather than treating a possibly live Pi session as a
+safe failure. Tool writes reuse an already-covering task lease, immediately persist cumulative observed
+impact, and reject symlink paths whose real target escapes the task workspace.
+`PiAgentRunner.bindRuntimeAuthority` supplies the runtime's initial impact and leases after every tool
+factory creates its `AgentToolRuntime`, preventing an individual factory from accidentally omitting
+the authority needed to reuse a broader task lease.
+The realpath check is best effort and does not eliminate a concurrent filesystem TOCTOU replacement;
+descriptor-relative sandboxed I/O remains future hardening.
+
+The full quality gate now has 281 passing tests. Coverage is 96.68% statements, 91.63% branches,
+98.61% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 10: Workspace and Git Lifecycle
 
@@ -1309,8 +1319,8 @@ with predicted scope, acquire leases during writes, coordinate multiple reposito
 automatically repair conflicts. Those require a future agent/runtime layer and ownership-generation
 write fencing.
 
-The full quality gate now has 275 passing tests. Coverage is 96.67% statements, 91.84% branches,
-98.60% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 281 passing tests. Coverage is 96.68% statements, 91.63% branches,
+98.61% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 11: Orchestration Runtime
 
@@ -1368,8 +1378,8 @@ For a code-level teaching model, see [Orchestration Runtime](./orchestration-run
 chain, agent failure, verification failure, same-run and external-run lease blocking, lease-release failure evidence, pre-start and post-start runner throws, completed-without-onStarted protocol failure, durable attempt recovery/resume with identity validation, multi-resource rollback, real Git vertical integration, blocked Git
 integration, eventless recovery, current evidence recovery, invalid bindings, and real SQLite replay.
 
-The full quality gate now has 275 passing tests. Coverage is 96.67% statements, 91.84% branches,
-98.60% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 281 passing tests. Coverage is 96.68% statements, 91.63% branches,
+98.61% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Current overall status (as of this writing)
 
@@ -1377,9 +1387,9 @@ The full quality gate now has 275 passing tests. Coverage is 96.67% statements, 
   complete: authenticated model setup, command sandboxing, observed-scope enforcement, concurrent
   dispatch, provider routing, and CLI runtime commands remain substantial capabilities outside the
   current milestone plan.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 275 tests,
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 281 tests,
   all passing.
-- Coverage is 96.67% statements, 91.84% branches, 98.60% functions, and 96.64% lines. Every enforced
+- Coverage is 96.68% statements, 91.63% branches, 98.61% functions, and 96.64% lines. Every enforced
   threshold is at least 90%.
 - `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.
@@ -1395,9 +1405,9 @@ The full quality gate now has 275 passing tests. Coverage is 96.67% statements, 
   verified clean-target task-branch collision handling.
 - Milestone 11 Orchestration Runtime is complete for the accepted local serial fake-agent scope and
   awaits independent review before it can be committed.
-- Milestone 12 Pi Agent Adapter is complete for the accepted mock-gateway and controlled-tool scope and
-  has passed independent review, including defensive session ordering, retained partial-write evidence,
-  explicit no-lease verification for out-of-order tool calls, and self-analysis CI timeout hardening.
+- Milestone 12 Pi Agent Adapter is complete for the accepted mock-gateway and controlled-tool scope.
+  Independent review identified post-start `UNKNOWN` safety, broader lease authority, symlink confinement,
+  and immediate observed-impact durability hardening; the follow-up implementation is awaiting review.
 
 ## What has NOT been implemented yet
 

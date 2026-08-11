@@ -165,6 +165,19 @@ class FailingPiGateway implements PiSessionGateway {
   }
 }
 
+class PostStartFailingPiGateway implements PiSessionGateway {
+  async start(options: {
+    readonly cwd: string;
+    readonly prompt: string;
+    readonly tools: readonly PiToolCall['name'][];
+    readonly executeTool: (call: PiToolCall) => Promise<PiToolResult>;
+    readonly onStarted: (sessionId: string) => Promise<void>;
+  }): Promise<{ readonly sessionId: string }> {
+    await options.onStarted('pi-session-1');
+    throw new Error('Pi connection lost.');
+  }
+}
+
 class DeniedPiGateway implements PiSessionGateway {
   async start(options: {
     readonly cwd: string;
@@ -186,6 +199,22 @@ class DeniedPiGateway implements PiSessionGateway {
 }
 
 class WritingPiGateway implements PiSessionGateway {
+  async start(options: {
+    readonly cwd: string;
+    readonly prompt: string;
+    readonly tools: readonly PiToolCall['name'][];
+    readonly executeTool: (call: PiToolCall) => Promise<PiToolResult>;
+    readonly onStarted: (sessionId: string) => Promise<void>;
+  }): Promise<{ readonly sessionId: string }> {
+    await options.onStarted('pi-session-1');
+    await expect(
+      options.executeTool({ name: 'forge_write', path: 'value.txt', content: 'after\n' })
+    ).resolves.toEqual({ content: 'Wrote value.txt' });
+    return { sessionId: 'pi-session-1' };
+  }
+}
+
+class ProjectLeaseWritingPiGateway implements PiSessionGateway {
   async start(options: {
     readonly cwd: string;
     readonly prompt: string;
@@ -588,7 +617,84 @@ describe('PiAgentRunner', () => {
     expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('after\n');
   });
 
-  it('returns a failed result when a read tool has an unexpected filesystem error', async () => {
+  it('binds runtime leases even when the tool factory omits them', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'pi-runner-'));
+    directories.push(workspacePath);
+    writeFileSync(join(workspacePath, 'value.txt'), 'before\n');
+    const writeGuard = new InMemoryWriteGuard();
+    const acquire = vi.spyOn(writeGuard, 'acquire');
+    const runner = new PiAgentRunner({
+      gateway: new ProjectLeaseWritingPiGateway(),
+      createTools: (agentRequest) =>
+        new AgentToolRuntime({
+          runId: agentRequest.runId,
+          taskId: agentRequest.taskId,
+          attemptId: agentRequest.attempt.id,
+          agentId: agentRequest.attempt.agentId,
+          workspacePath: agentRequest.workspace.workspacePath,
+          resolveResource: (path) => ({ type: 'file', projectId: 'core', fileId: `core:${path}` }),
+          resolveFileId: (path) => `core:${path}`,
+          writeGuard,
+          persistence: {
+            createRun: async () => {},
+            persistReevaluation: async () => {},
+            persistDispatch: async () => {},
+            persistImpact: async () => {},
+            persistConflict: async () => {},
+            persistLease: async () => {},
+            persistWorkspace: async () => {},
+            persistAttempt: async () => {},
+            updateRunState: async () => {},
+            recoverRun: async () => undefined,
+            replayRun: async () => []
+          }
+        })
+    });
+    const agentRequest = request(workspacePath, async () => {});
+
+    await expect(
+      runner.run({
+        ...agentRequest,
+        impact: {
+          predicted: {
+            taskId: 'task-1',
+            projectsRead: new Set(),
+            projectsWritten: new Set(['core']),
+            explicitProjectsWritten: new Set(['core']),
+            filesRead: new Set(),
+            filesWritten: new Set(),
+            explicitFilesWritten: new Set(),
+            globFilesWritten: new Set(),
+            symbolDerivedFilesWritten: new Set(),
+            symbolsRead: new Set(),
+            symbolsWritten: new Set(),
+            sharedResources: new Set(),
+            sharedResourceAccesses: [],
+            downstreamProjects: new Set(),
+            riskSignals: []
+          }
+        },
+        leases: [
+          {
+            id: 'lease-project',
+            runId: 'run-1',
+            taskId: 'task-1',
+            agentId: 'agent-1',
+            resource: { type: 'project', projectId: 'core' },
+            mode: 'exclusive',
+            version: 1,
+            state: 'ACTIVE',
+            acquiredAt: new Date('2026-08-14T00:00:00.000Z'),
+            lastHeartbeatAt: new Date('2026-08-14T00:00:00.000Z')
+          }
+        ]
+      })
+    ).resolves.toMatchObject({ status: 'completed', additionalLeases: [] });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('after\n');
+  });
+
+  it('returns completed when Pi receives a handled read-tool error', async () => {
     const workspacePath = mkdtempSync(join(tmpdir(), 'pi-runner-'));
     directories.push(workspacePath);
     const runner = new PiAgentRunner({
@@ -620,8 +726,7 @@ describe('PiAgentRunner', () => {
     });
 
     await expect(runner.run(request(workspacePath, async () => {}))).resolves.toMatchObject({
-      status: 'failed',
-      detail: expect.stringContaining('missing.txt')
+      status: 'completed'
     });
   });
 
@@ -681,6 +786,42 @@ describe('PiAgentRunner', () => {
       status: 'failed',
       detail: 'Tool runtime construction failed.'
     });
+  });
+
+  it('throws when Pi fails after durable session establishment', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'pi-runner-'));
+    directories.push(workspacePath);
+    const runner = new PiAgentRunner({
+      gateway: new PostStartFailingPiGateway(),
+      createTools: (agentRequest) =>
+        new AgentToolRuntime({
+          runId: agentRequest.runId,
+          taskId: agentRequest.taskId,
+          attemptId: agentRequest.attempt.id,
+          agentId: agentRequest.attempt.agentId,
+          workspacePath: agentRequest.workspace.workspacePath,
+          resolveResource: (path) => ({ type: 'file', projectId: 'core', fileId: `core:${path}` }),
+          resolveFileId: (path) => `core:${path}`,
+          writeGuard: new InMemoryWriteGuard(),
+          persistence: {
+            createRun: async () => {},
+            persistReevaluation: async () => {},
+            persistDispatch: async () => {},
+            persistImpact: async () => {},
+            persistConflict: async () => {},
+            persistLease: async () => {},
+            persistWorkspace: async () => {},
+            persistAttempt: async () => {},
+            updateRunState: async () => {},
+            recoverRun: async () => undefined,
+            replayRun: async () => []
+          }
+        })
+    });
+
+    await expect(runner.run(request(workspacePath, async () => {}))).rejects.toThrow(
+      'Pi connection lost.'
+    );
   });
 
   it('returns completed after a denied non-mutating Pi tool request', async () => {
