@@ -44,13 +44,13 @@ function gate() {
       return output({
         allowed: false,
         localVerifyCount: count,
-        message: `Local fix budget exhausted (${count}/${max} attempts)`,
+        message: `Local fix budget exhausted (${count}/${max} attempts)`
       });
     }
     return output({
       allowed: true,
       localVerifyCount: count + 1,
-      message: null,
+      message: null
     });
   }
 
@@ -60,13 +60,13 @@ function gate() {
       return output({
         allowed: false,
         envRerunCount: count,
-        message: `Environment issue persists after ${count} reruns. Manual investigation needed.`,
+        message: `Environment issue persists after ${count} reruns. Manual investigation needed.`
       });
     }
     return output({
       allowed: true,
       envRerunCount: count + 1,
-      message: null,
+      message: null
     });
   }
 
@@ -90,7 +90,7 @@ function postAction() {
     'reject-fix-push',
     'local-fix-push',
     'auto-fix-push',
-    'empty-commit-push',
+    'empty-commit-push'
   ];
 
   const trackByCipeUrl = cipeUrlActions.includes(action);
@@ -108,7 +108,7 @@ function postAction() {
     pollCount: 0,
     lastCipeUrl: trackByCipeUrl ? cipeUrl : null,
     expectedCommitSha: trackByCommitSha ? commitSha : null,
-    agentTriggered,
+    agentTriggered
   });
 }
 
@@ -143,8 +143,8 @@ function cycleCheck() {
     message: limitReached
       ? `Cycle limit reached (${cycleCount}/${maxCycles}). Stopping.`
       : approachingLimit
-      ? `Approaching cycle limit (${cycleCount}/${maxCycles})`
-      : null,
+        ? `Approaching cycle limit (${cycleCount}/${maxCycles})`
+        : null
   });
 }
 
