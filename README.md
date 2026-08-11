@@ -7,7 +7,7 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–13 establish the deterministic analysis, dispatch, write-safety, recovery, local
+Milestones 1–14 establish the deterministic analysis, dispatch, write-safety, recovery, local
 Git workspace core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
@@ -39,14 +39,14 @@ Git workspace core:
 - a serial application orchestration runtime that coordinates Scheduler, workspaces, leases,
   persistence, verification, and provider-neutral fake agents, with durable agent attempts and
   deterministic multi-resource lease plans;
-- a Pi-backed `AgentRunner` with controlled filesystem tools and policy-controlled fixed commands; Pi
-  built-in mutation and shell tools are disabled;
+- a Pi-backed `AgentRunner` with controlled filesystem tools, policy-controlled fixed commands, and a
+  Docker read-only validation sandbox; Pi built-in mutation and shell tools are disabled;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestones 12–13 add a Pi adapter and policy-controlled `forge_command` behind the runtime's
-provider-neutral `AgentRunner` port. They do not execute an authenticated production model by default,
-provide unrestricted shell access, run an operating-system sandbox, coordinate processes, provision
-integration checkouts, or automate conflict repair.
+Milestones 12–14 add a Pi adapter, policy-controlled `forge_command`, and a Docker read-only validation
+sandbox behind the runtime's provider-neutral `AgentRunner` port. They do not execute an authenticated
+production model by default, provide unrestricted shell access, offer portable process isolation,
+coordinate processes, provision integration checkouts, or automate conflict repair.
 The CLI still exposes `plan` as a discoverable placeholder until there is a tested task-spec input
 path and end-to-end runtime command.
 
@@ -86,7 +86,7 @@ libs/runtime-guard  In-process exclusive lease acquisition and lifecycle
 libs/persistence  SQLite/Drizzle run evidence, recovery, and replay verification
 libs/workspace-git  Local isolated Git worktree and integration lifecycle
 libs/orchestration-runtime  Serial application layer for deterministic runtime choreography
-libs/agent-runtime  Pi adapter and orchestrator-controlled filesystem and command tool runtime
+libs/agent-runtime  Pi adapter, controlled tools, and portable validation command sandbox
 docs/adr     Architecture decisions
 ```
 
@@ -103,6 +103,7 @@ Standalone training guides:
 - [Workspace and Git Lifecycle](docs/workspace-git.en.md) / [中文](docs/workspace-git.zh.md)
 - [Orchestration Runtime](docs/orchestration-runtime.en.md) / [中文](docs/orchestration-runtime.zh.md)
 - [Controlled Agent Commands](docs/controlled-agent-commands.en.md) / [中文](docs/controlled-agent-commands.zh.md)
+- [Sandboxed Agent Commands](docs/sandboxed-agent-commands.en.md) / [中文](docs/sandboxed-agent-commands.zh.md)
 
 Continuation agents must read the [OpenCode engineering handover](docs/opencode-handover.md) before
 changing the current uncommitted milestone state.

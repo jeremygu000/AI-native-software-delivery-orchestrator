@@ -1,8 +1,15 @@
-import type { AgentCommandExecutor } from '@ai-native-software-delivery-orchestrator/domain';
+import type {
+  AgentCommandExecutor,
+  AgentCommandSandbox
+} from '@ai-native-software-delivery-orchestrator/domain';
 import { dirname } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { AgentCommandRuntime, NodeAgentCommandExecutor } from './agent-command-runtime.js';
+import {
+  AgentCommandRuntime,
+  NodeAgentCommandExecutor,
+  SandboxedAgentCommandExecutor
+} from './agent-command-runtime.js';
 import { AgentToolDeniedError } from './agent-tool-runtime.js';
 
 describe('AgentCommandRuntime', () => {
@@ -43,6 +50,33 @@ describe('AgentCommandRuntime', () => {
       cwd: '/workspace/task-1',
       environment: { CI: '1' }
     });
+  });
+
+  it('passes the policy sandbox profile to the command executor', async () => {
+    const calls: Parameters<AgentCommandExecutor['execute']>[0][] = [];
+    const runtime = new AgentCommandRuntime({
+      execute: async (request) => {
+        calls.push(request);
+        return { status: 'completed', exitCode: 0, stdout: '', stderr: '' };
+      }
+    });
+    runtime.bindRuntimePolicy(
+      {
+        commands: [{ id: 'check', executable: 'node', args: [], timeoutMs: 1, maxOutputBytes: 1 }],
+        environment: {},
+        sandbox: {
+          kind: 'docker-read-only',
+          image: 'trusted/node:24',
+          network: 'deny',
+          workspaceAccess: 'read-only',
+          processTree: 'container'
+        }
+      },
+      '/workspace/task-1'
+    );
+
+    await runtime.run('check');
+    expect(calls[0]?.sandbox).toMatchObject({ kind: 'docker-read-only', image: 'trusted/node:24' });
   });
 
   it('rejects an unapproved command ID without invoking the executor', async () => {
@@ -114,6 +148,77 @@ describe('AgentCommandRuntime', () => {
         environment: { PATH: '/unsafe' }
       })
     ).resolves.toMatchObject({ status: 'completed', stdout: 'safe' });
+  });
+
+  it('selects Docker and native sandbox profiles without exposing trusted path policy input', async () => {
+    const requests: Parameters<AgentCommandSandbox['execute']>[0][] = [];
+    const executor = new SandboxedAgentCommandExecutor({
+      trustedPath: '/runtime/trusted',
+      sandbox: {
+        execute: async (request) => {
+          requests.push(request);
+          return { status: 'completed', exitCode: 0, stdout: '', stderr: '' };
+        }
+      }
+    });
+    const command = { id: 'check', executable: 'node', args: [], timeoutMs: 1, maxOutputBytes: 1 };
+
+    await executor.execute({
+      command,
+      sandbox: {
+        kind: 'docker-read-only',
+        image: 'node:24-alpine',
+        network: 'deny',
+        workspaceAccess: 'read-only',
+        processTree: 'container'
+      },
+      cwd: '/workspace',
+      environment: {}
+    });
+    await executor.execute({
+      command,
+      sandbox: {
+        kind: 'macos-read-only',
+        network: 'deny',
+        workspaceAccess: 'read-only',
+        processTree: 'direct-child'
+      },
+      cwd: '/workspace',
+      environment: {}
+    });
+
+    expect(requests).toMatchObject([
+      {
+        profile: { kind: 'docker-read-only' },
+        trustedPath: '/runtime/trusted'
+      },
+      { profile: { kind: 'macos-read-only' }, trustedPath: '/runtime/trusted' }
+    ]);
+  });
+
+  it('uses the default Docker profile and trusted path without override', async () => {
+    const requests: Parameters<AgentCommandSandbox['execute']>[0][] = [];
+    const sandbox: AgentCommandSandbox = {
+      execute: async (request) => {
+        requests.push(request);
+        return { status: 'completed', exitCode: 0, stdout: '', stderr: '' };
+      }
+    };
+    const executor = new SandboxedAgentCommandExecutor({ dockerSandbox: sandbox });
+
+    await executor.execute({
+      command: { id: 'check', executable: 'node', args: [], timeoutMs: 1, maxOutputBytes: 1 },
+      cwd: '/workspace',
+      environment: {}
+    });
+
+    expect(requests[0]).toMatchObject({
+      profile: {
+        kind: 'docker-read-only',
+        image: 'node:24-alpine'
+      },
+      trustedPath: expect.any(String)
+    });
   });
 
   it('terminates timed-out, cancelled, and output-limited commands', async () => {

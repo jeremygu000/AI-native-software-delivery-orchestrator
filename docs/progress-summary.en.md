@@ -1279,6 +1279,25 @@ its [Chinese edition](./controlled-agent-commands.zh.md).
 The full quality gate now has 320 passing tests. Coverage is 96.72% statements, 91.74% branches,
 98.69% functions, and 96.68% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
+## Stage 14: Sandboxed Validation Commands
+
+Validation commands now run through a provider-neutral `AgentCommandSandbox` port. The default portable
+adapter is `DockerReadOnlyCommandSandbox`: Docker Engine or Docker Desktop provides network denial, a
+read-only workspace mount, read-only container root, and tmpfs `/tmp` on macOS, Linux, and Windows. The
+macOS `sandbox-exec` adapter remains available for native validation. Unsupported profiles or a missing
+required adapter fail closed; the runtime never falls back to an unrestricted subprocess.
+
+Only `validation` commands use this profile. This does not permit workspace-writing commands or solve all
+command side effects. Process descendants, resource limits, image pinning, Docker daemon policy, full
+readable-host isolation for native execution, live Pi cancellation wiring, writable effects under leases,
+and diff-based observed impact reconciliation remain future sandbox-runtime work.
+
+For a code-level teaching model, see [Sandboxed Agent Commands](./sandboxed-agent-commands.en.md) and its
+[Chinese edition](./sandboxed-agent-commands.zh.md).
+
+The full quality gate now has 334 passing tests. Coverage is 96.67% statements, 91.67% branches,
+98.59% functions, and 96.66% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+
 ## Stage 10: Workspace and Git Lifecycle
 
 The deterministic core can now give each task an isolated local Git worktree and safely integrate its
@@ -1445,6 +1464,10 @@ The full quality gate now has 281 passing tests. Coverage is 96.68% statements, 
   direct-child `SIGTERM` to `SIGKILL` escalation. Durable command-policy identity prevents changed
   authority during PREPARING recovery. It remains policy control rather than a process-tree or operating-
   system sandbox.
+- Milestone 14 Sandboxed Validation Commands is complete and closed after independent review. The default
+  Docker profile denies network and mounts the workspace read-only on Docker Engine/Desktop for macOS,
+  Linux, and Windows; the native macOS profile explicitly rejects non-Darwin hosts. Writable commands,
+  process-tree controls, resource limits, and observed-impact reconciliation remain later sandbox work.
 
 ## What has NOT been implemented yet
 

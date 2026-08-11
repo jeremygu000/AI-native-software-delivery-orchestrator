@@ -1,6 +1,7 @@
 import {
   agentCommandPolicySchema,
   agentCommandPolicyFingerprint,
+  defaultAgentCommandTrustedPath,
   canonicalTaskLeaseResources,
   taskDecisionsWithTransitions,
   taskLeasePlanFingerprint,
@@ -487,7 +488,7 @@ export class OrchestrationRuntime {
           workspaceId: binding.workspace.id,
           leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
           commandPolicyFingerprint: agentCommandPolicyFingerprint(binding.commandPolicy),
-          trustedCommandPath: binding.trustedCommandPath,
+          trustedCommandPath: binding.trustedCommandPath ?? defaultAgentCommandTrustedPath,
           state: 'PREPARING',
           revision: 1
         };
@@ -599,7 +600,8 @@ export class OrchestrationRuntime {
         taskLeasePlanFingerprint(binding.leasePlan) !== attempt.leasePlanFingerprint ||
         attempt.commandPolicyFingerprint === undefined ||
         agentCommandPolicyFingerprint(binding.commandPolicy) !== attempt.commandPolicyFingerprint ||
-        binding.trustedCommandPath !== attempt.trustedCommandPath
+        (binding.trustedCommandPath ?? defaultAgentCommandTrustedPath) !==
+          attempt.trustedCommandPath
       ) {
         throw new OrchestrationRuntimeInputError(
           `Recovery binding does not match durable attempt: ${attempt.taskId}`

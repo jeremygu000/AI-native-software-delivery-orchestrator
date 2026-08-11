@@ -8,6 +8,7 @@ import type {
 } from './conflict.js';
 import type { AgentExecutionAttempt, AgentSessionRef } from './agent-execution.js';
 import type { AgentCommandPolicy } from './command-policy.js';
+import type { AgentCommandSandboxProfile } from './command-sandbox.js';
 import type { WriteLease } from './write-lease.js';
 import type { TaskContract } from './task-contract.js';
 import { taskStateSchema } from './task-state.js';
@@ -217,6 +218,7 @@ export interface AgentRunRequest {
   readonly leases?: readonly WriteLease[];
   readonly commandPolicy?: AgentCommandPolicy;
   readonly trustedCommandPath?: string;
+  readonly commandSandboxProfile?: AgentCommandSandboxProfile;
   readonly workspace: TaskWorkspace;
   readonly instructions: string;
   readonly onStarted: (evidence: { readonly sessionRef?: AgentSessionRef }) => Promise<void>;

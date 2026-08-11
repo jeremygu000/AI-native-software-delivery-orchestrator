@@ -3,8 +3,14 @@ import { dirname } from 'node:path';
 import type {
   AgentCommandExecutionResult,
   AgentCommandExecutor,
-  AgentCommandPolicy
+  AgentCommandPolicy,
+  AgentCommandSandbox
 } from '@ai-native-software-delivery-orchestrator/domain';
+import { defaultAgentCommandSandboxProfile } from '@ai-native-software-delivery-orchestrator/domain';
+import { defaultAgentCommandTrustedPath } from '@ai-native-software-delivery-orchestrator/domain';
+
+import { DockerReadOnlyCommandSandbox } from './docker-command-sandbox.js';
+import { MacosReadOnlyCommandSandbox } from './macos-command-sandbox.js';
 
 import { AgentToolDeniedError } from './agent-tool-runtime.js';
 
@@ -36,6 +42,7 @@ export class AgentCommandRuntime {
     }
     return this.#executor.execute({
       command,
+      sandbox: policy.sandbox ?? defaultAgentCommandSandboxProfile,
       cwd: workspacePath,
       environment: policy.environment
     });
@@ -129,6 +136,51 @@ export class NodeAgentCommandExecutor implements AgentCommandExecutor {
       child.once('close', (exitCode) => {
         finish({ status: 'completed', exitCode: exitCode ?? -1, stdout, stderr });
       });
+    });
+  }
+}
+
+export class SandboxedAgentCommandExecutor implements AgentCommandExecutor {
+  readonly #sandboxOverride: AgentCommandSandbox | undefined;
+  readonly #dockerSandbox: AgentCommandSandbox;
+  readonly #macosSandbox: AgentCommandSandbox;
+  readonly #trustedPath: string;
+
+  constructor(
+    options: {
+      readonly trustedPath?: string;
+      readonly sandbox?: AgentCommandSandbox;
+      readonly dockerSandbox?: AgentCommandSandbox;
+      readonly macosSandbox?: AgentCommandSandbox;
+    } = {}
+  ) {
+    this.#sandboxOverride = options.sandbox;
+    this.#dockerSandbox = options.dockerSandbox ?? new DockerReadOnlyCommandSandbox();
+    this.#macosSandbox = options.macosSandbox ?? new MacosReadOnlyCommandSandbox();
+    this.#trustedPath = options.trustedPath ?? defaultAgentCommandTrustedPath;
+  }
+
+  execute({
+    command,
+    sandbox,
+    cwd,
+    environment,
+    signal
+  }: Parameters<AgentCommandExecutor['execute']>[0]) {
+    const profile = sandbox ?? defaultAgentCommandSandboxProfile;
+    const adapter =
+      this.#sandboxOverride ??
+      (profile.kind === 'docker-read-only' ? this.#dockerSandbox : this.#macosSandbox);
+    return adapter.execute({
+      profile: profile.kind === 'docker-read-only' ? profile : profile,
+      executable: command.executable,
+      args: command.args,
+      cwd,
+      environment,
+      trustedPath: this.#trustedPath,
+      timeoutMs: command.timeoutMs,
+      maxOutputBytes: command.maxOutputBytes,
+      signal
     });
   }
 }

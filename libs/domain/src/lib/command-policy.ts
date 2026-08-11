@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  defaultAgentCommandSandboxProfile,
+  agentCommandSandboxProfileSchema,
+  type AgentCommandSandboxProfile
+} from './command-sandbox.js';
 
 const commandIdSchema = z
   .string()
@@ -30,7 +35,8 @@ const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 
 export const agentCommandPolicySchema = z
   .object({
     commands: z.array(agentCommandDefinitionSchema).min(1),
-    environment: z.record(environmentKeySchema, environmentValueSchema)
+    environment: z.record(environmentKeySchema, environmentValueSchema),
+    sandbox: agentCommandSandboxProfileSchema.optional()
   })
   .superRefine((policy, context) => {
     const ids = new Set<string>();
@@ -73,12 +79,14 @@ export const agentCommandPolicyFingerprint = (policy: AgentCommandPolicy | undef
             .toSorted((a, b) => compareText(a.id, b.id)),
           environment: Object.fromEntries(
             Object.entries(policy.environment).toSorted(([a], [b]) => compareText(a, b))
-          )
+          ),
+          sandbox: policy.sandbox ?? defaultAgentCommandSandboxProfile
         }
   );
 
 export interface AgentCommandExecutionRequest {
   readonly command: AgentCommandDefinition;
+  readonly sandbox?: AgentCommandSandboxProfile;
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;

@@ -1,6 +1,9 @@
-import type { AgentRunner } from '@ai-native-software-delivery-orchestrator/domain';
+import {
+  defaultAgentCommandTrustedPath,
+  type AgentRunner
+} from '@ai-native-software-delivery-orchestrator/domain';
 
-import { AgentCommandRuntime, NodeAgentCommandExecutor } from './agent-command-runtime.js';
+import { AgentCommandRuntime, SandboxedAgentCommandExecutor } from './agent-command-runtime.js';
 import { AgentToolDeniedError, AgentToolRuntime } from './agent-tool-runtime.js';
 import type { PiSessionGateway, PiToolCall, PiToolResult } from './pi-gateway.js';
 
@@ -20,7 +23,9 @@ export class PiAgentRunner implements AgentRunner {
       options.createCommands ??
       ((request) =>
         new AgentCommandRuntime(
-          new NodeAgentCommandExecutor({ trustedPath: request.trustedCommandPath })
+          new SandboxedAgentCommandExecutor({
+            trustedPath: request.trustedCommandPath ?? defaultAgentCommandTrustedPath
+          })
         ));
   }
 

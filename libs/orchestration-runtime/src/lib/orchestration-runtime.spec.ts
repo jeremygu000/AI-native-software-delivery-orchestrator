@@ -14,7 +14,10 @@ import type {
   WorkspaceManager,
   WriteGuard
 } from '@ai-native-software-delivery-orchestrator/domain';
-import { agentCommandPolicyFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
+import {
+  agentCommandPolicyFingerprint,
+  defaultAgentCommandTrustedPath
+} from '@ai-native-software-delivery-orchestrator/domain';
 import {
   AgentToolRuntime,
   PiAgentRunner,
@@ -507,6 +510,7 @@ describe('OrchestrationRuntime', () => {
             workspaceId: 'workspace-A',
             leasePlanFingerprint,
             commandPolicyFingerprint: agentCommandPolicyFingerprint(undefined),
+            trustedCommandPath: defaultAgentCommandTrustedPath,
             state: 'PREPARING',
             revision: 1
           }

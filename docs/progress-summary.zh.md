@@ -1129,6 +1129,24 @@ production agent 前完成设计。
 完整质量门现在有 320 个测试通过。覆盖率为语句 96.72%、分支 91.74%、函数 98.69%、行 96.68%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
+## 阶段十四:沙箱化 Validation Command
+
+Validation command 现在通过 provider-neutral `AgentCommandSandbox` port 运行。默认 portable adapter 是
+`DockerReadOnlyCommandSandbox`：Docker Engine 或 Docker Desktop 在 macOS、Linux 和 Windows 上提供 network denial、
+read-only workspace mount、read-only container root 和 tmpfs `/tmp`。macOS `sandbox-exec` adapter 保留为 native
+validation。Unsupported profile 或缺少 required adapter 时 fail closed；runtime 不会 fallback 到 unrestricted subprocess。
+
+只有 `validation` command 使用这个 profile。这不允许 workspace-writing command，也没有解决全部 command side
+effect。Process descendant、resource limit、image pinning、Docker daemon policy、native execution 的完整 readable-host
+isolation、live Pi cancellation wiring、lease 下的 writable effect 和基于 diff 的 observed impact reconciliation 仍是未来
+sandbox-runtime work。
+
+详细代码教学见 [Sandboxed Agent Commands](./sandboxed-agent-commands.zh.md) 和其
+[English edition](./sandboxed-agent-commands.en.md)。
+
+完整质量门现在有 334 个测试通过。覆盖率为语句 96.67%、分支 91.67%、函数 98.59%、行 96.66%。
+`pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
+
 ## 阶段十:Workspace 与 Git Lifecycle
 
 Deterministic core 现在可以为每个 task 提供 isolated local Git worktree，并把完成的 task branch 安全
@@ -1269,6 +1287,10 @@ invalid binding 和 real SQLite replay。
   有 runtime schema enforcement、executor-owned `PATH`、bounded output，以及 direct-child `SIGTERM` 到 `SIGKILL`
   escalation。Durable command-policy identity 防止 PREPARING recovery 时 authority 变化。它仍是 policy control，
   不是 process-tree 或 operating-system sandbox。
+- Milestone 14 Sandboxed Validation Commands 已在 independent review 后完成并关闭。默认 Docker profile 在
+  Docker Engine/Desktop 的 macOS、Linux 和 Windows 上拒绝 network 并 read-only mount workspace；native macOS
+  profile 会显式拒绝 non-Darwin host。Writable command、process-tree control、resource limit 和 observed-impact
+  reconciliation 仍是后续 sandbox work。
 
 ## 还没有实现的部分
 
