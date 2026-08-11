@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type {
@@ -23,29 +23,21 @@ interface GitResult {
 }
 
 export interface GitCommandRunner {
-  run(cwd: string, args: readonly string[]): GitResult;
+  run(cwd: string, args: readonly string[]): Promise<GitResult>;
+  workspacePathExists?(path: string): boolean;
 }
 
 class NativeGitCommandRunner implements GitCommandRunner {
-  run(cwd: string, args: readonly string[]): GitResult {
-    try {
-      const stdout = execFileSync('git', args, {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe']
+  run(cwd: string, args: readonly string[]): Promise<GitResult> {
+    return new Promise((complete, reject) => {
+      execFile('git', args, { cwd, encoding: 'utf8' }, (error, stdout, stderr) => {
+        if (error !== null) {
+          reject(new GitWorkspaceError(args, stderr));
+          return;
+        }
+        complete({ stdout, stderr });
       });
-      return { stdout, stderr: '' };
-    } catch (error) {
-      const stderr =
-        typeof error === 'object' && error !== null && 'stderr' in error
-          ? this.#stderr(Reflect.get(error, 'stderr'))
-          : '';
-      throw new GitWorkspaceError(args, stderr);
-    }
-  }
-
-  #stderr(value: unknown): string {
-    return typeof value === 'string' ? value : '';
+    });
   }
 }
 
@@ -72,15 +64,24 @@ export class GitWorkspaceManager implements WorkspaceManager {
     const parsed = createTaskWorkspaceRequestSchema.parse(request);
     const repositoryPath = resolve(parsed.repositoryPath);
     const workspacePath = resolve(parsed.workspacePath);
-    if (existsSync(workspacePath)) {
+    if (this.#workspacePathExists(workspacePath)) {
+      if (await this.#isMatchingWorktree(repositoryPath, workspacePath, parsed.branchName)) {
+        return {
+          ...parsed,
+          repositoryPath,
+          workspacePath,
+          revision: 1,
+          phase: 'READY_TO_INTEGRATE'
+        };
+      }
       throw new GitWorkspaceError(
         ['worktree', 'add', workspacePath],
         'Workspace path already exists.'
       );
     }
-    this.#git(repositoryPath, ['rev-parse', '--verify', parsed.baseRef]);
-    this.#git(repositoryPath, ['rev-parse', '--verify', parsed.integrationRef]);
-    this.#git(repositoryPath, [
+    await this.#git(repositoryPath, ['rev-parse', '--verify', parsed.baseRef]);
+    await this.#git(repositoryPath, ['rev-parse', '--verify', parsed.integrationRef]);
+    await this.#git(repositoryPath, [
       'worktree',
       'add',
       '--no-checkout',
@@ -90,16 +91,17 @@ export class GitWorkspaceManager implements WorkspaceManager {
       parsed.baseRef
     ]);
     try {
-      this.#git(workspacePath, ['checkout']);
+      await this.#git(workspacePath, ['checkout']);
     } catch (error) {
-      this.#tryGit(repositoryPath, ['worktree', 'remove', '--force', workspacePath]);
-      this.#tryGit(repositoryPath, ['branch', '-D', parsed.branchName]);
+      await this.#tryGit(repositoryPath, ['worktree', 'remove', '--force', workspacePath]);
+      await this.#tryGit(repositoryPath, ['branch', '-D', parsed.branchName]);
       throw error;
     }
     return {
       ...parsed,
       repositoryPath,
       workspacePath,
+      revision: 1,
       phase: 'READY_TO_INTEGRATE'
     };
   }
@@ -117,9 +119,9 @@ export class GitWorkspaceManager implements WorkspaceManager {
       );
     }
     if (parsed.blocker.type !== 'rebase-conflict') {
-      return this.#integrate(this.#readyWorkspace(parsed));
+      return this.#integrate(this.#readyWorkspace(parsed, false));
     }
-    const rebaseResult = this.#tryGit(parsed.workspacePath, [
+    const rebaseResult = await this.#tryGit(parsed.workspacePath, [
       '-c',
       'core.editor=true',
       'rebase',
@@ -128,7 +130,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     if (rebaseResult === undefined) {
       return this.#blockedWorkspace(parsed, 'rebase-conflict', 'Rebase remains blocked.');
     }
-    return this.#fastForwardIntegration(this.#readyWorkspace(parsed));
+    return this.#fastForwardIntegration(this.#readyWorkspace(parsed, false));
   }
 
   async abortIntegration(workspace: TaskWorkspace): Promise<TaskWorkspace> {
@@ -137,24 +139,32 @@ export class GitWorkspaceManager implements WorkspaceManager {
       return parsed;
     }
     if (parsed.blocker.type === 'rebase-conflict') {
-      this.#git(parsed.workspacePath, ['rebase', '--abort']);
+      await this.#git(parsed.workspacePath, ['rebase', '--abort']);
     }
     return this.#readyWorkspace(parsed);
   }
 
   async dispose(request: DisposeTaskWorkspaceRequest): Promise<DisposeTaskWorkspaceResult> {
     const parsed = disposeTaskWorkspaceRequestSchema.parse(request);
-    const dirtyPaths = this.#dirtyPaths(parsed.workspace.workspacePath);
-    if (dirtyPaths.length > 0 && !parsed.force) {
-      return { status: 'dirty', paths: dirtyPaths };
+    if (this.#workspacePathExists(parsed.workspace.workspacePath)) {
+      const dirtyPaths = await this.#dirtyPaths(parsed.workspace.workspacePath);
+      if (dirtyPaths.length > 0 && !parsed.force) {
+        return { status: 'dirty', paths: dirtyPaths };
+      }
+      await this.#git(parsed.workspace.repositoryPath, [
+        'worktree',
+        'remove',
+        ...(parsed.force ? ['--force'] : []),
+        parsed.workspace.workspacePath
+      ]);
     }
-    this.#git(parsed.workspace.repositoryPath, [
-      'worktree',
-      'remove',
-      ...(parsed.force ? ['--force'] : []),
-      parsed.workspace.workspacePath
-    ]);
-    this.#git(parsed.workspace.repositoryPath, ['branch', '-D', parsed.workspace.branchName]);
+    if (await this.#branchExists(parsed.workspace.repositoryPath, parsed.workspace.branchName)) {
+      await this.#git(parsed.workspace.repositoryPath, [
+        'branch',
+        '-D',
+        parsed.workspace.branchName
+      ]);
+    }
     return { status: 'disposed' };
   }
 
@@ -165,7 +175,10 @@ export class GitWorkspaceManager implements WorkspaceManager {
     if (workspace.phase === 'INTEGRATION_BLOCKED') {
       return { status: 'blocked', workspace };
     }
-    const rebase = this.#tryGit(workspace.workspacePath, ['rebase', workspace.integrationRef]);
+    const rebase = await this.#tryGit(workspace.workspacePath, [
+      'rebase',
+      workspace.integrationRef
+    ]);
     if (rebase === undefined) {
       return this.#blockedWorkspace(
         workspace,
@@ -176,9 +189,9 @@ export class GitWorkspaceManager implements WorkspaceManager {
     return this.#fastForwardIntegration(workspace);
   }
 
-  #fastForwardIntegration(workspace: TaskWorkspace): IntegrateTaskWorkspaceResult {
+  async #fastForwardIntegration(workspace: TaskWorkspace): Promise<IntegrateTaskWorkspaceResult> {
     const integrationRepositoryPath = this.#integrationRepositoryPath(workspace);
-    const dirtyPaths = this.#dirtyPaths(integrationRepositoryPath);
+    const dirtyPaths = await this.#dirtyPaths(integrationRepositoryPath);
     if (dirtyPaths.length > 0) {
       return {
         status: 'blocked',
@@ -191,6 +204,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
           branchName: workspace.branchName,
           baseRef: workspace.baseRef,
           integrationRef: workspace.integrationRef,
+          revision: workspace.revision + 1,
           phase: 'INTEGRATION_BLOCKED',
           blocker: {
             type: 'repository-dirty',
@@ -200,7 +214,10 @@ export class GitWorkspaceManager implements WorkspaceManager {
         }
       };
     }
-    const checkout = this.#tryGit(integrationRepositoryPath, ['switch', workspace.integrationRef]);
+    const checkout = await this.#tryGit(integrationRepositoryPath, [
+      'switch',
+      workspace.integrationRef
+    ]);
     if (checkout === undefined) {
       return this.#blockedWorkspace(
         workspace,
@@ -208,7 +225,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
         'Integration repository cannot switch to integration ref.'
       );
     }
-    const result = this.#tryGit(integrationRepositoryPath, [
+    const result = await this.#tryGit(integrationRepositoryPath, [
       'merge',
       '--ff-only',
       workspace.branchName
@@ -220,10 +237,9 @@ export class GitWorkspaceManager implements WorkspaceManager {
         'Integration ref cannot fast-forward to task branch.'
       );
     }
-    const integrationCommit = this.#git(integrationRepositoryPath, [
-      'rev-parse',
-      'HEAD'
-    ]).stdout.trim();
+    const integrationCommit = (
+      await this.#git(integrationRepositoryPath, ['rev-parse', 'HEAD'])
+    ).stdout.trim();
     return {
       status: 'integrated',
       workspace: {
@@ -235,17 +251,18 @@ export class GitWorkspaceManager implements WorkspaceManager {
         branchName: workspace.branchName,
         baseRef: workspace.baseRef,
         integrationRef: workspace.integrationRef,
+        revision: workspace.revision + 1,
         phase: 'INTEGRATED',
         integrationCommit
       }
     };
   }
 
-  #blockedWorkspace(
+  async #blockedWorkspace(
     workspace: TaskWorkspace,
     type: 'rebase-conflict' | 'fast-forward-failed',
     detail: string
-  ): IntegrateTaskWorkspaceResult {
+  ): Promise<IntegrateTaskWorkspaceResult> {
     return {
       status: 'blocked',
       workspace: {
@@ -257,8 +274,13 @@ export class GitWorkspaceManager implements WorkspaceManager {
         branchName: workspace.branchName,
         baseRef: workspace.baseRef,
         integrationRef: workspace.integrationRef,
+        revision: workspace.revision + 1,
         phase: 'INTEGRATION_BLOCKED',
-        blocker: { type, detail, conflictPaths: [...this.#conflictPaths(workspace.workspacePath)] }
+        blocker: {
+          type,
+          detail,
+          conflictPaths: [...(await this.#conflictPaths(workspace.workspacePath))]
+        }
       }
     };
   }
@@ -267,7 +289,41 @@ export class GitWorkspaceManager implements WorkspaceManager {
     return workspace.repositoryPath;
   }
 
-  #readyWorkspace(workspace: TaskWorkspace): TaskWorkspace {
+  async #isMatchingWorktree(
+    repositoryPath: string,
+    workspacePath: string,
+    branchName: string
+  ): Promise<boolean> {
+    const worktree = await this.#tryGit(workspacePath, ['rev-parse', '--is-inside-work-tree']);
+    const branch = await this.#tryGit(workspacePath, ['branch', '--show-current']);
+    const head = await this.#tryGit(workspacePath, ['rev-parse', 'HEAD']);
+    const expectedHead = await this.#tryGit(repositoryPath, ['rev-parse', '--verify', branchName]);
+    if (
+      worktree?.stdout.trim() !== 'true' ||
+      branch?.stdout.trim() !== branchName ||
+      head === undefined ||
+      expectedHead === undefined
+    ) {
+      return false;
+    }
+    return head.stdout.trim() === expectedHead.stdout.trim();
+  }
+
+  async #branchExists(repositoryPath: string, branchName: string): Promise<boolean> {
+    return (
+      (await this.#tryGit(repositoryPath, [
+        'rev-parse',
+        '--verify',
+        `refs/heads/${branchName}`
+      ])) !== undefined
+    );
+  }
+
+  #workspacePathExists(path: string): boolean {
+    return this.#runner.workspacePathExists?.(path) ?? existsSync(path);
+  }
+
+  #readyWorkspace(workspace: TaskWorkspace, advanceRevision = true): TaskWorkspace {
     return {
       id: workspace.id,
       runId: workspace.runId,
@@ -277,28 +333,48 @@ export class GitWorkspaceManager implements WorkspaceManager {
       branchName: workspace.branchName,
       baseRef: workspace.baseRef,
       integrationRef: workspace.integrationRef,
+      revision: workspace.revision + (advanceRevision ? 1 : 0),
       phase: 'READY_TO_INTEGRATE'
     };
   }
 
-  #dirtyPaths(workspacePath: string): readonly string[] {
-    return this.#git(workspacePath, ['status', '--porcelain=v1'])
-      .stdout.split('\n')
-      .filter((line) => line.length > 3)
-      .map((line) => line.slice(3))
-      .toSorted(comparePaths);
+  async #dirtyPaths(workspacePath: string): Promise<readonly string[]> {
+    const entries = (await this.#git(workspacePath, ['status', '--porcelain=v1', '-z'])).stdout
+      .split('\0')
+      .filter(Boolean);
+    const paths: string[] = [];
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (entry === undefined || entry.length < 4) {
+        continue;
+      }
+      paths.push(entry.slice(3));
+      if (entry[0] === 'R' || entry[1] === 'R' || entry[0] === 'C' || entry[1] === 'C') {
+        const previousPath = entries[index + 1];
+        if (previousPath !== undefined) {
+          paths.push(previousPath);
+          index += 1;
+        }
+      }
+    }
+    return paths.toSorted(comparePaths);
   }
 
-  #conflictPaths(workspacePath: string): readonly string[] {
-    const result = this.#tryGit(workspacePath, ['diff', '--name-only', '--diff-filter=U']);
+  async #conflictPaths(workspacePath: string): Promise<readonly string[]> {
+    const result = await this.#tryGit(workspacePath, [
+      'diff',
+      '--name-only',
+      '--diff-filter=U',
+      '-z'
+    ]);
     return result === undefined
       ? []
-      : result.stdout.split('\n').filter(Boolean).toSorted(comparePaths);
+      : result.stdout.split('\0').filter(Boolean).toSorted(comparePaths);
   }
 
-  #tryGit(cwd: string, args: readonly string[]): GitResult | undefined {
+  async #tryGit(cwd: string, args: readonly string[]): Promise<GitResult | undefined> {
     try {
-      return this.#git(cwd, args);
+      return await this.#git(cwd, args);
     } catch (error) {
       if (error instanceof GitWorkspaceError) {
         return undefined;
@@ -307,7 +383,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     }
   }
 
-  #git(cwd: string, args: readonly string[]): GitResult {
+  #git(cwd: string, args: readonly string[]): Promise<GitResult> {
     return this.#runner.run(cwd, args);
   }
 }

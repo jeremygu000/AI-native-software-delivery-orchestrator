@@ -48,6 +48,7 @@ const fixtureWorkspace = {
   branchName: 'orchestrator/run-1/task-1',
   baseRef: 'main',
   integrationRef: 'main',
+  revision: 1,
   phase: 'READY_TO_INTEGRATE'
 } as const;
 
@@ -55,8 +56,13 @@ class FakeGitRunner implements GitCommandRunner {
   readonly calls: Array<{ cwd: string; args: readonly string[] }> = [];
   readonly failures = new Map<string, string>();
   readonly outputs = new Map<string, string>();
+  readonly missingWorkspacePaths = new Set<string>();
 
-  run(cwd: string, args: readonly string[]): { stdout: string; stderr: string } {
+  workspacePathExists(path: string): boolean {
+    return !this.missingWorkspacePaths.has(path);
+  }
+
+  async run(cwd: string, args: readonly string[]): Promise<{ stdout: string; stderr: string }> {
     this.calls.push({ cwd, args });
     const key = args.join('\u0000');
     const failure = this.failures.get(key);
@@ -199,12 +205,22 @@ describe('GitWorkspaceManager', () => {
     expect(existsSync(workspaceRequest.workspacePath)).toBe(false);
   });
 
+  it('reuses a matching worktree after persistence is interrupted', async () => {
+    const repositoryPath = createRepository();
+    const manager = new GitWorkspaceManager();
+    const first = await manager.create(request(repositoryPath));
+
+    await expect(manager.create(request(repositoryPath))).resolves.toEqual(first);
+    await manager.dispose({ workspace: first, force: true, reason: 'Test cleanup.' });
+  });
+
   it('cleans a partially created worktree when checkout fails', async () => {
     const runner = new FakeGitRunner();
     runner.outputs.set(['rev-parse', '--verify', 'main'].join('\u0000'), 'commit\n');
     runner.failures.set(['checkout'].join('\u0000'), 'checkout failed');
     const manager = new GitWorkspaceManager(runner);
     const workspaceRequest = request('/repository');
+    runner.missingWorkspacePaths.add(workspaceRequest.workspacePath);
 
     await expect(manager.create(workspaceRequest)).rejects.toThrow('checkout failed');
     expect(runner.calls.map(({ args }) => args)).toContainEqual([
@@ -228,7 +244,7 @@ describe('GitWorkspaceManager', () => {
 
   it('disposes a clean workspace without force through the adapter seam', async () => {
     const runner = new FakeGitRunner();
-    runner.outputs.set(['status', '--porcelain=v1'].join('\u0000'), '');
+    runner.outputs.set(['status', '--porcelain=v1', '-z'].join('\u0000'), '');
     const manager = new GitWorkspaceManager(runner);
 
     await expect(manager.dispose({ workspace: fixtureWorkspace, force: false })).resolves.toEqual({
@@ -241,9 +257,38 @@ describe('GitWorkspaceManager', () => {
     ]);
   });
 
+  it('cleans a residual branch when a worktree was removed before disposal retry', async () => {
+    const runner = new FakeGitRunner();
+    runner.missingWorkspacePaths.add('/workspace');
+    runner.outputs.set(
+      ['rev-parse', '--verify', 'refs/heads/orchestrator/run-1/task-1'].join('\u0000'),
+      'commit\n'
+    );
+    const manager = new GitWorkspaceManager(runner);
+
+    await expect(manager.dispose({ workspace: fixtureWorkspace, force: false })).resolves.toEqual({
+      status: 'disposed'
+    });
+    expect(runner.calls.map(({ args }) => args)).not.toContainEqual([
+      'status',
+      '--porcelain=v1',
+      '-z'
+    ]);
+    expect(runner.calls.map(({ args }) => args)).not.toContainEqual([
+      'worktree',
+      'remove',
+      '/workspace'
+    ]);
+    expect(runner.calls.map(({ args }) => args)).toContainEqual([
+      'branch',
+      '-D',
+      'orchestrator/run-1/task-1'
+    ]);
+  });
+
   it('rejects forced disposal without a caller reason before removing a dirty workspace', async () => {
     const runner = new FakeGitRunner();
-    runner.outputs.set(['status', '--porcelain=v1'].join('\u0000'), '?? dirty.txt\n');
+    runner.outputs.set(['status', '--porcelain=v1', '-z'].join('\u0000'), '?? dirty.txt\0');
     const manager = new GitWorkspaceManager(runner);
 
     await expect(manager.dispose({ workspace: fixtureWorkspace, force: true })).rejects.toThrow(
@@ -254,13 +299,37 @@ describe('GitWorkspaceManager', () => {
 
   it('returns dirty paths in stable order', async () => {
     const runner = new FakeGitRunner();
-    runner.outputs.set(['status', '--porcelain=v1'].join('\u0000'), '?? z.txt\n?? a.txt\n');
+    runner.outputs.set(['status', '--porcelain=v1', '-z'].join('\u0000'), '?? z.txt\0?? a.txt\0');
     const manager = new GitWorkspaceManager(runner);
 
     await expect(manager.dispose({ workspace: fixtureWorkspace, force: false })).resolves.toEqual({
       status: 'dirty',
       paths: ['a.txt', 'z.txt']
     });
+  });
+
+  it('preserves spaces in dirty paths', async () => {
+    const runner = new FakeGitRunner();
+    runner.outputs.set(['status', '--porcelain=v1', '-z'].join('\u0000'), '?? my file.txt\0');
+    const manager = new GitWorkspaceManager(runner);
+
+    await expect(manager.dispose({ workspace: fixtureWorkspace, force: false })).resolves.toEqual({
+      status: 'dirty',
+      paths: ['my file.txt']
+    });
+  });
+
+  it('preserves both paths from a renamed file', async () => {
+    const repositoryPath = createRepository();
+    const manager = new GitWorkspaceManager();
+    const workspace = await manager.create(request(repositoryPath));
+    git(workspace.workspacePath, ['mv', 'value.txt', 'renamed value.txt']);
+
+    await expect(manager.dispose({ workspace, force: false })).resolves.toEqual({
+      status: 'dirty',
+      paths: ['renamed value.txt', 'value.txt']
+    });
+    await manager.dispose({ workspace, force: true, reason: 'Test cleanup.' });
   });
 
   it('records a rebase conflict without losing integration phase', async () => {
@@ -272,6 +341,7 @@ describe('GitWorkspaceManager', () => {
       status: 'blocked',
       workspace: {
         ...fixtureWorkspace,
+        revision: 2,
         phase: 'INTEGRATION_BLOCKED',
         blocker: {
           type: 'rebase-conflict',
@@ -285,7 +355,7 @@ describe('GitWorkspaceManager', () => {
   it('returns fast-forward and dirty integration evidence from Git failures and status', async () => {
     const runner = new FakeGitRunner();
     runner.outputs.set(['rebase', 'main'].join('\u0000'), '');
-    runner.outputs.set(['status', '--porcelain=v1'].join('\u0000'), ' M dirty.txt\n');
+    runner.outputs.set(['status', '--porcelain=v1', '-z'].join('\u0000'), ' M dirty.txt\0');
     const manager = new GitWorkspaceManager(runner);
 
     const dirty = await manager.integrate(fixtureWorkspace);
@@ -294,7 +364,7 @@ describe('GitWorkspaceManager', () => {
       workspace: { blocker: { type: 'repository-dirty', conflictPaths: ['dirty.txt'] } }
     });
 
-    runner.outputs.set(['status', '--porcelain=v1'].join('\u0000'), '');
+    runner.outputs.set(['status', '--porcelain=v1', '-z'].join('\u0000'), '');
     runner.failures.set(['switch', 'main'].join('\u0000'), 'switch failed');
     const fastForward = await manager.resumeIntegration(dirty.workspace);
     expect(fastForward).toMatchObject({
@@ -306,7 +376,7 @@ describe('GitWorkspaceManager', () => {
   it('handles non-rebase integration blocks without running rebase commands', async () => {
     const runner = new FakeGitRunner();
     runner.outputs.set(['rebase', 'main'].join('\u0000'), '');
-    runner.outputs.set(['status', '--porcelain=v1'].join('\u0000'), '');
+    runner.outputs.set(['status', '--porcelain=v1', '-z'].join('\u0000'), '');
     runner.outputs.set(['switch', 'main'].join('\u0000'), '');
     runner.outputs.set(['merge', '--ff-only', fixtureWorkspace.branchName].join('\u0000'), '');
     runner.outputs.set(['rev-parse', 'HEAD'].join('\u0000'), 'commit-1\n');
@@ -323,7 +393,10 @@ describe('GitWorkspaceManager', () => {
       workspace: { integrationCommit: 'commit-1' }
     });
     expect(runner.calls.some(({ args }) => args.includes('--continue'))).toBe(false);
-    await expect(manager.abortIntegration(blocked)).resolves.toEqual(fixtureWorkspace);
+    await expect(manager.abortIntegration(blocked)).resolves.toEqual({
+      ...fixtureWorkspace,
+      revision: 2
+    });
   });
 
   it('keeps an unresolved rebase conflict phase-aware when continue fails', async () => {
@@ -332,7 +405,7 @@ describe('GitWorkspaceManager', () => {
       ['-c', 'core.editor=true', 'rebase', '--continue'].join('\u0000'),
       'still conflicted'
     );
-    runner.failures.set(['diff', '--name-only', '--diff-filter=U'].join('\u0000'), 'no diff');
+    runner.failures.set(['diff', '--name-only', '--diff-filter=U', '-z'].join('\u0000'), 'no diff');
     const manager = new GitWorkspaceManager(runner);
     const blocked = {
       ...fixtureWorkspace,
@@ -384,7 +457,7 @@ describe('GitWorkspaceManager', () => {
     });
 
     runner.outputs.set(['rebase', 'main'].join('\u0000'), '');
-    runner.outputs.set(['status', '--porcelain=v1'].join('\u0000'), '');
+    runner.outputs.set(['status', '--porcelain=v1', '-z'].join('\u0000'), '');
     runner.outputs.set(['switch', 'main'].join('\u0000'), '');
     runner.failures.set(
       ['merge', '--ff-only', fixtureWorkspace.branchName].join('\u0000'),
@@ -407,7 +480,7 @@ describe('GitWorkspaceManager', () => {
 
   it('preserves unexpected command-runner errors instead of treating them as Git integration blocks', async () => {
     const manager = new GitWorkspaceManager({
-      run: () => {
+      run: async () => {
         throw new Error('Runner unavailable.');
       }
     });
@@ -419,6 +492,7 @@ describe('GitWorkspaceManager', () => {
     const runner = new FakeGitRunner();
     runner.failures.set(['rev-parse', '--verify', 'main'].join('\u0000'), '');
     const manager = new GitWorkspaceManager(runner);
+    runner.missingWorkspacePaths.add(request('/repository').workspacePath);
 
     await expect(manager.create(request('/repository'))).rejects.toThrow(
       'Git command failed: git rev-parse --verify main'

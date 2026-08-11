@@ -1194,8 +1194,8 @@ The persistence tests cover complete recovery, SQLite file reopen, Set/date roun
 transition-decision atomicity, transaction rollback, append-only sequencing, decision replay mismatch,
 current-record upserts, and corrupted stored-state rejection.
 
-The full quality gate now has 212 passing tests. Coverage is 97.38% statements, 92.32% branches,
-99.47% functions, and 97.32% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 218 passing tests. Coverage is 97.37% statements, 92.46% branches,
+99.47% functions, and 97.31% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 10: Workspace and Git Lifecycle
 
@@ -1246,6 +1246,12 @@ explicit disposal call removes the worktree and task branch. Disposal protects u
 changes by default: it returns stable dirty paths instead of deleting them. Discarding dirty work
 requires `force: true` and an explicit caller reason.
 
+Workspace records also carry a positive revision. Persistence accepts a newer revision or an identical
+same-revision retry, rejecting stale or conflicting evidence. Create and disposal recover the smallest
+interrupted lifecycle cases: a matching existing worktree is reusable, and a removed worktree with a
+remaining branch can finish disposal. Git commands are asynchronous, while NUL-delimited Git path
+output preserves unusual filenames.
+
 The Git adapter is tested with real temporary Git repositories for create, rebase, fast-forward
 integration, conflict block/abort/resolve/resume, dirty repository blocking, dirty disposal, and
 cleanup. A narrow injectable Git command runner covers deterministic process-failure diagnostics
@@ -1261,17 +1267,17 @@ with predicted scope, acquire leases during writes, coordinate multiple reposito
 automatically repair conflicts. Those require a future agent/runtime layer and ownership-generation
 write fencing.
 
-The full quality gate now has 212 passing tests. Coverage is 97.38% statements, 92.32% branches,
-99.47% functions, and 97.32% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 218 passing tests. Coverage is 97.37% statements, 92.46% branches,
+99.47% functions, and 97.31% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Current overall status (as of this writing)
 
 - Architecture milestones 1–10 of 10 are implemented. This does not mean the full product is 100%
   complete: agent execution, real write enforcement, provider integration, and CLI runtime work remain
   substantial product capabilities outside the deterministic milestone plan.
-- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 212 tests,
+- Formatting, linting, TypeScript 7 checking, and tests run through `pnpm check`. There are 218 tests,
   all passing.
-- Coverage is 97.38% statements, 92.32% branches, 99.47% functions, and 97.32% lines. Every enforced
+- Coverage is 97.37% statements, 92.46% branches, 99.47% functions, and 97.31% lines. Every enforced
   threshold is at least 90%.
 - `pnpm build` passes. `forge analyze` is real and verified on a 968-file repository; `forge plan`
   remains intentionally unavailable.

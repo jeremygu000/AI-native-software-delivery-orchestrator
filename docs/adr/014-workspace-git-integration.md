@@ -13,6 +13,14 @@ The implementation never creates an implicit merge commit. Creation rejects both
 path and an existing task branch through the stable Git adapter error; a branch collision must not
 silently reuse a previous task's branch.
 
+`repositoryPath` is an orchestrator-owned integration checkout, not a user's active working directory.
+The caller must provision it separately, for example under `.forge/integration/<repository-id>`, and
+must not pass a checkout a user may have open on another branch. The Git adapter switches this checkout
+to the requested integration ref before fast-forwarding, so accepting a user-active checkout would
+silently move that user's branch even when the directory is clean. Detecting shell or editor use is not
+portable; exclusive checkout ownership is therefore a caller responsibility until an application layer
+provisions and manages these directories.
+
 Workspace integration uses its own phase-aware lifecycle rather than overloading `TaskState`:
 
 ```text
@@ -38,6 +46,11 @@ Workspace evidence is persisted by run ID and workspace ID. It therefore survive
 the integration phase needed for later resume or abort. A workspace is disposed only by an explicit
 call. Disposal refuses a dirty worktree by default and returns its stable changed paths; any
 `force: true` disposal requires a non-empty caller reason before Git removal runs.
+
+Workspace creation can reuse only a matching interrupted revision-1 worktree. The retry path does not
+recover a later persisted revision; callers must recover that record through persistence rather than
+call `create` again. If they do call `create`, workspace revision compare-and-swap rejects the stale
+revision-1 view instead of overwriting later integration evidence.
 
 ## Consequences
 

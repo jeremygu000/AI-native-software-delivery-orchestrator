@@ -15,6 +15,7 @@ const workspace = {
   branchName: 'orchestrator/run-1/task-1',
   baseRef: 'main',
   integrationRef: 'main',
+  revision: 1,
   phase: 'READY_TO_INTEGRATE'
 } as const;
 
@@ -47,6 +48,10 @@ describe('workspace contracts', () => {
     expect(taskWorkspaceSchema.safeParse({ ...workspace, phase: 'INTEGRATED' }).success).toBe(
       false
     );
+  });
+
+  it('requires a positive workspace revision', () => {
+    expect(taskWorkspaceSchema.safeParse({ ...workspace, revision: 0 }).success).toBe(false);
   });
 
   it('defaults disposal to protecting dirty workspaces', () => {
