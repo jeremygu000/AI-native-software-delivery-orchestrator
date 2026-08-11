@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { agentCommandPolicySchema } from './command-policy.js';
+import { agentCommandPolicyFingerprint, agentCommandPolicySchema } from './command-policy.js';
 
 describe('AgentCommandPolicy', () => {
   it('accepts fixed command definitions and an explicit environment', () => {
@@ -18,6 +18,71 @@ describe('AgentCommandPolicy', () => {
         environment: { CI: '1' }
       }).success
     ).toBe(true);
+  });
+
+  it('accepts validation as the only current command effect', () => {
+    expect(
+      agentCommandPolicySchema.safeParse({
+        commands: [
+          {
+            id: 'check-types',
+            executable: 'pnpm',
+            args: ['typecheck'],
+            effect: 'validation',
+            timeoutMs: 1,
+            maxOutputBytes: 1
+          }
+        ],
+        environment: {}
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects unsupported command effects', () => {
+    expect(
+      agentCommandPolicySchema.safeParse({
+        commands: [
+          {
+            id: 'write',
+            executable: 'pnpm',
+            args: ['generate'],
+            effect: 'mutation',
+            timeoutMs: 1,
+            maxOutputBytes: 1
+          }
+        ],
+        environment: {}
+      }).success
+    ).toBe(false);
+  });
+
+  it('creates a stable fingerprint independent of command and environment ordering', () => {
+    const first = {
+      commands: [
+        {
+          id: 'test',
+          executable: 'pnpm',
+          args: ['test'],
+          timeoutMs: 30_000,
+          maxOutputBytes: 10_000
+        },
+        {
+          id: 'check-types',
+          executable: 'pnpm',
+          args: ['typecheck'],
+          timeoutMs: 30_000,
+          maxOutputBytes: 10_000
+        }
+      ],
+      environment: { CI: '1', NODE_ENV: 'test' }
+    };
+    const second = {
+      commands: [...first.commands].toReversed(),
+      environment: { NODE_ENV: 'test', CI: '1' }
+    };
+
+    expect(agentCommandPolicyFingerprint(first)).toBe(agentCommandPolicyFingerprint(second));
+    expect(agentCommandPolicyFingerprint(undefined)).not.toBe(agentCommandPolicyFingerprint(first));
   });
 
   it('rejects a shell-like executable', () => {

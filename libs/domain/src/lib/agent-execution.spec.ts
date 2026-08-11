@@ -9,6 +9,7 @@ const base = {
   agentId: 'agent-1',
   workspaceId: 'workspace-1',
   leasePlanFingerprint: 'lease-plan-1',
+  commandPolicyFingerprint: 'command-policy-1',
   revision: 1
 };
 

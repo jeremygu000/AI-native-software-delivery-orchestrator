@@ -13,11 +13,16 @@ export class PiAgentRunner implements AgentRunner {
     readonly gateway: PiSessionGateway;
     readonly createTools: (request: Parameters<AgentRunner['run']>[0]) => AgentToolRuntime;
     readonly createCommands?: (request: Parameters<AgentRunner['run']>[0]) => AgentCommandRuntime;
+    readonly trustedCommandPath?: string;
   }) {
     this.#gateway = options.gateway;
     this.#createTools = options.createTools;
     this.#createCommands =
-      options.createCommands ?? (() => new AgentCommandRuntime(new NodeAgentCommandExecutor()));
+      options.createCommands ??
+      (() =>
+        new AgentCommandRuntime(
+          new NodeAgentCommandExecutor({ trustedPath: options.trustedCommandPath })
+        ));
   }
 
   async run(request: Parameters<AgentRunner['run']>[0]) {

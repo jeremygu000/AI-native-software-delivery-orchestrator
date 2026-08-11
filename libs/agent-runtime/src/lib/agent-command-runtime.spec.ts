@@ -1,4 +1,5 @@
 import type { AgentCommandExecutor } from '@ai-native-software-delivery-orchestrator/domain';
+import { dirname } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { AgentCommandRuntime, NodeAgentCommandExecutor } from './agent-command-runtime.js';
@@ -93,14 +94,19 @@ describe('AgentCommandRuntime', () => {
   });
 
   it('keeps PATH orchestrator-owned even for an unvalidated executor request', async () => {
-    const executor = new NodeAgentCommandExecutor();
+    const trustedPath = dirname(process.execPath);
+    const executor = new NodeAgentCommandExecutor({ trustedPath });
 
     await expect(
       executor.execute({
         command: {
           id: 'path',
           executable: 'node',
-          args: ['-e', "process.stdout.write(process.env.PATH === '/unsafe' ? 'unsafe' : 'safe')"],
+          args: [
+            '-e',
+            "process.stdout.write(process.env.PATH === process.argv[1] ? 'safe' : 'unsafe')",
+            trustedPath
+          ],
           timeoutMs: 5_000,
           maxOutputBytes: 100
         },

@@ -1113,6 +1113,11 @@ Concrete local executor 在 task workspace 内用 `shell: false` 运行固定 co
 `SIGKILL`，同时报告 sanitized startup failure。
 没有 command policy 时，Pi session 根本不启用 `forge_command`；Pi built-in `bash` 仍保持 disabled。
 
+Command authority 是 durable execution identity 的一部分：canonical command-policy fingerprint 会随每个 attempt
+保存，PREPARING recovery 会拒绝 changed policy。Executor 接收 constructor-injected trusted path，而不是 ambient host
+`PATH`。当前 command definition 只声明 `validation`；这是一项 policy assertion，不是没有 side effect 的证明。Workspace-
+writing command 需要未来的 sandbox、matching lease 和基于 diff 的 observed-impact reconciliation。
+
 这是 policy boundary，不是 operating-system sandbox。它不 isolate network access、secrets、filesystem permission、
 process descendant、CPU 或 memory。这些控制需要后续 sandbox adapter，并且必须在允许 arbitrary command 或 concurrent
 production agent 前完成设计。
@@ -1120,8 +1125,7 @@ production agent 前完成设计。
 详细代码教学见 [Controlled Agent Commands](./controlled-agent-commands.zh.md) 和其
 [English edition](./controlled-agent-commands.en.md)。
 
-完整质量门现在有 309 个测试通过。覆盖率为语句 96.70%、分支 91.61%、函数 98.67%、行 96.66%。
-`pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
+完整质量门现在有 316 个测试通过。覆盖率由 `pnpm check` 验证；`pnpm build` 和 `git diff --check` 也通过。
 
 ## 阶段十:Workspace 与 Git Lifecycle
 
@@ -1261,7 +1265,8 @@ invalid binding 和 real SQLite replay。
   recovery 还必须从 workspace 或 Git change reconcile filesystem write 与 SQLite evidence 非原子窗口。
 - Milestone 13 Controlled Agent Commands 已在 independent review 后完成并关闭。它只允许 fixed-policy command ID，
   有 runtime schema enforcement、executor-owned `PATH`、bounded output，以及 direct-child `SIGTERM` 到 `SIGKILL`
-  escalation。它仍是 policy control，不是 process-tree 或 operating-system sandbox。
+  escalation。Durable command-policy identity 防止 PREPARING recovery 时 authority 变化。它仍是 policy control，
+  不是 process-tree 或 operating-system sandbox。
 
 ## 还没有实现的部分
 

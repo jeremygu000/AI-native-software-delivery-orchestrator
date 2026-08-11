@@ -14,6 +14,7 @@ import type {
   WorkspaceManager,
   WriteGuard
 } from '@ai-native-software-delivery-orchestrator/domain';
+import { agentCommandPolicyFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
 import {
   AgentToolRuntime,
   PiAgentRunner,
@@ -359,6 +360,19 @@ describe('OrchestrationRuntime', () => {
   it('marks an interrupted external attempt unknown during recovery', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(request([task('A')]));
+    const commandPolicy = {
+      commands: [
+        {
+          id: 'check-types',
+          executable: 'pnpm',
+          args: ['typecheck'],
+          effect: 'validation' as const,
+          timeoutMs: 30_000,
+          maxOutputBytes: 10_000
+        }
+      ],
+      environment: {}
+    };
     await persistence.persistDispatch({
       reevaluation: {
         event: {
@@ -405,6 +419,7 @@ describe('OrchestrationRuntime', () => {
             agentId: 'agent-A',
             workspaceId: 'workspace-A',
             leasePlanFingerprint,
+            commandPolicyFingerprint: agentCommandPolicyFingerprint(commandPolicy),
             state: 'PREPARING',
             revision: 1
           }
@@ -490,6 +505,7 @@ describe('OrchestrationRuntime', () => {
             agentId: 'agent-A',
             workspaceId: 'workspace-A',
             leasePlanFingerprint,
+            commandPolicyFingerprint: agentCommandPolicyFingerprint(undefined),
             state: 'PREPARING',
             revision: 1
           }
@@ -602,6 +618,19 @@ describe('OrchestrationRuntime', () => {
   it('rejects PREPARING recovery when durable attempt identity differs from binding intent', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(request([task('A')]));
+    const commandPolicy = {
+      commands: [
+        {
+          id: 'check-types',
+          executable: 'pnpm',
+          args: ['typecheck'],
+          effect: 'validation' as const,
+          timeoutMs: 30_000,
+          maxOutputBytes: 10_000
+        }
+      ],
+      environment: {}
+    };
     await persistence.persistDispatch({
       reevaluation: {
         event: {
@@ -648,6 +677,7 @@ describe('OrchestrationRuntime', () => {
             agentId: 'agent-A',
             workspaceId: 'workspace-A',
             leasePlanFingerprint,
+            commandPolicyFingerprint: agentCommandPolicyFingerprint(commandPolicy),
             state: 'PREPARING',
             revision: 1
           }
@@ -661,13 +691,7 @@ describe('OrchestrationRuntime', () => {
     await expect(
       runtime.recoverAndResumeRun({
         ...run,
-        taskBindings: [{ ...binding, agentId: 'agent-B' }]
-      })
-    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
-    await expect(
-      runtime.recoverAndResumeRun({
-        ...run,
-        taskBindings: [{ ...binding, workspace: { ...binding.workspace, id: 'workspace-B' } }]
+        taskBindings: [{ ...binding, commandPolicy, agentId: 'agent-B' }]
       })
     ).rejects.toThrow('Recovery binding does not match durable attempt: A');
     await expect(
@@ -676,6 +700,52 @@ describe('OrchestrationRuntime', () => {
         taskBindings: [
           {
             ...binding,
+            commandPolicy: {
+              commands: [
+                {
+                  id: 'check-types',
+                  executable: 'pnpm',
+                  args: ['typecheck'],
+                  effect: 'validation',
+                  timeoutMs: 30_000,
+                  maxOutputBytes: 10_000
+                }
+              ],
+              environment: { CI: '1' }
+            }
+          }
+        ]
+      })
+    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+    await expect(
+      runtime.recoverAndResumeRun({
+        ...run,
+        taskBindings: [
+          {
+            ...binding,
+            commandPolicy: {
+              ...commandPolicy,
+              environment: { CI: '1' }
+            }
+          }
+        ]
+      })
+    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+    await expect(
+      runtime.recoverAndResumeRun({
+        ...run,
+        taskBindings: [
+          { ...binding, commandPolicy, workspace: { ...binding.workspace, id: 'workspace-B' } }
+        ]
+      })
+    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+    await expect(
+      runtime.recoverAndResumeRun({
+        ...run,
+        taskBindings: [
+          {
+            ...binding,
+            commandPolicy,
             leasePlan: {
               ...binding.leasePlan,
               source: 'runtime-derived'
@@ -683,6 +753,57 @@ describe('OrchestrationRuntime', () => {
           }
         ]
       })
+    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+
+    await expect(
+      runtime.recoverAndResumeRun({
+        ...run,
+        taskBindings: [{ ...binding, commandPolicy }]
+      })
+    ).resolves.toMatchObject({ snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] } });
+  });
+
+  it('rejects a legacy PREPARING attempt without command authority identity', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(request([task('A')]));
+    await persistence.persistDispatch({
+      reevaluation: {
+        event: {
+          runId: 'run-1',
+          sequence: 1,
+          occurredAt: '2026-08-12T00:00:00.000Z',
+          event: { type: 'run-started' }
+        },
+        transitions: [
+          { runId: 'run-1', sequence: 1, taskId: 'A', fromState: 'PENDING', toState: 'READY' },
+          { runId: 'run-1', sequence: 1, taskId: 'A', fromState: 'READY', toState: 'RUNNING' }
+        ],
+        decision: {
+          runId: 'run-1',
+          sequence: 1,
+          inputSnapshot: { taskStates: [{ taskId: 'A', state: 'PENDING' }], runtimeBlocks: [] },
+          decision: { taskDecisions: [] }
+        }
+      },
+      attempts: [
+        {
+          runId: 'run-1',
+          attempt: {
+            id: 'attempt-A',
+            runId: 'run-1',
+            taskId: 'A',
+            agentId: 'agent-A',
+            workspaceId: 'workspace-A',
+            leasePlanFingerprint,
+            state: 'PREPARING',
+            revision: 1
+          }
+        }
+      ]
+    });
+
+    await expect(
+      createRuntime(persistence).recoverAndResumeRun(request([task('A')]))
     ).rejects.toThrow('Recovery binding does not match durable attempt: A');
   });
 

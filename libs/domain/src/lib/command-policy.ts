@@ -20,9 +20,12 @@ export const agentCommandDefinitionSchema = z.object({
   id: commandIdSchema,
   executable: executableSchema,
   args: z.array(z.string()),
+  effect: z.literal('validation').optional(),
   timeoutMs: z.int().min(1).max(600_000),
   maxOutputBytes: z.int().min(1).max(1_048_576)
 });
+
+const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 export const agentCommandPolicySchema = z
   .object({
@@ -52,6 +55,20 @@ export const agentCommandPolicySchema = z
 
 export type AgentCommandDefinition = z.infer<typeof agentCommandDefinitionSchema>;
 export type AgentCommandPolicy = z.infer<typeof agentCommandPolicySchema>;
+
+export const agentCommandPolicyFingerprint = (policy: AgentCommandPolicy | undefined): string =>
+  JSON.stringify(
+    policy === undefined
+      ? null
+      : {
+          commands: [...policy.commands]
+            .map((command) => ({ ...command, args: [...command.args] }))
+            .toSorted((a, b) => compareText(a.id, b.id)),
+          environment: Object.fromEntries(
+            Object.entries(policy.environment).toSorted(([a], [b]) => compareText(a, b))
+          )
+        }
+  );
 
 export interface AgentCommandExecutionRequest {
   readonly command: AgentCommandDefinition;

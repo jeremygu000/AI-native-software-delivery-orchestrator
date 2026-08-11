@@ -1,5 +1,6 @@
 import {
   agentCommandPolicySchema,
+  agentCommandPolicyFingerprint,
   canonicalTaskLeaseResources,
   taskDecisionsWithTransitions,
   taskLeasePlanFingerprint,
@@ -483,6 +484,7 @@ export class OrchestrationRuntime {
           agentId: binding.agentId,
           workspaceId: binding.workspace.id,
           leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
+          commandPolicyFingerprint: agentCommandPolicyFingerprint(binding.commandPolicy),
           state: 'PREPARING',
           revision: 1
         };
@@ -521,7 +523,14 @@ export class OrchestrationRuntime {
     taskId: string,
     update: Omit<
       AgentExecutionAttempt,
-      'id' | 'runId' | 'taskId' | 'agentId' | 'workspaceId' | 'revision' | 'leasePlanFingerprint'
+      | 'id'
+      | 'runId'
+      | 'taskId'
+      | 'agentId'
+      | 'workspaceId'
+      | 'revision'
+      | 'leasePlanFingerprint'
+      | 'commandPolicyFingerprint'
     >
   ): Promise<void> {
     const current = state.attemptsByTask.get(taskId);
@@ -578,11 +587,14 @@ export class OrchestrationRuntime {
         continue;
       }
       const binding = bindings.get(attempt.taskId);
+      // Legacy PREPARING attempts lack command authority identity and cannot safely resume.
       if (
         binding === undefined ||
         binding.agentId !== attempt.agentId ||
         binding.workspace.id !== attempt.workspaceId ||
-        taskLeasePlanFingerprint(binding.leasePlan) !== attempt.leasePlanFingerprint
+        taskLeasePlanFingerprint(binding.leasePlan) !== attempt.leasePlanFingerprint ||
+        attempt.commandPolicyFingerprint === undefined ||
+        agentCommandPolicyFingerprint(binding.commandPolicy) !== attempt.commandPolicyFingerprint
       ) {
         throw new OrchestrationRuntimeInputError(
           `Recovery binding does not match durable attempt: ${attempt.taskId}`

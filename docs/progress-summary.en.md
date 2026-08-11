@@ -1262,6 +1262,12 @@ captures bounded standard output and error, returns nonzero exits as tool errors
 bounded-grace `SIGKILL` on timeout or cancellation, and reports a sanitized startup failure. No command policy means Pi does not
 receive the `forge_command` tool at all; Pi built-in `bash` remains disabled.
 
+Command authority is part of durable execution identity: a canonical command-policy fingerprint is stored
+with every attempt, and PREPARING recovery rejects a changed policy. The executor receives a constructor-
+injected trusted path rather than ambient host `PATH`. Command definitions currently declare only
+`validation`; this is a policy assertion rather than proof of no side effects. Workspace-writing commands
+need a future sandbox, matching leases, and diff-based observed-impact reconciliation.
+
 This is a policy boundary, not an operating-system sandbox. It does not isolate network access, secrets,
 filesystem permissions, process descendants, CPU, or memory. These controls need a later sandbox adapter
 and must be designed before arbitrary commands or concurrent production agents are enabled.
@@ -1269,8 +1275,8 @@ and must be designed before arbitrary commands or concurrent production agents a
 For a code-level teaching model, see [Controlled Agent Commands](./controlled-agent-commands.en.md) and
 its [Chinese edition](./controlled-agent-commands.zh.md).
 
-The full quality gate now has 309 passing tests. Coverage is 96.70% statements, 91.61% branches,
-98.67% functions, and 96.66% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 316 passing tests. Coverage is verified by `pnpm check`; `pnpm build` and
+`git diff --check` also pass.
 
 ## Stage 10: Workspace and Git Lifecycle
 
@@ -1435,8 +1441,9 @@ The full quality gate now has 281 passing tests. Coverage is 96.68% statements, 
   reconcile the non-atomic filesystem-write and SQLite-evidence window from workspace or Git changes.
 - Milestone 13 Controlled Agent Commands is complete and closed after independent review. It admits only
   fixed-policy command IDs with runtime schema enforcement, executor-owned `PATH`, bounded output, and
-  direct-child `SIGTERM` to `SIGKILL` escalation. It remains policy control rather than a process-tree or
-  operating-system sandbox.
+  direct-child `SIGTERM` to `SIGKILL` escalation. Durable command-policy identity prevents changed
+  authority during PREPARING recovery. It remains policy control rather than a process-tree or operating-
+  system sandbox.
 
 ## What has NOT been implemented yet
 

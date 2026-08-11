@@ -21,8 +21,8 @@ NodeAgentCommandExecutor (shell: false, task workspace cwd)
 ## Policy
 
 `AgentCommandPolicy` 包含有名称的 command definition。每个 definition 固定 executable 与 argument。Policy 还提供
-完整 command environment。Agent 不能提供 command text、argument、executable path、working directory 或 environment
-variable。
+完整 command environment。当前支持的每个 command 都声明为 `validation`。Agent 不能提供 command text、argument、
+executable path、working directory 或 environment variable。
 
 例如 orchestrator 可以允许：
 
@@ -36,12 +36,19 @@ Agent 可以请求 `check-types`，但不能把它改为 `pnpm typecheck --dange
 
 ## Execution behavior
 
-Command 在 task workspace 内以 `shell: false` 运行。Runner 提供 orchestrator-owned `PATH` 和 explicit policy
-environment；policy 不能 override `PATH` 或加入 malformed environment name/value。Standard output/error 有上限。
+Command 在 task workspace 内以 `shell: false` 运行。Runner 从 constructor-injected trusted path 提供 orchestrator-owned
+`PATH` 和 explicit policy environment；policy 不能 override `PATH` 或加入 malformed environment name/value。Standard
+output/error 有上限。
 Timeout 或 cancellation 会向 direct child 发送 `SIGTERM`，并在 bounded grace period 后升级为 `SIGKILL`。Nonzero exit、
 timeout、cancellation、output-limit 和 startup failure 都作为 Pi tool error 返回，不会静默成功。
 
 没有 command policy 时，session 不启用 `forge_command`。每个 session 都保持 Pi built-in `bash` disabled。
+
+`validation` 是 orchestrator 的 policy assertion，不是命令没有 filesystem side effect 的证明。声明为 workspace-write
+的 command 需要未来的 sandbox、matching write lease 和基于 diff 的 observed impact reconciliation 后才能允许。
+
+Canonical policy fingerprint 会随每个 execution attempt persistence。PREPARING attempt 在 recovery 后如果 caller
+提供不同 command authority，就不能 resume。
 
 ## 限制
 
