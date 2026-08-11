@@ -1301,6 +1301,25 @@ For a code-level teaching model, see [Sandboxed Agent Commands](./sandboxed-agen
 The full quality gate now has 337 passing tests. Coverage is 96.68% statements, 91.59% branches,
 98.59% functions, and 96.67% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
+## Stage 15: Parallel Agent Execution
+
+The runtime now starts independent task agents concurrently up to the scheduler's configured
+`maxConcurrency`. Each agent still has its own worktree, durable attempt, and lease plan. A conflict at
+lease acquisition blocks the task before its agent starts; after the conflicting lease releases, existing
+Scheduler unblock/retry evidence allows the task to run later.
+
+Concurrency is deliberately limited to external agent execution. The runtime serializes workspace and lease
+preparation, durable attempt transitions, Scheduler events, verification, commits, and Git integration.
+This keeps the shared integration reference safe and maintains deterministic persistence/replay evidence
+while letting real agent work overlap. `forge_edit` now acquires write authority before reading the file,
+closing its former read-modify-write race before parallel execution is enabled.
+
+Cross-process coordination, integration reservation, agent cancellation, unknown-attempt resume, and
+writable-command side-effect reconciliation remain future work.
+
+The full quality gate now has 342 passing tests. Coverage is 96.71% statements, 91.57% branches,
+98.62% functions, and 96.71% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+
 ## Stage 10: Workspace and Git Lifecycle
 
 The deterministic core can now give each task an isolated local Git worktree and safely integrate its

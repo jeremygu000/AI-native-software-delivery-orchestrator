@@ -92,11 +92,6 @@ export class OrchestrationRuntime {
 
   async startRun(request: StartRuntimeRunRequest): Promise<RecoveredRuntimeRun> {
     const bindings = this.#bindingsByTask(request);
-    if (request.scheduleOptions.maxConcurrency !== 1) {
-      throw new OrchestrationRuntimeInputError(
-        'The local orchestration runtime currently requires maxConcurrency of 1'
-      );
-    }
     await this.#persistence.createRun(request);
     const state = {
       request,
@@ -108,7 +103,8 @@ export class OrchestrationRuntime {
         runtimeBlocks: []
       },
       nextSequence: 1,
-      pendingTaskIds: [] as string[]
+      pendingTaskIds: [] as string[],
+      lifecycle: Promise.resolve()
     };
     await this.#recordEvent(state, { type: 'run-started' });
     await this.#drain(state);
@@ -206,7 +202,8 @@ export class OrchestrationRuntime {
             this.#stateFor(recovered.snapshot, attempt.taskId) === 'RUNNING'
         )
         .map(({ attempt }) => attempt.taskId)
-        .toSorted(compareIds)
+        .toSorted(compareIds),
+      lifecycle: Promise.resolve()
     };
     await this.#drain(state);
     return this.#recoveredState(state.snapshot, request.run.id);
@@ -248,12 +245,22 @@ export class OrchestrationRuntime {
   }
 
   async #drain(state: RuntimeState): Promise<void> {
-    while (state.pendingTaskIds.length > 0) {
-      const taskId = state.pendingTaskIds.shift();
-      if (taskId === undefined || this.#stateFor(state.snapshot, taskId) !== 'RUNNING') {
-        continue;
+    const executing = new Set<Promise<void>>();
+    while (state.pendingTaskIds.length > 0 || executing.size > 0) {
+      while (
+        state.pendingTaskIds.length > 0 &&
+        executing.size < state.request.scheduleOptions.maxConcurrency
+      ) {
+        const taskId = state.pendingTaskIds.shift();
+        if (taskId === undefined || this.#stateFor(state.snapshot, taskId) !== 'RUNNING') {
+          continue;
+        }
+        const execution = this.#runTask(state, taskId).finally(() => executing.delete(execution));
+        executing.add(execution);
       }
-      await this.#runTask(state, taskId);
+      if (executing.size > 0) {
+        await Promise.race(executing);
+      }
     }
   }
 
@@ -267,32 +274,41 @@ export class OrchestrationRuntime {
     if (preparing === undefined) {
       throw new OrchestrationRuntimeInputError(`Missing execution attempt: ${taskId}`);
     }
-    const workspace = await this.#workspaceManager.create(binding.workspace);
-    await this.#persistence.persistWorkspace({ runId: state.request.run.id, workspace });
-    const acquisition = await this.#acquireLeasePlan(state, binding.leasePlan, binding.agentId);
+    const prepared = await this.#withLifecycle(state, async () => {
+      const workspace = await this.#workspaceManager.create(binding.workspace);
+      await this.#persistence.persistWorkspace({ runId: state.request.run.id, workspace });
+      const acquisition = await this.#acquireLeasePlan(state, binding.leasePlan, binding.agentId);
+      return { workspace, acquisition };
+    });
+    const { workspace, acquisition } = prepared;
     if (acquisition.status === 'blocked') {
-      for (const lease of acquisition.rolledBackLeases) {
-        await this.#persistence.persistLease({ runId: state.request.run.id, lease });
-      }
-      const leaseId = acquisition.leaseId;
-      if (leaseId === undefined) {
-        throw new OrchestrationRuntimeInputError(`Lease block is missing an owner: ${taskId}`);
-      }
-      await this.#recordEvent(state, {
-        type: 'lease-blocked',
-        taskId,
-        leaseId
+      await this.#withLifecycle(state, async () => {
+        for (const lease of acquisition.rolledBackLeases) {
+          await this.#persistence.persistLease({ runId: state.request.run.id, lease });
+        }
+        const leaseId = acquisition.leaseId;
+        if (leaseId === undefined) {
+          throw new OrchestrationRuntimeInputError(`Lease block is missing an owner: ${taskId}`);
+        }
+        await this.#recordEvent(state, {
+          type: 'lease-blocked',
+          taskId,
+          leaseId
+        });
       });
       return;
     }
-    const starting: AgentExecutionAttempt = {
-      ...preparing,
-      state: 'STARTING',
-      revision: preparing.revision + 1,
-      startedAt: this.#now()
-    };
-    state.attemptsByTask.set(taskId, starting);
-    await this.#persistence.persistAttempt({ runId: state.request.run.id, attempt: starting });
+    const starting = await this.#withLifecycle(state, async () => {
+      const attempt: AgentExecutionAttempt = {
+        ...preparing,
+        state: 'STARTING',
+        revision: preparing.revision + 1,
+        startedAt: this.#now()
+      };
+      state.attemptsByTask.set(taskId, attempt);
+      await this.#persistence.persistAttempt({ runId: state.request.run.id, attempt });
+      return attempt;
+    });
     let executionEstablished = false;
     let agentResult: Awaited<ReturnType<AgentRunner['run']>>;
     try {
@@ -312,77 +328,101 @@ export class OrchestrationRuntime {
             throw new OrchestrationRuntimeInputError(`Agent execution started twice: ${taskId}`);
           }
           executionEstablished = true;
-          await this.#persistAttempt(state, taskId, { state: 'RUNNING', sessionRef });
+          await this.#withLifecycle(state, async () => {
+            await this.#persistAttempt(state, taskId, { state: 'RUNNING', sessionRef });
+          });
         }
       });
     } catch (error) {
       const detail =
         error instanceof Error ? error.message : 'Agent runner threw a non-error value.';
-      if (executionEstablished) {
-        await this.#persistAttempt(state, taskId, {
-          state: 'UNKNOWN',
-          completedAt: this.#now(),
-          failure: { type: 'unknown-outcome', detail }
-        });
-        // The external agent may still mutate the workspace, so retain its ACTIVE leases.
-        await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
-        throw new OrchestrationRuntimeInputError(
-          `Agent runner failed for task ${taskId}: ${detail}`
-        );
-      }
-      await this.#failBeforeExecutionEstablished(state, taskId, acquisition.leases, detail);
+      await this.#withLifecycle(state, async () => {
+        if (executionEstablished) {
+          await this.#persistAttempt(state, taskId, {
+            state: 'UNKNOWN',
+            completedAt: this.#now(),
+            failure: { type: 'unknown-outcome', detail }
+          });
+          // The external agent may still mutate the workspace, so retain its ACTIVE leases.
+          await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+          return;
+        }
+        await this.#failBeforeExecutionEstablished(state, taskId, acquisition.leases, detail);
+      });
       throw new OrchestrationRuntimeInputError(`Agent runner failed for task ${taskId}: ${detail}`);
     }
-    if (agentResult.status === 'failed') {
-      await this.#persistAttempt(state, taskId, {
-        state: 'FAILED',
-        completedAt: this.#now(),
-        failure: { type: 'execution-failed', detail: agentResult.detail }
-      });
-      this.#setState(state, taskId, 'FAILED');
-      await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
-    } else if (agentResult.status === 'completed') {
-      if (!executionEstablished) {
-        const detail = 'Agent runner completed without calling onStarted.';
-        await this.#failBeforeExecutionEstablished(state, taskId, acquisition.leases, detail);
-        throw new OrchestrationRuntimeInputError(`Agent execution did not establish: ${taskId}`);
+    await this.#withLifecycle(state, async () => {
+      if (agentResult.status === 'failed') {
+        await this.#persistAttempt(state, taskId, {
+          state: 'FAILED',
+          completedAt: this.#now(),
+          failure: { type: 'execution-failed', detail: agentResult.detail }
+        });
+        this.#setState(state, taskId, 'FAILED');
+        await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
+      } else if (agentResult.status === 'completed') {
+        if (!executionEstablished) {
+          const detail = 'Agent runner completed without calling onStarted.';
+          await this.#failBeforeExecutionEstablished(state, taskId, acquisition.leases, detail);
+          throw new OrchestrationRuntimeInputError(`Agent execution did not establish: ${taskId}`);
+        }
+        await this.#persistAttempt(state, taskId, {
+          state: 'COMPLETED',
+          completedAt: this.#now(),
+          sessionRef: agentResult.sessionRef
+        });
+        this.#setState(state, taskId, 'VERIFYING');
+        await this.#recordEvent(state, { type: 'agent-completed', taskId, state: 'VERIFYING' });
       }
-      await this.#persistAttempt(state, taskId, {
-        state: 'COMPLETED',
-        completedAt: this.#now(),
-        sessionRef: agentResult.sessionRef
-      });
-      this.#setState(state, taskId, 'VERIFYING');
-      await this.#recordEvent(state, { type: 'agent-completed', taskId, state: 'VERIFYING' });
-    }
-    const released = await this.#releaseLeasePlan([
-      ...acquisition.leases,
-      ...(agentResult.status === 'completed' || agentResult.status === 'blocked'
-        ? (agentResult.additionalLeases ?? [])
-        : [])
-    ]);
-    if (released.status !== 'released') {
+      const released = await this.#releaseLeasePlan([
+        ...acquisition.leases,
+        ...(agentResult.status === 'completed' || agentResult.status === 'blocked'
+          ? (agentResult.additionalLeases ?? [])
+          : [])
+      ]);
+      if (released.status !== 'released') {
+        for (const lease of released.leases) {
+          await this.#persistence.persistLease({ runId: state.request.run.id, lease });
+        }
+        await this.#recordEvent(state, {
+          type: 'lease-release-failed',
+          taskId,
+          leaseId: released.leaseId
+        });
+        await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+        throw new OrchestrationRuntimeInputError(
+          `Lease release failed for task ${taskId}: ${released.status}`
+        );
+      }
       for (const lease of released.leases) {
         await this.#persistence.persistLease({ runId: state.request.run.id, lease });
+        await this.#recordEvent(state, { type: 'lease-released', taskId, leaseId: lease.id });
       }
-      await this.#recordEvent(state, {
-        type: 'lease-release-failed',
-        taskId,
-        leaseId: released.leaseId
-      });
-      await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
-      throw new OrchestrationRuntimeInputError(
-        `Lease release failed for task ${taskId}: ${released.status}`
-      );
-    }
-    for (const lease of released.leases) {
-      await this.#persistence.persistLease({ runId: state.request.run.id, lease });
-      await this.#recordEvent(state, { type: 'lease-released', taskId, leaseId: lease.id });
-    }
-    if (agentResult.status === 'failed') {
-      return;
-    }
-    if (agentResult.status === 'blocked') {
+      if (agentResult.status === 'failed') {
+        return;
+      }
+      if (agentResult.status === 'blocked') {
+        if (agentResult.observedImpact !== undefined) {
+          await this.#persistence.persistImpact({
+            runId: state.request.run.id,
+            taskId,
+            impact: {
+              predicted: binding.impact?.predicted ?? this.#emptyPredictedImpact(taskId),
+              observed: agentResult.observedImpact
+            }
+          });
+        }
+        await this.#persistAttempt(state, taskId, {
+          state: 'COMPLETED',
+          completedAt: this.#now()
+        });
+        await this.#recordEvent(state, {
+          type: 'lease-blocked',
+          taskId,
+          leaseId: agentResult.leaseId
+        });
+        return;
+      }
       if (agentResult.observedImpact !== undefined) {
         await this.#persistence.persistImpact({
           runId: state.request.run.id,
@@ -393,57 +433,37 @@ export class OrchestrationRuntime {
           }
         });
       }
-      await this.#persistAttempt(state, taskId, {
-        state: 'COMPLETED',
-        completedAt: this.#now()
-      });
-      await this.#recordEvent(state, {
-        type: 'lease-blocked',
-        taskId,
-        leaseId: agentResult.leaseId
-      });
-      return;
-    }
-    if (agentResult.observedImpact !== undefined) {
-      await this.#persistence.persistImpact({
+      const verification = await this.#verifier.verify({
         runId: state.request.run.id,
-        taskId,
-        impact: {
-          predicted: binding.impact?.predicted ?? this.#emptyPredictedImpact(taskId),
-          observed: agentResult.observedImpact
-        }
+        task,
+        workspace
       });
-    }
-    const verification = await this.#verifier.verify({
-      runId: state.request.run.id,
-      task,
-      workspace
+      if (verification.status === 'failed') {
+        this.#setState(state, taskId, 'FAILED');
+        await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
+        return;
+      }
+      await this.#workspaceManager.commit({
+        workspace,
+        message: `forge: ${task.id}`
+      });
+      this.#setState(state, taskId, 'INTEGRATING');
+      await this.#recordEvent(state, {
+        type: 'verification-completed',
+        taskId,
+        state: 'INTEGRATING'
+      });
+      const integration = await this.#workspaceManager.integrate(workspace);
+      await this.#persistence.persistWorkspace({
+        runId: state.request.run.id,
+        workspace: integration.workspace
+      });
+      if (integration.status === 'blocked') {
+        return;
+      }
+      this.#setState(state, taskId, 'COMPLETED');
+      await this.#recordEvent(state, { type: 'workspace-integrated', taskId, state: 'COMPLETED' });
     });
-    if (verification.status === 'failed') {
-      this.#setState(state, taskId, 'FAILED');
-      await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
-      return;
-    }
-    await this.#workspaceManager.commit({
-      workspace,
-      message: `forge: ${task.id}`
-    });
-    this.#setState(state, taskId, 'INTEGRATING');
-    await this.#recordEvent(state, {
-      type: 'verification-completed',
-      taskId,
-      state: 'INTEGRATING'
-    });
-    const integration = await this.#workspaceManager.integrate(workspace);
-    await this.#persistence.persistWorkspace({
-      runId: state.request.run.id,
-      workspace: integration.workspace
-    });
-    if (integration.status === 'blocked') {
-      return;
-    }
-    this.#setState(state, taskId, 'COMPLETED');
-    await this.#recordEvent(state, { type: 'workspace-integrated', taskId, state: 'COMPLETED' });
   }
 
   async #recordEvent(state: RuntimeState, event: SchedulerEvent): Promise<void> {
@@ -765,6 +785,20 @@ export class OrchestrationRuntime {
     };
   }
 
+  async #withLifecycle<T>(state: RuntimeState, operation: () => Promise<T>): Promise<T> {
+    const previous = state.lifecycle;
+    let release: (() => void) | undefined;
+    state.lifecycle = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release?.();
+    }
+  }
+
   #stateFor(
     snapshot: SchedulerSnapshot,
     taskId: string
@@ -785,6 +819,7 @@ interface RuntimeState {
   snapshot: SchedulerSnapshot;
   nextSequence: number;
   readonly pendingTaskIds: string[];
+  lifecycle: Promise<void>;
 }
 
 export class FakeAgentRunner implements AgentRunner {

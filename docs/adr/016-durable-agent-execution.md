@@ -41,16 +41,18 @@ IDs rather than parsing symbol ID strings, whose file paths may contain delimite
 
 Execution write leases protect agent mutation while an attempt runs. They are released after the agent
 outcome is durable and before verification. This does not reserve integration ordering: Git rebase and
-fast-forward integration remain the current ordering boundary. A future concurrent runtime may add an
-explicit integration reservation rather than silently extending execution leases.
+fast-forward integration remain the current ordering boundary. Concurrent task agents run in isolated
+worktrees, but the runtime serializes verification, commit, and integration through its lifecycle queue
+rather than extending execution leases or allowing simultaneous integration operations.
 
 ## Consequences
 
 The runtime can distinguish dispatch authorization from durable external execution evidence and can
 recover uncertain starts without guessing. It still has no backend inspection/resume capability, no
-automatic retry for `UNKNOWN` attempts or externally owned lease blockers, no observed impact capture,
-and no concurrent execution. Pi is not added in this stage; any Pi session must implement the existing
-provider-neutral attempt/session contract and must use future orchestrator-controlled tools.
+on isolated worktrees, serialized lifecycle evidence, and dynamic runtime lease blockers. Pi must implement
+
+The concurrent execution boundary passed independent review. Distributed fencing and an integration test
+that derives contention from a real overlapping resource remain future hardening work.
 
 If an `AgentRunner` throws before `onStarted`, the runtime records a definite `FAILED` attempt and task
 failure, releases leases, and marks the run failed. If it throws after `onStarted`, the runtime records

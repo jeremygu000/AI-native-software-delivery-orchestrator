@@ -144,6 +144,45 @@ describe('AgentToolRuntime', () => {
     );
   });
 
+  it('acquires write authority before reading edit content', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
+    directories.push(workspacePath);
+    writeFileSync(join(workspacePath, 'value.txt'), 'before\n');
+    const tools = createTools(
+      workspacePath,
+      {
+        acquire: async (request) => {
+          writeFileSync(join(workspacePath, 'value.txt'), 'new\n');
+          return {
+            status: 'granted' as const,
+            lease: {
+              id: 'lease-1',
+              runId: request.runId,
+              taskId: request.taskId,
+              agentId: request.agentId,
+              resource: request.resource,
+              mode: 'exclusive' as const,
+              version: 1,
+              state: 'ACTIVE' as const,
+              acquiredAt: new Date('2026-08-14T00:00:00.000Z'),
+              lastHeartbeatAt: new Date('2026-08-14T00:00:00.000Z')
+            }
+          };
+        },
+        heartbeat: async () => ({ status: 'not-found' }),
+        markStale: async () => ({ status: 'not-found' }),
+        release: async () => ({ status: 'not-found' })
+      },
+      new LeasePersistence()
+    );
+
+    await expect(tools.edit('value.txt', 'new', 'after')).resolves.toEqual({
+      status: 'written',
+      path: 'value.txt'
+    });
+    expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('after\n');
+  });
+
   it('reuses its acquired lease for repeated writes to one resource', async () => {
     const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
     directories.push(workspacePath);

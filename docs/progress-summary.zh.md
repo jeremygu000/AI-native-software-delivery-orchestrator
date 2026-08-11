@@ -1149,6 +1149,23 @@ wiring、lease 下的 writable effect 和基于 diff 的 observed impact reconci
 完整质量门现在有 337 个测试通过。覆盖率为语句 96.68%、分支 91.59%、函数 98.59%、行 96.67%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
+## 阶段十五:并行 Agent Execution
+
+Runtime 现在会在 scheduler 配置的 `maxConcurrency` 范围内并发启动 independent task agent。每个 agent 仍有自己的
+worktree、durable attempt 和 lease plan。Lease acquisition 发生 conflict 时，task 会在 agent 启动前 block；conflicting
+lease release 后，现有 Scheduler unblock/retry evidence 允许 task 稍后运行。
+
+Concurrency 有意只限于 external agent execution。Runtime 会串行化 workspace/lease preparation、durable attempt
+transition、Scheduler event、verification、commit 和 Git integration。这样在 agent 工作真正重叠时仍保护 shared
+integration ref，并维护 deterministic persistence/replay evidence。`forge_edit` 现在会在 read file 前 acquire write
+authority，关闭原有 read-modify-write race。
+
+Cross-process coordination、integration reservation、agent cancellation、unknown-attempt resume 和 writable-command
+side-effect reconciliation 仍是未来工作。
+
+完整质量门现在有 342 个测试通过。覆盖率为语句 96.71%、分支 91.57%、函数 98.62%、行 96.71%。
+`pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
+
 ## 阶段十:Workspace 与 Git Lifecycle
 
 Deterministic core 现在可以为每个 task 提供 isolated local Git worktree，并把完成的 task branch 安全

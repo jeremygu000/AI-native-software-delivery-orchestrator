@@ -325,7 +325,142 @@ const createRuntime = (
     now: () => new Date('2026-08-12T00:00:00.000Z')
   });
 
+class ConcurrentAgentRunner implements AgentRunner {
+  readonly started: string[] = [];
+  #release: (() => void) | undefined;
+  readonly #bothStarted = new Promise<void>((resolve) => {
+    this.#release = resolve;
+  });
+
+  async run(agentRequest: Parameters<AgentRunner['run']>[0]) {
+    this.started.push(agentRequest.taskId);
+    await agentRequest.onStarted({
+      sessionRef: { backend: 'fake', value: `session-${agentRequest.taskId}` }
+    });
+    if (this.started.length === 2) {
+      this.#release?.();
+    }
+    await this.#bothStarted;
+    return { status: 'completed' as const };
+  }
+}
+
 describe('OrchestrationRuntime', () => {
+  it('runs independent task agents concurrently while serializing lifecycle operations', async () => {
+    const persistence = new MemoryPersistence();
+    const agent = new ConcurrentAgentRunner();
+    const runtime = createRuntime(persistence, undefined, undefined, agent);
+    const run = request([task('A'), task('B')]);
+
+    await expect(
+      runtime.startRun({
+        ...run,
+        scheduleOptions: { maxConcurrency: 2 }
+      })
+    ).resolves.toMatchObject({
+      snapshot: {
+        taskStates: [
+          { taskId: 'A', state: 'COMPLETED' },
+          { taskId: 'B', state: 'COMPLETED' }
+        ]
+      }
+    });
+    expect(agent.started).toEqual(['A', 'B']);
+  });
+
+  it('blocks a conflicting concurrent task before its agent starts', async () => {
+    const persistence = new MemoryPersistence();
+    const started: string[] = [];
+    const agent: AgentRunner = {
+      run: async (agentRequest) => {
+        started.push(agentRequest.taskId);
+        await agentRequest.onStarted({
+          sessionRef: { backend: 'fake', value: `session-${agentRequest.taskId}` }
+        });
+        return { status: 'completed' };
+      }
+    };
+    const guard = new MemoryWriteGuard();
+    guard.blockedTaskIds.add('B');
+    const runtime = createRuntime(persistence, undefined, guard, agent);
+    const run = request([task('A'), task('B')]);
+    const [first, second] = run.taskBindings;
+
+    await expect(
+      runtime.startRun({
+        ...run,
+        scheduleOptions: { maxConcurrency: 2 },
+        taskBindings: [first, second]
+      })
+    ).resolves.toMatchObject({
+      snapshot: {
+        taskStates: [
+          { taskId: 'A', state: 'COMPLETED' },
+          { taskId: 'B', state: 'BLOCKED' }
+        ]
+      }
+    });
+    expect(started).toEqual(['A']);
+    expect(persistence.reevaluations.map(({ event }) => event.event.type)).toContain(
+      'lease-blocked'
+    );
+  });
+
+  it('releases the lifecycle queue after one concurrent agent fails before establishment', async () => {
+    const persistence = new MemoryPersistence();
+    const started: string[] = [];
+    const agent: AgentRunner = {
+      run: async (agentRequest) => {
+        started.push(agentRequest.taskId);
+        if (agentRequest.taskId === 'A') {
+          throw new Error('Agent A preparation failed.');
+        }
+        await agentRequest.onStarted({ sessionRef: { backend: 'fake', value: 'session-B' } });
+        return { status: 'completed' };
+      }
+    };
+    const runtime = createRuntime(persistence, undefined, undefined, agent);
+    const run = request([task('A'), task('B')]);
+
+    await expect(
+      runtime.startRun({
+        ...run,
+        scheduleOptions: { maxConcurrency: 2 }
+      })
+    ).rejects.toThrow('Agent runner failed for task A: Agent A preparation failed.');
+    expect(started).toContain('B');
+  });
+
+  it('releases the lifecycle queue after workspace preparation throws', async () => {
+    const persistence = new MemoryPersistence();
+    const started: string[] = [];
+    const workspaceManager = new MemoryWorkspaceManager();
+    const create = workspaceManager.create.bind(workspaceManager);
+    workspaceManager.create = async (workspace) => {
+      if (workspace.taskId === 'A') {
+        throw new Error('Workspace A preparation failed.');
+      }
+      return create(workspace);
+    };
+    const agent: AgentRunner = {
+      run: async (agentRequest) => {
+        started.push(agentRequest.taskId);
+        await agentRequest.onStarted({ sessionRef: { backend: 'fake', value: 'session-B' } });
+        return { status: 'completed' };
+      }
+    };
+    const runtime = createRuntime(persistence, workspaceManager, undefined, agent);
+    const run = request([task('A'), task('B')]);
+
+    await expect(
+      runtime.startRun({
+        ...run,
+        scheduleOptions: { maxConcurrency: 2 }
+      })
+    ).rejects.toThrow('Workspace A preparation failed.');
+    expect(started).toContain('B');
+  });
+
   it('executes a dependency chain through lease, fake agent, verification, and integration', async () => {
     const persistence = new MemoryPersistence();
     const runtime = createRuntime(persistence);
@@ -1622,7 +1757,7 @@ describe('OrchestrationRuntime', () => {
     );
   });
 
-  it('rejects incomplete bindings and unsupported concurrent dispatch', async () => {
+  it('rejects incomplete bindings', async () => {
     const runtime = createRuntime();
     const oneTask = request([task('A')]);
     const binding = oneTask.taskBindings[0];
@@ -1653,9 +1788,6 @@ describe('OrchestrationRuntime', () => {
         taskBindings: [...oneTask.taskBindings, { ...binding, taskId: 'unknown' }]
       })
     ).rejects.toThrow('Unknown task binding: unknown');
-    await expect(
-      runtime.startRun({ ...oneTask, scheduleOptions: { maxConcurrency: 2 } })
-    ).rejects.toThrow('currently requires maxConcurrency of 1');
     expect(new OrchestrationRuntimeInputError('Invalid.').name).toBe(
       'OrchestrationRuntimeInputError'
     );

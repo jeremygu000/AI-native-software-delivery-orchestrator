@@ -304,15 +304,17 @@ is not safe: switching it could move a user's current branch without leaving dir
 
 ### Application orchestration layer
 
-`libs/orchestration-runtime` now owns the first local application workflow and keeps `apps/cli` thin.
+`libs/orchestration-runtime` now owns the local application workflow and keeps `apps/cli` thin.
 It persists Scheduler evidence, creates and persists workspaces, acquires/releases leases, runs a
 provider-neutral fake agent, verifies it, integrates Git work, and reconstructs a recovery snapshot.
 Its production package depends only on Domain ports; local Scheduler, SQLite, Guard, and Workspace/Git
 implementations are injected by integration tests rather than imported as application dependencies.
-Its accepted scope is serial `maxConcurrency: 1`; it does not provision dedicated integration checkouts,
-run real agents or verification commands, coordinate processes, resume unknown in-flight agents, or
-automatically repair Git conflicts. Those workflows remain runtime extensions and must not be placed in
-the CLI or hidden inside infrastructure adapters.
+Independent agents execute concurrently up to `maxConcurrency` in isolated worktrees. Runtime lifecycle
+operations remain serialized: workspace/lease preparation, attempt transitions, persisted Scheduler events,
+verification, commit, and integration run through one lifecycle queue. This preserves deterministic evidence
+and prevents concurrent integration-ref mutation while making parallel task execution real. The runtime does
+not provision dedicated integration checkouts, coordinate processes, resume unknown in-flight agents, or
+CLI or hidden inside infrastructure adapters.
 
 Scheduler `RUNNING` means dispatch is authorized, while a separate revisioned `AgentExecutionAttempt`
 records external execution preparation, startup, durable session establishment, completion, failure, or

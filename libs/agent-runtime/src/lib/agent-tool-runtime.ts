@@ -78,46 +78,22 @@ export class AgentToolRuntime {
   }
 
   async write(path: string, content: string): Promise<AgentToolWriteResult> {
-    const absolutePath = await this.#resolve(path);
-    const workspaceRelativePath = this.#relative(absolutePath);
-    const resource = this.#context.resolveResource(workspaceRelativePath);
-    const resourceKey = JSON.stringify(resource);
-    if (!this.#isAuthorized(resource)) {
-      const acquired = await this.#context.writeGuard.acquire({
-        runId: this.#context.runId,
-        agentId: this.#context.agentId,
-        taskId: this.#context.taskId,
-        resource,
-        mode: 'exclusive'
-      });
-      if (acquired.status === 'blocked') {
-        const leaseId = acquired.conflictingLeaseIds[0];
-        if (leaseId === undefined) {
-          throw new AgentToolDeniedError('Write lease block is missing an owner');
-        }
-        return { status: 'blocked', leaseId };
-      }
-      this.#leasesByResource.set(resourceKey, acquired.lease);
-      await this.#context.persistence.persistLease({
-        runId: this.#context.runId,
-        lease: acquired.lease
-      });
+    const target = await this.#prepareWrite(path);
+    if (target.status === 'blocked') {
+      return target;
     }
-    await writeFile(absolutePath, content, 'utf8');
-    this.#writtenFileIds.add(this.#context.resolveFileId(workspaceRelativePath));
-    await this.#context.persistence.persistImpact({
-      runId: this.#context.runId,
-      taskId: this.#context.taskId,
-      impact: { ...this.#currentImpact(), observed: this.observedImpact() }
-    });
-    return { status: 'written', path: workspaceRelativePath };
+    return this.#writePrepared(target, content);
   }
 
   async edit(path: string, expected: string, replacement: string): Promise<AgentToolWriteResult> {
     if (expected.length === 0) {
       throw new AgentToolDeniedError('Expected edit text must not be empty');
     }
-    const content = await this.read(path);
+    const target = await this.#prepareWrite(path);
+    if (target.status === 'blocked') {
+      return target;
+    }
+    const content = await readFile(target.absolutePath, 'utf8');
     const index = content.indexOf(expected);
     if (index === -1) {
       throw new AgentToolDeniedError(`Expected edit text was not found: ${path}`);
@@ -125,8 +101,8 @@ export class AgentToolRuntime {
     if (content.indexOf(expected, index + expected.length) !== -1) {
       throw new AgentToolDeniedError(`Expected edit text is ambiguous: ${path}`);
     }
-    return this.write(
-      path,
+    return this.#writePrepared(
+      target,
       `${content.slice(0, index)}${replacement}${content.slice(index + expected.length)}`
     );
   }
@@ -154,6 +130,56 @@ export class AgentToolRuntime {
     return [...(this.#initialLeases ?? []), ...this.#leasesByResource.values()].some(
       (lease) => lease.state === 'ACTIVE' && resourceIsCoveredBy(lease.resource, resource)
     );
+  }
+
+  async #prepareWrite(path: string): Promise<
+    | {
+        readonly status: 'ready';
+        readonly absolutePath: string;
+        readonly workspaceRelativePath: string;
+      }
+    | Extract<AgentToolWriteResult, { readonly status: 'blocked' }>
+  > {
+    const absolutePath = await this.#resolve(path);
+    const workspaceRelativePath = this.#relative(absolutePath);
+    const resource = this.#context.resolveResource(workspaceRelativePath);
+    const resourceKey = JSON.stringify(resource);
+    if (!this.#isAuthorized(resource)) {
+      const acquired = await this.#context.writeGuard.acquire({
+        runId: this.#context.runId,
+        agentId: this.#context.agentId,
+        taskId: this.#context.taskId,
+        resource,
+        mode: 'exclusive'
+      });
+      if (acquired.status === 'blocked') {
+        const leaseId = acquired.conflictingLeaseIds[0];
+        if (leaseId === undefined) {
+          throw new AgentToolDeniedError('Write lease block is missing an owner');
+        }
+        return { status: 'blocked', leaseId };
+      }
+      this.#leasesByResource.set(resourceKey, acquired.lease);
+      await this.#context.persistence.persistLease({
+        runId: this.#context.runId,
+        lease: acquired.lease
+      });
+    }
+    return { status: 'ready', absolutePath, workspaceRelativePath };
+  }
+
+  async #writePrepared(
+    target: { readonly absolutePath: string; readonly workspaceRelativePath: string },
+    content: string
+  ): Promise<Extract<AgentToolWriteResult, { readonly status: 'written' }>> {
+    await writeFile(target.absolutePath, content, 'utf8');
+    this.#writtenFileIds.add(this.#context.resolveFileId(target.workspaceRelativePath));
+    await this.#context.persistence.persistImpact({
+      runId: this.#context.runId,
+      taskId: this.#context.taskId,
+      impact: { ...this.#currentImpact(), observed: this.observedImpact() }
+    });
+    return { status: 'written', path: target.workspaceRelativePath };
   }
 
   #currentImpact(): TaskImpact {

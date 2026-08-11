@@ -15,10 +15,21 @@ in-memory guard, and Workspace/Git adapters are integration-test fixtures, not r
 dependencies. This keeps provider selection in a future composition root rather than coupling the
 application workflow to a local adapter.
 
-The first runtime is intentionally local, single-process, and serial. It uses a provider-neutral
-`AgentRunner` port and a deterministic `FakeAgentRunner` test implementation rather than a coding-agent
-SDK. Durable external dispatch, attempt recovery, and multi-resource lease-plan policy are defined by
-ADR-016. Pi remains a future backend implementation of this port and cannot own orchestration policy.
+The runtime is intentionally local and single-process. It uses a provider-neutral `AgentRunner` port and a
+deterministic `FakeAgentRunner` test implementation rather than a coding-agent SDK. Durable external
+dispatch, attempt recovery, and multi-resource lease-plan policy are defined by ADR-016. Pi remains a
+backend implementation of this port and cannot own orchestration policy.
+
+Independent task agents may execute concurrently up to `ScheduleOptions.maxConcurrency`. Workspace
+creation, lease acquisition, attempt transitions, Scheduler events, verification, commits, and Git
+integration remain serialized through one runtime lifecycle queue. This lets external agents overlap in
+isolated worktrees while preserving deterministic persistence evidence and preventing concurrent mutation
+of the integration reference. Lease contention blocks a task before its agent starts; normal lease release
+then allows Scheduler unblock/retry evidence to dispatch it later.
+
+The concurrent runtime passed independent review. Its current contention regression uses a deterministic
+guard double to assert pre-dispatch blocking; an additional real-resource overlap integration scenario is
+future test hardening and does not change the local runtime's current lease enforcement contract.
 
 For every runtime event, the runtime persists the Scheduler input snapshot, event, Scheduler decision,
 and non-deferred decision transitions atomically through `OrchestrationPersistence`. The runtime applies
