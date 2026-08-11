@@ -11,6 +11,7 @@ const directories: string[] = [];
 const trustedPath = `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`;
 const profile: AgentCommandSandboxProfile = {
   kind: 'macos-read-only',
+  assurance: 'developer-only',
   network: 'deny',
   workspaceAccess: 'read-only',
   processTree: 'direct-child'

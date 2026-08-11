@@ -1,11 +1,11 @@
 import { z } from 'zod';
 
 export const defaultAgentCommandSandboxProfile = {
-  kind: 'docker-read-only',
-  image: 'node:24-alpine',
-  network: 'deny',
-  workspaceAccess: 'read-only',
-  processTree: 'container'
+  kind: 'trusted-local',
+  assurance: 'developer-trusted',
+  network: 'host',
+  workspaceAccess: 'worktree',
+  processTree: 'direct-child'
 } as const;
 
 // This PATH applies inside the Linux validation container, not to the host process.
@@ -13,7 +13,15 @@ export const defaultAgentCommandTrustedPath = '/usr/local/bin:/usr/bin:/bin';
 
 export const agentCommandSandboxProfileSchema = z.discriminatedUnion('kind', [
   z.object({
+    kind: z.literal('trusted-local'),
+    assurance: z.literal('developer-trusted'),
+    network: z.literal('host'),
+    workspaceAccess: z.literal('worktree'),
+    processTree: z.literal('direct-child')
+  }),
+  z.object({
     kind: z.literal('macos-read-only'),
+    assurance: z.literal('developer-only'),
     network: z.literal('deny'),
     workspaceAccess: z.literal('read-only'),
     processTree: z.literal('direct-child')
@@ -21,9 +29,13 @@ export const agentCommandSandboxProfileSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('docker-read-only'),
     image: z.string().trim().min(1),
+    assurance: z.literal('production-validation'),
     network: z.literal('deny'),
     workspaceAccess: z.literal('read-only'),
-    processTree: z.literal('container')
+    processTree: z.literal('container'),
+    memoryBytes: z.int().min(1).max(17_179_869_184),
+    cpuCount: z.number().positive().max(16),
+    pidLimit: z.int().min(1).max(4_096)
   })
 ]);
 

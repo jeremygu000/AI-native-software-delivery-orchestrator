@@ -142,6 +142,7 @@ export class NodeAgentCommandExecutor implements AgentCommandExecutor {
 
 export class SandboxedAgentCommandExecutor implements AgentCommandExecutor {
   readonly #sandboxOverride: AgentCommandSandbox | undefined;
+  readonly #trustedLocalExecutor: AgentCommandExecutor;
   readonly #dockerSandbox: AgentCommandSandbox;
   readonly #macosSandbox: AgentCommandSandbox;
   readonly #trustedPath: string;
@@ -150,11 +151,17 @@ export class SandboxedAgentCommandExecutor implements AgentCommandExecutor {
     options: {
       readonly trustedPath?: string;
       readonly sandbox?: AgentCommandSandbox;
+      readonly trustedLocalExecutor?: AgentCommandExecutor;
       readonly dockerSandbox?: AgentCommandSandbox;
       readonly macosSandbox?: AgentCommandSandbox;
     } = {}
   ) {
     this.#sandboxOverride = options.sandbox;
+    this.#trustedLocalExecutor =
+      options.trustedLocalExecutor ??
+      new NodeAgentCommandExecutor({
+        trustedPath: options.trustedPath
+      });
     this.#dockerSandbox = options.dockerSandbox ?? new DockerReadOnlyCommandSandbox();
     this.#macosSandbox = options.macosSandbox ?? new MacosReadOnlyCommandSandbox();
     this.#trustedPath = options.trustedPath ?? defaultAgentCommandTrustedPath;
@@ -168,6 +175,9 @@ export class SandboxedAgentCommandExecutor implements AgentCommandExecutor {
     signal
   }: Parameters<AgentCommandExecutor['execute']>[0]) {
     const profile = sandbox ?? defaultAgentCommandSandboxProfile;
+    if (profile.kind === 'trusted-local') {
+      return this.#trustedLocalExecutor.execute({ command, cwd, environment, signal });
+    }
     const adapter =
       this.#sandboxOverride ??
       (profile.kind === 'docker-read-only' ? this.#dockerSandbox : this.#macosSandbox);

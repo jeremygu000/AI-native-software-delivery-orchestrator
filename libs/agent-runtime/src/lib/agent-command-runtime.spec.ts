@@ -67,9 +67,13 @@ describe('AgentCommandRuntime', () => {
         sandbox: {
           kind: 'docker-read-only',
           image: 'trusted/node:24',
+          assurance: 'production-validation',
           network: 'deny',
           workspaceAccess: 'read-only',
-          processTree: 'container'
+          processTree: 'container',
+          memoryBytes: 1_073_741_824,
+          cpuCount: 2,
+          pidLimit: 256
         }
       },
       '/workspace/task-1'
@@ -168,9 +172,13 @@ describe('AgentCommandRuntime', () => {
       sandbox: {
         kind: 'docker-read-only',
         image: 'node:24-alpine',
+        assurance: 'production-validation',
         network: 'deny',
         workspaceAccess: 'read-only',
-        processTree: 'container'
+        processTree: 'container',
+        memoryBytes: 1_073_741_824,
+        cpuCount: 2,
+        pidLimit: 256
       },
       cwd: '/workspace',
       environment: {}
@@ -179,6 +187,7 @@ describe('AgentCommandRuntime', () => {
       command,
       sandbox: {
         kind: 'macos-read-only',
+        assurance: 'developer-only',
         network: 'deny',
         workspaceAccess: 'read-only',
         processTree: 'direct-child'
@@ -196,15 +205,15 @@ describe('AgentCommandRuntime', () => {
     ]);
   });
 
-  it('uses the default Docker profile and trusted path without override', async () => {
-    const requests: Parameters<AgentCommandSandbox['execute']>[0][] = [];
-    const sandbox: AgentCommandSandbox = {
+  it('uses the default trusted local profile without Docker', async () => {
+    const requests: Parameters<AgentCommandExecutor['execute']>[0][] = [];
+    const trustedLocalExecutor: AgentCommandExecutor = {
       execute: async (request) => {
         requests.push(request);
         return { status: 'completed', exitCode: 0, stdout: '', stderr: '' };
       }
     };
-    const executor = new SandboxedAgentCommandExecutor({ dockerSandbox: sandbox });
+    const executor = new SandboxedAgentCommandExecutor({ trustedLocalExecutor });
 
     await executor.execute({
       command: { id: 'check', executable: 'node', args: [], timeoutMs: 1, maxOutputBytes: 1 },
@@ -212,13 +221,27 @@ describe('AgentCommandRuntime', () => {
       environment: {}
     });
 
-    expect(requests[0]).toMatchObject({
-      profile: {
-        kind: 'docker-read-only',
-        image: 'node:24-alpine'
-      },
-      trustedPath: expect.any(String)
+    expect(requests).toMatchObject([{ command: { id: 'check' }, cwd: '/workspace' }]);
+  });
+
+  it('uses the trusted local executor for the default developer profile', async () => {
+    const calls: Parameters<AgentCommandExecutor['execute']>[0][] = [];
+    const executor = new SandboxedAgentCommandExecutor({
+      trustedLocalExecutor: {
+        execute: async (request) => {
+          calls.push(request);
+          return { status: 'completed', exitCode: 0, stdout: '', stderr: '' };
+        }
+      }
     });
+
+    await executor.execute({
+      command: { id: 'check', executable: 'node', args: [], timeoutMs: 1, maxOutputBytes: 1 },
+      cwd: '/workspace',
+      environment: {}
+    });
+
+    expect(calls).toMatchObject([{ command: { id: 'check' }, cwd: '/workspace' }]);
   });
 
   it('terminates timed-out, cancelled, and output-limited commands', async () => {

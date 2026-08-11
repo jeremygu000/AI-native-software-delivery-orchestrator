@@ -39,12 +39,13 @@ Git workspace core:
 - a serial application orchestration runtime that coordinates Scheduler, workspaces, leases,
   persistence, verification, and provider-neutral fake agents, with durable agent attempts and
   deterministic multi-resource lease plans;
-- a Pi-backed `AgentRunner` with controlled filesystem tools, policy-controlled fixed commands, and a
-  Docker read-only validation sandbox; Pi built-in mutation and shell tools are disabled;
+- a Pi-backed `AgentRunner` with controlled filesystem tools, policy-controlled fixed commands, and
+  optional hardened validation sandbox profiles; Pi built-in mutation and shell tools are disabled;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestones 12–14 add a Pi adapter, policy-controlled `forge_command`, and a Docker read-only validation
-sandbox behind the runtime's provider-neutral `AgentRunner` port. They do not execute an authenticated
+Milestones 12–14 add a Pi adapter, policy-controlled `forge_command`, trusted-local developer execution,
+and optional hardened validation sandbox profiles behind the runtime's provider-neutral `AgentRunner` port.
+They do not execute an authenticated
 production model by default, provide unrestricted shell access, offer portable process isolation,
 coordinate processes, provision integration checkouts, or automate conflict repair.
 The CLI still exposes `plan` as a discoverable placeholder until there is a tested task-spec input
@@ -86,7 +87,7 @@ libs/runtime-guard  In-process exclusive lease acquisition and lifecycle
 libs/persistence  SQLite/Drizzle run evidence, recovery, and replay verification
 libs/workspace-git  Local isolated Git worktree and integration lifecycle
 libs/orchestration-runtime  Serial application layer for deterministic runtime choreography
-libs/agent-runtime  Pi adapter, controlled tools, and portable validation command sandbox
+libs/agent-runtime  Pi adapter, controlled tools, and execution profile adapters
 docs/adr     Architecture decisions
 ```
 

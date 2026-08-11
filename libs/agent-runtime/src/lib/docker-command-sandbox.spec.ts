@@ -2,12 +2,23 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { defaultAgentCommandSandboxProfile } from '@ai-native-software-delivery-orchestrator/domain';
+import type { AgentCommandSandboxProfile } from '@ai-native-software-delivery-orchestrator/domain';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { DockerReadOnlyCommandSandbox } from './docker-command-sandbox.js';
 
 const directories: string[] = [];
+const profile: AgentCommandSandboxProfile = {
+  kind: 'docker-read-only',
+  image: 'node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43',
+  assurance: 'production-validation',
+  network: 'deny',
+  workspaceAccess: 'read-only',
+  processTree: 'container',
+  memoryBytes: 1_073_741_824,
+  cpuCount: 2,
+  pidLimit: 256
+};
 
 const createDockerScript = (directory: string, body: string): string => {
   const executable = join(directory, 'docker');
@@ -32,7 +43,7 @@ describe('DockerReadOnlyCommandSandbox', () => {
 
     await expect(
       sandbox.execute({
-        profile: defaultAgentCommandSandboxProfile,
+        profile,
         executable: 'node',
         args: ['-e', "process.stdout.write('ok')"],
         cwd: directory,
@@ -51,7 +62,7 @@ describe('DockerReadOnlyCommandSandbox', () => {
     const directory = mkdtempSync(join(tmpdir(), 'docker-sandbox-'));
     directories.push(directory);
     const request = {
-      profile: defaultAgentCommandSandboxProfile,
+      profile,
       executable: 'node',
       args: [],
       cwd: directory,
@@ -65,7 +76,7 @@ describe('DockerReadOnlyCommandSandbox', () => {
         dockerExecutable: join(directory, 'missing-docker')
       }).execute({
         ...request,
-        profile: defaultAgentCommandSandboxProfile
+        profile
       })
     ).resolves.toMatchObject({ status: 'failed', detail: 'Command sandbox could not start' });
   });
@@ -79,6 +90,7 @@ describe('DockerReadOnlyCommandSandbox', () => {
       sandbox.execute({
         profile: {
           kind: 'macos-read-only',
+          assurance: 'developer-only',
           network: 'deny',
           workspaceAccess: 'read-only',
           processTree: 'direct-child'
@@ -106,7 +118,7 @@ describe('DockerReadOnlyCommandSandbox', () => {
         dockerExecutable: executable,
         terminationGraceMs: 20
       }).execute({
-        profile: defaultAgentCommandSandboxProfile,
+        profile,
         executable: 'node',
         args: [],
         cwd: directory,
@@ -128,7 +140,7 @@ describe('DockerReadOnlyCommandSandbox', () => {
       terminationGraceMs: 20
     });
     const base = {
-      profile: defaultAgentCommandSandboxProfile,
+      profile,
       executable: 'node',
       args: [],
       cwd: directory,
@@ -167,7 +179,7 @@ describe('DockerReadOnlyCommandSandbox', () => {
 
     await expect(
       new DockerReadOnlyCommandSandbox({ dockerExecutable: executable }).execute({
-        profile: defaultAgentCommandSandboxProfile,
+        profile,
         executable: 'node',
         args: [],
         cwd: directory,

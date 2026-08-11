@@ -342,13 +342,14 @@ must be present before the session enables the tool. This is not an OS sandbox: 
 network, secrets, file descriptors, process descendants, or resource limits. ADR-018 records the
 boundary.
 
-Validation commands now run through the provider-neutral `AgentCommandSandbox` port. The default
-`DockerReadOnlyCommandSandbox` uses Docker Engine or Docker Desktop with network denial, a read-only
-workspace mount, read-only container root, and tmpfs `/tmp`, providing one profile for macOS, Linux, and
-Windows. `MacosReadOnlyCommandSandbox` remains a native adapter. Missing required adapters fail closed and
-never fall back to an unrestricted local subprocess. Descendants, resource limits, image pinning,
-Docker-daemon policy, Pi cancellation wiring, and writable command effects remain sandbox-runtime work.
-ADR-019 records this boundary.
+Command execution now uses a provider-neutral `AgentCommandSandbox` port and explicit execution profiles.
+The default `trusted-local` profile runs fixed policy commands in the task worktree with developer host
+permissions, so Docker is not a core runtime dependency. The optional `DockerReadOnlyCommandSandbox` uses
+Docker Engine or Docker Desktop with network denial, a read-only workspace mount, read-only container root,
+and tmpfs `/tmp`, providing one hardened profile for macOS, Linux, and Windows. `MacosReadOnlyCommandSandbox`
+remains a native developer-only adapter. Missing selected hardened adapters fail closed and never fall back
+to an unrestricted local subprocess. Descendants, resource limits, image pinning, Docker-daemon policy, Pi
+cancellation wiring, and writable command effects remain sandbox-runtime work. ADR-019 records this boundary.
 
 The feedback loop is:
 

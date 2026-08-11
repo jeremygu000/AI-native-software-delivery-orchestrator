@@ -1281,22 +1281,25 @@ The full quality gate now has 320 passing tests. Coverage is 96.72% statements, 
 
 ## Stage 14: Sandboxed Validation Commands
 
-Validation commands now run through a provider-neutral `AgentCommandSandbox` port. The default portable
-adapter is `DockerReadOnlyCommandSandbox`: Docker Engine or Docker Desktop provides network denial, a
-read-only workspace mount, read-only container root, and tmpfs `/tmp` on macOS, Linux, and Windows. The
-macOS `sandbox-exec` adapter remains available for native validation. Unsupported profiles or a missing
-required adapter fail closed; the runtime never falls back to an unrestricted subprocess.
+Validation commands now run through a provider-neutral `AgentCommandSandbox` port and explicit execution
+profiles. The default developer profile is `trusted-local`: fixed policy commands run in the task worktree
+with developer host permissions and do not require Docker. The optional hardened `docker-read-only` profile
+uses Docker Engine or Docker Desktop for network denial, a read-only workspace mount, read-only container
+root, and tmpfs `/tmp` on macOS, Linux, and Windows. The macOS `sandbox-exec` adapter remains a native
+developer-only option. Unsupported selected hardened profiles or missing adapters fail closed; the runtime
+never falls back to an unrestricted subprocess.
 
-Only `validation` commands use this profile. This does not permit workspace-writing commands or solve all
-command side effects. Process descendants, resource limits, image pinning, Docker daemon policy, full
-readable-host isolation for native execution, live Pi cancellation wiring, writable effects under leases,
-and diff-based observed impact reconciliation remain future sandbox-runtime work.
+Only `validation` commands use these profiles. `trusted-local` is a developer trust model, not sandbox
+enforcement; `docker-read-only` restricts workspace and network effects. Neither permits workspace-writing
+commands. Process descendants, resource limits, image pinning, Docker daemon policy, full readable-host
+isolation for native execution, live Pi cancellation wiring, writable effects under leases, and diff-based
+observed impact reconciliation remain future sandbox-runtime work.
 
 For a code-level teaching model, see [Sandboxed Agent Commands](./sandboxed-agent-commands.en.md) and its
 [Chinese edition](./sandboxed-agent-commands.zh.md).
 
-The full quality gate now has 334 passing tests. Coverage is 96.67% statements, 91.67% branches,
-98.59% functions, and 96.66% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+The full quality gate now has 337 passing tests. Coverage is 96.68% statements, 91.59% branches,
+98.59% functions, and 96.67% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
 ## Stage 10: Workspace and Git Lifecycle
 
@@ -1464,10 +1467,11 @@ The full quality gate now has 281 passing tests. Coverage is 96.68% statements, 
   direct-child `SIGTERM` to `SIGKILL` escalation. Durable command-policy identity prevents changed
   authority during PREPARING recovery. It remains policy control rather than a process-tree or operating-
   system sandbox.
-- Milestone 14 Sandboxed Validation Commands is complete and closed after independent review. The default
-  Docker profile denies network and mounts the workspace read-only on Docker Engine/Desktop for macOS,
-  Linux, and Windows; the native macOS profile explicitly rejects non-Darwin hosts. Writable commands,
-  process-tree controls, resource limits, and observed-impact reconciliation remain later sandbox work.
+- Milestone 14 Sandboxed Validation Commands is complete and closed after independent review. `trusted-local`
+  is the default developer mode with fixed command policy and host permissions; `docker-read-only` is an
+  optional hardened mode with Docker read-only workspace and network denial on macOS, Linux, and Windows;
+  the macOS native adapter is developer-only. Writable commands, process-tree controls, resource limits,
+  and observed-impact reconciliation remain later sandbox work.
 
 ## What has NOT been implemented yet
 

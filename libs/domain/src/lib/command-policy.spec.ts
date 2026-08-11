@@ -38,6 +38,16 @@ describe('AgentCommandPolicy', () => {
     ).toBe(true);
   });
 
+  it('defaults command policy to trusted local developer execution', () => {
+    const parsed = agentCommandPolicySchema.parse({
+      commands: [{ id: 'check', executable: 'node', args: [], timeoutMs: 1, maxOutputBytes: 1 }],
+      environment: {}
+    });
+
+    expect(parsed.sandbox).toBeUndefined();
+    expect(agentCommandPolicyFingerprint(parsed)).toContain('trusted-local');
+  });
+
   it('rejects unsupported command effects', () => {
     expect(
       agentCommandPolicySchema.safeParse({
