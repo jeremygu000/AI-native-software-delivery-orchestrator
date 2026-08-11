@@ -98,9 +98,8 @@ The complete solution-style repository-analysis regression test has a scoped 30-
 opens this repository's full TypeScript workspace and can legitimately exceed Vitest's default
 five-second timeout under load; the larger timeout does not affect ordinary test cases.
 
-The initial mock-gateway and controlled-tool scope passed independent review. The current follow-up
-safety hardening for `UNKNOWN` outcomes, lease authority, symlink confinement, and immediate observed
-impact persistence awaits independent review.
+The mock-gateway and controlled-tool scope, including the `UNKNOWN`, lease-authority, symlink, and
+immediate observed-impact safety follow-up, passed independent review. Milestone 12 is closed.
 
 ## Current limits
 
@@ -110,3 +109,7 @@ impact persistence awaits independent review.
 - no automatic retry for externally owned lease blockers;
 - no observed-scope replanning or concurrent agent dispatch.
 - no descriptor-relative filesystem operations to eliminate realpath TOCTOU races.
+- `forge_edit` reads before acquiring authority, which is safe only while `maxConcurrency` remains one;
+  it must acquire before read before concurrent agent execution is enabled.
+- filesystem writes and SQLite impact persistence are not one atomic transaction; recovery must later
+  reconcile observed impact from workspace or Git changes.

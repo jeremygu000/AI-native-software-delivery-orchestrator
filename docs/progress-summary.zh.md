@@ -1233,9 +1233,10 @@ invalid binding 和 real SQLite replay。
 - Milestone 10 Workspace/Git 已完成接受的 local single-repository scope，并已通过独立 Review。Review 还
   重新验证 Date-aware lease idempotency 和 clean-target task-branch collision handling。
 - Milestone 11 Orchestration Runtime 已完成接受的 local serial fake-agent scope，正在等待独立 Review 后才能提交。
-- Milestone 12 Pi Agent Adapter 已完成接受的 mock-gateway 和 controlled-tool scope。Independent review 发现
-  post-start `UNKNOWN` safety、broader lease authority、symlink confinement 和 immediate observed-impact durability
-  hardening；follow-up implementation 正在等待 review。
+- Milestone 12 Pi Agent Adapter 已在 independent review 后完成并关闭。Follow-up hardening 保留 post-start
+  `UNKNOWN` ownership、复用 broader task lease、拒绝 static symlink escape、立即 persistence observed impact，并防止
+  tool factory 遗漏 runtime authority。启用 concurrent dispatch 前，`forge_edit` 必须先 acquire authority 再 read；
+  recovery 还必须从 workspace 或 Git change reconcile filesystem write 与 SQLite evidence 非原子窗口。
 
 ## 还没有实现的部分
 

@@ -1405,9 +1405,11 @@ The full quality gate now has 281 passing tests. Coverage is 96.68% statements, 
   verified clean-target task-branch collision handling.
 - Milestone 11 Orchestration Runtime is complete for the accepted local serial fake-agent scope and
   awaits independent review before it can be committed.
-- Milestone 12 Pi Agent Adapter is complete for the accepted mock-gateway and controlled-tool scope.
-  Independent review identified post-start `UNKNOWN` safety, broader lease authority, symlink confinement,
-  and immediate observed-impact durability hardening; the follow-up implementation is awaiting review.
+- Milestone 12 Pi Agent Adapter is complete and closed after independent review. The follow-up hardening
+  preserves post-start `UNKNOWN` ownership, reuses broader task leases, rejects static symlink escapes,
+  immediately persists observed impact, and prevents tool factories from omitting runtime authority.
+  Before concurrent dispatch, `forge_edit` must acquire authority before reading; recovery must also
+  reconcile the non-atomic filesystem-write and SQLite-evidence window from workspace or Git changes.
 
 ## What has NOT been implemented yet
 

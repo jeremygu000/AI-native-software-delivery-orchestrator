@@ -90,8 +90,8 @@ acquire lease。测试不启动 real authenticated model。
 TypeScript workspace，在 load 下可能合理地超过 Vitest 默认的 five-second timeout；更大的 timeout 不影响普通
 test case。
 
-初始 mock-gateway 和 controlled-tool scope 已通过 independent review。当前针对 `UNKNOWN` outcome、lease authority、
-symlink confinement 和 immediate observed impact persistence 的 follow-up safety hardening 正在等待 independent review。
+mock-gateway 和 controlled-tool scope，以及 `UNKNOWN` outcome、lease authority、symlink confinement 和 immediate
+observed impact persistence 的 safety follow-up，均已通过 independent review。Milestone 12 已关闭。
 
 ## 当前限制
 
@@ -101,3 +101,7 @@ symlink confinement 和 immediate observed impact persistence 的 follow-up safe
 - 没有 external lease blocker 的 automatic retry；
 - 没有 observed-scope replanning 或 concurrent agent dispatch。
 - 没有 descriptor-relative filesystem operation 来消除 realpath TOCTOU race。
+- `forge_edit` 会在 acquire authority 前 read；这只在 `maxConcurrency` 保持为 one 时安全，启用 concurrent agent
+  execution 前必须改成 acquire-before-read。
+- filesystem write 和 SQLite impact persistence 不是一个 atomic transaction；recovery 后续必须从 workspace 或 Git
+  change reconcile observed impact。

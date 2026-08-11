@@ -55,10 +55,15 @@ Pi built-in mutation and shell tools are not enabled. In particular, there is no
 
 ## Consequences
 
-The first Pi adapter is independently reviewed with deterministic gateways, without calling a paid
+The first Pi adapter passed independent review with deterministic gateways, without calling a paid
 model. Tests prove Pi tool requests traverse the orchestration safety boundary, including rejection of
 a tool call that arrives before durable session establishment. The repository self-analysis regression
 test has a scoped 30-second timeout because it opens the complete solution-style workspace and can
 legitimately exceed Vitest's default five-second limit under load. This does not add arbitrary command
 execution, sandboxing, network/secrets policies, observed-scope replanning, concurrent agents, or
 automatic UNKNOWN attempt reconciliation. Those remain later stages.
+
+Before enabling concurrent agent execution, `forge_edit` must acquire write authority before reading
+the file, so its read-modify-write operation cannot overwrite a later edit made while it waited for a
+lease. Filesystem writes and SQLite evidence are also not atomically committed together; recovery must
+eventually inspect workspace changes and reconcile observed impact from the filesystem or Git diff.
