@@ -30,9 +30,14 @@ attempts become `UNKNOWN`; the local fake backend does not guess whether an exte
 Attempts use revision CAS: stale evidence and same-revision conflicting evidence are rejected.
 
 Recovery safely re-enqueues `PREPARING` attempts because no external agent invocation has occurred.
+The recovery binding must match the persisted attempt's agent ID, workspace ID, and canonical lease-plan
+fingerprint. This prevents a caller from resuming a durable attempt with a different agent, workspace,
+or ownership plan.
 If a runner throws before `onStarted`, the attempt and task become `FAILED`; after `onStarted`, the
-attempt becomes `UNKNOWN`. In both cases the run is marked `FAILED`, leases are released where possible,
-and verification/integration do not run.
+attempt becomes `UNKNOWN`. The `UNKNOWN` path retains ACTIVE leases because the external actor may
+still mutate the workspace. Both paths mark the run `FAILED` and never enter verification/integration.
+A completed result without `onStarted` is a durable protocol failure: it becomes `FAILED`, releases
+leases, and stops.
 
 ## Lease plans
 

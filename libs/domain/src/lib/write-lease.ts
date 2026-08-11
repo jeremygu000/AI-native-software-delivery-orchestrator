@@ -87,6 +87,17 @@ export const canonicalTaskLeaseResources = (
   resources: readonly WritableResource[]
 ): readonly WritableResource[] => [...resources].toSorted(compareWritableResources);
 
+export const taskLeasePlanFingerprint = (plan: TaskLeasePlan): string =>
+  JSON.stringify({
+    taskId: plan.taskId,
+    source: plan.source,
+    resources: canonicalTaskLeaseResources(plan.predictedResources).map((resource) =>
+      resource.type === 'symbol'
+        ? { ...resource, ancestorSymbolIds: resource.ancestorSymbolIds.toSorted() }
+        : resource
+    )
+  });
+
 export const taskLeasePlanFromPredictedImpact = (impact: {
   readonly taskId: string;
   readonly projectsWritten: ReadonlySet<string>;

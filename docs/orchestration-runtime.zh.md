@@ -25,9 +25,12 @@ invocation。Runner 在 attempt 变为 `RUNNING` 前通过 `onStarted` 提供 op
 Restart 时 unresolved `STARTING`/`RUNNING` attempt 变为 `UNKNOWN`；local fake backend 不猜测 external process
 是否存在。Attempt 使用 revision CAS，拒绝 stale evidence 和 same-revision conflicting evidence。
 
-Recovery 可以安全地 re-enqueue `PREPARING` attempt，因为 external agent invocation 尚未发生。如果 runner 在
-`onStarted` 前 throw，attempt/task 变为 `FAILED`；在 `onStarted` 后 throw，attempt 变为 `UNKNOWN`。两种情况 run
-都会标记为 `FAILED`，lease 尽可能 release，且不会进入 verification/integration。
+Recovery 可以安全地 re-enqueue `PREPARING` attempt，因为 external agent invocation 尚未发生。recovery binding
+必须匹配 persisted attempt 的 agent ID、workspace ID 和 canonical lease-plan fingerprint，防止 caller 用不同
+agent、workspace 或 ownership plan resume durable attempt。如果 runner 在 `onStarted` 前 throw，attempt/task
+变为 `FAILED`；在 `onStarted` 后 throw，attempt 变为 `UNKNOWN`。`UNKNOWN` path 保留 ACTIVE lease，因为 external
+actor 可能仍在 mutation workspace。两种情况 run 都标记为 `FAILED`，且不会进入 verification/integration。
+completed result 没有 `onStarted` 是 durable protocol failure：它变为 `FAILED`、release lease 并停止。
 
 ## Lease plan
 

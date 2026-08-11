@@ -8,6 +8,7 @@ const base = {
   taskId: 'task-1',
   agentId: 'agent-1',
   workspaceId: 'workspace-1',
+  leasePlanFingerprint: 'lease-plan-1',
   revision: 1
 };
 

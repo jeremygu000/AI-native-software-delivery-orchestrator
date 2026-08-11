@@ -1055,7 +1055,7 @@ Persistence test 覆盖 complete recovery、SQLite file reopen、Set/date round-
 atomicity、transaction rollback、append-only sequence、decision replay mismatch、current-record upsert 以及
 corrupted stored-state rejection。
 
-完整质量门现在有 248 个测试通过。覆盖率为语句 96.76%、分支 91.86%、函数 99.13%、行 96.73%。
+完整质量门现在有 250 个测试通过。覆盖率为语句 96.78%、分支 91.83%、函数 99.14%、行 96.75%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 阶段十:Workspace 与 Git Lifecycle
@@ -1121,7 +1121,7 @@ protection。
 acquire lease、不协调 multiple repository/process，也不自动修复 conflict。这些需要未来 agent/runtime layer
 和 ownership-generation write fencing。
 
-完整质量门现在有 248 个测试通过。覆盖率为语句 96.76%、分支 91.86%、函数 99.13%、行 96.73%。
+完整质量门现在有 250 个测试通过。覆盖率为语句 96.78%、分支 91.83%、函数 99.14%、行 96.75%。
 
 ## 阶段十一:Orchestration Runtime
 
@@ -1153,8 +1153,9 @@ Predicted-impact conversion 在没有完整 symbol ancestor evidence 时保守�
 
 后续 dispatch hardening 让 `PREPARING` attempt 可在 recovery 后安全继续 workspace/lease preparation。Project-wide
 predicted write 会 dominate child file/symbol lease，不会错误缩小。Runner 在 `onStarted` 前 exception 会记录确定的
-attempt/task failure；在 `onStarted` 后 exception 会记录 `UNKNOWN` outcome。两种情况都停止
-verification/integration，尽可能 release lease，并把 run 标记为 failed。Attempt schema 现在强制
+attempt/task failure；在 `onStarted` 后 exception 会记录 `UNKNOWN` outcome，并保留 ACTIVE lease，因为 external
+actor 可能仍在 mutation workspace。两种情况都停止 verification/integration，并把 run 标记为 failed。
+`PREPARING` recovery resume 前验证 persisted agent/workspace/lease-plan identity。Attempt schema 现在强制
 state-specific timestamp/failure evidence。
 
 新增 vertical test 组合 real SQLite persistence、InMemoryWriteGuard、GitWorkspaceManager、temporary integration
@@ -1167,18 +1168,18 @@ workspace/lease record。它有意不 restart unknown in-flight agent 或 reclai
 
 详细代码教学见 [Orchestration Runtime](./orchestration-runtime.zh.md) 和其
 [English edition](./orchestration-runtime.en.md)。Test 覆盖 dependency chain success、agent failure、verification
-failure、same-run/external-run lease blocking、lease-release failure evidence、pre-start/post-start runner throw、durable attempt recovery/resume、multi-resource rollback、real Git vertical integration、blocked Git integration、eventless recovery、current evidence recovery、
+failure、same-run/external-run lease blocking、lease-release failure evidence、pre-start/post-start runner throw、completed-without-onStarted protocol failure、identity-validated durable attempt recovery/resume、multi-resource rollback、real Git vertical integration、blocked Git integration、eventless recovery、current evidence recovery、
 invalid binding 和 real SQLite replay。
 
-完整质量门现在有 248 个测试通过。覆盖率为语句 96.76%、分支 91.86%、函数 99.13%、行 96.73%。
+完整质量门现在有 250 个测试通过。覆盖率为语句 96.78%、分支 91.83%、函数 99.14%、行 96.75%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
 ## 目前整体状态(截止到本文写作时)
 
 - 架构规划的 11 个里程碑已全部实现。这不代表完整产品 100% 完成：real agent execution、真实 write
   enforcement、concurrent dispatch、provider integration 和 CLI runtime command 仍是当前 milestone 计划外的重要能力。
-- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 248 个测试全部通过。
-- 覆盖率为:语句 96.76%、分支 91.86%、函数 99.13%、行 96.73%;四项都达到至少 90% 的门槛。
+- `pnpm check` 会完成格式、lint、TypeScript 7 类型检查和测试。当前 250 个测试全部通过。
+- 覆盖率为:语句 96.78%、分支 91.83%、函数 99.14%、行 96.75%;四项都达到至少 90% 的门槛。
 - `pnpm build` 通过。`forge analyze` 已在 968 个文件的真实仓库验证;`forge plan` 仍然刻意
   保持不可用。
 - Milestone 6 第二次正确性加固和 Milestone 7 实现都已经通过独立 Review 与 follow-up Review,没有

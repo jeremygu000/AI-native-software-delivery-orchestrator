@@ -44,6 +44,12 @@ const task = (id: string, dependencies: readonly string[] = []): TaskContract =>
   verification: []
 });
 
+const leasePlanFingerprint = JSON.stringify({
+  taskId: 'A',
+  source: 'manual',
+  resources: [{ type: 'project', projectId: 'project-A' }]
+});
+
 const directories: string[] = [];
 
 const git = (cwd: string, args: readonly string[]): string =>
@@ -389,6 +395,7 @@ describe('OrchestrationRuntime', () => {
             taskId: 'A',
             agentId: 'agent-A',
             workspaceId: 'workspace-A',
+            leasePlanFingerprint,
             state: 'PREPARING',
             revision: 1
           }
@@ -403,6 +410,7 @@ describe('OrchestrationRuntime', () => {
         taskId: 'A',
         agentId: 'agent-A',
         workspaceId: 'workspace-A',
+        leasePlanFingerprint,
         state: 'STARTING',
         revision: 2,
         startedAt: new Date('2026-08-12T00:00:00.000Z')
@@ -472,6 +480,7 @@ describe('OrchestrationRuntime', () => {
             taskId: 'A',
             agentId: 'agent-A',
             workspaceId: 'workspace-A',
+            leasePlanFingerprint,
             state: 'PREPARING',
             revision: 1
           }
@@ -532,6 +541,111 @@ describe('OrchestrationRuntime', () => {
       run: { state: 'FAILED' },
       snapshot: { taskStates: [{ taskId: 'A', state: 'RUNNING' }] },
       attempts: [{ attempt: { state: 'UNKNOWN', failure: { type: 'unknown-outcome' } } }],
+      leases: [{ lease: { state: 'ACTIVE' } }]
+    });
+  });
+
+  it('rejects PREPARING recovery when durable attempt identity differs from binding intent', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(request([task('A')]));
+    await persistence.persistDispatch({
+      reevaluation: {
+        event: {
+          runId: 'run-1',
+          sequence: 1,
+          occurredAt: '2026-08-12T00:00:00.000Z',
+          event: { type: 'run-started' }
+        },
+        transitions: [
+          { runId: 'run-1', sequence: 1, taskId: 'A', fromState: 'PENDING', toState: 'READY' },
+          { runId: 'run-1', sequence: 1, taskId: 'A', fromState: 'READY', toState: 'RUNNING' }
+        ],
+        decision: {
+          runId: 'run-1',
+          sequence: 1,
+          inputSnapshot: { taskStates: [{ taskId: 'A', state: 'PENDING' }], runtimeBlocks: [] },
+          decision: {
+            taskDecisions: [
+              {
+                taskId: 'A',
+                action: 'ready',
+                fromState: 'PENDING',
+                toState: 'READY',
+                reasons: [{ type: 'dependencies-completed', dependencyTaskIds: [] }]
+              },
+              {
+                taskId: 'A',
+                action: 'start',
+                fromState: 'READY',
+                toState: 'RUNNING',
+                reasons: [{ type: 'selected-by-priority', priority: 0 }]
+              }
+            ]
+          }
+        }
+      },
+      attempts: [
+        {
+          runId: 'run-1',
+          attempt: {
+            id: 'attempt-A',
+            runId: 'run-1',
+            taskId: 'A',
+            agentId: 'agent-A',
+            workspaceId: 'workspace-A',
+            leasePlanFingerprint,
+            state: 'PREPARING',
+            revision: 1
+          }
+        }
+      ]
+    });
+    const runtime = createRuntime(persistence);
+    const run = request([task('A')]);
+    const binding = run.taskBindings[0];
+
+    await expect(
+      runtime.recoverAndResumeRun({
+        ...run,
+        taskBindings: [{ ...binding, agentId: 'agent-B' }]
+      })
+    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+    await expect(
+      runtime.recoverAndResumeRun({
+        ...run,
+        taskBindings: [{ ...binding, workspace: { ...binding.workspace, id: 'workspace-B' } }]
+      })
+    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+    await expect(
+      runtime.recoverAndResumeRun({
+        ...run,
+        taskBindings: [
+          {
+            ...binding,
+            leasePlan: {
+              ...binding.leasePlan,
+              source: 'runtime-derived'
+            }
+          }
+        ]
+      })
+    ).rejects.toThrow('Recovery binding does not match durable attempt: A');
+  });
+
+  it('turns a completed result without onStarted into a durable failed attempt', async () => {
+    const persistence = new MemoryPersistence();
+    const invalidAgent: AgentRunner = {
+      run: async () => ({ status: 'completed' })
+    };
+    const runtime = createRuntime(persistence, undefined, undefined, invalidAgent);
+
+    await expect(runtime.startRun(request([task('A')]))).rejects.toThrow(
+      'Agent execution did not establish: A'
+    );
+    await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
+      run: { state: 'FAILED' },
+      snapshot: { taskStates: [{ taskId: 'A', state: 'FAILED' }] },
+      attempts: [{ attempt: { state: 'FAILED', failure: { type: 'execution-failed' } } }],
       leases: [{ lease: { state: 'RELEASED' } }]
     });
   });
@@ -1143,6 +1257,7 @@ describe('OrchestrationRuntime', () => {
           taskId: 'A',
           agentId: 'agent-A',
           workspaceId: workspace.id,
+          leasePlanFingerprint,
           state: 'STARTING',
           revision: 2
         },

@@ -1,6 +1,7 @@
 import {
   canonicalTaskLeaseResources,
   taskDecisionsWithTransitions,
+  taskLeasePlanFingerprint,
   taskLeasePlanSchema
 } from '@ai-native-software-delivery-orchestrator/domain';
 import type {
@@ -183,6 +184,7 @@ export class OrchestrationRuntime {
         `Run disappeared during recovery: ${request.run.id}`
       );
     }
+    this.#assertRecoveryBindings(recovered.attempts, bindings);
     const state: RuntimeState = {
       request,
       bindings,
@@ -302,35 +304,19 @@ export class OrchestrationRuntime {
     } catch (error) {
       const detail =
         error instanceof Error ? error.message : 'Agent runner threw a non-error value.';
-      await this.#persistAttempt(state, taskId, {
-        state: executionEstablished ? 'UNKNOWN' : 'FAILED',
-        completedAt: this.#now(),
-        failure: {
-          type: executionEstablished ? 'unknown-outcome' : 'execution-failed',
-          detail
-        }
-      });
-      if (!executionEstablished) {
-        this.#setState(state, taskId, 'FAILED');
-        await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
-      }
-      const released = await this.#releaseLeasePlan(acquisition.leases);
-      if (released.status === 'released') {
-        for (const lease of released.leases) {
-          await this.#persistence.persistLease({ runId: state.request.run.id, lease });
-          await this.#recordEvent(state, { type: 'lease-released', taskId, leaseId: lease.id });
-        }
-      } else {
-        for (const lease of released.leases) {
-          await this.#persistence.persistLease({ runId: state.request.run.id, lease });
-        }
-        await this.#recordEvent(state, {
-          type: 'lease-release-failed',
-          taskId,
-          leaseId: released.leaseId
+      if (executionEstablished) {
+        await this.#persistAttempt(state, taskId, {
+          state: 'UNKNOWN',
+          completedAt: this.#now(),
+          failure: { type: 'unknown-outcome', detail }
         });
+        // The external agent may still mutate the workspace, so retain its ACTIVE leases.
+        await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+        throw new OrchestrationRuntimeInputError(
+          `Agent runner failed for task ${taskId}: ${detail}`
+        );
       }
-      await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+      await this.#failBeforeExecutionEstablished(state, taskId, acquisition.leases, detail);
       throw new OrchestrationRuntimeInputError(`Agent runner failed for task ${taskId}: ${detail}`);
     }
     if (agentResult.status === 'failed') {
@@ -343,6 +329,8 @@ export class OrchestrationRuntime {
       await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
     } else {
       if (!executionEstablished) {
+        const detail = 'Agent runner completed without calling onStarted.';
+        await this.#failBeforeExecutionEstablished(state, taskId, acquisition.leases, detail);
         throw new OrchestrationRuntimeInputError(`Agent execution did not establish: ${taskId}`);
       }
       await this.#persistAttempt(state, taskId, {
@@ -443,6 +431,7 @@ export class OrchestrationRuntime {
           taskId: taskDecision.taskId,
           agentId: binding.agentId,
           workspaceId: binding.workspace.id,
+          leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
           state: 'PREPARING',
           revision: 1
         };
@@ -481,7 +470,7 @@ export class OrchestrationRuntime {
     taskId: string,
     update: Omit<
       AgentExecutionAttempt,
-      'id' | 'runId' | 'taskId' | 'agentId' | 'workspaceId' | 'revision'
+      'id' | 'runId' | 'taskId' | 'agentId' | 'workspaceId' | 'revision' | 'leasePlanFingerprint'
     >
   ): Promise<void> {
     const current = state.attemptsByTask.get(taskId);
@@ -495,6 +484,60 @@ export class OrchestrationRuntime {
     };
     state.attemptsByTask.set(taskId, attempt);
     await this.#persistence.persistAttempt({ runId: state.request.run.id, attempt });
+  }
+
+  async #failBeforeExecutionEstablished(
+    state: RuntimeState,
+    taskId: string,
+    leases: readonly WriteLease[],
+    detail: string
+  ): Promise<void> {
+    await this.#persistAttempt(state, taskId, {
+      state: 'FAILED',
+      completedAt: this.#now(),
+      failure: { type: 'execution-failed', detail }
+    });
+    this.#setState(state, taskId, 'FAILED');
+    await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
+    const released = await this.#releaseLeasePlan(leases);
+    if (released.status === 'released') {
+      for (const lease of released.leases) {
+        await this.#persistence.persistLease({ runId: state.request.run.id, lease });
+        await this.#recordEvent(state, { type: 'lease-released', taskId, leaseId: lease.id });
+      }
+    } else {
+      for (const lease of released.leases) {
+        await this.#persistence.persistLease({ runId: state.request.run.id, lease });
+      }
+      await this.#recordEvent(state, {
+        type: 'lease-release-failed',
+        taskId,
+        leaseId: released.leaseId
+      });
+    }
+    await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+  }
+
+  #assertRecoveryBindings(
+    attempts: RecoveredRun['attempts'],
+    bindings: ReadonlyMap<string, RuntimeTaskBinding>
+  ): void {
+    for (const { attempt } of attempts) {
+      if (attempt.state !== 'PREPARING') {
+        continue;
+      }
+      const binding = bindings.get(attempt.taskId);
+      if (
+        binding === undefined ||
+        binding.agentId !== attempt.agentId ||
+        binding.workspace.id !== attempt.workspaceId ||
+        taskLeasePlanFingerprint(binding.leasePlan) !== attempt.leasePlanFingerprint
+      ) {
+        throw new OrchestrationRuntimeInputError(
+          `Recovery binding does not match durable attempt: ${attempt.taskId}`
+        );
+      }
+    }
   }
 
   async #acquireLeasePlan(

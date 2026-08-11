@@ -685,6 +685,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
             taskId: 'B',
             agentId: 'agent-B',
             workspaceId: 'workspace-B',
+            leasePlanFingerprint: 'lease-plan-B',
             state: 'PREPARING' as const,
             revision: 1
           }

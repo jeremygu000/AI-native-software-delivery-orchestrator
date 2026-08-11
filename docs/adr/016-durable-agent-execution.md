@@ -12,7 +12,7 @@ Scheduler start decision is persisted with an `AgentExecutionAttempt` in `PREPAR
 preparation must be reconciled after a crash.
 
 An attempt has a stable ID, run/task/agent/workspace identity, revision CAS, optional provider-neutral
-session reference, timestamps, and typed failure evidence. The runtime advances it:
+session reference, canonical lease-plan fingerprint, timestamps, and typed failure evidence. The runtime advances it:
 
 ```text
 PREPARING -> STARTING -> RUNNING -> COMPLETED | FAILED
@@ -21,7 +21,8 @@ process restart ----------> UNKNOWN
 ```
 
 `PREPARING` is safe to resume: recovery reconstructs its workspace and lease preparation without
-invoking an external agent again. `STARTING` means invocation was sent but no durable backend
+invoking an external agent again, but only after its persisted agent, workspace, and lease-plan
+fingerprint match the supplied recovery binding. `STARTING` means invocation was sent but no durable backend
 establishment evidence exists. An `AgentRunner` calls `onStarted` when it can provide that evidence;
 only then does the attempt become `RUNNING`. On restart, `STARTING` and `RUNNING` attempts become
 `UNKNOWN` with `unknown-outcome` evidence. The first fake backend cannot inspect an external process,
@@ -53,5 +54,7 @@ provider-neutral attempt/session contract and must use future orchestrator-contr
 
 If an `AgentRunner` throws before `onStarted`, the runtime records a definite `FAILED` attempt and task
 failure, releases leases, and marks the run failed. If it throws after `onStarted`, the runtime records
-an `UNKNOWN` attempt, releases leases where possible, marks the run failed, and never continues to
-verification or integration.
+an `UNKNOWN` attempt, retains its ACTIVE leases because the external actor may still mutate the
+workspace, marks the run failed, and never continues to verification or integration. A completed
+result without `onStarted` is a durable protocol failure: the runtime records `FAILED`, releases
+leases, and marks the run failed.
