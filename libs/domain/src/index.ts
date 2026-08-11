@@ -7,3 +7,4 @@ export * from './lib/task-state.js';
 export * from './lib/write-lease.js';
 export * from './lib/workspace.js';
 export * from './lib/agent-execution.js';
+export * from './lib/command-policy.js';

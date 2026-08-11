@@ -1101,6 +1101,28 @@ sandboxed I/O 仍是后续 hardening。
 完整质量门现在有 281 个测试通过。覆盖率为语句 96.68%、分支 91.63%、函数 98.61%、行 96.64%。
 `pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
 
+## 阶段十三:受控 Agent Command
+
+Orchestrator 现在可以让 Pi agent 请求一个明确批准的 validation command，而不提供 arbitrary shell access。
+`forge_command` 只接受 command ID。Runtime binding 提供 `AgentCommandPolicy`，为每个 ID 固定 executable、
+argument vector、timeout、output limit 和完整 environment。Agent 不能选择 shell command、extra argument、
+不同 working directory 或 environment variable。
+
+Concrete local executor 在 task workspace 内用 `shell: false` 运行固定 command。它捕获有上限的 standard output/error，
+把 nonzero exit 作为 tool error 返回，在 timeout/cancellation 时发送 `SIGTERM` 并在 bounded grace 后升级为
+`SIGKILL`，同时报告 sanitized startup failure。
+没有 command policy 时，Pi session 根本不启用 `forge_command`；Pi built-in `bash` 仍保持 disabled。
+
+这是 policy boundary，不是 operating-system sandbox。它不 isolate network access、secrets、filesystem permission、
+process descendant、CPU 或 memory。这些控制需要后续 sandbox adapter，并且必须在允许 arbitrary command 或 concurrent
+production agent 前完成设计。
+
+详细代码教学见 [Controlled Agent Commands](./controlled-agent-commands.zh.md) 和其
+[English edition](./controlled-agent-commands.en.md)。
+
+完整质量门现在有 309 个测试通过。覆盖率为语句 96.70%、分支 91.61%、函数 98.67%、行 96.66%。
+`pnpm check`、`pnpm build` 和 `git diff --check` 都通过。
+
 ## 阶段十:Workspace 与 Git Lifecycle
 
 Deterministic core 现在可以为每个 task 提供 isolated local Git worktree，并把完成的 task branch 安全
@@ -1237,6 +1259,9 @@ invalid binding 和 real SQLite replay。
   `UNKNOWN` ownership、复用 broader task lease、拒绝 static symlink escape、立即 persistence observed impact，并防止
   tool factory 遗漏 runtime authority。启用 concurrent dispatch 前，`forge_edit` 必须先 acquire authority 再 read；
   recovery 还必须从 workspace 或 Git change reconcile filesystem write 与 SQLite evidence 非原子窗口。
+- Milestone 13 Controlled Agent Commands 已在 independent review 后完成并关闭。它只允许 fixed-policy command ID，
+  有 runtime schema enforcement、executor-owned `PATH`、bounded output，以及 direct-child `SIGTERM` 到 `SIGKILL`
+  escalation。它仍是 policy control，不是 process-tree 或 operating-system sandbox。
 
 ## 还没有实现的部分
 

@@ -23,7 +23,8 @@ export type PiToolCall =
       readonly expected: string;
       readonly replacement: string;
     }
-  | { readonly name: 'forge_write'; readonly path: string; readonly content: string };
+  | { readonly name: 'forge_write'; readonly path: string; readonly content: string }
+  | { readonly name: 'forge_command'; readonly commandId: string };
 
 export interface PiToolResult {
   readonly content: string;
@@ -93,6 +94,13 @@ export const createControlledPiTools = (
     description: 'Write a workspace-relative file through the orchestrator write guard.',
     parameters: Type.Object({ path: Type.String(), content: Type.String() }),
     execute: async (_id, params) => asToolResult({ name: 'forge_write', ...params }, executeTool)
+  }),
+  defineTool({
+    name: 'forge_command',
+    label: 'Forge command',
+    description: 'Run one orchestrator-approved command in the task workspace.',
+    parameters: Type.Object({ commandId: Type.String() }),
+    execute: async (_id, params) => asToolResult({ name: 'forge_command', ...params }, executeTool)
   })
 ];
 

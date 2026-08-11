@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentToolRuntime } from './agent-tool-runtime.js';
+import { AgentCommandRuntime } from './agent-command-runtime.js';
 import type { PiSessionGateway, PiToolCall, PiToolResult } from './pi-gateway.js';
 import { PiAgentRunner } from './pi-agent-runner.js';
 
@@ -226,6 +227,81 @@ class ProjectLeaseWritingPiGateway implements PiSessionGateway {
     await expect(
       options.executeTool({ name: 'forge_write', path: 'value.txt', content: 'after\n' })
     ).resolves.toEqual({ content: 'Wrote value.txt' });
+    return { sessionId: 'pi-session-1' };
+  }
+}
+
+class CommandPiGateway implements PiSessionGateway {
+  readonly result: PiToolResult[] = [];
+
+  async start(options: {
+    readonly cwd: string;
+    readonly prompt: string;
+    readonly tools: readonly PiToolCall['name'][];
+    readonly executeTool: (call: PiToolCall) => Promise<PiToolResult>;
+    readonly onStarted: (sessionId: string) => Promise<void>;
+  }): Promise<{ readonly sessionId: string }> {
+    await options.onStarted('pi-session-1');
+    this.result.push(
+      await options.executeTool({ name: 'forge_command', commandId: 'check-types' })
+    );
+    this.result.push(await options.executeTool({ name: 'forge_command', commandId: 'shell' }));
+    return { sessionId: 'pi-session-1' };
+  }
+}
+
+class CommandFailurePiGateway implements PiSessionGateway {
+  readonly result: PiToolResult[] = [];
+
+  async start(options: {
+    readonly cwd: string;
+    readonly prompt: string;
+    readonly tools: readonly PiToolCall['name'][];
+    readonly executeTool: (call: PiToolCall) => Promise<PiToolResult>;
+    readonly onStarted: (sessionId: string) => Promise<void>;
+  }): Promise<{ readonly sessionId: string }> {
+    expect(options.tools).not.toContain('forge_command');
+    await options.onStarted('pi-session-1');
+    this.result.push(
+      await options.executeTool({ name: 'forge_command', commandId: 'check-types' })
+    );
+    return { sessionId: 'pi-session-1' };
+  }
+}
+
+class FailedAllowedCommandPiGateway implements PiSessionGateway {
+  readonly result: PiToolResult[] = [];
+
+  async start(options: {
+    readonly cwd: string;
+    readonly prompt: string;
+    readonly tools: readonly PiToolCall['name'][];
+    readonly executeTool: (call: PiToolCall) => Promise<PiToolResult>;
+    readonly onStarted: (sessionId: string) => Promise<void>;
+  }): Promise<{ readonly sessionId: string }> {
+    expect(options.tools).toContain('forge_command');
+    await options.onStarted('pi-session-1');
+    this.result.push(
+      await options.executeTool({ name: 'forge_command', commandId: 'check-types' })
+    );
+    return { sessionId: 'pi-session-1' };
+  }
+}
+
+class EmptyCommandPiGateway implements PiSessionGateway {
+  readonly result: PiToolResult[] = [];
+
+  async start(options: {
+    readonly cwd: string;
+    readonly prompt: string;
+    readonly tools: readonly PiToolCall['name'][];
+    readonly executeTool: (call: PiToolCall) => Promise<PiToolResult>;
+    readonly onStarted: (sessionId: string) => Promise<void>;
+  }): Promise<{ readonly sessionId: string }> {
+    await options.onStarted('pi-session-1');
+    this.result.push(
+      await options.executeTool({ name: 'forge_command', commandId: 'check-types' })
+    );
     return { sessionId: 'pi-session-1' };
   }
 }
@@ -692,6 +768,237 @@ describe('PiAgentRunner', () => {
     ).resolves.toMatchObject({ status: 'completed', additionalLeases: [] });
     expect(acquire).not.toHaveBeenCalled();
     expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('after\n');
+  });
+
+  it('routes only policy-approved Pi commands through the controlled executor', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'pi-runner-'));
+    directories.push(workspacePath);
+    const gateway = new CommandPiGateway();
+    const commands: string[] = [];
+    const runner = new PiAgentRunner({
+      gateway,
+      createTools: (agentRequest) =>
+        new AgentToolRuntime({
+          runId: agentRequest.runId,
+          taskId: agentRequest.taskId,
+          attemptId: agentRequest.attempt.id,
+          agentId: agentRequest.attempt.agentId,
+          workspacePath: agentRequest.workspace.workspacePath,
+          resolveResource: (path) => ({ type: 'file', projectId: 'core', fileId: `core:${path}` }),
+          resolveFileId: (path) => `core:${path}`,
+          writeGuard: new InMemoryWriteGuard(),
+          persistence: {
+            createRun: async () => {},
+            persistReevaluation: async () => {},
+            persistDispatch: async () => {},
+            persistImpact: async () => {},
+            persistConflict: async () => {},
+            persistLease: async () => {},
+            persistWorkspace: async () => {},
+            persistAttempt: async () => {},
+            updateRunState: async () => {},
+            recoverRun: async () => undefined,
+            replayRun: async () => []
+          }
+        }),
+      createCommands: () =>
+        new AgentCommandRuntime({
+          execute: async ({ command }) => {
+            commands.push(command.id);
+            return { status: 'completed', exitCode: 0, stdout: 'checked', stderr: '' };
+          }
+        })
+    });
+    const agentRequest = request(workspacePath, async () => {});
+
+    await expect(
+      runner.run({
+        ...agentRequest,
+        commandPolicy: {
+          commands: [
+            {
+              id: 'check-types',
+              executable: 'pnpm',
+              args: ['typecheck'],
+              timeoutMs: 30_000,
+              maxOutputBytes: 10_000
+            }
+          ],
+          environment: {}
+        }
+      })
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(commands).toEqual(['check-types']);
+    expect(gateway.result).toEqual([
+      { content: 'checked' },
+      { content: 'Agent command is not allowed: shell', isError: true }
+    ]);
+  });
+
+  it('does not enable commands without policy and maps command failures to tool errors', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'pi-runner-'));
+    directories.push(workspacePath);
+    const gateway = new CommandFailurePiGateway();
+    const runner = new PiAgentRunner({
+      gateway,
+      createTools: (agentRequest) =>
+        new AgentToolRuntime({
+          runId: agentRequest.runId,
+          taskId: agentRequest.taskId,
+          attemptId: agentRequest.attempt.id,
+          agentId: agentRequest.attempt.agentId,
+          workspacePath: agentRequest.workspace.workspacePath,
+          resolveResource: (path) => ({ type: 'file', projectId: 'core', fileId: `core:${path}` }),
+          resolveFileId: (path) => `core:${path}`,
+          writeGuard: new InMemoryWriteGuard(),
+          persistence: {
+            createRun: async () => {},
+            persistReevaluation: async () => {},
+            persistDispatch: async () => {},
+            persistImpact: async () => {},
+            persistConflict: async () => {},
+            persistLease: async () => {},
+            persistWorkspace: async () => {},
+            persistAttempt: async () => {},
+            updateRunState: async () => {},
+            recoverRun: async () => undefined,
+            replayRun: async () => []
+          }
+        }),
+      createCommands: () =>
+        new AgentCommandRuntime({
+          execute: async () => ({
+            status: 'failed',
+            detail: 'not available',
+            stdout: '',
+            stderr: ''
+          })
+        })
+    });
+
+    await expect(runner.run(request(workspacePath, async () => {}))).resolves.toMatchObject({
+      status: 'completed'
+    });
+    expect(gateway.result).toEqual([
+      { content: 'Agent command is not allowed: check-types', isError: true }
+    ]);
+  });
+
+  it('maps an allowed command failure to a Pi tool error', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'pi-runner-'));
+    directories.push(workspacePath);
+    const gateway = new FailedAllowedCommandPiGateway();
+    const runner = new PiAgentRunner({
+      gateway,
+      createTools: (agentRequest) =>
+        new AgentToolRuntime({
+          runId: agentRequest.runId,
+          taskId: agentRequest.taskId,
+          attemptId: agentRequest.attempt.id,
+          agentId: agentRequest.attempt.agentId,
+          workspacePath: agentRequest.workspace.workspacePath,
+          resolveResource: (path) => ({ type: 'file', projectId: 'core', fileId: `core:${path}` }),
+          resolveFileId: (path) => `core:${path}`,
+          writeGuard: new InMemoryWriteGuard(),
+          persistence: {
+            createRun: async () => {},
+            persistReevaluation: async () => {},
+            persistDispatch: async () => {},
+            persistImpact: async () => {},
+            persistConflict: async () => {},
+            persistLease: async () => {},
+            persistWorkspace: async () => {},
+            persistAttempt: async () => {},
+            updateRunState: async () => {},
+            recoverRun: async () => undefined,
+            replayRun: async () => []
+          }
+        }),
+      createCommands: () =>
+        new AgentCommandRuntime({
+          execute: async () => ({
+            status: 'failed',
+            detail: 'not available',
+            stdout: '',
+            stderr: 'failed'
+          })
+        })
+    });
+    const agentRequest = request(workspacePath, async () => {});
+
+    await expect(
+      runner.run({
+        ...agentRequest,
+        commandPolicy: {
+          commands: [
+            {
+              id: 'check-types',
+              executable: 'pnpm',
+              args: ['typecheck'],
+              timeoutMs: 30_000,
+              maxOutputBytes: 10_000
+            }
+          ],
+          environment: {}
+        }
+      })
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(gateway.result).toEqual([{ content: 'failed', isError: true }]);
+  });
+
+  it('returns a successful empty-output command status without a Pi tool error', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'pi-runner-'));
+    directories.push(workspacePath);
+    const gateway = new EmptyCommandPiGateway();
+    const runner = new PiAgentRunner({
+      gateway,
+      createTools: (agentRequest) =>
+        new AgentToolRuntime({
+          runId: agentRequest.runId,
+          taskId: agentRequest.taskId,
+          attemptId: agentRequest.attempt.id,
+          agentId: agentRequest.attempt.agentId,
+          workspacePath: agentRequest.workspace.workspacePath,
+          resolveResource: (path) => ({ type: 'file', projectId: 'core', fileId: `core:${path}` }),
+          resolveFileId: (path) => `core:${path}`,
+          writeGuard: new InMemoryWriteGuard(),
+          persistence: {
+            createRun: async () => {},
+            persistReevaluation: async () => {},
+            persistDispatch: async () => {},
+            persistImpact: async () => {},
+            persistConflict: async () => {},
+            persistLease: async () => {},
+            persistWorkspace: async () => {},
+            persistAttempt: async () => {},
+            updateRunState: async () => {},
+            recoverRun: async () => undefined,
+            replayRun: async () => []
+          }
+        }),
+      createCommands: () =>
+        new AgentCommandRuntime({
+          execute: async () => ({ status: 'completed', exitCode: 0, stdout: '', stderr: '' })
+        })
+    });
+    const agentRequest = request(workspacePath, async () => {});
+
+    await runner.run({
+      ...agentRequest,
+      commandPolicy: {
+        commands: [
+          {
+            id: 'check-types',
+            executable: 'pnpm',
+            args: ['typecheck'],
+            timeoutMs: 30_000,
+            maxOutputBytes: 10_000
+          }
+        ],
+        environment: {}
+      }
+    });
+    expect(gateway.result).toEqual([{ content: 'completed' }]);
   });
 
   it('returns completed when Pi receives a handled read-tool error', async () => {

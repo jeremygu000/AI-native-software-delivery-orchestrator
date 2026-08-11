@@ -335,6 +335,13 @@ session gateway and exposes only `forge_read`, `forge_list`, `forge_find`, `forg
 acquires/persists write leases, and returns observed file evidence. The gateway maps Pi SDK types only
 inside `agent-runtime`; domain and orchestration runtime remain provider-neutral.
 
+`forge_command` is an explicit policy-controlled extension, not Pi shell access. The agent selects only
+a command ID. `AgentCommandPolicy` fixes each executable, argument vector, timeout, output limit, and
+environment; `NodeAgentCommandExecutor` runs it with `shell: false` in the task workspace. The policy
+must be present before the session enables the tool. This is not an OS sandbox: it does not isolate
+network, secrets, file descriptors, process descendants, or resource limits. ADR-018 records the
+boundary.
+
 The feedback loop is:
 
 ```text

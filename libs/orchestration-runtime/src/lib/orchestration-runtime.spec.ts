@@ -686,6 +686,42 @@ describe('OrchestrationRuntime', () => {
     ).rejects.toThrow('Recovery binding does not match durable attempt: A');
   });
 
+  it('rejects an invalid command policy before dispatching an agent', async () => {
+    let runs = 0;
+    const runtime = createRuntime(undefined, undefined, undefined, {
+      run: async () => {
+        runs += 1;
+        return { status: 'completed' };
+      }
+    });
+    const run = request([task('A')]);
+    const binding = run.taskBindings[0];
+
+    await expect(
+      runtime.startRun({
+        ...run,
+        taskBindings: [
+          {
+            ...binding,
+            commandPolicy: {
+              commands: [
+                {
+                  id: 'check-types',
+                  executable: 'pnpm',
+                  args: ['typecheck'],
+                  timeoutMs: 1,
+                  maxOutputBytes: 1
+                }
+              ],
+              environment: { PATH: '/unsafe' }
+            }
+          }
+        ]
+      })
+    ).rejects.toThrow();
+    expect(runs).toBe(0);
+  });
+
   it('turns a completed result without onStarted into a durable failed attempt', async () => {
     const persistence = new MemoryPersistence();
     const invalidAgent: AgentRunner = {

@@ -23,7 +23,7 @@ const executePiToolDefinition = <T>(
 describe('PiCodingAgentGateway', () => {
   it('maps each controlled Pi tool to the provider-neutral tool call', async () => {
     const executeTool = vi.fn(async (call) => ({ content: JSON.stringify(call) }));
-    const [read, list, find, edit, write] = createControlledPiTools(executeTool);
+    const [read, list, find, edit, write, command] = createControlledPiTools(executeTool);
 
     await expect(executePiToolDefinition(read, 'tool-1', { path: 'value.txt' })).resolves.toEqual({
       content: [{ type: 'text', text: '{"name":"forge_read","path":"value.txt"}' }],
@@ -62,6 +62,12 @@ describe('PiCodingAgentGateway', () => {
       ],
       details: {}
     });
+    await expect(
+      executePiToolDefinition(command, 'tool-6', { commandId: 'check-types' })
+    ).resolves.toEqual({
+      content: [{ type: 'text', text: '{"name":"forge_command","commandId":"check-types"}' }],
+      details: {}
+    });
     expect(executeTool).toHaveBeenNthCalledWith(1, { name: 'forge_read', path: 'value.txt' });
     expect(executeTool).toHaveBeenNthCalledWith(2, { name: 'forge_list' });
     expect(executeTool).toHaveBeenNthCalledWith(3, {
@@ -79,6 +85,10 @@ describe('PiCodingAgentGateway', () => {
       name: 'forge_write',
       path: 'value.txt',
       content: 'after'
+    });
+    expect(executeTool).toHaveBeenNthCalledWith(6, {
+      name: 'forge_command',
+      commandId: 'check-types'
     });
   });
 

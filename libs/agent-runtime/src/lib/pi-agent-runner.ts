@@ -1,18 +1,23 @@
 import type { AgentRunner } from '@ai-native-software-delivery-orchestrator/domain';
 
+import { AgentCommandRuntime, NodeAgentCommandExecutor } from './agent-command-runtime.js';
 import { AgentToolDeniedError, AgentToolRuntime } from './agent-tool-runtime.js';
 import type { PiSessionGateway, PiToolCall, PiToolResult } from './pi-gateway.js';
 
 export class PiAgentRunner implements AgentRunner {
   readonly #gateway: PiSessionGateway;
   readonly #createTools: (request: Parameters<AgentRunner['run']>[0]) => AgentToolRuntime;
+  readonly #createCommands: (request: Parameters<AgentRunner['run']>[0]) => AgentCommandRuntime;
 
   constructor(options: {
     readonly gateway: PiSessionGateway;
     readonly createTools: (request: Parameters<AgentRunner['run']>[0]) => AgentToolRuntime;
+    readonly createCommands?: (request: Parameters<AgentRunner['run']>[0]) => AgentCommandRuntime;
   }) {
     this.#gateway = options.gateway;
     this.#createTools = options.createTools;
+    this.#createCommands =
+      options.createCommands ?? (() => new AgentCommandRuntime(new NodeAgentCommandExecutor()));
   }
 
   async run(request: Parameters<AgentRunner['run']>[0]) {
@@ -21,10 +26,20 @@ export class PiAgentRunner implements AgentRunner {
     try {
       const tools = this.#createTools(request);
       tools.bindRuntimeAuthority(request.impact, request.leases);
+      const commands = this.#createCommands(request);
+      commands.bindRuntimePolicy(request.commandPolicy, request.workspace.workspacePath);
+      const toolNames: PiToolCall['name'][] = [
+        'forge_read',
+        'forge_list',
+        'forge_find',
+        'forge_edit',
+        'forge_write',
+        ...(request.commandPolicy === undefined ? [] : ['forge_command' as const])
+      ];
       const session = await this.#gateway.start({
         cwd: request.workspace.workspacePath,
         prompt: request.instructions,
-        tools: ['forge_read', 'forge_list', 'forge_find', 'forge_edit', 'forge_write'],
+        tools: toolNames,
         executeTool: async (call) => {
           if (!sessionEstablished) {
             return { content: 'Pi session is not durably established', isError: true };
@@ -33,7 +48,7 @@ export class PiAgentRunner implements AgentRunner {
             return { content: `Write blocked by lease: ${blockedLeaseId}`, isError: true };
           }
           try {
-            return await this.#executeTool(tools, call);
+            return await this.#executeTool(tools, commands, call);
           } catch (error) {
             if (error instanceof AgentToolBlockedError) {
               blockedLeaseId = error.leaseId;
@@ -73,7 +88,11 @@ export class PiAgentRunner implements AgentRunner {
     }
   }
 
-  async #executeTool(tools: AgentToolRuntime, call: PiToolCall): Promise<PiToolResult> {
+  async #executeTool(
+    tools: AgentToolRuntime,
+    commands: AgentCommandRuntime,
+    call: PiToolCall
+  ): Promise<PiToolResult> {
     try {
       switch (call.name) {
         case 'forge_read':
@@ -95,6 +114,17 @@ export class PiAgentRunner implements AgentRunner {
             throw new AgentToolBlockedError(result.leaseId);
           }
           return { content: `Wrote ${result.path}` };
+        }
+        case 'forge_command': {
+          const result = await commands.run(call.commandId);
+          const content = [result.stdout, result.stderr]
+            .filter((value) => value.length > 0)
+            .join('\n');
+          const failed = result.status !== 'completed' || result.exitCode !== 0;
+          return {
+            content: content.length > 0 ? content : result.status,
+            ...(failed ? { isError: true } : {})
+          };
         }
         default:
           throw new AgentToolDeniedError('Pi tool is not allowed');

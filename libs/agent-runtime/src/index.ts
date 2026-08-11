@@ -1,4 +1,5 @@
 export * from './lib/agent-tool-runtime.js';
+export * from './lib/agent-command-runtime.js';
 export * from './lib/pi-agent-runner.js';
 export type {
   PiSessionFactory,

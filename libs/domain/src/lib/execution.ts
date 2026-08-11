@@ -7,6 +7,7 @@ import type {
   TaskImpact
 } from './conflict.js';
 import type { AgentExecutionAttempt, AgentSessionRef } from './agent-execution.js';
+import type { AgentCommandPolicy } from './command-policy.js';
 import type { WriteLease } from './write-lease.js';
 import type { TaskContract } from './task-contract.js';
 import { taskStateSchema } from './task-state.js';
@@ -214,6 +215,7 @@ export interface AgentRunRequest {
   readonly task: TaskContract;
   readonly impact?: TaskImpact;
   readonly leases?: readonly WriteLease[];
+  readonly commandPolicy?: AgentCommandPolicy;
   readonly workspace: TaskWorkspace;
   readonly instructions: string;
   readonly onStarted: (evidence: { readonly sessionRef?: AgentSessionRef }) => Promise<void>;

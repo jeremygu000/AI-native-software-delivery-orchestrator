@@ -1,4 +1,5 @@
 import {
+  agentCommandPolicySchema,
   canonicalTaskLeaseResources,
   taskDecisionsWithTransitions,
   taskLeasePlanFingerprint,
@@ -31,6 +32,7 @@ export interface RuntimeTaskBinding {
   readonly agentId: string;
   readonly leasePlan: TaskLeasePlan;
   readonly impact?: TaskImpact;
+  readonly commandPolicy?: Parameters<AgentRunner['run']>[0]['commandPolicy'];
   readonly workspace: Parameters<WorkspaceManager['create']>[0];
 }
 
@@ -229,6 +231,9 @@ export class OrchestrationRuntime {
         throw new OrchestrationRuntimeInputError(`Lease plan must match task: ${binding.taskId}`);
       }
       taskLeasePlanSchema.parse(binding.leasePlan);
+      if (binding.commandPolicy !== undefined) {
+        agentCommandPolicySchema.parse(binding.commandPolicy);
+      }
       bindings.set(binding.taskId, binding);
     }
     for (const taskId of taskIds) {
@@ -295,6 +300,7 @@ export class OrchestrationRuntime {
         task,
         impact: binding.impact ?? { predicted: this.#emptyPredictedImpact(taskId) },
         leases: acquisition.leases,
+        commandPolicy: binding.commandPolicy,
         workspace,
         instructions: task.goal,
         onStarted: async ({ sessionRef }) => {

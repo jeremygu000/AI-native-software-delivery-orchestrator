@@ -1249,6 +1249,29 @@ descriptor-relative sandboxed I/O remains future hardening.
 The full quality gate now has 281 passing tests. Coverage is 96.68% statements, 91.63% branches,
 98.61% functions, and 96.64% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
+## Stage 13: Controlled Agent Commands
+
+The orchestrator can now let a Pi agent request one explicitly approved validation command without
+giving it arbitrary shell access. `forge_command` accepts only a command ID. The runtime binding supplies
+an `AgentCommandPolicy` that fixes the executable, argument vector, timeout, output limit, and complete
+environment for each ID. The agent cannot choose a shell command, extra arguments, a different working
+directory, or environment variables.
+
+The concrete local executor runs the fixed command inside the task workspace with `shell: false`. It
+captures bounded standard output and error, returns nonzero exits as tool errors, sends `SIGTERM` then
+bounded-grace `SIGKILL` on timeout or cancellation, and reports a sanitized startup failure. No command policy means Pi does not
+receive the `forge_command` tool at all; Pi built-in `bash` remains disabled.
+
+This is a policy boundary, not an operating-system sandbox. It does not isolate network access, secrets,
+filesystem permissions, process descendants, CPU, or memory. These controls need a later sandbox adapter
+and must be designed before arbitrary commands or concurrent production agents are enabled.
+
+For a code-level teaching model, see [Controlled Agent Commands](./controlled-agent-commands.en.md) and
+its [Chinese edition](./controlled-agent-commands.zh.md).
+
+The full quality gate now has 309 passing tests. Coverage is 96.70% statements, 91.61% branches,
+98.67% functions, and 96.66% lines. `pnpm check`, `pnpm build`, and `git diff --check` pass.
+
 ## Stage 10: Workspace and Git Lifecycle
 
 The deterministic core can now give each task an isolated local Git worktree and safely integrate its
@@ -1410,6 +1433,10 @@ The full quality gate now has 281 passing tests. Coverage is 96.68% statements, 
   immediately persists observed impact, and prevents tool factories from omitting runtime authority.
   Before concurrent dispatch, `forge_edit` must acquire authority before reading; recovery must also
   reconcile the non-atomic filesystem-write and SQLite-evidence window from workspace or Git changes.
+- Milestone 13 Controlled Agent Commands is complete and closed after independent review. It admits only
+  fixed-policy command IDs with runtime schema enforcement, executor-owned `PATH`, bounded output, and
+  direct-child `SIGTERM` to `SIGKILL` escalation. It remains policy control rather than a process-tree or
+  operating-system sandbox.
 
 ## What has NOT been implemented yet
 
