@@ -9,7 +9,9 @@ Accepted
 Each task receives an isolated Git worktree on its own task branch, created from an explicit base ref.
 Before integration, the task branch rebases onto the explicit integration ref. The integration
 repository then switches to that ref and accepts the task branch only through `git merge --ff-only`.
-The implementation never creates an implicit merge commit. Creation rejects both an occupied worktree
+The implementation never creates an implicit merge commit. Workspace creation uses one `git worktree
+add -b` operation that creates the branch and materializes its checkout together; it does not leave a
+separate `--no-checkout` to be reconciled after a process interruption. Creation rejects both an occupied worktree
 path and an existing task branch through the stable Git adapter error; a branch collision must not
 silently reuse a previous task's branch.
 

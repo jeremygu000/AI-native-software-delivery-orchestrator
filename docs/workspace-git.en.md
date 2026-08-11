@@ -126,12 +126,11 @@ Workspace creation validates both refs before creating anything:
 ```text
 git rev-parse --verify <base ref>
 git rev-parse --verify <integration ref>
-git worktree add --no-checkout -b <task branch> <workspace path> <base ref>
-git checkout
+git worktree add -b <task branch> <workspace path> <base ref>
 ```
 
-If checkout fails after Git creates the worktree, the manager removes the partially created worktree
-and deletes the new task branch. A failed creation does not leave a hidden branch or directory behind.
+Git creates the branch and materializes the checkout in this one operation. There is no separate
+`--no-checkout` phase that a retry could mistake for a ready workspace after process interruption.
 
 Creation is retry-aware after a process interruption. If the target path is already a valid Git
 worktree on the requested branch and its `HEAD` matches that branch in the integration repository,

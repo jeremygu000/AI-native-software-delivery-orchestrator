@@ -121,12 +121,11 @@ Workspace creation 先验证两个 ref：
 ```text
 git rev-parse --verify <base ref>
 git rev-parse --verify <integration ref>
-git worktree add --no-checkout -b <task branch> <workspace path> <base ref>
-git checkout
+git worktree add -b <task branch> <workspace path> <base ref>
 ```
 
-如果 checkout 在 Git 创建 worktree 后失败，manager 会移除 partial worktree 并删除新 task branch。失败的
-creation 不会留下隐藏 branch/directory。
+Git 在一个 operation 内创建 branch 并 materialize checkout。不存在单独的 `--no-checkout` phase，因此 process
+interruption 后 retry 不会把未 checkout 的 directory 误认为 ready workspace。
 
 Process interruption 后 create 可以 retry。如果 target path 已是 requested branch 上的 valid Git worktree，且
 其 `HEAD` 与 integration repository 中该 branch 匹配，create 返回等价的 revision-1 workspace。不是该 exact

@@ -84,19 +84,11 @@ export class GitWorkspaceManager implements WorkspaceManager {
     await this.#git(repositoryPath, [
       'worktree',
       'add',
-      '--no-checkout',
       '-b',
       parsed.branchName,
       workspacePath,
       parsed.baseRef
     ]);
-    try {
-      await this.#git(workspacePath, ['checkout']);
-    } catch (error) {
-      await this.#tryGit(repositoryPath, ['worktree', 'remove', '--force', workspacePath]);
-      await this.#tryGit(repositoryPath, ['branch', '-D', parsed.branchName]);
-      throw error;
-    }
     return {
       ...parsed,
       repositoryPath,
