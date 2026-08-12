@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Stage 20 passed independent review and follow-up verification.
+Accepted. Stage 20's runtime boundary and sandboxed-verification follow-up passed independent review.
 
 ## Context
 
@@ -47,7 +47,10 @@ against an attacker who can forge Git commits.
 
 `forge run` is a thin CLI composition route. `RunPreparation`, `LocalRuntimeBindingPolicy`, and
 `LocalRuntimeStarter` own orchestration composition. Pi receives only the controlled Forge tools.
-Package-script verification is executed by the orchestrator after the agent completes.
+Package-script verification is executed after the agent completes, but only through the exact
+fingerprinted Docker verification profile. Direct host execution is forbidden. Each verification container
+has a run-scoped name; timeout, cancellation, or output limits trigger Docker daemon-side `kill`, `wait`,
+and cleanup before the verifier reports that command settled.
 
 ## Boundaries
 
@@ -63,9 +66,17 @@ Package-script verification is executed by the orchestrator after the agent comp
 - The default coding-agent binding does not grant `forge_command`. Final package-script verification is
   independent of agent command access.
 - SHA-256 evidence remains an integrity link under the local filesystem threat model, not a signature.
-- Package verification receives a minimal environment containing only `CI` and a trusted `PATH`;
-  parent options such as `NODE_OPTIONS` are not inherited. Package and script identifiers are
-  schema-restricted before process creation.
+- Package verification maps the approved project through Repository Facts, uses a fixed argument
+  vector, and runs in a pinned-digest Node container with no network, read-only root/workspace mounts,
+  a non-root user, dropped capabilities, `no-new-privileges`, bounded memory/CPU/PIDs, and disposable
+  temporary storage. Parent environment variables are not inherited. Unknown packages, free-form
+  commands, policy drift, missing Docker/image state, and sandbox failure all fail closed.
+  The verification image must use an immutable sha256 digest.
+- Linked worktrees isolate checked-out files, not the source repository's shared `.git` metadata.
+  Physical Git-metadata isolation requires a future dedicated orchestrator clone. Branch-only partial
+  creation after process interruption also requires an explicit reconciliation path.
+- Verification container names are unique run-scoped identifiers but do not currently embed readable task
+  provenance. Container-to-task operational lookup is future observability work.
 
 ## Consequences
 

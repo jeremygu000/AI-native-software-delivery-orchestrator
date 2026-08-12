@@ -13,10 +13,11 @@ updated: 2026-08-13
 
 ## Immediate state
 
-Work in `~/Desktop/apra_new/apra-amcos-admin-coding-orchestrator` on `main`. Stage 19 and its final
-architecture notes are committed through `290f44a5c66a53502ea7b049d7ad760b2c385813`. Stage 20 is complete
-and independently reviewed in the working tree. It remains intentionally uncommitted pending explicit
-user approval. Preserve all tracked and untracked changes.
+Work in `~/Desktop/apra_new/apra-amcos-admin-coding-orchestrator` on `main`. Stage 20 and its first
+follow-up review are committed through `b1f1a4ba6bc01f236c96b3708dc599936042f1c7`. A later
+whole-architecture review reopened one P1 verification-executor boundary. The sandboxed-verification
+fix is implemented in the working tree and remains intentionally uncommitted pending independent
+follow-up review and explicit user approval. Preserve every current change.
 
 Do not commit unless the user explicitly approves it after review. Repository-local commit identity
 must remain `JeremyGu2021 <isdance2004.yg@gmail.com>`. The remote is
@@ -73,7 +74,7 @@ Core deterministic packages must remain free of LLM, provider, Jira, pnpm, Git i
 filesystem storage, and CLI concerns. Pi stays inside `libs/agent-runtime`. Repository-provider details
 stay inside `libs/repository-analysis`. Filesystem and SQLite mechanics stay inside persistence.
 
-## Stage 20 working tree
+## Stage 20 committed baseline and uncommitted security fix
 
 Stage 20 adds:
 
@@ -83,7 +84,7 @@ Stage 20 adds:
 - durable `RunAuthorityEvidence` in SQLite and identical-authority `startOrResumeRun()` semantics;
 - persisted lease hydration plus correct terminal run-state finalization;
 - `LocalRuntimeStarter`, which composes controlled Pi tools, Write Guard, Scheduler, SQLite, Git, and
-  post-agent pnpm verification outside the CLI;
+  post-agent verification outside the CLI;
 - a real `forge run` command for clean approved snapshots;
 - ADR-024 and bilingual training/progress documentation.
 
@@ -102,18 +103,18 @@ on the run-specific integration branch; Stage 20 does not publish them to the us
 
 ## Current verification baseline
 
-Stage 20 currently passes:
+The current uncommitted fix passes:
 
 ```text
-pnpm check       38 files / 491 tests
-coverage         95.44% statements / 90.90% branches / 96.51% functions / 95.39% lines
-run-preparation  19 tests / 100% / 98.33% / 100% / 100%
+pnpm check       38 files / 494 passed / 1 opt-in Docker test skipped
+coverage         95.43% statements / 90.79% branches / 96.51% functions / 95.38% lines
+real Docker      pass when FORGE_DOCKER_TEST=1; malicious script starts, workspace write denied
 pnpm build       pass
 git diff --check pass
 ```
 
-Self-analysis: 15 projects, 114 files, 1,620 symbols, 59 project dependencies, 241 file dependencies,
-3,007 symbol references, two known root configuration diagnostics.
+Self-analysis: 15 projects, 114 files, 1,635 symbols, 59 project dependencies, 243 file dependencies,
+3,031 symbol references, two known root configuration diagnostics.
 
 Research analysis at `~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching`: 3 projects, 1,010
 files, 7,617 symbols, 3 project dependencies, 3,592 file dependencies, 13,893 symbol references, and
@@ -121,8 +122,18 @@ the known 25-file API scripts coverage diagnostic.
 
 ## Review state
 
-Stage 19 passed independent review and follow-up verification. Stage 20 also passed follow-up review;
-its initial C1 and H1-H3 findings are closed. Its evidence confirms:
+Stage 19 passed independent review and follow-up verification. Stage 20 passed its first follow-up
+review and closed its initial C1 and H1-H3 findings. A later whole-architecture review found a new P1:
+the post-agent package script was Agent-mutable code executed directly on the host after leases were
+released. Fixed arguments and a clean environment did not contain the script's filesystem, secret,
+network, or child-process effects.
+
+The uncommitted fix removes direct host script execution. Verification policy v2 fingerprints a
+pinned-digest Docker profile; runtime rechecks that exact policy, resolves the package root through the
+approved RepositoryGraph, and runs only `npm --prefix <root> run <script>` through
+`AgentCommandSandbox`. The container is non-root, no-network, read-only, capability-free,
+`no-new-privileges`, resource-bounded, and receives only explicit environment. Failure never falls back
+to trusted-local. The existing committed evidence still confirms:
 
 - stale-intent and dirty-snapshot rejection before checkout creation;
 - checkout base/ref/path confinement and exact retry;
@@ -134,25 +145,30 @@ its initial C1 and H1-H3 findings are closed. Its evidence confirms:
 - process-wide serialization of concurrent local start/resume calls, with a two-runtime
   `PREPARING` recovery test proving one dispatch;
 - run/task commit trailers and rejection of foreign or unrelated integration history;
-- minimal verification environment, strict package/script identifiers, ACTIVE-only lease hydration,
-  and explicit NULL/malformed authority recovery tests;
+- strict package/script identifiers, ACTIVE-only lease hydration, and explicit NULL/malformed
+  authority recovery tests;
 - real clean-at-bind/dirty-before-start rejection before checkout provision.
 
-The reviewer should specifically challenge recovery semantics, clean-only scope, checkout
-confinement, runtime request equality, lease hydration, package verification, and whether CLI
-composition remains thin.
+The follow-up reviewer must specifically challenge whether any host package-script path remains,
+whether the runtime profile is truly bound to approval authority, whether Docker failure is fail
+closed, and whether the opt-in real Docker test proves the script starts before its write is denied.
+Also challenge recovery semantics, clean-only scope, checkout confinement, runtime request equality,
+lease hydration, and whether CLI composition remains thin.
 
-Non-blocking follow-ups retained for later work are strict Git trailer parsing, the deliberately strict
-all-commits-must-have-a-trailer recovery policy, Windows/configurable pnpm executable-path support, and
-possible minimal-environment hardening for trusted Git subprocesses. Do not reopen Stage 20 for these
-unless a concrete bypass is demonstrated.
+Known limits: the pinned Node image invokes approved scripts with npm and never installs dependencies,
+so scripts requiring pnpm or missing dependencies fail closed; Docker/image state must already exist;
+strict Git trailer parsing and minimal-environment hardening for trusted Git subprocesses remain later
+work. Linked worktrees still mutate source `.git` metadata, and branch-only partial creation needs an
+explicit reconciliation path. These Git facts are documented P2 limits, not security-boundary claims.
 
-## Next stage after review and explicit commit approval
+## Next stage after follow-up review and explicit commit approval
 
-Stage 21 should add **Run Operations and Recovery Control**: `forge status`, explicit resume/cancel
-semantics, `UNKNOWN` attempt resolution, safe integration-block handling, and useful multi-failure
-diagnostics over the Stage 20 durable run. It must not publish branches or introduce GitHub/Jira
-triggers until local operator control is complete.
+The recommended next stage is **Observed Impact Reconciliation**: inspect the actual Git diff after the
+agent settles and before verification/integration, canonicalize changed resources, compare them with
+predicted impact and acquired lease authority, and fail/block on unauthorized scope expansion. Run
+Operations and Recovery Control (`forge status`, resume/cancel, `UNKNOWN` resolution, integration-block
+handling, and multi-failure diagnostics) remains the following planned stage. Neither stage should
+publish branches or introduce GitHub/Jira triggers.
 
 Do not let the CLI manually assemble those collaborators. Do not add GitHub/webhook/PR/Jira product
 integration yet. Do not broaden sandbox permissions merely to make runtime binding convenient.

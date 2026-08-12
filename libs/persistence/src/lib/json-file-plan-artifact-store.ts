@@ -88,6 +88,19 @@ const assertOutsideRepository = async (
   }
 };
 
+const prepareExternalDirectory = async (
+  directory: string,
+  forbiddenRepositoryRoot: string | undefined,
+  recordName: string,
+  createError: (message: string) => Error
+): Promise<string> => {
+  await assertOutsideRepository(directory, forbiddenRepositoryRoot, recordName, createError);
+  await mkdir(directory, { recursive: true });
+  const actualDirectory = await canonicalFuturePath(directory);
+  await assertOutsideRepository(actualDirectory, forbiddenRepositoryRoot, recordName, createError);
+  return actualDirectory;
+};
+
 const publishImmutableRecord = async <T>(request: {
   readonly directory: string;
   readonly recordId: string;
@@ -162,13 +175,15 @@ export class JsonFilePlanArtifactStore implements PlanArtifactStore {
 
   async save(candidate: PlanArtifact): Promise<void> {
     const artifact = parsePlanArtifact(candidate);
-    await this.#assertOutsideForbiddenRepository();
-    await mkdir(this.#directory, { recursive: true });
-    await this.#assertOutsideForbiddenRepository();
-    const target = this.pathFor(artifact.artifactId, artifact.revision);
-    await this.#assertOutsideForbiddenRepository();
+    const directory = await prepareExternalDirectory(
+      this.#directory,
+      this.#forbiddenRepositoryRoot,
+      'Plan artifact',
+      (message) => new PlanArtifactStoreError(message)
+    );
+    const target = join(directory, artifactFileName(artifact.artifactId, artifact.revision));
     await publishImmutableRecord({
-      directory: this.#directory,
+      directory,
       recordId: artifact.artifactId,
       target,
       candidate: artifact,
@@ -199,15 +214,6 @@ export class JsonFilePlanArtifactStore implements PlanArtifactStore {
       throw new PlanArtifactStoreError(`Plan artifact key does not match its file name: ${path}`);
     }
     return artifact;
-  }
-
-  async #assertOutsideForbiddenRepository(): Promise<void> {
-    await assertOutsideRepository(
-      this.#directory,
-      this.#forbiddenRepositoryRoot,
-      'Plan artifact',
-      (message) => new PlanArtifactStoreError(message)
-    );
   }
 }
 
@@ -290,16 +296,12 @@ export class JsonFilePlanApprovalStore implements PlanApprovalStore {
   }
 
   async #prepareDirectory(): Promise<void> {
-    const assertOutside = async (): Promise<void> =>
-      assertOutsideRepository(
-        this.#directory,
-        this.#forbiddenRepositoryRoot,
-        'Plan approval',
-        (message) => new PlanApprovalStoreError(message)
-      );
-    await assertOutside();
-    await mkdir(this.#directory, { recursive: true });
-    await assertOutside();
+    await prepareExternalDirectory(
+      this.#directory,
+      this.#forbiddenRepositoryRoot,
+      'Plan approval',
+      (message) => new PlanApprovalStoreError(message)
+    );
   }
 }
 

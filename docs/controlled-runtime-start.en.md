@@ -142,17 +142,41 @@ Pi still cannot use built-in shell or mutation tools. It receives only controlle
 `forge_list`, `forge_find`, `forge_edit`, and `forge_write` tools. Stage 20's default binding does not
 grant `forge_command`.
 
-After Pi completes, the orchestrator runs every approved package-script rule with an argument-vector
-process invocation:
+After Pi completes, the orchestrator maps every approved package ID to its root in the current
+RepositoryGraph and delegates the package-script rule to the approved verification sandbox:
 
 ```text
-pnpm --filter <approved-package-name> run <approved-script-name>
+host orchestrator
+    -> Docker sandbox selected by verification-policy v2
+       -> npm --prefix <approved-project-root> run <approved-script-name>
 ```
 
 No shell string is evaluated. Package names and script names are restricted to package-manager-safe
-identifier characters. The child receives only `CI=1` and a trusted `PATH`, so parent variables such as
-`NODE_OPTIONS` do not flow into verification. A free-form `command` verification rule fails closed in
-this autonomous runtime. A failed script prevents Git integration.
+identifier characters. The pinned Node image runs as a non-root user with a read-only root filesystem,
+a read-only task workspace, no network, dropped Linux capabilities, `no-new-privileges`, bounded memory,
+CPU and process count, and a disposable `/tmp`. It receives only explicit environment variables; parent
+variables such as credentials and `NODE_OPTIONS` do not flow into verification. The runtime recomputes
+the complete verification-policy fingerprint before persistence or dispatch, so a different image or
+sandbox profile cannot silently execute an existing approval.
+
+This repository uses pnpm for workspace development, but the Stage 20 verification image deliberately
+uses the `npm` executable already present in the pinned official Node image. It invokes an already
+approved package script and never installs dependencies. A script that requires pnpm or dependencies
+not materialized in the worktree fails closed until a dedicated verifier image is introduced. A
+free-form `command` rule, an unknown package, an unavailable image, or any sandbox startup/exit failure
+also fails closed and prevents Git integration.
+
+The verification image must use an immutable sha256 digest. Each verification container has a unique
+run-scoped name. On timeout, cancellation, or output limit, the runtime asks the Docker daemon to `kill`
+and `wait` for that exact container, then removes it before returning the verification result. Killing only
+the Docker client is not treated as container settlement.
+
+Stage 20's verification boundary passed independent review. The random run-scoped container name does not
+yet embed a human-readable task ID; container-to-task operational lookup is future observability work.
+
+Verification still occurs after execution leases are released, but the verifier cannot mutate the host
+worktree: the workspace mount is read-only and `/tmp` is discarded. An opt-in real-Docker adversarial
+test starts a package script that tries to write into the worktree and proves that the write is denied.
 
 Each task commit includes exact `Forge-Run-Id` and `Forge-Task-Id` trailers. If an integration checkout
 has advanced beyond the approved base, reuse checks every intervening commit for the requested run
@@ -186,6 +210,9 @@ wrong workspace checkout, identical retry, changed-authority retry, real Pi-tool
 free-form verification, persisted lease hydration, SQLite migration/corruption, and real Git checkout
 reuse. A real two-clone integration test proves that clones sharing the same origin and bytes are still
 rejected when the physical approved root differs. Dirty-state-only binding is independently tested.
+Verification tests prove exact sandbox delegation, runtime policy-fingerprint rejection, unknown-package
+and free-form-command rejection, fail-closed sandbox errors, resource flags, and—when explicitly enabled
+with Docker—a script that starts successfully but cannot write to its read-only workspace.
 
 ## 9. Intentional limitations
 
@@ -197,10 +224,17 @@ rejected when the physical approved root differs. Dirty-state-only binding is in
 - Multiple sibling failures are settled but not yet aggregated into one diagnostic.
 - The result is not automatically published to a user branch, GitHub branch, issue, or pull request.
 - No GitHub/Jira/provider identity is allowed into the deterministic domain contracts.
-- The current verifier path list targets the supported macOS/Linux local runtime. Windows path
-  separators and Corepack/Volta/custom pnpm locations require a later portability adapter.
+- Verification currently requires Docker and the pinned Node image to be locally available. It does not
+  install dependencies or fall back to host execution. A future dedicated verifier image may include
+  pnpm and pre-materialized dependencies without weakening the no-network/read-only boundary.
 - Commit provenance uses exact-line run trailers plus the Git ancestor check. It deliberately fails
   closed if any post-base commit lacks the trailer; strict Git trailer-block parsing can be added if
   the metadata format expands.
 - Trusted Git subprocesses still inherit the orchestrator environment. Their threat model differs from
   agent-controlled verification, but minimal-environment consistency remains a security-review item.
+- Linked integration/task worktrees do not edit the user's checked-out files, but their branches and
+  worktree registrations still live in the source repository's shared `.git` metadata. A dedicated
+  orchestrator clone is required for physical Git-metadata isolation.
+- Worktree creation is retry-safe only after a valid path and branch both exist. A crash after branch
+  creation but before worktree materialization can leave a branch-only partial state that currently
+  requires explicit cleanup/reconciliation.

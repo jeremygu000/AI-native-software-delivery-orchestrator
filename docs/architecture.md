@@ -517,12 +517,19 @@ the approved base requires every intervening commit to carry the requested run t
 ordinary foreign commits while preserving legitimate retries. The marker is not a cryptographic
 signature against a writer who can deliberately forge the trailer.
 
-The pnpm verifier accepts schema-restricted package and script identifiers, invokes pnpm without a
-shell, and supplies only `CI` plus a trusted executable `PATH`; it does not inherit the orchestrator's
-arbitrary environment.
+The verification-policy v2 verifier maps schema-restricted package identifiers through the approved
+RepositoryGraph and delegates `npm --prefix <project-root> run <script>` to a pinned-digest Docker
+profile. It never invokes a package script on the host. The container has no network, read-only
+root/workspace mounts, a non-root user, dropped capabilities, `no-new-privileges`, bounded
+memory/CPU/PIDs, disposable `/tmp`, and only explicit environment variables. The complete runtime
+profile is fingerprinted and rechecked before persistence or dispatch. Unsupported scripts, policy
+drift, unknown packages, Docker/image absence, and sandbox failure all fail closed.
 
-The source repository is never an execution workspace. Successful work accumulates on the run's
-integration branch and is not automatically published to a user branch or remote. The CLI only
+The source repository is never an execution workspace. Linked worktree branches and registrations do,
+however, still mutate its shared `.git` metadata; a future dedicated orchestrator clone is required for
+physical Git-metadata isolation. A branch-only partial create can also require explicit reconciliation
+after interruption. Successful work accumulates on the run's integration branch and is not
+automatically published to a user branch or remote. The CLI only
 selects paths and adapters; scheduling, lease, verification, Git integration, and recovery remain in
 their application/domain components. ADR-024 defines this boundary.
 

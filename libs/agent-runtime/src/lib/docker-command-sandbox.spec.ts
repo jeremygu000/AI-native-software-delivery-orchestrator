@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -38,8 +38,11 @@ describe('DockerReadOnlyCommandSandbox', () => {
     const directory = mkdtempSync(join(tmpdir(), 'docker-sandbox-'));
     directories.push(directory);
     const logPath = join(directory, 'arguments.txt');
-    const executable = createDockerScript(directory, `printf '%s\\n' "$@" > "${logPath}"`);
-    const sandbox = new DockerReadOnlyCommandSandbox({ dockerExecutable: executable });
+    const executable = createDockerScript(directory, `printf '%s\\n' "$@" >> "${logPath}"`);
+    const sandbox = new DockerReadOnlyCommandSandbox({
+      dockerExecutable: executable,
+      createContainerName: () => 'forge-test-container'
+    });
 
     await expect(
       sandbox.execute({
@@ -54,8 +57,15 @@ describe('DockerReadOnlyCommandSandbox', () => {
       })
     ).resolves.toMatchObject({ status: 'completed', exitCode: 0 });
     expect(readFileSync(logPath, 'utf8')).toContain('--network\nnone');
+    expect(readFileSync(logPath, 'utf8')).toContain('--name\nforge-test-container');
     expect(readFileSync(logPath, 'utf8')).toContain(`${directory}:/workspace:ro`);
     expect(readFileSync(logPath, 'utf8')).toContain('--read-only');
+    expect(readFileSync(logPath, 'utf8')).toContain('--cap-drop\nALL');
+    expect(readFileSync(logPath, 'utf8')).toContain('--security-opt\nno-new-privileges');
+    expect(readFileSync(logPath, 'utf8')).toContain('--user\n65532:65532');
+    expect(readFileSync(logPath, 'utf8')).toContain('--memory\n1073741824');
+    expect(readFileSync(logPath, 'utf8')).toContain('--cpus\n2');
+    expect(readFileSync(logPath, 'utf8')).toContain('--pids-limit\n256');
   });
 
   it('fails closed for a missing Docker adapter', async () => {
@@ -109,7 +119,10 @@ describe('DockerReadOnlyCommandSandbox', () => {
   it('honors a pre-aborted signal', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'docker-sandbox-'));
     directories.push(directory);
-    const executable = createDockerScript(directory, 'while true; do sleep 1; done');
+    const executable = createDockerScript(
+      directory,
+      'if [ "$1" = run ]; then while true; do sleep 1; done; fi'
+    );
     const controller = new AbortController();
     controller.abort();
 
@@ -134,10 +147,15 @@ describe('DockerReadOnlyCommandSandbox', () => {
   it('terminates timed-out, cancelled, and output-limited Docker commands', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'docker-sandbox-'));
     directories.push(directory);
-    const executable = createDockerScript(directory, 'trap "" TERM\nwhile true; do sleep 1; done');
+    const logPath = join(directory, 'commands.txt');
+    const executable = createDockerScript(
+      directory,
+      `printf '%s\\n' "$@" >> "${logPath}"\nif [ "$1" = run ]; then trap "" TERM; while true; do sleep 1; done; fi`
+    );
     const sandbox = new DockerReadOnlyCommandSandbox({
       dockerExecutable: executable,
-      terminationGraceMs: 20
+      terminationGraceMs: 20,
+      createContainerName: () => 'forge-test-container'
     });
     const base = {
       profile,
@@ -158,7 +176,7 @@ describe('DockerReadOnlyCommandSandbox', () => {
 
     const outputExecutable = createDockerScript(
       directory,
-      'trap "" TERM\nprintf "long output"\nwhile true; do sleep 1; done'
+      'if [ "$1" = run ]; then trap "" TERM; printf "long output"; while true; do sleep 1; done; fi'
     );
     await expect(
       new DockerReadOnlyCommandSandbox({
@@ -170,6 +188,93 @@ describe('DockerReadOnlyCommandSandbox', () => {
         maxOutputBytes: 4
       })
     ).resolves.toMatchObject({ status: 'output-limited', stdout: 'long' });
+  });
+
+  it('reconciles a named container through Docker kill and wait before cancellation settles', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'docker-sandbox-'));
+    directories.push(directory);
+    const logPath = join(directory, 'commands.txt');
+    const executable = createDockerScript(
+      directory,
+      `printf '%s\n' "$@" >> "${logPath}"\nif [ "$1" = run ]; then trap "" TERM; while true; do sleep 1; done; fi`
+    );
+    const sandbox = new DockerReadOnlyCommandSandbox({
+      dockerExecutable: executable,
+      terminationGraceMs: 20,
+      createContainerName: () => 'forge-test-container'
+    });
+    const controller = new AbortController();
+    const execution = sandbox.execute({
+      profile,
+      executable: 'node',
+      args: [],
+      cwd: directory,
+      environment: {},
+      trustedPath: '/trusted/bin',
+      timeoutMs: 5_000,
+      maxOutputBytes: 100,
+      signal: controller.signal
+    });
+    await new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        if (existsSync(logPath)) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 1);
+    });
+    controller.abort();
+
+    await expect(execution).resolves.toMatchObject({ status: 'cancelled' });
+    expect(readFileSync(logPath, 'utf8')).toContain('kill\nforge-test-container');
+    expect(readFileSync(logPath, 'utf8')).toContain('wait\nforge-test-container');
+    expect(readFileSync(logPath, 'utf8')).toContain('rm\n-f\nforge-test-container');
+  });
+
+  it('does not settle a cancelled command until Docker wait completes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'docker-sandbox-'));
+    directories.push(directory);
+    const logPath = join(directory, 'commands.txt');
+    const releaseWaitPath = join(directory, 'release-wait');
+    const executable = createDockerScript(
+      directory,
+      `printf '%s\\n' "$@" >> "${logPath}"\nif [ "$1" = run ]; then trap "" TERM; while true; do sleep 1; done; fi\nif [ "$1" = wait ]; then while [ ! -f "${releaseWaitPath}" ]; do sleep 1; done; fi`
+    );
+    const sandbox = new DockerReadOnlyCommandSandbox({
+      dockerExecutable: executable,
+      terminationGraceMs: 100,
+      createContainerName: () => 'forge-test-container'
+    });
+    const controller = new AbortController();
+    let settled = false;
+    const execution = sandbox
+      .execute({
+        profile,
+        executable: 'node',
+        args: [],
+        cwd: directory,
+        environment: {},
+        trustedPath: '/trusted/bin',
+        timeoutMs: 5_000,
+        maxOutputBytes: 100,
+        signal: controller.signal
+      })
+      .finally(() => {
+        settled = true;
+      });
+    await new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        if (existsSync(logPath)) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 1);
+    });
+    controller.abort();
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    writeFileSync(releaseWaitPath, 'release');
+    await expect(execution).resolves.toMatchObject({ status: 'cancelled' });
   });
 
   it('limits Docker stderr output', async () => {

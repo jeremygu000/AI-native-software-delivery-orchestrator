@@ -135,8 +135,20 @@ interface SerializableProjectGraph {
 }
 
 const verificationPolicy = {
-  version: 1,
-  autonomousRules: ['package-script-required', 'free-form-command-forbidden']
+  version: 2,
+  autonomousRules: ['package-script-required', 'free-form-command-forbidden'],
+  packageScriptRunner: 'npm-from-pinned-node-image',
+  executionProfile: {
+    kind: 'docker-read-only',
+    image: 'node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43',
+    assurance: 'production-validation',
+    network: 'deny',
+    workspaceAccess: 'read-only',
+    processTree: 'container',
+    memoryBytes: 1_073_741_824,
+    cpuCount: 2,
+    pidLimit: 256
+  }
 } as const;
 
 const createRepositoryPlan = async (request: {
@@ -334,7 +346,8 @@ const runRepositoryPlan = async (request: {
         }
         const runtime = new LocalRuntimeStarter({
           graph: currentGraph,
-          databasePath: join(runDirectory, request.runId, 'run.sqlite')
+          databasePath: join(runDirectory, request.runId, 'run.sqlite'),
+          verificationPolicy
         });
         try {
           return await runtime.startOrResumeRun(runtimeRequest);

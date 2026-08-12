@@ -1678,8 +1678,9 @@ execution、working-tree、Repository Facts、shared-resource 与 verification-p
 Runtime 还补齐了 durable run state 收尾，不再出现 task snapshot 已完成而 run row 仍为 `ACTIVE` 的情况。
 
 `LocalRuntimeStarter` 组合既有 Scheduler、SQLite adapter、Write Guard、Git workspace manager、受控 Pi agent 与
-post-agent pnpm package-script verifier。默认 agent binding 不授予 `forge_command`；verification 继续由 orchestrator 用
-固定参数数组执行。成功输出保留在 run integration checkout，不会 push 或 merge 到用户 branch。
+post-agent package-script verifier。默认 agent binding 不授予 `forge_command`；verification 仍由 orchestrator 管理。
+后续 whole-architecture Review 发现原 verifier 仍会在 host 直接执行 package script；下方 security hardening 小节取代
+原 executor。成功输出保留在 run integration checkout，不会 push 或 merge 到用户 branch。
 
 Stage 19 的两项 test-organization follow-up 已关闭：真实 integration test 会创建两份共享相同 origin 和 bytes 的 clone，
 并证明第二个物理 root 会在 claim 前被拒绝；另一个测试只改变 dirty state。真实 local runtime test 则完整经过受控 Pi
@@ -1737,8 +1738,59 @@ Reviewer 还做了 mutation test，临时恢复父进程 environment inheritance
 ACTIVE-only lease hydration、SQLite NULL/malformed authority 测试、identifier allowlist、unrelated-history rejection 与
 public export 清理也都被直接核实。Stage 20 因此正式 **PASS / CLOSED**，可以开始 Stage 21。
 
-四项非阻塞 follow-up 被登记为技术债，而不是继续改变刚通过 Review 的 Stage 20 实现：若 provenance format 扩展，改用
+在当时 Review 节点，四项非阻塞 follow-up 被登记为技术债：若 provenance format 扩展，改用
 严格 Git trailer parser；继续保留所有 post-base commit 必须带 run trailer 的 fail-closed 规则；让 verification
 executable PATH 在 Windows 上可移植，并支持 Corepack、Volta 或自定义 pnpm 路径；在后续 security review 中决定
 trusted Git subprocess 是否也应使用 minimal environment。当前没有证据表明这些事项能绕过 Stage 20 authority 或造成
 重复 dispatch。
+
+### Stage 20 Whole-architecture Review：Sandboxed verification 修复待复审
+
+后续 whole-project Review 找到一个之前 Stage 20 Review 没有暴露的 P1 architecture violation：orchestrator 在 release
+execution lease 后，会直接在 developer host 执行可由 Agent 修改的 `package.json` script。固定参数与 minimal
+environment 能防 shell/environment injection，却不能约束 script 自身；它仍可能写 task workspace 之外、读取 host
+secret、访问 network，或在 Write Guard 外启动 child process。
+
+当前 working-tree fix 已删除 host package-script execution。Verification policy v2 包含准确 pinned-digest Docker
+profile，完整 profile 会进入 approval policy fingerprint。`LocalRuntimeStarter` 在 persistence/dispatch 前重新计算该
+fingerprint，只通过 approved RepositoryGraph 解析 package，然后把固定命令委托给 `AgentCommandSandbox`：
+
+```text
+approved package-script rule
+        -> approved RepositoryGraph project root
+        -> fingerprinted Docker profile
+        -> npm --prefix <project-root> run <script>
+        -> read-only workspace, no network, disposable /tmp
+```
+
+Container 以 non-root user 运行，drop 全部 Linux capability，启用 `no-new-privileges`，root/workspace 只读，并限制
+memory、CPU 与 PID，只接收明确 environment。Docker/image 缺失、未知 package、free-form command、policy drift、
+sandbox 启动失败或 script 非零退出都会 fail closed，绝不 fallback 到 trusted-local。固定官方 Node image 只使用自带
+npm 调用已批准 script，不安装 dependency。需要 pnpm 或缺失 dependency 的 script 暂时 fail closed，直到提供专用
+verifier image。
+
+Docker adapter 现在会在替换 environment 前把 host Docker CLI 解析成 absolute path。这是由真实对抗测试发现的：
+bare `docker` 配合空 PATH 时 sandbox 根本无法启动。Host Docker client 现在只收到运行所需的最小 HOME，而 container
+继续只收到明确批准的 environment。
+
+每个 verification container 有唯一 run-scoped name。Timeout、cancellation 与 output-limit path 会请求 Docker daemon 对该
+name 的 container 执行 `kill` 与 `wait`，再 cleanup 后才让 verifier 报告 command settled。Docker CLI process 退出不算
+container 已停止。Verification image policy 拒绝 mutable tag，要求 immutable sha256 digest。
+
+测试证明准确 sandbox delegation、runtime policy mismatch、未知 package/free-form rule、Docker hardening flag 与
+sandbox fail-closed。最终默认 gate 共 38 个 test file，494 个通过、1 个 opt-in Docker test 跳过（总计 495）；覆盖率为
+statement 95.40%、branch 90.76%、function 96.32%、line 95.36%。显式启用后，真实 Docker test 会启动 malicious
+package script、观察到它的 marker，并证明其 workspace write 被拒绝。`pnpm check`、`pnpm build` 与
+`git diff --check` 全部通过。Self-analysis 为 15 个 project、114 个 file、1,635 个 symbol、59 条 project dependency、
+243 条 file dependency、3,031 条 symbol reference，以及同样两个 root diagnostic。研究仓库稳定为 3 个 project、
+1,010 个 file、7,617 个 symbol、3 条 project dependency、3,592 条 file dependency、13,893 条 symbol reference，
+以及已知的 25-file diagnostic。文档同步与独立 follow-up Review 已完成。
+
+同一 Review 也澄清两项 Git boundary：linked worktree 能保护用户 checkout file，但其 branch 与 registration 仍会写
+source repository 共享的 `.git` metadata；真正 metadata isolation 需要 dedicated orchestrator clone。另外，若 process
+在 branch 创建后、worktree materialization 前中断，可能遗留 branch-only partial state，需要显式 reconciliation。这些
+是已登记 P2 limitation，不会再把 linked worktree 描述为完整 security boundary。
+
+Stage 20 在独立 follow-up Review 后为 **PASS / CLOSED**。建议下一 product stage 先做 **Observed Impact
+Reconciliation**：在 verification/integration 前，把实际 Git change 与 predicted impact、lease authority 对账。
+Run Operations and Recovery Control 排在该 authority gap 之后。

@@ -1,4 +1,8 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import type {
   AgentCommandSandbox,
   AgentCommandSandboxRequest,
@@ -10,15 +14,32 @@ const appendOutput = (current: string, chunk: Buffer, maxOutputBytes: number): s
     .subarray(0, maxOutputBytes)
     .toString('utf8');
 
+const dockerExecutableFromPath = (): string => {
+  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+    const candidate = join(directory, 'docker');
+    if (directory.length > 0 && existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return 'docker';
+};
+
 export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
   readonly #dockerExecutable: string;
   readonly #terminationGraceMs: number;
+  readonly #createContainerName: () => string;
 
   constructor(
-    options: { readonly dockerExecutable?: string; readonly terminationGraceMs?: number } = {}
+    options: {
+      readonly dockerExecutable?: string;
+      readonly terminationGraceMs?: number;
+      readonly createContainerName?: () => string;
+    } = {}
   ) {
-    this.#dockerExecutable = options.dockerExecutable ?? 'docker';
+    this.#dockerExecutable = options.dockerExecutable ?? dockerExecutableFromPath();
     this.#terminationGraceMs = options.terminationGraceMs ?? 5_000;
+    this.#createContainerName =
+      options.createContainerName ?? (() => `forge-sandbox-${randomUUID()}`);
   }
 
   async execute(request: AgentCommandSandboxRequest): Promise<AgentCommandSandboxResult> {
@@ -30,12 +51,26 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
         stderr: ''
       };
     }
+    const containerName = request.containerName ?? this.#createContainerName();
     const args = [
       'run',
-      '--rm',
+      '--name',
+      containerName,
       '--network',
       'none',
       '--read-only',
+      '--cap-drop',
+      'ALL',
+      '--security-opt',
+      'no-new-privileges',
+      '--user',
+      '65532:65532',
+      '--memory',
+      String(request.profile.memoryBytes),
+      '--cpus',
+      String(request.profile.cpuCount),
+      '--pids-limit',
+      String(request.profile.pidLimit),
       '--tmpfs',
       '/tmp:rw,noexec,nosuid,size=64m',
       '--workdir',
@@ -55,7 +90,7 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
     return new Promise((resolve) => {
       const child = spawn(this.#dockerExecutable, args, {
         cwd: request.cwd,
-        env: {},
+        env: { HOME: homedir() },
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe']
       });
@@ -64,8 +99,11 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
       let result: AgentCommandSandboxResult | undefined;
       let settled = false;
       let escalation: ReturnType<typeof setTimeout> | undefined;
+      let cliSettled = false;
+      let containerSettled = false;
+      let waitStarted = false;
       const finish = (fallback: AgentCommandSandboxResult) => {
-        if (settled) {
+        if (settled || !cliSettled || !containerSettled) {
           return;
         }
         settled = true;
@@ -82,7 +120,54 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
         }
         result = next;
         child.kill('SIGTERM');
-        escalation = setTimeout(() => child.kill('SIGKILL'), this.#terminationGraceMs);
+        const killer = spawn(this.#dockerExecutable, ['kill', containerName], {
+          cwd: request.cwd,
+          env: { HOME: homedir() },
+          shell: false,
+          stdio: 'ignore'
+        });
+        const removeContainer = (fallback: AgentCommandSandboxResult) => {
+          const remover = spawn(this.#dockerExecutable, ['rm', '-f', containerName], {
+            cwd: request.cwd,
+            env: { HOME: homedir() },
+            shell: false,
+            stdio: 'ignore'
+          });
+          const complete = () => {
+            containerSettled = true;
+            finish(fallback);
+          };
+          remover.once('error', complete);
+          remover.once('close', complete);
+        };
+        const waitForContainer = () => {
+          if (waitStarted) {
+            return;
+          }
+          waitStarted = true;
+          const waiter = spawn(this.#dockerExecutable, ['wait', containerName], {
+            cwd: request.cwd,
+            env: { HOME: homedir() },
+            shell: false,
+            stdio: 'ignore'
+          });
+          waiter.once('error', () => {
+            removeContainer(next);
+          });
+          waiter.once('close', () => {
+            removeContainer(next);
+          });
+        };
+        killer.once('error', () => {
+          waitForContainer();
+        });
+        killer.once('close', () => {
+          waitForContainer();
+        });
+        escalation = setTimeout(() => {
+          child.kill('SIGKILL');
+          waitForContainer();
+        }, this.#terminationGraceMs);
       };
       const timeout = setTimeout(
         () => terminate({ status: 'timed-out', stdout, stderr }),
@@ -108,11 +193,38 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
       });
       child.once('error', () => {
         result = { status: 'failed', detail: 'Command sandbox could not start', stdout, stderr };
+        cliSettled = true;
+        containerSettled = true;
         finish(result);
       });
-      child.once('close', (exitCode) =>
-        finish({ status: 'completed', exitCode: exitCode ?? -1, stdout, stderr })
-      );
+      child.once('close', (exitCode) => {
+        cliSettled = true;
+        if (result === undefined) {
+          const waiter = spawn(this.#dockerExecutable, ['wait', containerName], {
+            cwd: request.cwd,
+            env: { HOME: homedir() },
+            shell: false,
+            stdio: 'ignore'
+          });
+          const removeContainer = () => {
+            const remover = spawn(this.#dockerExecutable, ['rm', '-f', containerName], {
+              cwd: request.cwd,
+              env: { HOME: homedir() },
+              shell: false,
+              stdio: 'ignore'
+            });
+            const complete = () => {
+              containerSettled = true;
+              finish({ status: 'completed', exitCode: exitCode ?? -1, stdout, stderr });
+            };
+            remover.once('error', complete);
+            remover.once('close', complete);
+          };
+          waiter.once('error', removeContainer);
+          waiter.once('close', removeContainer);
+        }
+        finish({ status: 'completed', exitCode: exitCode ?? -1, stdout, stderr });
+      });
     });
   }
 }

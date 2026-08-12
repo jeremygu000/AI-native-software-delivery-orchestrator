@@ -60,8 +60,8 @@ and local Git workspace core:
   revalidates shared-resource and verification policy before producing a `PlanExecutionIntent`;
 - a recoverable `forge run` path that revalidates authority immediately before execution, creates an
   orchestrator-owned integration checkout at the approved commit, derives isolated task worktrees,
-  persists complete run authority, dispatches controlled Pi agents, verifies package scripts, and
-  serially integrates successful work;
+  persists complete run authority, dispatches controlled Pi agents, verifies package scripts only in
+  a pinned no-network/read-only Docker profile, and serially integrates successful work;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
 Milestones 12–20 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,

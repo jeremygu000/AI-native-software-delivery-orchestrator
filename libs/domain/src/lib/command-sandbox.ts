@@ -10,6 +10,7 @@ export const defaultAgentCommandSandboxProfile = {
 
 // This PATH applies inside the Linux validation container, not to the host process.
 export const defaultAgentCommandTrustedPath = '/usr/local/bin:/usr/bin:/bin';
+const dockerDigestImage = /^.+@sha256:[a-f0-9]{64}$/;
 
 export const agentCommandSandboxProfileSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -28,7 +29,7 @@ export const agentCommandSandboxProfileSchema = z.discriminatedUnion('kind', [
   }),
   z.object({
     kind: z.literal('docker-read-only'),
-    image: z.string().trim().min(1),
+    image: z.string().trim().regex(dockerDigestImage, 'Docker image must use a sha256 digest'),
     assurance: z.literal('production-validation'),
     network: z.literal('deny'),
     workspaceAccess: z.literal('read-only'),
@@ -48,6 +49,7 @@ export interface AgentCommandSandboxRequest {
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
   readonly trustedPath: string;
+  readonly containerName?: string;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
   readonly signal?: AbortSignal;

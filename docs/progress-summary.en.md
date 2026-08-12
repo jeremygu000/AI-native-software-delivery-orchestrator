@@ -1932,10 +1932,11 @@ leases hydrate the restarted local guard. The runtime now also finalizes durable
 `COMPLETED` or `FAILED` instead of leaving completed task snapshots under an `ACTIVE` run row.
 
 `LocalRuntimeStarter` composes the existing Scheduler, SQLite adapter, Write Guard, Git workspace
-manager, controlled Pi agent, and post-agent pnpm package-script verifier. The default agent binding
-does not grant `forge_command`; verification remains an orchestrator-owned fixed argument-vector
-process. Successful output remains in the run integration checkout and is not pushed or merged into
-the user's branch.
+manager, controlled Pi agent, and post-agent package-script verifier. The default agent binding does
+not grant `forge_command`; verification remains orchestrator-owned. The later whole-architecture
+review identified that the original verifier still executed the package script directly on the host;
+the security hardening subsection below supersedes that executor. Successful output remains in the
+run integration checkout and is not pushed or merged into the user's branch.
 
 The two Stage 19 test-organization follow-ups are closed: one real integration test creates two clones
 with the same origin and bytes and proves the second physical root is rejected before claim; another
@@ -2008,9 +2009,69 @@ hydration, NULL/malformed SQLite authority tests, identifier allowlists, unrelat
 and public-export cleanup were also verified directly. Stage 20 is therefore **PASS / CLOSED**, and
 Stage 21 may begin.
 
-Four non-blocking follow-ups remain registered rather than changing reviewed Stage 20 code: use strict
+Four non-blocking follow-ups were registered at that review point: use strict
 Git trailer parsing if the provenance format grows; retain the fail-closed rule that every post-base
 commit must carry the run trailer; make verification executable-path construction portable to Windows
 and configurable for Corepack/Volta/custom pnpm installations; and decide in a later security review
 whether trusted Git subprocesses should also receive a minimal environment. None is an observed Stage
 20 authorization or duplicate-dispatch bypass.
+
+### Stage 20 whole-architecture review: sandboxed verification fix pending follow-up
+
+A later whole-project review found one P1 architecture violation that the earlier Stage 20 review did
+not expose. The orchestrator released execution leases and then ran an Agent-mutable `package.json`
+script directly on the developer host. Fixed arguments and a minimal environment prevented shell and
+environment injection, but they did not contain the script itself: it could still write outside the
+task workspace, read host secrets, use the network, or start child processes outside Write Guard.
+
+The working-tree fix removes direct host package-script execution. Verification policy v2 contains an
+exact pinned-digest Docker profile and its full profile is part of the approved policy fingerprint.
+`LocalRuntimeStarter` recomputes that fingerprint before persistence or dispatch, resolves the package
+only through the approved RepositoryGraph, and delegates this fixed command to `AgentCommandSandbox`:
+
+```text
+approved package-script rule
+        -> approved RepositoryGraph project root
+        -> fingerprinted Docker profile
+        -> npm --prefix <project-root> run <script>
+        -> read-only workspace, no network, disposable /tmp
+```
+
+The container runs non-root with all Linux capabilities dropped, `no-new-privileges`, read-only root
+and workspace mounts, memory/CPU/PID limits, and explicit environment variables only. Docker/image
+absence, an unknown package, free-form command verification, policy drift, sandbox startup failure, or
+nonzero script exit all fail closed. There is no trusted-local fallback. The official pinned Node image
+uses its bundled npm only to invoke an already approved script; it never installs dependencies. Scripts
+that require pnpm or missing dependencies currently fail closed until a dedicated verifier image exists.
+
+The Docker adapter now resolves the host Docker CLI to an absolute path before replacing its
+environment. This was found by the real adversarial test: a bare `docker` executable plus an empty PATH
+could not start the sandbox. The host Docker client now receives only the minimum HOME it requires,
+while the container continues to receive the explicitly approved environment.
+
+Each verification container has a unique run-scoped name. Timeout, cancellation, and output-limit paths
+ask the Docker daemon to `kill` and `wait` for that named container, then remove it before the verifier
+reports the command settled. The Docker CLI process exiting is not treated as proof that the container has
+stopped. Verification image policy rejects mutable tags and requires an immutable sha256 digest.
+
+Tests prove exact sandbox delegation, runtime policy mismatch rejection, unknown-package and free-form
+rule rejection, Docker hardening flags, and fail-closed sandbox errors. The final default gate has 38 test
+files with 494 passed and one opt-in Docker test skipped (495 total); coverage is 95.40% statements,
+90.76% branches, 96.32% functions, and 95.36% lines. When explicitly enabled, the real Docker test
+starts a malicious package script, observes its marker, and proves its attempted workspace write is
+denied. `pnpm check`, `pnpm build`, and `git diff --check` pass. Self-analysis reports 15 projects, 114
+files, 1,635 symbols, 59 project dependencies, 243 file dependencies, 3,031 symbol references, and the
+same two known root diagnostics. The research repository remains stable at 3 projects, 1,010 files,
+7,617 symbols, 3 project dependencies, 3,592 file dependencies, 13,893 symbol references, and its known
+25-file diagnostic. Documentation sync and independent follow-up review are complete.
+
+The same review clarified two Git boundaries. Linked worktrees protect the user's checked-out files,
+but their branches and registrations still mutate the source repository's shared `.git` metadata; true
+metadata isolation needs a dedicated orchestrator clone. Also, interruption after branch creation but
+before worktree materialization can leave a branch-only partial state requiring explicit reconciliation.
+These are documented P2 limitations, not claims that linked worktrees provide a full security boundary.
+
+Stage 20 is **PASS / CLOSED** after independent follow-up review. The recommended next product stage is
+**Observed Impact Reconciliation**: compare actual Git changes with predicted impact and lease authority
+before allowing verification/integration. Run Operations and Recovery Control remains planned after that
+authority gap.

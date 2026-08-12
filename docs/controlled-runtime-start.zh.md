@@ -129,15 +129,35 @@ Runtime 也补齐了 run state 收尾：task 全部 completed/cancelled 时 run 
 Pi 仍不能使用 built-in shell 或 mutation tool，只能使用受控 `forge_read`、`forge_list`、`forge_find`、
 `forge_edit` 与 `forge_write`。Stage 20 默认 binding 不授予 `forge_command`。
 
-Pi 完成后，orchestrator 用参数数组执行每条 approved package-script rule：
+Pi 完成后，orchestrator 先把 approved package ID 映射到当前 RepositoryGraph 中的 project root，再把 package-script
+rule 委托给已批准的 verification sandbox：
 
 ```text
-pnpm --filter <approved-package-name> run <approved-script-name>
+host orchestrator
+    -> verification-policy v2 选择的 Docker sandbox
+       -> npm --prefix <approved-project-root> run <approved-script-name>
 ```
 
-系统不会解释 shell string；package name 与 script name 也被限制为 package-manager-safe identifier。Child process
-只收到 `CI=1` 与 trusted `PATH`，父进程的 `NODE_OPTIONS` 等任意环境变量不会进入 verification。Autonomous runtime
-遇到 free-form `command` verification 会 fail closed；script 失败则不会 Git integrate。
+系统不会解释 shell string；package name 与 script name 也被限制为 package-manager-safe identifier。固定 digest 的
+Node image 以 non-root user 运行，root filesystem 与 task workspace 都只读，network 被禁止，Linux capability 全部
+drop，并启用 `no-new-privileges`、memory/CPU/process-count limit 和一次性 `/tmp`。Container 只接收明确环境变量，
+父进程 credentials、`NODE_OPTIONS` 等不会进入 verification。Runtime 会在 persistence/dispatch 前重新计算完整
+verification-policy fingerprint，所以不同 image 或 sandbox profile 不能静默消费旧 approval。
+
+本仓库自身用 pnpm 管理 workspace，但 Stage 20 verifier 有意使用固定官方 Node image 自带的 `npm` 来调用已经批准的
+package script，且绝不安装依赖。需要 pnpm 或 worktree 中未 materialize dependency 的 script 会 fail closed，直到后续
+提供专用 verifier image。Free-form `command`、未知 package、image 不可用、sandbox 启动失败或非零退出都会 fail
+closed，并阻止 Git integration。
+
+Verification image 必须使用 immutable sha256 digest。每个 verification container 有唯一 run-scoped name。Timeout、
+cancellation 或 output limit 时，runtime 会请求 Docker daemon 对该 container 执行 `kill` 和 `wait`，再清理后才返回
+verification result。只 kill Docker client 不算 container settlement。
+
+Stage 20 verification boundary 已通过 independent review。随机 run-scoped container name 当前不嵌入 human-readable
+task ID；container-to-task operational lookup 是未来 observability work。
+
+Verification 仍发生在 execution lease release 之后，但 verifier 无法修改 host worktree：workspace mount 是只读的，
+`/tmp` 运行后丢弃。一个 opt-in 真实 Docker 对抗测试会启动尝试写 worktree 的 package script，并证明写入被拒绝。
 
 每个 task commit 都包含准确的 `Forge-Run-Id` 与 `Forge-Task-Id` trailer。若 integration checkout 已经越过 approved
 base，复用时会逐个检查中间 commit 是否带有当前 run trailer，因此普通人工插入的 commit 会被拒绝，不会被误认成
@@ -168,7 +188,9 @@ history、错误 checkout commit、symlink path escape、错误 durable
 authority、缺失 task/impact、conflict/schedule drift、lease/impact drift、错误 workspace checkout、相同 retry、authority
 变化 retry、真实 Pi tool edit、失败/free-form verification、persisted lease hydration、SQLite migration/corruption 与真实
 Git checkout reuse。真实 two-clone integration test 证明：即使两个 clone 共享 origin 和 bytes，只要物理 approved root
-不同，binder 仍会拒绝。Dirty-state-only binding 也有独立测试。
+不同，binder 仍会拒绝。Dirty-state-only binding 也有独立测试。Verification 测试还覆盖准确 sandbox delegation、
+runtime policy-fingerprint mismatch、未知 package/free-form command、sandbox fail-closed、resource flags；显式启用 Docker
+时，还会证明 script 确实启动但不能写入只读 workspace。
 
 ## 9. 有意保留的限制
 
@@ -178,9 +200,13 @@ Git checkout reuse。真实 two-clone integration test 证明：即使两个 clo
 - 多个 sibling failure 会等待 settle，但还不会聚合成一个 diagnostic。
 - 结果不会自动发布到用户 branch、GitHub branch、issue 或 pull request。
 - GitHub/Jira/provider identity 不进入 deterministic domain contract。
-- 当前 verifier PATH 针对已支持的 macOS/Linux local runtime；Windows path separator，以及 Corepack、Volta、自定义 pnpm
-  位置需要后续 portability adapter。
+- Verification 当前要求本机 Docker 与固定 Node image 已可用；不会安装 dependency，也不会 fallback 到 host execution。
+  未来可用专用 verifier image 加入 pnpm 与预先 materialize 的 dependency，但不能削弱 no-network/read-only boundary。
 - Commit provenance 使用 exact-line run trailer 与 Git ancestor check；任何 post-base commit 缺少 trailer 都会 fail
   closed。若 metadata format 以后扩展，可再引入严格 Git trailer-block parser。
 - Trusted Git subprocess 目前仍继承 orchestrator environment。它与 agent-controlled verification 的 threat model 不同，
   但 minimal-environment 一致性仍登记为后续 security-review 项。
+- Linked integration/task worktree 不会修改用户 checkout 中的文件，但其 branch 与 worktree registration 仍写入 source
+  repository 共用的 `.git` metadata。若需要物理 Git metadata 隔离，必须使用 dedicated orchestrator clone。
+- Worktree create 只有在 branch 与 valid path 都存在后才完整支持 retry。若 process 在 branch 创建后、worktree
+  materialization 前崩溃，会留下 branch-only partial state，目前需要显式 cleanup/reconciliation。
