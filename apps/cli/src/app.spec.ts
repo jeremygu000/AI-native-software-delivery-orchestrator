@@ -212,6 +212,18 @@ describe('forge analyze', () => {
     let output = '';
     const planRepository = vi.fn(async () => ({
       attempts: 2,
+      semanticReview: {
+        recommendation: 'accept' as const,
+        summary: 'The requested change is covered.',
+        requirements: [
+          {
+            requirement: 'Change A.',
+            status: 'covered' as const,
+            taskIds: ['task-a'],
+            detail: 'Task A implements the request.'
+          }
+        ]
+      },
       specification: { tasks: [] },
       impacts: [
         {
@@ -257,7 +269,8 @@ describe('forge analyze', () => {
       '--max-attempts',
       '5',
       '--max-concurrency',
-      '4'
+      '4',
+      '--semantic-review'
     ]);
 
     expect(planRepository).toHaveBeenCalledWith({
@@ -265,10 +278,12 @@ describe('forge analyze', () => {
       repositoryPath: '/workspace/repo',
       sharedResourcesPath: '/workspace/shared-resources.json',
       maxAttempts: 5,
-      maxConcurrency: 4
+      maxConcurrency: 4,
+      semanticReviewAuthorized: true
     });
     expect(JSON.parse(output)).toMatchObject({
       attempts: 2,
+      semanticReview: { recommendation: 'accept' },
       impacts: [{ projectsRead: ['project-a'], filesRead: ['file-a'] }],
       schedule: { maxConcurrency: 4 }
     });
@@ -290,11 +305,11 @@ describe('forge analyze', () => {
       }
     });
 
-    await expect(program.parseAsync(['node', 'forge', 'plan', 'request.md'])).rejects.toMatchObject(
-      {
-        code: 'commander.error'
-      }
-    );
+    await expect(
+      program.parseAsync(['node', 'forge', 'plan', 'request.md', '--semantic-review'])
+    ).rejects.toMatchObject({
+      code: 'commander.error'
+    });
     expect(errorOutput).toContain('PLANNING_REJECTED');
     expect(errorOutput).toContain('INVALID_PLANNER_OUTPUT');
   });
@@ -320,9 +335,9 @@ describe('forge analyze', () => {
       }
     });
 
-    await expect(program.parseAsync(['node', 'forge', 'plan', 'request.md'])).rejects.toMatchObject(
-      { code: 'commander.error' }
-    );
+    await expect(
+      program.parseAsync(['node', 'forge', 'plan', 'request.md', '--semantic-review'])
+    ).rejects.toMatchObject({ code: 'commander.error' });
     expect(errorOutput).toContain('No shared-resource policy was configured');
     expect(errorOutput).toContain('--shared-resources <path>');
   });
@@ -368,7 +383,22 @@ describe('forge analyze', () => {
       planRepository: async () => Promise.reject(failure)
     });
 
-    await expect(program.parseAsync(['node', 'forge', 'plan', 'request.md'])).rejects.toBe(failure);
+    await expect(
+      program.parseAsync(['node', 'forge', 'plan', 'request.md', '--semantic-review'])
+    ).rejects.toBe(failure);
+  });
+
+  it('requires explicit consent before sending a plan to the semantic reviewer', async () => {
+    const planRepository = vi.fn();
+    const program = createForgeProgram({ planRepository });
+    program.commands.find((command) => command.name() === 'plan')!.exitOverride();
+
+    await expect(program.parseAsync(['node', 'forge', 'plan', 'request.md'])).rejects.toMatchObject(
+      {
+        code: 'commander.missingMandatoryOptionValue'
+      }
+    );
+    expect(planRepository).not.toHaveBeenCalled();
   });
 
   it('rejects invalid positive-integer plan options before invoking planning', async () => {
@@ -376,7 +406,15 @@ describe('forge analyze', () => {
     const program = createForgeProgram({ planRepository });
 
     await expect(
-      program.parseAsync(['node', 'forge', 'plan', 'request.md', '--max-attempts', '0'])
+      program.parseAsync([
+        'node',
+        'forge',
+        'plan',
+        'request.md',
+        '--max-attempts',
+        '0',
+        '--semantic-review'
+      ])
     ).rejects.toThrow('Expected a positive integer, received 0');
     expect(planRepository).not.toHaveBeenCalled();
   });

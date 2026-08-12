@@ -1642,3 +1642,52 @@ repository-derived project/file/symbol facts to the currently configured externa
 and this session did not have explicit authorization for that data egress. Deterministic fake-planner,
 Pi gateway/tool, isolated resource-loader, CLI composition, and rejection-path tests are complete; an
 authorized live-model smoke remains a review/deployment check rather than an unstated success claim.
+
+## Stage 17: Semantic Plan Review
+
+Stage 17 separates “this task plan is structurally valid” from “this task plan appears to cover the
+user's request.” Deterministic repository and scheduling logic cannot prove natural-language
+completeness, so the project now defines a provider-neutral `SemanticPlanReviewer` as a second,
+untrusted semantic role.
+
+The Reviewer receives the original source, a deterministically valid Task Specification, and the
+already-built RepositoryGraph. Its response remains `unknown` until `semanticPlanReviewSchema`
+accepts a structured requirement map. Each requirement is `covered`, `missing`, or `ambiguous`.
+Covered items must cite at least one known task. `accept` is legal only when every item is covered;
+`revise` must identify at least one gap. Duplicate requirements, unknown task IDs, contradictory
+recommendations, malformed JSON, and non-object values fail closed.
+
+Missing and ambiguous items become stable `SEMANTIC_REQUIREMENT_GAP` diagnostics for the next Planner
+attempt. They share the existing positive `maxAttempts` budget, so semantic revision cannot loop
+forever. Reviewer formatting or provider failures do not become Planner revision requests because a
+Planner cannot repair that infrastructure path. After an accept recommendation, the complete Task
+Contract, DAG, verification, impact, conflict, and Scheduler pipeline runs again from a schema-cloned
+specification before returning a `PreparedOrchestrationPlan`.
+
+`PiSemanticPlanReviewer` is implemented inside `libs/agent-runtime`, using a separate one-response Pi
+session and the same isolated resource boundary as planning. The fact surface now includes a fourth
+read-only tool, `forge_relationships`, for bounded project-dependency, file-dependency, and
+symbol-reference queries. It supports incoming/outgoing/either filtering and a server-enforced
+500-edge page maximum. Neither Planner nor Reviewer receives live filesystem mutation or command
+capability. Session cleanup now also preserves the primary provider failure if disposal fails at the
+same time.
+
+The CLI requires `--semantic-review`. This is an explicit consent gate for the additional model call
+to receive the specification and read-only repository facts. Without it, Commander rejects the
+command before the planning composition root runs. The accepted semantic recommendation is serialized
+with the plan as advisory evidence; it is not human approval and cannot start a run.
+
+ADR-021 records this trust boundary. Standalone beginner-oriented guides are available in
+[English](./semantic-plan-review.en.md) and [Chinese](./semantic-plan-review.zh.md). Human approval,
+plan/repository fingerprints, durable planning evidence, runtime binding, and `forge run` remain the
+next Plan-to-Run stage.
+
+The Stage 17 local gate passes with 29 test files and 397 tests. Coverage is 96.46% statements,
+91.33% branches, 96.85% functions, and 96.43% lines. `pnpm check`, `pnpm build`, and
+`git diff --check` pass. Self-analysis reports 14 projects, 93 files, 1,285 symbols, 46 project
+dependencies, 171 file dependencies, 2,331 symbol references, and the same two known root
+configuration diagnostics. The ingestion-and-matching research repository remains stable at three
+projects, 1,010 files, 7,617 symbols, three project dependencies, 3,592 file dependencies, 13,893
+symbol references, and one known 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic. No live Planner or
+Reviewer model call was made; the automated adapter tests use controlled gateways, and the CLI now
+requires explicit review consent for real data egress.

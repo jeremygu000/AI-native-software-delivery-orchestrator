@@ -62,13 +62,15 @@ returns only the fixed planning system prompt and empty resource collections. It
 default project/global resource discovery, so project context files, extensions, skills, prompt
 templates, themes, and appended system prompts cannot enter through that path. Pi sessions use
 `noTools: "builtin"`: built-in filesystem and command tools start disabled while explicitly supplied
-custom tools remain registrable. The same three names are also passed through Pi's explicit `tools`
+custom tools remain registrable. The same four names are also passed through Pi's explicit `tools`
 allowlist, so unrelated extension/custom tools cannot enter the session registry.
 The planning session receives only:
 
 - `forge_projects` — pages discovered project identities and package facts;
 - `forge_files` — pages files with optional project and path-prefix filters;
 - `forge_symbols` — searches or pages symbols by query or file.
+- `forge_relationships` — pages project dependencies, file dependencies, or symbol references with
+  optional node and direction filters.
 
 The tools query the immutable in-memory `RepositoryGraph`. They do not inspect an unanalysed live
 filesystem, execute a command, or write a file. Pagination keeps a large repository from being copied
@@ -86,7 +88,7 @@ Pi-specific sessions, messages, tool definitions, and response extraction remain
 ```sh
 pnpm build
 pnpm exec forge plan request.md --repository /path/to/repository --max-concurrency 2 \
-  --shared-resources /path/to/shared-resources.json
+  --shared-resources /path/to/shared-resources.json --semantic-review
 ```
 
 The command:
@@ -95,13 +97,21 @@ The command:
 2. builds the repository graph;
 3. starts the configured Pi planning session;
 4. allows up to three proposals by default;
-5. prints JSON containing accepted tasks, predicted impacts, hard/risk conflicts, and an explanatory
-   wave preview.
+5. asks a separate semantic Reviewer to map source requirements to proposed task IDs;
+6. returns semantic gaps to the Planner for bounded revision, or fully revalidates an accept
+   recommendation;
+7. prints JSON containing accepted tasks, semantic review evidence, predicted impacts, hard/risk
+   conflicts, and an explanatory wave preview.
 
 `--max-attempts` and `--max-concurrency` accept positive integers. The latter influences the schedule
 preview; it does not start agents. `--shared-resources` is optional and loads the JSON policy consumed
 by the deterministic impact and conflict engines. Without it, the registry is deliberately empty and
 the CLI explains that named shared resources require a policy file.
+
+`--semantic-review` is required. Passing it explicitly authorizes a separate Pi review session to
+receive the specification and read-only Repository Facts. The Reviewer has the same restricted fact
+tools as the Planner and no mutation or command capability. Its recommendation cannot authorize a
+runtime run.
 
 The command currently uses Pi's configured model and authentication. Explicit model selection,
 routing, and failover are not implemented.
@@ -127,7 +137,10 @@ Tests cover valid plans, fenced JSON, malformed JSON, invalid contracts, missing
 unresolved selectors, unknown shared resources, missing and empty package-script verification,
 free-form command rejection, hard/risk separation,
 Scheduler rejection and revision, exhausted attempts, provider failure propagation, fact-tool
-pagination, server-side limit clamping and filtering, symbol lookup, disabled built-in Pi tools,
+pagination, relationship direction/filtering, server-side limit clamping and filtering, symbol lookup,
+disabled built-in Pi tools, semantic status/recommendation consistency, duplicate requirements,
+unknown task citations, missing/ambiguous revision, post-review deterministic revalidation,
+reviewer failure propagation, explicit CLI review consent,
 missing/empty/error responses, session disposal on success/failure, policy-file loading, CLI
 serialization, CLI rejection diagnostics, and invalid numeric options. A non-mocked Pi SDK integration test proves that the Stage 12–15 coding tools
 and Stage 16 fact tools actually enter the live session registry while built-in `bash` remains absent.
@@ -141,5 +154,6 @@ and Stage 16 fact tools actually enter the live session registry while built-in 
   validated command-policy ID instead of carrying executable text.
 - The Planner cannot start, resume, cancel, or inspect a runtime run.
 - Planning output is not persisted.
-- There is no human approval checkpoint or automated review-agent loop.
+- Semantic review is probabilistic evidence, not proof that every natural-language requirement was
+  identified correctly. Human approval is still absent and remains the execution authority boundary.
 - Model routing, failover, token budgeting, and prompt-size telemetry are deferred.

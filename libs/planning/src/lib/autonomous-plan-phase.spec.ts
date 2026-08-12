@@ -19,6 +19,7 @@ import {
   type PlannerProposalRequest,
   type PlanningDiagnostic
 } from './autonomous-plan-phase.js';
+import { SemanticPlanReviewError, type SemanticPlanReviewer } from './semantic-plan-review.js';
 
 const graph: RepositoryGraph = {
   repositoryPath: '/repo',
@@ -89,9 +90,27 @@ const task = (overrides: Partial<TaskContract> = {}): TaskContract => ({
 
 const specification = (...tasks: readonly TaskContract[]) => ({ tasks });
 
-const createPhase = (planner: PlannerAgent) =>
+const acceptedReview = {
+  recommendation: 'accept' as const,
+  summary: 'Every requested change is represented by a task.',
+  requirements: [
+    {
+      requirement: 'Change A and B.',
+      status: 'covered' as const,
+      taskIds: ['task-a'],
+      detail: 'The task specification contains implementation and verification work.'
+    }
+  ]
+};
+
+const acceptedReviewer = (): SemanticPlanReviewer => ({
+  review: async () => acceptedReview
+});
+
+const createPhase = (planner: PlannerAgent, reviewer: SemanticPlanReviewer = acceptedReviewer()) =>
   new AutonomousPlanPhase({
     planner,
+    reviewer,
     impactAnalyzer: new RepositoryTaskImpactAnalyzer(registry),
     conflictAnalyzer: new DeterministicConflictEngine(registry),
     scheduler: new DeterministicScheduler()
@@ -126,6 +145,124 @@ describe('AutonomousPlanPhase', () => {
     expect(result.hardConflicts).toEqual([]);
     expect(result.riskConflicts).toHaveLength(1);
     expect(result.executionPlan.waves).toEqual([{ index: 0, taskIds: ['task-a', 'task-b'] }]);
+    expect(result.semanticReview).toEqual(acceptedReview);
+  });
+
+  it('returns semantic gaps to the planner and reviews the revised deterministic plan', async () => {
+    const propose = vi.fn().mockResolvedValue(specification(task()));
+    const review = vi
+      .fn()
+      .mockResolvedValueOnce({
+        recommendation: 'revise',
+        summary: 'The plan omits the requested change to B.',
+        requirements: [
+          {
+            requirement: 'Change B.',
+            status: 'missing',
+            taskIds: [],
+            detail: 'No task changes file B.'
+          },
+          {
+            requirement: 'Change A.',
+            status: 'covered',
+            taskIds: ['task-a'],
+            detail: 'Task A covers this requirement.'
+          }
+        ]
+      })
+      .mockResolvedValueOnce(acceptedReview);
+
+    const result = await createPhase({ propose }, { review }).create(request);
+
+    expect(result.attempts).toBe(2);
+    expect(propose.mock.calls[1][0].previousDiagnostics).toEqual([
+      {
+        code: 'SEMANTIC_REQUIREMENT_GAP',
+        detail: 'No task changes file B.',
+        requirement: 'Change B.',
+        status: 'missing'
+      }
+    ]);
+    expect(review).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not ask the semantic reviewer to inspect a deterministically invalid proposal', async () => {
+    const propose = vi
+      .fn()
+      .mockResolvedValueOnce(specification(task({ dependencies: ['missing'] })))
+      .mockResolvedValueOnce(specification(task()));
+    const review = vi.fn().mockResolvedValue(acceptedReview);
+
+    await createPhase({ propose }, { review }).create(request);
+
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(review.mock.calls[0][0].attempt).toBe(2);
+  });
+
+  it('fails closed when semantic review output is malformed or references an unknown task', async () => {
+    await expect(
+      createPhase(
+        { propose: async () => specification(task()) },
+        { review: async () => 'not json' }
+      ).create(request)
+    ).rejects.toBeInstanceOf(SemanticPlanReviewError);
+
+    await expect(
+      createPhase(
+        { propose: async () => specification(task()) },
+        {
+          review: async () => ({
+            ...acceptedReview,
+            requirements: [{ ...acceptedReview.requirements[0], taskIds: ['unknown-task'] }]
+          })
+        }
+      ).create(request)
+    ).rejects.toMatchObject({
+      name: 'SemanticPlanReviewError',
+      issues: [
+        expect.objectContaining({
+          message: 'Semantic review references unknown task: unknown-task'
+        })
+      ]
+    });
+  });
+
+  it('revalidates the task specification after an accept recommendation', async () => {
+    const propose = vi.fn().mockResolvedValue(specification(task()));
+    let reviews = 0;
+    const reviewer: SemanticPlanReviewer = {
+      review: async ({ specification: reviewed }) => {
+        reviews += 1;
+        if (reviews === 1) {
+          reviewed.tasks[0].dependencies.push('missing-after-review');
+        }
+        return acceptedReview;
+      }
+    };
+
+    const result = await createPhase({ propose }, reviewer).create(request);
+
+    expect(result.attempts).toBe(2);
+    expect(propose.mock.calls[1][0].previousDiagnostics).toEqual([
+      expect.objectContaining({
+        code: 'INVALID_TASK_GRAPH',
+        issue: {
+          type: 'missing-dependency',
+          taskId: 'task-a',
+          dependencyId: 'missing-after-review'
+        }
+      })
+    ]);
+  });
+
+  it('propagates semantic reviewer infrastructure failures without planner revision', async () => {
+    const failure = new Error('review provider unavailable');
+    const propose = vi.fn().mockResolvedValue(specification(task()));
+
+    await expect(
+      createPhase({ propose }, { review: async () => Promise.reject(failure) }).create(request)
+    ).rejects.toBe(failure);
+    expect(propose).toHaveBeenCalledTimes(1);
   });
 
   it('accepts a fenced JSON response and sends deterministic contract diagnostics for revision', async () => {
@@ -374,6 +511,41 @@ describe('AutonomousPlanPhase', () => {
     ]);
   });
 
+  it('fails closed with the last semantic gaps when review revisions exhaust the budget', async () => {
+    const phase = createPhase(
+      { propose: async () => specification(task()) },
+      {
+        review: async () => ({
+          recommendation: 'revise',
+          summary: 'Logout is missing.',
+          requirements: [
+            {
+              requirement: 'Add logout.',
+              status: 'missing',
+              taskIds: [],
+              detail: 'No task implements logout.'
+            }
+          ]
+        })
+      }
+    );
+
+    await expect(
+      phase.create({ ...request, options: { maxAttempts: 2, schedule: { maxConcurrency: 2 } } })
+    ).rejects.toMatchObject({
+      name: 'AutonomousPlanningError',
+      attempts: 2,
+      diagnostics: [
+        {
+          code: 'SEMANTIC_REQUIREMENT_GAP',
+          detail: 'No task implements logout.',
+          requirement: 'Add logout.',
+          status: 'missing'
+        }
+      ]
+    });
+  });
+
   it('does not convert planner infrastructure failures into revision requests', async () => {
     const failure = new Error('provider unavailable');
 
@@ -397,6 +569,7 @@ describe('AutonomousPlanPhase', () => {
     const propose = vi.fn(async (_request: PlannerProposalRequest) => specification(task()));
     const phase = new AutonomousPlanPhase({
       planner: { propose },
+      reviewer: acceptedReviewer(),
       impactAnalyzer: new RepositoryTaskImpactAnalyzer(registry),
       conflictAnalyzer: new DeterministicConflictEngine(registry),
       scheduler
@@ -428,6 +601,7 @@ describe('AutonomousPlanPhase', () => {
     };
     const phase = new AutonomousPlanPhase({
       planner: { propose: async () => specification(task()) },
+      reviewer: acceptedReviewer(),
       impactAnalyzer: new RepositoryTaskImpactAnalyzer(registry),
       conflictAnalyzer: new DeterministicConflictEngine(registry),
       scheduler
@@ -440,6 +614,7 @@ describe('AutonomousPlanPhase', () => {
     const failure = new Error('repository facts unavailable');
     const phase = new AutonomousPlanPhase({
       planner: { propose: async () => specification(task()) },
+      reviewer: acceptedReviewer(),
       impactAnalyzer: { analyze: async () => Promise.reject(failure) },
       conflictAnalyzer: new DeterministicConflictEngine(registry),
       scheduler: new DeterministicScheduler()

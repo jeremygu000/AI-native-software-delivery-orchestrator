@@ -53,6 +53,14 @@ export type PiPlanningToolCall =
       readonly fileId?: string;
       readonly after?: string;
       readonly limit?: unknown;
+    }
+  | {
+      readonly name: 'forge_relationships';
+      readonly kind: 'project-dependency' | 'file-dependency' | 'symbol-reference';
+      readonly nodeId?: string;
+      readonly direction?: 'incoming' | 'outgoing' | 'either';
+      readonly after?: string;
+      readonly limit?: unknown;
     };
 
 export interface PiPlanningToolResult {
@@ -99,7 +107,7 @@ class IsolatedPlanningResourceLoader implements ResourceLoader {
   }
 
   getSystemPrompt(): string {
-    return 'You create task proposals from the supplied request and read-only repository facts.';
+    return 'You are a repository-aware planning component. Follow the supplied role and use only read-only repository facts.';
   }
 
   getAppendSystemPrompt(): string[] {
@@ -159,6 +167,27 @@ export const createPlanningFactTools = (
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 }))
     }),
     execute: async (_id, params) => asToolResult({ name: 'forge_symbols', ...params }, executeTool)
+  }),
+  defineTool({
+    name: 'forge_relationships',
+    label: 'Forge relationships',
+    description:
+      'List project dependencies, file dependencies, or symbol references from repository facts.',
+    parameters: Type.Object({
+      kind: Type.Union([
+        Type.Literal('project-dependency'),
+        Type.Literal('file-dependency'),
+        Type.Literal('symbol-reference')
+      ]),
+      nodeId: Type.Optional(Type.String()),
+      direction: Type.Optional(
+        Type.Union([Type.Literal('incoming'), Type.Literal('outgoing'), Type.Literal('either')])
+      ),
+      after: Type.Optional(Type.String()),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 }))
+    }),
+    execute: async (_id, params) =>
+      asToolResult({ name: 'forge_relationships', ...params }, executeTool)
   })
 ];
 
@@ -202,13 +231,16 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
     readonly prompt: string;
     readonly executeTool: (call: PiPlanningToolCall) => Promise<PiPlanningToolResult>;
   }): Promise<{ readonly sessionId: string; readonly output: string }> {
-    const toolNames = ['forge_projects', 'forge_files', 'forge_symbols'];
+    const toolNames = ['forge_projects', 'forge_files', 'forge_symbols', 'forge_relationships'];
     const { session } = await this.#createSession({
       cwd: options.cwd,
       noTools: 'builtin',
       tools: toolNames,
       customTools: createPlanningFactTools(options.executeTool)
     });
+    let generated: { readonly sessionId: string; readonly output: string } | undefined;
+    let operationFailure: unknown;
+    let operationFailed = false;
     try {
       session.setActiveToolsByName(toolNames);
       await session.prompt(options.prompt);
@@ -226,10 +258,30 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
       if (output.length === 0) {
         throw new Error('Pi planner returned no text response');
       }
-      return { sessionId: session.sessionId, output };
-    } finally {
-      session.dispose();
+      generated = { sessionId: session.sessionId, output };
+    } catch (error) {
+      operationFailed = true;
+      operationFailure = error;
     }
+    try {
+      session.dispose();
+    } catch (disposalFailure) {
+      if (!operationFailed) {
+        operationFailed = true;
+        operationFailure = disposalFailure;
+      }
+    }
+    if (operationFailed) {
+      throw operationFailure instanceof Error
+        ? operationFailure
+        : new Error('Pi planning session failed with a non-error value', {
+            cause: operationFailure
+          });
+    }
+    if (generated === undefined) {
+      throw new Error('Pi planning session completed without a result');
+    }
+    return generated;
   }
 }
 
@@ -258,6 +310,64 @@ const paginate = <T extends { readonly id: string }>(
   };
 };
 
+export const createPlanningFactToolExecutor =
+  (
+    graph: PlannerProposalRequest['repository']
+  ): ((call: PiPlanningToolCall) => Promise<PiPlanningToolResult>) =>
+  async (call) => {
+    if (call.name === 'forge_projects') {
+      return {
+        content: JSON.stringify(
+          paginate([...graph.projects.values()], call.after, call.limit, 100, 200)
+        )
+      };
+    }
+    if (call.name === 'forge_files') {
+      const files = [...graph.files.values()].filter(
+        (file) =>
+          (call.projectId === undefined || file.projectId === call.projectId) &&
+          (call.prefix === undefined || file.path.startsWith(call.prefix))
+      );
+      return { content: JSON.stringify(paginate(files, call.after, call.limit, 200, 500)) };
+    }
+    if (call.name === 'forge_relationships') {
+      const direction = call.direction ?? 'either';
+      const edges = (
+        call.kind === 'project-dependency'
+          ? graph.projectDependencies.map((edge) => ({ ...edge }))
+          : call.kind === 'file-dependency'
+            ? graph.fileDependencies.map((edge) => ({ ...edge }))
+            : graph.symbolReferences.map((edge) => ({ ...edge }))
+      )
+        .filter(
+          (edge) =>
+            call.nodeId === undefined ||
+            (direction !== 'incoming' && edge.from === call.nodeId) ||
+            (direction !== 'outgoing' && edge.to === call.nodeId)
+        )
+        .map((edge) => ({ ...edge, id: `${edge.from}\u0000${edge.to}` }));
+      return {
+        content: JSON.stringify(paginate(edges, call.after, call.limit, 200, 500))
+      };
+    }
+    if (call.query === undefined && call.fileId === undefined) {
+      return {
+        content: 'forge_symbols requires query or fileId.',
+        isError: true
+      };
+    }
+    const query = call.query?.toLowerCase();
+    const symbols = [...graph.symbols.values()].filter(
+      (symbol) =>
+        (call.fileId === undefined || symbol.fileId === call.fileId) &&
+        (query === undefined ||
+          symbol.id.toLowerCase().includes(query) ||
+          symbol.name.toLowerCase().includes(query) ||
+          symbol.path.toLowerCase().includes(query))
+    );
+    return { content: JSON.stringify(paginate(symbols, call.after, call.limit, 100, 200)) };
+  };
+
 const buildPrompt = (request: PlannerProposalRequest): string => {
   const sourceLabel =
     request.source.type === 'markdown-spec'
@@ -271,11 +381,11 @@ const buildPrompt = (request: PlannerProposalRequest): string => {
     'Return exactly one JSON object and no prose or Markdown fence.',
     'The object must have this shape:',
     '{"tasks":[{"id":"stable-id","title":"...","goal":"...","description":"optional","dependencies":[],"expectedReads":[{"type":"project|file|glob|symbol|shared-resource","value":"exact selector"}],"expectedWrites":[],"sharedResources":[],"verification":[{"type":"package-script","packageName":"...","script":"..."}],"priority":0}]}',
-    'Use forge_projects, forge_files, and forge_symbols to inspect deterministic repository facts.',
+    'Use forge_projects, forge_files, forge_symbols, and forge_relationships to inspect deterministic repository facts.',
     'Exact project, file, and symbol selectors must resolve to one fact. Glob selectors may match many files.',
     'Every task must define at least one package-script verification backed by repository facts.',
     'Never emit free-form command verification. Autonomous planning does not authorize command strings.',
-    'Do not invent shared-resource IDs. Do not use tools other than the three repository-fact tools.',
+    'Do not invent shared-resource IDs. Do not use tools other than the four repository-fact tools.',
     `Known shared-resource IDs: ${JSON.stringify(request.sharedResourceIds)}`,
     `Repository: ${request.repository.repositoryPath}`,
     `Repository counts: ${JSON.stringify({
@@ -303,39 +413,7 @@ export class PiPlanningAgent implements PlannerAgent {
     const result = await this.#gateway.generate({
       cwd: graph.repositoryPath,
       prompt: buildPrompt(request),
-      executeTool: async (call) => {
-        if (call.name === 'forge_projects') {
-          return {
-            content: JSON.stringify(
-              paginate([...graph.projects.values()], call.after, call.limit, 100, 200)
-            )
-          };
-        }
-        if (call.name === 'forge_files') {
-          const files = [...graph.files.values()].filter(
-            (file) =>
-              (call.projectId === undefined || file.projectId === call.projectId) &&
-              (call.prefix === undefined || file.path.startsWith(call.prefix))
-          );
-          return { content: JSON.stringify(paginate(files, call.after, call.limit, 200, 500)) };
-        }
-        if (call.query === undefined && call.fileId === undefined) {
-          return {
-            content: 'forge_symbols requires query or fileId.',
-            isError: true
-          };
-        }
-        const query = call.query?.toLowerCase();
-        const symbols = [...graph.symbols.values()].filter(
-          (symbol) =>
-            (call.fileId === undefined || symbol.fileId === call.fileId) &&
-            (query === undefined ||
-              symbol.id.toLowerCase().includes(query) ||
-              symbol.name.toLowerCase().includes(query) ||
-              symbol.path.toLowerCase().includes(query))
-        );
-        return { content: JSON.stringify(paginate(symbols, call.after, call.limit, 100, 200)) };
-      }
+      executeTool: createPlanningFactToolExecutor(graph)
     });
     return result.output;
   }

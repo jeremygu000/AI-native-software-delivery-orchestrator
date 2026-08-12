@@ -1445,3 +1445,44 @@ configuration diagnostic。活跃的 ingestion-and-matching 研究仓库得到 3
 project/file/symbol facts 发送给当前配置的 external model destination，而本 session 没有得到该数据外发的明确
 授权。Deterministic fake-planner、Pi gateway/tool、isolated resource-loader、CLI composition 和 rejection
 path test 已完成；经过授权的 live-model smoke 是后续 review/deployment check，不能在这里被暗示为已经成功。
+
+## Stage 17：Semantic Plan Review
+
+Stage 17 把“task plan 结构合法”与“task plan 看起来覆盖了用户需求”拆成两个不同问题。Deterministic
+repository/scheduling logic 无法证明自然语言需求完整性，因此项目现在定义 provider-neutral
+`SemanticPlanReviewer`，把它作为第二个不可信 semantic role。
+
+Reviewer 接收原始 source、已经通过 deterministic validation 的 Task Specification，以及已经构建好的
+RepositoryGraph。Response 在 `semanticPlanReviewSchema` 接受 structured requirement map 前始终是 `unknown`。
+每项 requirement 只能是 `covered`、`missing` 或 `ambiguous`。Covered item 必须引用至少一个已知 task；只有全部
+item covered 时 `accept` 才合法；`revise` 必须指出至少一个 gap。Duplicate requirement、unknown task ID、互相
+矛盾的 recommendation、malformed JSON 和非 object value 都会 fail closed。
+
+Missing/ambiguous item 会变成稳定的 `SEMANTIC_REQUIREMENT_GAP`，交给下一次 Planner attempt。它们共享现有正数
+`maxAttempts` budget，因此 semantic revision 不会无限循环。Reviewer formatting/provider failure 不会被包装成
+Planner revision，因为 Planner 无法修复这条 infrastructure path。Reviewer 给出 accept recommendation 后，系统
+会从 schema-cloned specification 再次执行完整 Task Contract、DAG、verification、impact、conflict 与 Scheduler
+pipeline，之后才能返回 `PreparedOrchestrationPlan`。
+
+`PiSemanticPlanReviewer` 位于 `libs/agent-runtime`，使用独立 one-response Pi session 和与 planning 相同的 isolated
+resource boundary。Fact surface 现在增加第四个只读工具 `forge_relationships`，用于分页查询 project dependency、
+file dependency 与 symbol reference。它支持 incoming/outgoing/either filter，并在 server 端限制每页最多 500 条
+edge。Planner 与 Reviewer 都没有 live filesystem mutation 或 command capability。Session cleanup 也已加固：如果
+provider operation 与 dispose 同时失败，原始 provider failure 不会被 cleanup error 覆盖。
+
+CLI 现在要求 `--semantic-review`，作为 additional model call 接收 specification 与只读 repository facts 的显式
+consent gate。没有该参数时，Commander 会在 planning composition root 运行前拒绝命令。Accepted semantic
+recommendation 会作为 advisory evidence 一起序列化，但它不是 human approval，也不能启动 run。
+
+ADR-021 记录了这个 trust boundary。独立初学者培训文档见[英文](./semantic-plan-review.en.md)与
+[中文](./semantic-plan-review.zh.md)。Human approval、plan/repository fingerprint、durable planning evidence、
+runtime binding 和 `forge run` 是下一阶段的 Plan-to-Run 工作。
+
+Stage 17 local gate 有 29 个 test file、397 个 test 全部通过。覆盖率为 statement 96.46%、branch 91.33%、
+function 96.85%、line 96.43%；`pnpm check`、`pnpm build` 与 `git diff --check` 通过。Self-analysis 得到 14 个
+project、93 个 file、1,285 个 symbol、46 条 project dependency、171 条 file dependency、2,331 条 symbol
+reference，以及同样两个已知 root configuration diagnostic。Ingestion-and-matching 研究仓库保持稳定：3 个
+project、1,010 个 file、7,617 个 symbol、3 条 project dependency、3,592 条 file dependency、13,893 条
+symbol reference，以及一个已知的 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic。本阶段没有执行 live Planner
+或 Reviewer model call；automated adapter test 使用 controlled gateway，真实 CLI 数据外发现在需要显式 review
+consent。

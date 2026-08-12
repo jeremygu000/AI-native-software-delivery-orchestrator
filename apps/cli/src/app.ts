@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import { PiPlanningAgent } from '@ai-native-software-delivery-orchestrator/agent-runtime';
+import {
+  PiPlanningAgent,
+  PiSemanticPlanReviewer
+} from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import { DeterministicConflictEngine } from '@ai-native-software-delivery-orchestrator/conflict-engine';
 import type {
   FileNode,
@@ -36,6 +39,7 @@ export interface ForgeProgramDependencies {
     readonly sharedResourcesPath?: string;
     readonly maxAttempts: number;
     readonly maxConcurrency: number;
+    readonly semanticReviewAuthorized: true;
   }) => Promise<PreparedOrchestrationPlan>;
   readonly writeOutput?: (output: string) => void;
 }
@@ -85,6 +89,7 @@ const createRepositoryPlan = async (request: {
   readonly sharedResourcesPath?: string;
   readonly maxAttempts: number;
   readonly maxConcurrency: number;
+  readonly semanticReviewAuthorized: true;
 }): Promise<PreparedOrchestrationPlan> => {
   const [content, analysis, registry] = await Promise.all([
     readFile(request.specificationPath, 'utf8'),
@@ -93,6 +98,7 @@ const createRepositoryPlan = async (request: {
   ]);
   return new AutonomousPlanPhase({
     planner: new PiPlanningAgent(),
+    reviewer: new PiSemanticPlanReviewer(),
     impactAnalyzer: new RepositoryTaskImpactAnalyzer(registry),
     conflictAnalyzer: new DeterministicConflictEngine(registry),
     scheduler: new DeterministicScheduler()
@@ -124,6 +130,7 @@ export const loadSharedResourceRegistry = async (
 
 const serializePlan = (plan: PreparedOrchestrationPlan) => ({
   attempts: plan.attempts,
+  semanticReview: plan.semanticReview,
   specification: plan.specification,
   impacts: plan.impacts.map((impact) => ({
     ...impact,
@@ -229,6 +236,10 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     )
     .option('--max-attempts <count>', 'maximum planner attempts', parsePositiveInteger, 3)
     .option('--max-concurrency <count>', 'maximum concurrent tasks', parsePositiveInteger, 1)
+    .requiredOption(
+      '--semantic-review',
+      'authorize an independent Pi review using the specification and read-only repository facts'
+    )
     .action(
       async (
         specification: string,
@@ -237,6 +248,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           sharedResources?: string;
           maxAttempts: number;
           maxConcurrency: number;
+          semanticReview: true;
         }
       ) => {
         try {
@@ -247,7 +259,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
               ? {}
               : { sharedResourcesPath: resolve(cwd, options.sharedResources) }),
             maxAttempts: options.maxAttempts,
-            maxConcurrency: options.maxConcurrency
+            maxConcurrency: options.maxConcurrency,
+            semanticReviewAuthorized: options.semanticReview
           });
           writeOutput(`${JSON.stringify(serializePlan(result), null, 2)}\n`);
         } catch (error) {

@@ -20,3 +20,4 @@ export type {
   PiPlanningToolCall,
   PiPlanningToolResult
 } from './lib/pi-planning-agent.js';
+export { PiSemanticPlanReviewer } from './lib/pi-semantic-plan-reviewer.js';

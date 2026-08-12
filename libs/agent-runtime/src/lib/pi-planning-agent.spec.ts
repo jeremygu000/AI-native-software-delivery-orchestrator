@@ -65,8 +65,13 @@ const graph: RepositoryGraph = {
       }
     ]
   ]),
-  fileDependencies: [],
-  symbolReferences: [],
+  fileDependencies: [
+    {
+      from: 'project:api:apps/api/src/a.ts',
+      to: 'project:api:apps/api/src/b.ts'
+    }
+  ],
+  symbolReferences: [{ from: 'symbol:value-a', to: 'symbol:nested-special' }],
   diagnostics: []
 };
 
@@ -132,6 +137,18 @@ describe('PiPlanningAgent', () => {
           content: 'forge_symbols requires query or fileId.',
           isError: true
         });
+        calls.push({
+          name: 'forge_relationships',
+          kind: 'file-dependency',
+          nodeId: 'project:api:apps/api/src/b.ts',
+          direction: 'incoming'
+        });
+        expect(JSON.parse((await executeTool(calls.at(-1)!)).content).items).toEqual([
+          expect.objectContaining({
+            from: 'project:api:apps/api/src/a.ts',
+            to: 'project:api:apps/api/src/b.ts'
+          })
+        ]);
         return { sessionId: 'session-1', output: '{"tasks":[]}' };
       })
     };
@@ -144,7 +161,8 @@ describe('PiPlanningAgent', () => {
       'forge_files',
       'forge_files',
       'forge_symbols',
-      'forge_symbols'
+      'forge_symbols',
+      'forge_relationships'
     ]);
   });
 
@@ -317,6 +335,76 @@ describe('PiPlanningAgent', () => {
 
     await new PiPlanningAgent(gateway).propose({ ...proposalRequest, repository: largeGraph });
   });
+
+  it('filters and caps repository relationships with stable edge identities', async () => {
+    const fileDependencies = Array.from({ length: 520 }, (_, index) => ({
+      from: `file:${String(index).padStart(3, '0')}`,
+      to: 'file:consumer'
+    }));
+    const relationshipGraph: RepositoryGraph = {
+      ...graph,
+      projectDependencies: [
+        {
+          from: 'project:api',
+          to: 'project:domain',
+          sources: ['typescript-import']
+        }
+      ],
+      fileDependencies,
+      symbolReferences: [{ from: 'symbol:value-a', to: 'symbol:nested-special' }]
+    };
+    const gateway: PiPlanningGateway = {
+      generate: async ({ executeTool }) => {
+        const incoming = JSON.parse(
+          (
+            await executeTool({
+              name: 'forge_relationships',
+              kind: 'file-dependency',
+              nodeId: 'file:consumer',
+              direction: 'incoming',
+              limit: 10_000
+            })
+          ).content
+        );
+        expect(incoming.items).toHaveLength(500);
+        expect(incoming.nextAfter).toBe('file:499\u0000file:consumer');
+
+        const outgoing = JSON.parse(
+          (
+            await executeTool({
+              name: 'forge_relationships',
+              kind: 'symbol-reference',
+              nodeId: 'symbol:value-a',
+              direction: 'outgoing'
+            })
+          ).content
+        );
+        expect(outgoing.items).toEqual([
+          {
+            id: 'symbol:value-a\u0000symbol:nested-special',
+            from: 'symbol:value-a',
+            to: 'symbol:nested-special'
+          }
+        ]);
+
+        const projects = JSON.parse(
+          (
+            await executeTool({
+              name: 'forge_relationships',
+              kind: 'project-dependency'
+            })
+          ).content
+        );
+        expect(projects.items[0]).toMatchObject({ sources: ['typescript-import'] });
+        return { sessionId: 'session-relationships', output: '{"tasks":[]}' };
+      }
+    };
+
+    await new PiPlanningAgent(gateway).propose({
+      ...proposalRequest,
+      repository: relationshipGraph
+    });
+  });
 });
 
 describe('PiPlanningGatewayAdapter', () => {
@@ -336,7 +424,8 @@ describe('PiPlanningGatewayAdapter', () => {
         'forge_command',
         'forge_projects',
         'forge_files',
-        'forge_symbols'
+        'forge_symbols',
+        'forge_relationships'
       ],
       customTools: [...controlledTools, ...planningTools],
       resourceLoader,
@@ -354,7 +443,8 @@ describe('PiPlanningGatewayAdapter', () => {
         'forge_command',
         'forge_projects',
         'forge_files',
-        'forge_symbols'
+        'forge_symbols',
+        'forge_relationships'
       ];
       session.setActiveToolsByName(activeToolNames);
 
@@ -374,7 +464,7 @@ describe('PiPlanningGatewayAdapter', () => {
     expect(loader.getPrompts()).toEqual({ prompts: [], diagnostics: [] });
     expect(loader.getThemes()).toEqual({ themes: [], diagnostics: [] });
     expect(loader.getSystemPrompt()).toBe(
-      'You create task proposals from the supplied request and read-only repository facts.'
+      'You are a repository-aware planning component. Follow the supplied role and use only read-only repository facts.'
     );
     await expect(createIsolatedPlanningResourceLoader()).resolves.toBeInstanceOf(
       loader.constructor
@@ -411,14 +501,15 @@ describe('PiPlanningGatewayAdapter', () => {
       expect.objectContaining({
         cwd: '/repo',
         noTools: 'builtin',
-        tools: ['forge_projects', 'forge_files', 'forge_symbols'],
+        tools: ['forge_projects', 'forge_files', 'forge_symbols', 'forge_relationships'],
         customTools: expect.any(Array)
       })
     );
     expect(setActiveToolsByName).toHaveBeenCalledWith([
       'forge_projects',
       'forge_files',
-      'forge_symbols'
+      'forge_symbols',
+      'forge_relationships'
     ]);
     expect(prompt).toHaveBeenCalledWith('plan this');
     expect(dispose).toHaveBeenCalledOnce();
@@ -467,6 +558,51 @@ describe('PiPlanningGatewayAdapter', () => {
       gateway.generate({ cwd: '/repo', prompt: 'plan', executeTool: async () => ({ content: '' }) })
     ).rejects.toBe(failure);
     expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the primary planning failure when session disposal also fails', async () => {
+    const providerFailure = new Error('provider unavailable');
+    const disposalFailure = new Error('dispose failed');
+    const gateway = new PiPlanningGatewayAdapter(async () => ({
+      session: {
+        sessionId: 'session-1',
+        setActiveToolsByName: () => undefined,
+        prompt: async () => Promise.reject(providerFailure),
+        dispose: () => {
+          throw disposalFailure;
+        },
+        assistantMessages: () => []
+      }
+    }));
+
+    await expect(
+      gateway.generate({ cwd: '/repo', prompt: 'plan', executeTool: async () => ({ content: '' }) })
+    ).rejects.toBe(providerFailure);
+  });
+
+  it('surfaces session disposal failure after otherwise successful planning', async () => {
+    const disposalFailure = new Error('dispose failed');
+    const gateway = new PiPlanningGatewayAdapter(async () => ({
+      session: {
+        sessionId: 'session-1',
+        setActiveToolsByName: () => undefined,
+        prompt: async () => undefined,
+        dispose: () => {
+          throw disposalFailure;
+        },
+        assistantMessages: () => [
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: '{"tasks":[]}' }],
+            stopReason: 'stop'
+          }
+        ]
+      }
+    }));
+
+    await expect(
+      gateway.generate({ cwd: '/repo', prompt: 'plan', executeTool: async () => ({ content: '' }) })
+    ).rejects.toBe(disposalFailure);
   });
 
   it('fails when Pi produces no assistant response', async () => {
@@ -522,7 +658,8 @@ describe('PiPlanningGatewayAdapter', () => {
     expect(tools.map((tool) => tool.name)).toEqual([
       'forge_projects',
       'forge_files',
-      'forge_symbols'
+      'forge_symbols',
+      'forge_relationships'
     ]);
     await executePiToolDefinition(tools[0], 'call-1', {});
     await executePiToolDefinition(tools[1], 'call-2', {
@@ -534,6 +671,13 @@ describe('PiPlanningGatewayAdapter', () => {
     await executePiToolDefinition(tools[2], 'call-3', {
       query: 'value',
       fileId: 'file-a',
+      after: 'a',
+      limit: 10
+    });
+    await executePiToolDefinition(tools[3], 'call-4', {
+      kind: 'symbol-reference',
+      nodeId: 'symbol-a',
+      direction: 'outgoing',
       after: 'a',
       limit: 10
     });
@@ -551,6 +695,14 @@ describe('PiPlanningGatewayAdapter', () => {
         name: 'forge_symbols',
         query: 'value',
         fileId: 'file-a',
+        after: 'a',
+        limit: 10
+      },
+      {
+        name: 'forge_relationships',
+        kind: 'symbol-reference',
+        nodeId: 'symbol-a',
+        direction: 'outgoing',
         after: 'a',
         limit: 10
       }

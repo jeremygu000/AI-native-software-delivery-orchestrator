@@ -7,7 +7,7 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–16 establish the deterministic analysis, planning, dispatch, write-safety, recovery,
+Milestones 1–17 establish the deterministic analysis, planning, review, dispatch, write-safety, recovery,
 and local Git workspace core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
@@ -49,10 +49,13 @@ and local Git workspace core:
   read-only Repository Facts tools and cannot mutate the repository or execute commands; every
   autonomous task must reference a discovered package script for verification, while free-form
   command verification fails closed;
+- a separate semantic Plan Reviewer that maps source requirements to proposed task IDs, requests
+  bounded Planner revision for missing or ambiguous coverage, and is followed by full deterministic
+  revalidation; its recommendation is evidence, never execution approval;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestones 12–16 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
-concurrent local agent execution, and an autonomous Pi-backed planning path. Planning and execution
+Milestones 12–17 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
+concurrent local agent execution, and an autonomous Pi-backed planning and review path. Planning and execution
 remain separate: `forge plan` does not create worktrees, acquire leases, dispatch coding agents, run
 verification, or integrate Git work. Cross-process coordination, explicit model routing/failover,
 runtime CLI commands, integration checkout provisioning, and automatic conflict repair remain deferred.
@@ -77,7 +80,7 @@ pnpm build
 node apps/cli/dist/main.js --help
 pnpm exec forge analyze .
 pnpm exec forge analyze . --full
-pnpm exec forge plan request.md --repository . --max-concurrency 2
+pnpm exec forge plan request.md --repository . --max-concurrency 2 --semantic-review
 ```
 
 ## Workspace

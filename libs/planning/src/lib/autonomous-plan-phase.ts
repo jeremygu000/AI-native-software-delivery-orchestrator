@@ -23,6 +23,12 @@ import {
 import { TaskImpactAnalysisError } from '@ai-native-software-delivery-orchestrator/task-impact';
 import { z } from 'zod';
 
+import {
+  parseSemanticPlanReview,
+  type SemanticPlanReview,
+  type SemanticPlanReviewer
+} from './semantic-plan-review.js';
+
 export const planningSourceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('user-request'), content: z.string().trim().min(1) }),
   z.object({
@@ -74,6 +80,12 @@ export type PlanningDiagnostic =
   | {
       readonly code: 'UNSCHEDULABLE_PLAN';
       readonly detail: string;
+    }
+  | {
+      readonly code: 'SEMANTIC_REQUIREMENT_GAP';
+      readonly detail: string;
+      readonly requirement: string;
+      readonly status: 'missing' | 'ambiguous';
     };
 
 export interface PlannerProposalRequest {
@@ -109,6 +121,7 @@ export interface PreparedOrchestrationPlan {
   readonly riskConflicts: readonly RiskTaskConflict[];
   readonly executionPlan: ExecutionPlan;
   readonly schedule: ScheduleOptions;
+  readonly semanticReview: SemanticPlanReview;
 }
 
 export class AutonomousPlanningError extends Error {
@@ -125,6 +138,7 @@ export class AutonomousPlanningError extends Error {
 
 interface AutonomousPlanPhaseDependencies {
   readonly planner: PlannerAgent;
+  readonly reviewer: SemanticPlanReviewer;
   readonly impactAnalyzer: TaskImpactAnalyzer;
   readonly conflictAnalyzer: ConflictAnalyzer;
   readonly scheduler: Scheduler;
@@ -230,12 +244,14 @@ const verificationDiagnostics = (
 
 export class AutonomousPlanPhase {
   readonly #planner: PlannerAgent;
+  readonly #reviewer: SemanticPlanReviewer;
   readonly #impactAnalyzer: TaskImpactAnalyzer;
   readonly #conflictAnalyzer: ConflictAnalyzer;
   readonly #scheduler: Scheduler;
 
   constructor(dependencies: AutonomousPlanPhaseDependencies) {
     this.#planner = dependencies.planner;
+    this.#reviewer = dependencies.reviewer;
     this.#impactAnalyzer = dependencies.impactAnalyzer;
     this.#conflictAnalyzer = dependencies.conflictAnalyzer;
     this.#scheduler = dependencies.scheduler;
@@ -263,58 +279,111 @@ export class AutonomousPlanPhase {
         continue;
       }
 
-      const taskGraphDiagnostics = graphDiagnostics(parsed.specification.tasks);
-      if (taskGraphDiagnostics.length > 0) {
-        previousDiagnostics = taskGraphDiagnostics;
-        continue;
-      }
-
-      const taskVerificationDiagnostics = verificationDiagnostics(
-        parsed.specification.tasks,
-        request.repository
+      const candidate = await this.#prepare(
+        parsed.specification,
+        request.repository,
+        options.schedule
       );
-      if (taskVerificationDiagnostics.length > 0) {
-        previousDiagnostics = taskVerificationDiagnostics;
+      if (candidate.plan === undefined) {
+        previousDiagnostics = candidate.diagnostics;
         continue;
       }
 
-      const analyzed = await this.#analyze(parsed.specification.tasks, request.repository);
-      if (analyzed.diagnostics.length > 0) {
-        previousDiagnostics = analyzed.diagnostics;
+      const review = parseSemanticPlanReview(
+        await this.#reviewer.review({
+          attempt,
+          source,
+          repository: request.repository,
+          specification: candidate.plan.specification
+        }),
+        new Set(candidate.plan.specification.tasks.map((task) => task.id))
+      );
+      if (review.recommendation === 'revise') {
+        previousDiagnostics = review.requirements
+          .filter(
+            (
+              requirement
+            ): requirement is Extract<
+              SemanticPlanReview['requirements'][number],
+              { readonly status: 'missing' | 'ambiguous' }
+            > => requirement.status !== 'covered'
+          )
+          .map((requirement) => ({
+            code: 'SEMANTIC_REQUIREMENT_GAP' as const,
+            detail: requirement.detail,
+            requirement: requirement.requirement,
+            status: requirement.status
+          }))
+          .toSorted(
+            (left, right) =>
+              compareStrings(left.status, right.status) ||
+              compareStrings(left.requirement, right.requirement) ||
+              compareStrings(left.detail, right.detail)
+          );
         continue;
       }
 
-      const conflicts = this.#compare(analyzed.impacts, request.repository);
-      try {
-        const executionPlan = this.#scheduler.createInitialPlan(
-          parsed.specification.tasks,
-          conflicts.hard,
-          conflicts.risk,
-          options.schedule
-        );
-        return {
-          attempts: attempt,
-          specification: parsed.specification,
-          impacts: analyzed.impacts,
-          hardConflicts: conflicts.hard,
-          riskConflicts: conflicts.risk,
-          executionPlan,
-          schedule: options.schedule
-        };
-      } catch (error) {
-        if (!(error instanceof SchedulerInputError)) {
-          throw error;
-        }
-        previousDiagnostics = [
-          {
-            code: 'UNSCHEDULABLE_PLAN',
-            detail: error.message
-          }
-        ];
+      const revalidated = await this.#prepare(
+        taskSpecificationSchema.parse(candidate.plan.specification),
+        request.repository,
+        options.schedule
+      );
+      if (revalidated.plan === undefined) {
+        previousDiagnostics = revalidated.diagnostics;
+        continue;
       }
+      return { attempts: attempt, ...revalidated.plan, semanticReview: review };
     }
 
     throw new AutonomousPlanningError(options.maxAttempts, previousDiagnostics);
+  }
+
+  async #prepare(
+    specification: TaskSpecification,
+    repository: RepositoryGraph,
+    schedule: ScheduleOptions
+  ): Promise<{
+    readonly plan?: Omit<PreparedOrchestrationPlan, 'attempts' | 'semanticReview'>;
+    readonly diagnostics: readonly PlanningDiagnostic[];
+  }> {
+    const taskGraphDiagnostics = graphDiagnostics(specification.tasks);
+    if (taskGraphDiagnostics.length > 0) {
+      return { diagnostics: taskGraphDiagnostics };
+    }
+    const taskVerificationDiagnostics = verificationDiagnostics(specification.tasks, repository);
+    if (taskVerificationDiagnostics.length > 0) {
+      return { diagnostics: taskVerificationDiagnostics };
+    }
+    const analyzed = await this.#analyze(specification.tasks, repository);
+    if (analyzed.diagnostics.length > 0) {
+      return { diagnostics: analyzed.diagnostics };
+    }
+    const conflicts = this.#compare(analyzed.impacts, repository);
+    try {
+      return {
+        plan: {
+          specification,
+          impacts: analyzed.impacts,
+          hardConflicts: conflicts.hard,
+          riskConflicts: conflicts.risk,
+          executionPlan: this.#scheduler.createInitialPlan(
+            specification.tasks,
+            conflicts.hard,
+            conflicts.risk,
+            schedule
+          ),
+          schedule
+        },
+        diagnostics: []
+      };
+    } catch (error) {
+      if (!(error instanceof SchedulerInputError)) {
+        throw error;
+      }
+      return {
+        diagnostics: [{ code: 'UNSCHEDULABLE_PLAN', detail: error.message }]
+      };
+    }
   }
 
   async #analyze(

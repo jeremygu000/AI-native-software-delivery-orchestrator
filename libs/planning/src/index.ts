@@ -13,3 +13,13 @@ export type {
   PlanningSource,
   PreparedOrchestrationPlan
 } from './lib/autonomous-plan-phase.js';
+export {
+  parseSemanticPlanReview,
+  SemanticPlanReviewError,
+  semanticPlanReviewSchema
+} from './lib/semantic-plan-review.js';
+export type {
+  SemanticPlanReview,
+  SemanticPlanReviewer,
+  SemanticPlanReviewRequest
+} from './lib/semantic-plan-review.js';

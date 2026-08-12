@@ -321,17 +321,28 @@ The first provider adapter is `PiPlanningAgent` inside `libs/agent-runtime`. It 
 static resource loader that performs no project/global resource discovery and supplies no context
 files, extensions, skills, prompt templates, themes, or appended prompts. It starts Pi with
 `noTools: "builtin"`, disabling built-ins while preserving explicitly supplied custom tools, and
-uses an explicit `tools` allowlist to enable only three paginated in-memory Repository Facts
-queries: list projects, page/filter files, and search/page symbols. These tools do not read the live
+uses an explicit `tools` allowlist to enable only four paginated in-memory Repository Facts
+queries: list projects, page/filter files, search/page symbols, and inspect project/file/symbol
+relationships. These tools do not read the live
 filesystem, run commands, or mutate anything. Pi session and message types remain inside the adapter.
 Each one-response planning session is disposed after success or failure. The planner package and
 domain contracts contain no Pi or model-provider types.
 
-`forge plan <specification.md>` is now a real planning composition root. It analyzes the selected
-repository, runs the bounded planning phase, and prints JSON-safe contracts, predicted impacts,
-hard conflicts, risk conflicts, schedule options, and an explanatory execution-wave preview. The
-result is ready for runtime-specific identity and workspace binding; the command intentionally does
-not call `OrchestrationRuntime.startRun()` yet.
+After a proposal passes deterministic validation, a separate provider-neutral `SemanticPlanReviewer`
+maps concrete source requirements to task IDs. A `missing` or `ambiguous` item becomes a structured
+Planner revision diagnostic and consumes the same bounded attempt budget. An `accept` recommendation
+is followed by a second complete deterministic validation pass before it enters
+`PreparedOrchestrationPlan`. Malformed review output, inconsistent recommendation/status combinations,
+unknown task citations, and reviewer transport failures fail closed. This recommendation remains
+probabilistic evidence: it is not a human approval and cannot authorize execution.
+
+`forge plan <specification.md> --semantic-review` is now the planning composition root. The required
+flag is explicit consent for an independent Pi review to receive the specification and read-only
+Repository Facts. The command analyzes the selected repository, runs bounded planning and review, and
+prints JSON-safe contracts, semantic coverage evidence, predicted impacts, hard conflicts, risk
+conflicts, schedule options, and an explanatory execution-wave preview. The result is ready for
+runtime-specific identity and workspace binding; the command intentionally does not call
+`OrchestrationRuntime.startRun()` yet.
 
 Tasks move through `INTEGRATING` after verification and before completion. Each task executes in an
 isolated Git worktree. Workspace integration now uses a separate persisted phase lifecycle:
@@ -520,7 +531,10 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
     verification, commit, and Git integration. **Complete.**
 16. **Autonomous Plan phase:** bounded Planner revision, deterministic contract/DAG/resource/
     verification validation, impact/conflict analysis, schedule preparation, and real `forge plan`.
-    **Complete pending independent review.**
+    **Complete.**
+17. **Semantic Plan Review:** structured source-requirement coverage, bounded semantic revision,
+    read-only dependency/reference facts, full post-review deterministic revalidation, and explicit
+    CLI data-egress consent. **Complete pending independent review.**
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
 non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before
