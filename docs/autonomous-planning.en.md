@@ -100,13 +100,18 @@ The command:
 5. asks a separate semantic Reviewer to map source requirements to proposed task IDs;
 6. returns semantic gaps to the Planner for bounded revision, or fully revalidates an accept
    recommendation;
-7. prints JSON containing accepted tasks, semantic review evidence, predicted impacts, hard/risk
-   conflicts, and an explanatory wave preview.
+7. captures the repository again and rejects planning if source bytes changed during analysis;
+8. creates, atomically stores, and prints an immutable JSON `PlanArtifact` containing accepted tasks,
+   semantic review evidence, predicted impacts, hard/risk conflicts, and an explanatory wave preview.
 
 `--max-attempts` and `--max-concurrency` accept positive integers. The latter influences the schedule
 preview; it does not start agents. `--shared-resources` is optional and loads the JSON policy consumed
 by the deterministic impact and conflict engines. Without it, the registry is deliberately empty and
 the CLI explains that named shared resources require a policy file.
+
+Artifacts are stored under `~/.forge/plans/<repository-id>` by default. `--plan-directory <path>`
+selects another directory outside the analyzed repository. See
+[Durable Plan Artifact](./plan-artifact.en.md) for snapshot and fingerprint semantics.
 
 `--semantic-review` is required. Passing it explicitly authorizes a separate Pi review session to
 receive the specification and read-only Repository Facts. The Reviewer has the same restricted fact
@@ -127,7 +132,7 @@ A safe plan still lacks execution-specific identity and resources:
 - canonical lease plan;
 - command policy and execution profile.
 
-Those belong to runtime binding, not planning. `forge plan` therefore stops before persistence,
+Those belong to runtime binding, not planning. `forge plan` persists planning evidence but stops before run persistence,
 workspace creation, lease acquisition, coding-agent dispatch, verification, commit, or Git integration.
 This preserves the boundary between “is this plan valid?” and “is this concrete write authorized now?”
 
@@ -153,7 +158,7 @@ and Stage 16 fact tools actually enter the live session registry while built-in 
 - Autonomous command verification remains unavailable until a future contract can select a fixed,
   validated command-policy ID instead of carrying executable text.
 - The Planner cannot start, resume, cancel, or inspect a runtime run.
-- Planning output is not persisted.
+- Plan artifacts are persisted, but no human approval or runtime binding exists yet.
 - Semantic review is probabilistic evidence, not proof that every natural-language requirement was
   identified correctly. Human approval is still absent and remains the execution authority boundary.
 - Model routing, failover, token budgeting, and prompt-size telemetry are deferred.

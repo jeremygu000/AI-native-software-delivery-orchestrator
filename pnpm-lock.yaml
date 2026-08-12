@@ -63,6 +63,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../../libs/domain
+      '@ai-native-software-delivery-orchestrator/persistence':
+        specifier: workspace:*
+        version: link:../../libs/persistence
       '@ai-native-software-delivery-orchestrator/planning':
         specifier: workspace:*
         version: link:../../libs/planning
@@ -75,6 +78,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/task-impact':
         specifier: workspace:*
         version: link:../../libs/task-impact
+      '@ai-native-software-delivery-orchestrator/workspace-git':
+        specifier: workspace:*
+        version: link:../../libs/workspace-git
       commander:
         specifier: 15.0.0
         version: 15.0.0
@@ -158,6 +164,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../domain
+      '@ai-native-software-delivery-orchestrator/planning':
+        specifier: workspace:*
+        version: link:../planning
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3

@@ -7,7 +7,7 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–17 establish the deterministic analysis, planning, review, dispatch, write-safety, recovery,
+Milestones 1–18 establish the deterministic analysis, planning, review, dispatch, write-safety, recovery,
 and local Git workspace core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
@@ -52,9 +52,12 @@ and local Git workspace core:
 - a separate semantic Plan Reviewer that maps source requirements to proposed task IDs, requests
   bounded Planner revision for missing or ambiguous coverage, and is followed by full deterministic
   revalidation; its recommendation is evidence, never execution approval;
+- immutable, JSON-safe PlanArtifact revisions bound to the planning source, Git commit and working-tree
+  bytes, Repository Facts, shared-resource policy, verification policy, and complete planning decision;
+  `forge plan` stores them atomically under `~/.forge/plans/<repository-id>` by default;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestones 12–17 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
+Milestones 12–18 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
 concurrent local agent execution, and an autonomous Pi-backed planning and review path. Planning and execution
 remain separate: `forge plan` does not create worktrees, acquire leases, dispatch coding agents, run
 verification, or integrate Git work. Cross-process coordination, explicit model routing/failover,
@@ -117,6 +120,8 @@ Standalone training guides:
 - [Controlled Agent Commands](docs/controlled-agent-commands.en.md) / [中文](docs/controlled-agent-commands.zh.md)
 - [Sandboxed Agent Commands](docs/sandboxed-agent-commands.en.md) / [中文](docs/sandboxed-agent-commands.zh.md)
 - [Autonomous Planning](docs/autonomous-planning.en.md)
+- [Semantic Plan Review](docs/semantic-plan-review.en.md) / [中文](docs/semantic-plan-review.zh.md)
+- [Durable Plan Artifact](docs/plan-artifact.en.md) / [中文](docs/plan-artifact.zh.md)
 
 Continuation agents must read the [OpenCode engineering handover](docs/opencode-handover.md) before
 changing the current uncommitted milestone state.

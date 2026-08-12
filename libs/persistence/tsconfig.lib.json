@@ -12,6 +12,9 @@
   "references": [
     {
       "path": "../domain/tsconfig.lib.json"
+    },
+    {
+      "path": "../planning/tsconfig.lib.json"
     }
   ],
   "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"]

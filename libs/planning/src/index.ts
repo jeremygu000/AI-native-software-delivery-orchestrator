@@ -23,3 +23,21 @@ export type {
   SemanticPlanReviewer,
   SemanticPlanReviewRequest
 } from './lib/semantic-plan-review.js';
+export {
+  assertStableRepositorySnapshot,
+  canonicalPlanJson,
+  createPlanArtifact,
+  fingerprintPlanValue,
+  parsePlanArtifact,
+  planArtifactSchema,
+  repositoryBindingMismatches,
+  repositoryFactsFingerprint,
+  PlanArtifactIntegrityError,
+  RepositorySnapshotChangedError
+} from './lib/plan-artifact.js';
+export type {
+  CreatePlanArtifactRequest,
+  PlanArtifact,
+  PlanArtifactStore,
+  RepositoryBindingMismatch
+} from './lib/plan-artifact.js';

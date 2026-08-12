@@ -15,9 +15,17 @@ export default defineConfig(() => ({
         import.meta.dirname,
         '../domain/src/index.ts'
       ),
+      '@ai-native-software-delivery-orchestrator/planning': resolve(
+        import.meta.dirname,
+        '../planning/src/index.ts'
+      ),
       '@ai-native-software-delivery-orchestrator/scheduler': resolve(
         import.meta.dirname,
         '../scheduler/src/index.ts'
+      ),
+      '@ai-native-software-delivery-orchestrator/task-impact': resolve(
+        import.meta.dirname,
+        '../task-impact/src/index.ts'
       )
     }
   },

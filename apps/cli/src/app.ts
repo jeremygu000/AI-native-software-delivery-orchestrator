@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
@@ -15,8 +16,14 @@ import type {
 import {
   AutonomousPlanPhase,
   AutonomousPlanningError,
-  type PreparedOrchestrationPlan
+  assertStableRepositorySnapshot,
+  createPlanArtifact,
+  type PlanArtifact
 } from '@ai-native-software-delivery-orchestrator/planning';
+import {
+  JsonFilePlanArtifactStore,
+  resolvePlanArtifactDirectory
+} from '@ai-native-software-delivery-orchestrator/persistence';
 import {
   analyzeRepository,
   ProjectGraphError,
@@ -28,6 +35,7 @@ import {
   SharedResourceRegistry,
   sharedResourceRegistryConfigSchema
 } from '@ai-native-software-delivery-orchestrator/task-impact';
+import { GitRepositorySnapshotProvider } from '@ai-native-software-delivery-orchestrator/workspace-git';
 import { Command } from 'commander';
 
 export interface ForgeProgramDependencies {
@@ -39,8 +47,9 @@ export interface ForgeProgramDependencies {
     readonly sharedResourcesPath?: string;
     readonly maxAttempts: number;
     readonly maxConcurrency: number;
+    readonly planDirectory?: string;
     readonly semanticReviewAuthorized: true;
-  }) => Promise<PreparedOrchestrationPlan>;
+  }) => Promise<PlanArtifact>;
   readonly writeOutput?: (output: string) => void;
 }
 
@@ -89,25 +98,33 @@ const createRepositoryPlan = async (request: {
   readonly sharedResourcesPath?: string;
   readonly maxAttempts: number;
   readonly maxConcurrency: number;
+  readonly planDirectory?: string;
   readonly semanticReviewAuthorized: true;
-}): Promise<PreparedOrchestrationPlan> => {
-  const [content, analysis, registry] = await Promise.all([
+}): Promise<PlanArtifact> => {
+  const snapshotProvider = new GitRepositorySnapshotProvider();
+  const [content, registry, snapshotBeforeAnalysis] = await Promise.all([
     readFile(request.specificationPath, 'utf8'),
-    analyzeRepository(request.repositoryPath),
-    loadSharedResourceRegistry(request.sharedResourcesPath)
+    loadSharedResourceRegistry(request.sharedResourcesPath),
+    snapshotProvider.capture({ repositoryPath: request.repositoryPath })
   ]);
-  return new AutonomousPlanPhase({
+  const analysis = await analyzeRepository(request.repositoryPath);
+  const repositorySnapshot = assertStableRepositorySnapshot(
+    snapshotBeforeAnalysis,
+    await snapshotProvider.capture({ repositoryPath: request.repositoryPath })
+  );
+  const source = {
+    type: 'markdown-spec' as const,
+    content,
+    path: request.specificationPath
+  };
+  const preparedPlan = await new AutonomousPlanPhase({
     planner: new PiPlanningAgent(),
     reviewer: new PiSemanticPlanReviewer(),
     impactAnalyzer: new RepositoryTaskImpactAnalyzer(registry),
     conflictAnalyzer: new DeterministicConflictEngine(registry),
     scheduler: new DeterministicScheduler()
   }).create({
-    source: {
-      type: 'markdown-spec',
-      content,
-      path: request.specificationPath
-    },
+    source,
     repository: analysis.graph,
     sharedResourceIds: registry.list().map((resource) => resource.id),
     options: {
@@ -115,6 +132,28 @@ const createRepositoryPlan = async (request: {
       schedule: { maxConcurrency: request.maxConcurrency }
     }
   });
+  const artifact = createPlanArtifact({
+    artifactId: randomUUID(),
+    revision: 1,
+    createdAt: new Date().toISOString(),
+    source,
+    repository: analysis.graph,
+    repositorySnapshot,
+    sharedResourcePolicy: registry.list(),
+    verificationPolicy: {
+      version: 1,
+      autonomousRules: ['package-script-required', 'free-form-command-forbidden']
+    },
+    preparedPlan
+  });
+  const artifactDirectory = await resolvePlanArtifactDirectory(
+    repositorySnapshot,
+    request.planDirectory
+  );
+  await new JsonFilePlanArtifactStore(artifactDirectory, repositorySnapshot.repositoryRoot).save(
+    artifact
+  );
+  return artifact;
 };
 
 export const loadSharedResourceRegistry = async (
@@ -127,31 +166,6 @@ export const loadSharedResourceRegistry = async (
   const configuration: unknown = JSON.parse(source);
   return new SharedResourceRegistry(sharedResourceRegistryConfigSchema.parse(configuration));
 };
-
-const serializePlan = (plan: PreparedOrchestrationPlan) => ({
-  attempts: plan.attempts,
-  semanticReview: plan.semanticReview,
-  specification: plan.specification,
-  impacts: plan.impacts.map((impact) => ({
-    ...impact,
-    projectsRead: [...impact.projectsRead],
-    projectsWritten: [...impact.projectsWritten],
-    explicitProjectsWritten: [...impact.explicitProjectsWritten],
-    filesRead: [...impact.filesRead],
-    filesWritten: [...impact.filesWritten],
-    explicitFilesWritten: [...impact.explicitFilesWritten],
-    globFilesWritten: [...impact.globFilesWritten],
-    symbolDerivedFilesWritten: [...impact.symbolDerivedFilesWritten],
-    symbolsRead: [...impact.symbolsRead],
-    symbolsWritten: [...impact.symbolsWritten],
-    sharedResources: [...impact.sharedResources],
-    downstreamProjects: [...impact.downstreamProjects]
-  })),
-  hardConflicts: plan.hardConflicts,
-  riskConflicts: plan.riskConflicts,
-  executionPlan: plan.executionPlan,
-  schedule: plan.schedule
-});
 
 const parsePositiveInteger = (value: string): number => {
   const parsed = Number(value);
@@ -236,6 +250,10 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     )
     .option('--max-attempts <count>', 'maximum planner attempts', parsePositiveInteger, 3)
     .option('--max-concurrency <count>', 'maximum concurrent tasks', parsePositiveInteger, 1)
+    .option(
+      '--plan-directory <path>',
+      'directory for immutable plan artifacts (default: ~/.forge/plans/<repository-id>)'
+    )
     .requiredOption(
       '--semantic-review',
       'authorize an independent Pi review using the specification and read-only repository facts'
@@ -248,21 +266,26 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           sharedResources?: string;
           maxAttempts: number;
           maxConcurrency: number;
+          planDirectory?: string;
           semanticReview: true;
         }
       ) => {
         try {
+          const repositoryPath = resolve(cwd, options.repository);
           const result = await planRepository({
             specificationPath: resolve(cwd, specification),
-            repositoryPath: resolve(cwd, options.repository),
+            repositoryPath,
             ...(options.sharedResources === undefined
               ? {}
               : { sharedResourcesPath: resolve(cwd, options.sharedResources) }),
             maxAttempts: options.maxAttempts,
             maxConcurrency: options.maxConcurrency,
+            ...(options.planDirectory === undefined
+              ? {}
+              : { planDirectory: resolve(cwd, options.planDirectory) }),
             semanticReviewAuthorized: options.semanticReview
           });
-          writeOutput(`${JSON.stringify(serializePlan(result), null, 2)}\n`);
+          writeOutput(`${JSON.stringify(result, null, 2)}\n`);
         } catch (error) {
           if (error instanceof AutonomousPlanningError) {
             const missingRegistryHint =

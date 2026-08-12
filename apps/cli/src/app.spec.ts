@@ -208,46 +208,53 @@ describe('forge analyze', () => {
     }
   });
 
-  it('plans a Markdown specification against an explicit repository and prints JSON-safe impact', async () => {
+  it('plans against an explicit repository and prints the durable artifact identity', async () => {
     let output = '';
     const planRepository = vi.fn(async () => ({
-      attempts: 2,
-      semanticReview: {
-        recommendation: 'accept' as const,
-        summary: 'The requested change is covered.',
-        requirements: [
-          {
-            requirement: 'Change A.',
-            status: 'covered' as const,
-            taskIds: ['task-a'],
-            detail: 'Task A implements the request.'
-          }
-        ]
+      schemaVersion: 1 as const,
+      artifactId: 'plan-1',
+      revision: 1,
+      createdAt: '2026-08-12T00:00:00.000Z',
+      source: {
+        type: 'markdown-spec' as const,
+        content: 'Change A.',
+        path: '/workspace/request.md'
       },
-      specification: { tasks: [] },
-      impacts: [
-        {
-          taskId: 'task-a',
-          projectsRead: new Set(['project-a']),
-          projectsWritten: new Set<string>(),
-          explicitProjectsWritten: new Set<string>(),
-          filesRead: new Set(['file-a']),
-          filesWritten: new Set<string>(),
-          explicitFilesWritten: new Set<string>(),
-          globFilesWritten: new Set<string>(),
-          symbolDerivedFilesWritten: new Set<string>(),
-          symbolsRead: new Set<string>(),
-          symbolsWritten: new Set<string>(),
-          sharedResources: new Set<string>(),
-          sharedResourceAccesses: [],
-          downstreamProjects: new Set<string>(),
-          riskSignals: []
-        }
-      ],
-      hardConflicts: [],
-      riskConflicts: [],
-      executionPlan: { waves: [{ index: 0, taskIds: ['task-a'] }] },
-      schedule: { maxConcurrency: 4 }
+      sourceFingerprint: `sha256:${'1'.repeat(64)}`,
+      repository: {
+        repositoryId: `sha256:${'2'.repeat(64)}`,
+        repositoryRoot: '/workspace/repo',
+        baseCommit: '3'.repeat(40),
+        workingTreeFingerprint: `sha256:${'4'.repeat(64)}`,
+        dirty: false,
+        factsFingerprint: `sha256:${'5'.repeat(64)}`
+      },
+      authority: {
+        sharedResourcePolicyFingerprint: `sha256:${'6'.repeat(64)}`,
+        verificationPolicyFingerprint: `sha256:${'7'.repeat(64)}`
+      },
+      decision: {
+        attempts: 2,
+        semanticReview: {
+          recommendation: 'accept' as const,
+          summary: 'The requested change is covered.',
+          requirements: [
+            {
+              requirement: 'Change A.',
+              status: 'covered' as const,
+              taskIds: ['task-a'],
+              detail: 'Task A implements the request.'
+            }
+          ]
+        },
+        specification: { tasks: [] },
+        impacts: [],
+        hardConflicts: [],
+        riskConflicts: [],
+        executionPlan: { waves: [{ index: 0, taskIds: ['task-a'] }] },
+        schedule: { maxConcurrency: 4 }
+      },
+      planFingerprint: `sha256:${'8'.repeat(64)}`
     }));
     const program = createForgeProgram({
       cwd: '/workspace',
@@ -270,6 +277,8 @@ describe('forge analyze', () => {
       '5',
       '--max-concurrency',
       '4',
+      '--plan-directory',
+      'artifacts',
       '--semantic-review'
     ]);
 
@@ -279,13 +288,17 @@ describe('forge analyze', () => {
       sharedResourcesPath: '/workspace/shared-resources.json',
       maxAttempts: 5,
       maxConcurrency: 4,
+      planDirectory: '/workspace/artifacts',
       semanticReviewAuthorized: true
     });
     expect(JSON.parse(output)).toMatchObject({
-      attempts: 2,
-      semanticReview: { recommendation: 'accept' },
-      impacts: [{ projectsRead: ['project-a'], filesRead: ['file-a'] }],
-      schedule: { maxConcurrency: 4 }
+      artifactId: 'plan-1',
+      revision: 1,
+      decision: {
+        attempts: 2,
+        semanticReview: { recommendation: 'accept' },
+        schedule: { maxConcurrency: 4 }
+      }
     });
   });
 

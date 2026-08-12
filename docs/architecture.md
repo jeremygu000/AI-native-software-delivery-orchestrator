@@ -339,10 +339,19 @@ probabilistic evidence: it is not a human approval and cannot authorize executio
 `forge plan <specification.md> --semantic-review` is now the planning composition root. The required
 flag is explicit consent for an independent Pi review to receive the specification and read-only
 Repository Facts. The command analyzes the selected repository, runs bounded planning and review, and
-prints JSON-safe contracts, semantic coverage evidence, predicted impacts, hard conflicts, risk
-conflicts, schedule options, and an explanatory execution-wave preview. The result is ready for
-runtime-specific identity and workspace binding; the command intentionally does not call
-`OrchestrationRuntime.startRun()` yet.
+creates an immutable, JSON-safe `PlanArtifact` revision. The artifact binds the source, Git base
+commit, tracked/untracked non-ignored working-tree bytes, canonical Repository Facts,
+shared-resource policy, verification policy, predicted impacts, conflicts, schedule, execution-wave
+preview, and semantic evidence under one fingerprint. The CLI brackets RepositoryGraph analysis with
+two snapshots and rejects a repository that changes between them. Artifacts are atomically stored in
+`~/.forge/plans/<repository-id>` by default. Storage inside the analyzed repository fails closed so
+publishing the artifact cannot invalidate its own snapshot; confinement is checked before destination
+creation, after creation, and immediately before the temporary-file write. Portable NFD-normalized,
+lowercased path collisions and Git submodules also fail closed. `repositoryBindingMismatches` is a
+tested binder contract with no Stage 18 production caller; Stage 19's `PlanExecutionBinder` must reject
+any repository ID, base commit, working-tree fingerprint, or Repository Facts fingerprint mismatch
+before runtime binding. Artifacts are ready for approval and runtime binding, but are not approval and
+the command intentionally does not call `OrchestrationRuntime.startRun()`.
 
 Tasks move through `INTEGRATING` after verification and before completion. Each task executes in an
 isolated Git worktree. Workspace integration now uses a separate persisted phase lifecycle:
@@ -350,8 +359,10 @@ isolated Git worktree. Workspace integration now uses a separate persisted phase
 Git evidence and never converts completed execution work into ordinary `READY` work. The local Git
 adapter rebases the task branch onto the integration ref, then integrates through a fast-forward-only
 merge. Dirty integration repositories, rebase conflicts, and fast-forward failures remain explicit
-blocks that an outer runtime may resume or abort. Observed writes are still not implemented, so no
-current component claims to check them against predicted scope or leases before integration. The
+blocks that an outer runtime may resume or abort. Controlled `forge_write` and `forge_edit` writes are
+captured and persisted. Complete observed-impact collection, command-effect diffing,
+predicted-versus-observed reconciliation, and dynamic conflict recomputation are not yet implemented.
+The
 workspace record carries a positive revision. Persistence accepts only a strictly newer revision, or
 an exactly matching retry at the same revision; an older workspace record cannot overwrite newer Git
 integration evidence. Git processes run asynchronously and use NUL-delimited path output, so a long
@@ -478,11 +489,13 @@ defines this replay boundary.
 
 ## Persistence boundary
 
-`libs/persistence` implements an SQLite/Drizzle adapter using `better-sqlite3`. It persists only
+`libs/persistence` implements an SQLite/Drizzle run adapter using `better-sqlite3`. It persists
 domain-shaped JSON plus relational run, sequence, and current-record keys; compiler AST objects and
 SQLite types remain outside the domain. It atomically writes each event reevaluation, validates data
 while recovering it, and verifies stored decisions by replaying immutable run inputs through the
-Scheduler. PostgreSQL support must remain addable by implementing the same domain port.
+Scheduler. The package also implements the outward-facing planning `PlanArtifactStore` port with an
+atomic immutable JSON-file adapter; planning does not depend on filesystem persistence. PostgreSQL or
+other durable backends remain addable behind the corresponding ports.
 
 ## Workspace tooling
 
@@ -534,7 +547,10 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
     **Complete.**
 17. **Semantic Plan Review:** structured source-requirement coverage, bounded semantic revision,
     read-only dependency/reference facts, full post-review deterministic revalidation, and explicit
-    CLI data-egress consent. **Complete pending independent review.**
+    CLI data-egress consent. **Complete.**
+18. **Durable Plan Artifact:** immutable schema-versioned plan revisions, Git commit plus working-tree
+    content identity, Repository Facts and policy fingerprints, moving-repository rejection, atomic
+    file publication, portable path-identity rejection, and binding comparison contracts. **Complete.**
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
 non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before

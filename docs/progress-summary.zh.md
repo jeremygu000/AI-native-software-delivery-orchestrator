@@ -1486,3 +1486,73 @@ project、1,010 个 file、7,617 个 symbol、3 条 project dependency、3,592 �
 symbol reference，以及一个已知的 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic。本阶段没有执行 live Planner
 或 Reviewer model call；automated adapter test 使用 controlled gateway，真实 CLI 数据外发现在需要显式 review
 consent。
+
+## Stage 18：Durable Plan Artifact 与 Repository Snapshot Identity
+
+Stage 18 关闭第一个 Plan-to-Run authority gap：已经验证的内存计划现在会成为 durable、immutable decision
+artifact，并绑定规划时使用的准确 repository evidence。本阶段仍然不会批准或执行 artifact。
+
+`PlanArtifact` 有 schema version 且完全 JSON-safe。它记录 artifact ID/revision/time、完整 planning source、source
+fingerprint、repository identity 与 real root、Git base commit、working-tree fingerprint 与 dirty state、canonical
+Repository Facts fingerprint、shared-resource/verification policy fingerprint、Task Specification、predicted impact、
+hard/risk conflict、schedule、execution preview、semantic-review evidence，以及覆盖完整 payload 的总 fingerprint。
+Predicted Set 会序列化成稳定、唯一的 array。
+
+Schema 不只验证 field shape，也验证关系：每个 task 必须恰好有一个 impact、并在 execution wave 中恰好出现一次；
+wave index 必须连续、满足声明的 dependency order，且 wave 宽度不能超过 `maxConcurrency`；conflict endpoint 必须
+是两个不同的已知 task，同一个无序 task pair 不能在 hard/risk collection 内部或之间重复；semantic-review task
+citation 必须存在于 Task Specification；hard/risk collection 不能互换。Array 形态的 shared-resource access、access
+mode 与 risk signal 会被规范化，并由 schema 校验唯一、canonical 顺序。只修改 source 或 decision 而不更新
+fingerprint 会 fail closed。
+
+`GitRepositorySnapshotProvider` 绑定的不只是 `HEAD`。它会对所有 tracked 和 untracked non-ignored entry 的
+length-framed path、filesystem mode、kind 与 bytes 做 hash；symlink hash link text，不跟随 target。Origin URL 用于
+跨 clone repository identity，没有 origin 时使用 real local root，因此不同 real path 的 clone 会有意得到不同 ID。
+Ignored build/cache state 有意不属于 Git source identity；Git submodule 与 Unicode NFD normalization + lowercase
+conversion 后冲突的 path 都会 fail closed，系统不会假装已经 fingerprint mutable nested worktree 或不可移植的文件
+身份。这里不声称实现完整的 Unicode case folding。
+
+真实 CLI 会在 RepositoryGraph analysis 前后各抓一次 snapshot。Repository ID/root、base commit、working-tree
+fingerprint 或 dirty state 只要变化，就抛出 `RepositorySnapshotChangedError`，不会发布 mixed-state artifact。
+`repositoryBindingMismatches` 为未来 approval/runtime binder 提供明确的 repository-ID、commit、working-tree 与
+facts mismatch。它已经实现并测试，但 Stage 18 有意没有 production caller。Stage 19 的
+`PlanExecutionBinder` 必须在创建 runtime request 前拒绝任何 `repositoryId`、`baseCommit`、
+`workingTreeFingerprint` 或 `factsFingerprint` mismatch。
+
+`JsonFilePlanArtifactStore` 在 infrastructure persistence package 中实现 planning store port。它先写唯一临时文件，
+再用 atomic hard link 发布 `<artifact-id>.r<revision>.json`。并发保存完全相同内容是 idempotent；不同内容不能覆盖
+同一 revision。Corrupt content、filename/payload 不一致、path traversal ID、非法 revision 与 fingerprint mismatch
+都会 fail closed。`forge plan` 默认把 artifact 保存到 `~/.forge/plans/<repository-id>`，也可以用
+`--plan-directory` 指定仓库之外的其他位置。位于仓库内或通过 symlink 指回仓库内的 destination 会 fail closed，
+因为 artifact persistence 不能让刚刚记录的 snapshot 自己失效。Save 会在 directory 创建前、创建后，以及临时
+文件写入前立即重新解析并检查 destination，覆盖“原先不存在的 ancestor 在保存前被换成仓库内 symlink”的场景；
+cleanup failure 不会掩盖已经产生的 publish/immutability 主要错误，而 cleanup-only failure 仍会返回。Planning 仍
+不会创建 runtime
+run/worktree/lease，不会 dispatch agent、执行 verification 或 Git integration。
+
+第一次 Stage 18 独立 Review 发现一个 Critical storage-boundary race、三个 High 加固缺口和三个 Medium
+一致性/文档缺口。本轮已在 save 内重新解析 path、对不可移植 path collision fail closed、保留 primary error、规范化
+array-shaped impact evidence，并拒绝 self-conflict、duplicate conflict pair、违反 dependency 的 wave 和超过 schedule
+上限的 wave。Review 同时确认 repository runtime comparison 属于 Stage 19 binder responsibility，且 local-root fallback
+具有 path-specific 语义。新增对抗测试锁定这些保证；没有新增 runtime execution capability。
+
+修复复审独立重现了 race test、完整项目 gate、planning-only coverage、Scheduler readiness 行为与 runtime dispatch
+行为，并同意关闭 Stage 18。其余非阻塞建议也已在关闭前处理：storage 在写入前增加第三次 confinement check；新增
+正常非冲突 path 与 cleanup-only failure propagation 专项测试；Unicode 措辞与真实的 NFD + lowercase 算法一致；
+ADR-022 明确点名 `PlanExecutionBinder` 与四个必须校验的 binding field。
+
+ADR-022 记录该边界。独立初学者培训文档见[英文](./plan-artifact.en.md)与[中文](./plan-artifact.zh.md)。Architecture
+文档也已修正 observed write 的旧描述：受控 `forge_write`/`forge_edit` capture 已实现；完整 observed-impact
+reconciliation 与 dynamic conflict recomputation 仍未实现。
+
+Stage 18 local gate 有 32 个 test file、427 个 test 全部通过。覆盖率为 statement 96.28%、branch 91.32%、
+function 97.16%、line 96.24%。Planning-only gate 有 41 个 test，覆盖率为 statement 99.06%、branch 95.70%、
+function 98.68%、line 99.01%。`pnpm check`、`pnpm build` 与 `git diff --check` 通过。Self-analysis 得到 14 个 project、99 个 file、1,388 个 symbol、49 条 project dependency、188 条 file dependency、2,510 条 symbol reference，以及
+同样两个已知 root configuration diagnostic。Ingestion-and-matching 研究仓库保持 3 个 project、1,010 个 file、
+7,617 个 symbol、3 条 project dependency、3,592 条 file dependency、13,893 条 symbol reference，以及已知的
+25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic。本阶段没有执行 live Pi plan，因为 Stage 18 修改的是 deterministic
+artifact authority 和本地 persistence，不是 model behavior。
+
+下一阶段是 explicit human approval 与 `PlanExecutionBinder`。Approval 必须引用 artifact ID、revision 与
+`planFingerprint`；任何新 revision 或内容 fingerprint 都会让旧 approval 失效。Binder 必须重新抓取 repository
+snapshot/facts、拒绝 mismatch，并在 CLI 和 deterministic core 之外生成 canonical runtime request。

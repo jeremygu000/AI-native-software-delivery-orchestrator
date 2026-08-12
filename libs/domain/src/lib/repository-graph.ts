@@ -6,6 +6,24 @@ export interface RepositoryContext {
   readonly repositoryPath: string;
 }
 
+/**
+ * Content-addressed evidence for the exact Git working tree used to derive repository facts.
+ *
+ * `baseCommit` alone is insufficient because planning may inspect tracked modifications or
+ * untracked files. The working-tree fingerprint binds those bytes without exposing them here.
+ */
+export interface RepositorySnapshot {
+  readonly repositoryId: string;
+  readonly repositoryRoot: string;
+  readonly baseCommit: string;
+  readonly workingTreeFingerprint: string;
+  readonly dirty: boolean;
+}
+
+export interface RepositorySnapshotProvider {
+  capture(repository: RepositoryContext): Promise<RepositorySnapshot>;
+}
+
 export type PackageDependencyKind =
   | 'dependency'
   | 'dev-dependency'

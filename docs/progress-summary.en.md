@@ -1691,3 +1691,92 @@ projects, 1,010 files, 7,617 symbols, three project dependencies, 3,592 file dep
 symbol references, and one known 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic. No live Planner or
 Reviewer model call was made; the automated adapter tests use controlled gateways, and the CLI now
 requires explicit review consent for real data egress.
+
+## Stage 18: Durable Plan Artifact and Repository Snapshot Identity
+
+Stage 18 closes the first Plan-to-Run authority gap: a valid in-memory plan now becomes a durable,
+immutable decision artifact tied to the exact repository evidence used during planning. It does not
+yet approve or execute that artifact.
+
+`PlanArtifact` is schema-versioned and JSON-safe. It records artifact ID/revision/time, the complete
+planning source, source fingerprint, repository identity and real root, Git base commit, working-tree
+fingerprint and dirty state, canonical Repository Facts fingerprint, shared-resource and verification
+policy fingerprints, Task Specification, predicted impacts, hard/risk conflicts, schedule, execution
+preview, semantic-review evidence, and one fingerprint over the full payload. Predicted Set values are
+serialized as stable unique arrays.
+
+The schema validates relationships as well as field shapes. Every task must have exactly one impact
+and exactly one execution-wave occurrence. Wave indices are contiguous, respect declared dependency
+order, and cannot exceed `maxConcurrency`. Conflict endpoints must be distinct known tasks, and an
+unordered pair cannot be duplicated within or across hard/risk collections. Semantic-review task
+citations must exist in the Task Specification. Hard and risk collections cannot be interchanged.
+Array-shaped shared-resource accesses, access modes, and risk signals are normalized and schema-
+checked for unique canonical order. Tampering with source or decision content without changing the
+fingerprint fails closed.
+
+`GitRepositorySnapshotProvider` binds more than `HEAD`: it hashes every tracked and untracked
+non-ignored entry with length-framed path, filesystem mode, kind, and bytes. Symlinks hash their link
+text instead of following a target. Origin URL supplies cross-clone repository identity; a real local
+root is the fallback. Without an origin, clones at different real paths intentionally receive
+different IDs. Ignored build/cache state is intentionally outside Git source identity. Git submodules
+and paths that collide after Unicode NFD normalization plus lowercase conversion fail closed rather
+than claiming an incomplete or non-portable identity. This is not full Unicode case folding.
+
+The real CLI captures one snapshot before RepositoryGraph analysis and another after it. Any change
+to repository ID/root, base commit, working-tree fingerprint, or dirty state raises
+`RepositorySnapshotChangedError`; no mixed-state artifact is published. `repositoryBindingMismatches`
+supplies the future approval/runtime binder with explicit repository-ID, commit, working-tree, and
+facts mismatches. It is implemented and tested but deliberately has no production caller in Stage 18.
+Stage 19's `PlanExecutionBinder` must reject any `repositoryId`, `baseCommit`,
+`workingTreeFingerprint`, or `factsFingerprint` mismatch before creating a runtime request.
+
+`JsonFilePlanArtifactStore` implements the planning store port in the infrastructure persistence
+package. It writes a unique temporary file and atomically hard-links it to
+`<artifact-id>.r<revision>.json`. Concurrent identical saves are idempotent; different content cannot
+replace the same revision. Corrupt content, filename/payload disagreement, path traversal IDs, invalid
+revisions, and fingerprint mismatch fail closed. `forge plan` now stores artifacts in
+`~/.forge/plans/<repository-id>` by default; `--plan-directory` selects another location outside the
+analyzed repository. In-repository and symlink-aliased in-repository destinations fail closed because
+artifact persistence must not invalidate the snapshot it just recorded. Save checks the resolved
+destination before directory creation, after creation, and immediately before the temporary-file
+write, covering replacement of a previously missing ancestor by an in-repository symlink before
+publication. Cleanup failure cannot mask an already selected publication or immutability error, while
+a cleanup-only failure remains visible. Planning still
+does not create a runtime run, worktree, lease, agent dispatch, verification execution, or Git
+integration.
+
+The first independent Stage 18 review found one Critical storage-boundary race, three High hardening
+gaps, and three Medium consistency/documentation gaps. The storage path is now re-resolved during
+save; portable path collisions fail closed; cleanup preserves the primary error; array-shaped impact
+evidence is normalized; and artifact validation now rejects self-conflicts, duplicate conflict pairs,
+dependency-invalid waves, and waves wider than the schedule limit. The review also confirmed that
+runtime repository comparison is a Stage 19 binding responsibility and that local-root fallback is
+path-specific. New adversarial tests lock these guarantees. No runtime execution capability was added.
+
+The follow-up review independently reproduced the race test, complete project gate, planning-only
+coverage, scheduler readiness behavior, and runtime dispatch behavior, then approved Stage 18 for
+closure. Its remaining non-blocking suggestions were completed before close: storage now performs a
+third confinement check immediately before writing, dedicated tests cover non-colliding portable paths
+and cleanup-only failure propagation, Unicode wording now matches the actual NFD-plus-lowercase
+algorithm, and ADR-022 names `PlanExecutionBinder` plus all four mandatory binding fields.
+
+ADR-022 records the boundary. Standalone beginner-oriented guides are available in
+[English](./plan-artifact.en.md) and [Chinese](./plan-artifact.zh.md). The architecture guide also now
+correctly distinguishes controlled `forge_write`/`forge_edit` capture from the still-missing complete
+observed-impact reconciliation and dynamic conflict recomputation.
+
+The Stage 18 local gate passes with 32 test files and 427 tests. Coverage is 96.28% statements, 91.32%
+branches, 97.16% functions, and 96.24% lines. The planning-only gate passes 41 tests at 99.06%
+statements, 95.70% branches, 98.68% functions, and 99.01% lines. `pnpm check`, `pnpm build`, and
+`git diff --check` pass. Self-analysis reports 14 projects, 99 files, 1,388 symbols, 49 project dependencies, 188 file
+dependencies, 2,510 symbol references, and the same two known root
+configuration diagnostics. The ingestion-and-matching research repository remains stable at three
+projects, 1,010 files, 7,617 symbols, three project dependencies, 3,592 file dependencies, 13,893
+symbol references, and the known 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic. No live Pi plan was
+run because Stage 18 changes deterministic artifact authority and local persistence, not model
+behavior.
+
+The next stage is explicit human approval plus `PlanExecutionBinder`. Approval must cite artifact ID,
+revision, and `planFingerprint`; any new revision or content fingerprint invalidates old approval. The
+binder must recapture repository snapshot/facts, reject mismatch, and create the canonical runtime
+request outside the CLI and deterministic core.

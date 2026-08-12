@@ -19,6 +19,9 @@
       "path": "../../libs/domain/tsconfig.lib.json"
     },
     {
+      "path": "../../libs/persistence/tsconfig.lib.json"
+    },
+    {
       "path": "../../libs/planning/tsconfig.lib.json"
     },
     {
@@ -29,6 +32,9 @@
     },
     {
       "path": "../../libs/task-impact/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/workspace-git/tsconfig.lib.json"
     }
   ]
 }
