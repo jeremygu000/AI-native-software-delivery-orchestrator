@@ -52,8 +52,14 @@ replaced.
   filesystems.
 - Origin URL is the stable cross-clone repository identity. Without an origin, the real local root is
   an explicit fallback, so separate clones at different paths intentionally receive different IDs.
+- Origin URL spelling is not yet canonicalized. SSH and HTTPS URLs for the same hosted repository
+  intentionally produce different fail-closed identities until a provider-neutral remote identity
+  policy is introduced for distributed workers.
 - Filesystem permissions can still delete an artifact. Cross-process authorization and signed audit
   storage remain future deployment concerns.
+- Repeated pathname checks reduce accidental symlink races but do not provide directory-descriptor
+  confinement against a hostile local process that can replace ancestors between the final check and
+  write. That stronger guarantee is outside the current single-user local threat model.
 - Runtime binding must recapture the snapshot and facts, compare all binding fields, and fail closed.
   Stage 18 supplies `repositoryBindingMismatches` and tests it, but deliberately has no production
   caller because it does not start a run. Stage 19's `PlanExecutionBinder` must call it and reject any

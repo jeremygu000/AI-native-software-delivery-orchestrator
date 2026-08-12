@@ -1541,6 +1541,16 @@ array-shaped impact evidence，并拒绝 self-conflict、duplicate conflict pair
 正常非冲突 path 与 cleanup-only failure propagation 专项测试；Unicode 措辞与真实的 NFD + lowercase 算法一致；
 ADR-022 明确点名 `PlanExecutionBinder` 与四个必须校验的 binding field。
 
+最终 whole-architecture gate 针对 commit `2356dc062967703c75094a7707dfc0739f9b4bd5` 给出 Stage 18 **PASS /
+CLOSED**。它确认 durable identity、dirty/untracked source binding、Repository Facts binding、mixed-state rejection、
+canonical cross-record validation、immutable publication、repository-external storage 与未来 rebinding contract 已共同
+形成完整的 Plan/Execute authority boundary，没有发现新的 Stage 18 P1。
+
+仍有两个明确的非阻塞 deployment limitation。第一，repository identity 直接 hash 原始 origin URL，所以同一 remote
+的 SSH 与 HTTPS 写法会得到不同的 fail-closed ID；remote canonicalization 属于未来 distributed-worker/product
+integration。第二，多次 real-path check 能降低普通 symlink race，但 pathname API 无法提供抵御 hostile concurrent
+local process 的 atomic directory-descriptor confinement；更强保证不属于当前 single-user local threat model。
+
 ADR-022 记录该边界。独立初学者培训文档见[英文](./plan-artifact.en.md)与[中文](./plan-artifact.zh.md)。Architecture
 文档也已修正 observed write 的旧描述：受控 `forge_write`/`forge_edit` capture 已实现；完整 observed-impact
 reconciliation 与 dynamic conflict recomputation 仍未实现。
@@ -1553,6 +1563,9 @@ function 98.68%、line 99.01%。`pnpm check`、`pnpm build` 与 `git diff --chec
 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic。本阶段没有执行 live Pi plan，因为 Stage 18 修改的是 deterministic
 artifact authority 和本地 persistence，不是 model behavior。
 
-下一阶段是 explicit human approval 与 `PlanExecutionBinder`。Approval 必须引用 artifact ID、revision 与
-`planFingerprint`；任何新 revision 或内容 fingerprint 都会让旧 approval 失效。Binder 必须重新抓取 repository
-snapshot/facts、拒绝 mismatch，并在 CLI 和 deterministic core 之外生成 canonical runtime request。
+Stage 19 正式定义为 **Approval + Execution Binding**。`PlanApproval` 是独立、provider-neutral 的事实记录，必须包含
+准确 artifact ID、revision、`planFingerprint`、approving actor 与 approval time；它不能成为嵌入 immutable
+PlanArtifact 的 `approved: true` flag。`PlanExecutionBinder` 必须加载并验证该准确 artifact、验证 exact approval、重新
+抓取 repository snapshot 与 Repository Facts、拒绝四类 repository binding mismatch、重新验证当前 shared-resource
+与 verification authority fingerprint，然后才能生成唯一 canonical runtime request。CLI 只负责 composition/I/O，
+不能手工拼装 agent、workspace、lease、command-policy、sandbox、model 或 runtime binding。

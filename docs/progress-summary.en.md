@@ -1760,6 +1760,19 @@ third confinement check immediately before writing, dedicated tests cover non-co
 and cleanup-only failure propagation, Unicode wording now matches the actual NFD-plus-lowercase
 algorithm, and ADR-022 names `PlanExecutionBinder` plus all four mandatory binding fields.
 
+A final whole-architecture gate reviewed commit `2356dc062967703c75094a7707dfc0739f9b4bd5` and rated
+Stage 18 **PASS / CLOSED**. It confirmed that durable identity, dirty/untracked source binding,
+Repository Facts binding, mixed-state rejection, canonical cross-record validation, immutable
+publication, repository-external storage, and the future rebinding contract all hold together as one
+Plan/Execute authority boundary. No new Stage 18 P1 was found.
+
+Two non-blocking deployment limitations remain explicit. First, repository identity hashes the origin
+URL as written, so equivalent SSH and HTTPS remote spellings receive different fail-closed IDs; remote
+canonicalization belongs to future distributed-worker/product integration. Second, repeated real-path
+checks mitigate ordinary symlink races but pathname APIs cannot provide atomic directory-descriptor
+confinement against a hostile concurrent local process. That stronger security boundary is outside the
+current single-user local threat model.
+
 ADR-022 records the boundary. Standalone beginner-oriented guides are available in
 [English](./plan-artifact.en.md) and [Chinese](./plan-artifact.zh.md). The architecture guide also now
 correctly distinguishes controlled `forge_write`/`forge_edit` capture from the still-missing complete
@@ -1776,7 +1789,11 @@ symbol references, and the known 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic
 run because Stage 18 changes deterministic artifact authority and local persistence, not model
 behavior.
 
-The next stage is explicit human approval plus `PlanExecutionBinder`. Approval must cite artifact ID,
-revision, and `planFingerprint`; any new revision or content fingerprint invalidates old approval. The
-binder must recapture repository snapshot/facts, reject mismatch, and create the canonical runtime
-request outside the CLI and deterministic core.
+Stage 19 is **Approval + Execution Binding**. `PlanApproval` remains a separate provider-neutral fact
+recording the exact artifact ID, revision, `planFingerprint`, approving actor, and approval time; it is
+not an `approved: true` flag embedded in the immutable PlanArtifact. `PlanExecutionBinder` must load and
+verify that exact artifact, validate the exact approval, recapture repository snapshot and Repository
+Facts, reject all four repository binding mismatches, revalidate current shared-resource and
+verification authority fingerprints, and only then produce one canonical runtime request. The CLI may
+compose I/O and adapters but must not manually assemble agent, workspace, lease, command-policy,
+sandbox, model, or runtime bindings.

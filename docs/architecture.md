@@ -551,6 +551,11 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
 18. **Durable Plan Artifact:** immutable schema-versioned plan revisions, Git commit plus working-tree
     content identity, Repository Facts and policy fingerprints, moving-repository rejection, atomic
     file publication, portable path-identity rejection, and binding comparison contracts. **Complete.**
+19. **Approval and Execution Binding:** persist a provider-neutral human approval tied to the exact
+    artifact ID, revision, and plan fingerprint; reload and verify the artifact; recapture repository
+    snapshot and Repository Facts; revalidate shared-resource and verification authority; reject every
+    mismatch; and produce one canonical runtime request through `PlanExecutionBinder`. The CLI remains
+    a composition/I/O boundary and must not assemble runtime bindings itself.
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
 non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before

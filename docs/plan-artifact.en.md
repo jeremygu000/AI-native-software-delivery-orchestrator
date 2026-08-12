@@ -195,7 +195,12 @@ The next stage must create an approval record that references the exact artifact
   identity. This is deliberately not described as full Unicode case folding.
 - Origin URL provides cross-clone repository identity. Without an origin, identity falls back to the
   real local root, so clones at different paths intentionally receive different repository IDs.
+- Equivalent SSH and HTTPS origin spellings are not normalized and therefore intentionally receive
+  different fail-closed IDs. Distributed workers will need a provider-neutral canonical remote
+  identity policy.
 - Artifact files are immutable by application behavior, not protected from an OS-level administrator.
+- Pathname rechecks mitigate ordinary symlink races but are not atomic directory-descriptor
+  confinement against a hostile local process. That is outside the current single-user threat model.
 - Fingerprints are content identities, not signatures.
 - `repositoryBindingMismatches` is implemented and tested but has no production caller in Stage 18.
   Stage 19's `PlanExecutionBinder` must reject any `repositoryId`, `baseCommit`,

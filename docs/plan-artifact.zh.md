@@ -181,7 +181,11 @@ snapshot 仍匹配，才能绑定成 canonical runtime request。
   声称实现完整的 Unicode case folding。
 - Origin URL 提供跨 clone repository identity；没有 origin 时退回 real local root，因此不同路径的 clone 会有意
   得到不同的 repository ID。
+- 等价的 SSH 与 HTTPS origin 写法尚未 normalization，因此会有意得到不同的 fail-closed ID。未来 distributed
+  worker 需要 provider-neutral canonical remote identity policy。
 - Artifact file 由应用行为保证不可变，但无法阻止 OS administrator 删除。
+- Pathname recheck 能降低普通 symlink race，但不能提供抵御 hostile local process 的 atomic
+  directory-descriptor confinement；这超出当前 single-user threat model。
 - Fingerprint 是 content identity，不是 signature。
 - `repositoryBindingMismatches` 已实现并测试，但 Stage 18 没有 production caller。Stage 19 的
   `PlanExecutionBinder` 必须在创建 runtime request 前拒绝任何 `repositoryId`、`baseCommit`、
