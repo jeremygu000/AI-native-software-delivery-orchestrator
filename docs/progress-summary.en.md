@@ -1880,3 +1880,22 @@ Two non-blocking test-organization improvements are registered for Stage 20 inte
 one end-to-end test should create two real clones with the same origin and prove the binder rejects the
 second clone, and one isolated test should change only dirty state. Existing tests already prove the
 two underlying halves and the production comparisons are present, so these do not reopen Stage 19.
+
+A final whole-architecture review of commit `9982ddd749ba5e30ea7d6beb7bbf37c03c1d8476` again rated
+Stage 19 **PASS / CLOSED** and identified the Stage 20 P1 more precisely. A `PlanExecutionIntent`
+proves that repository, facts, and policies matched at bind time; it is not a repository lock and may
+be consumed seconds or hours later. Stage 20 must therefore revalidate authority immediately before
+side effects, provision an orchestrator-owned integration checkout whose base commit matches the
+approved artifact, derive task worktrees from that checkout, persist the run-creation boundary, and
+only then call the existing runtime. It must not merely parse the intent and call `startRun()`.
+
+The review also raised representation-sensitive shared-resource policy fingerprints as a possible P2.
+The current CLI path is already semantically canonical: `SharedResourceRegistry` normalizes and sorts
+file/path patterns and sorts definitions by ID before both planning and binding call `registry.list()`.
+Therefore JSON input reordering does not reject the production CLI path. The generic binder still
+accepts an `unknown` policy value and hashes its array representation, so any future non-registry
+adapter must canonicalize through the same domain registry or a dedicated authority fingerprint
+function. This is a future-adapter contract concern, not a Stage 19 defect. Durable intent storage is
+also unnecessary now: same-run rebinding reloads and revalidates durable artifact/approval/claim
+evidence and regenerates the same execution fingerprint. The future run record should persist the
+execution, plan, approval, and claim fingerprints for traceability.

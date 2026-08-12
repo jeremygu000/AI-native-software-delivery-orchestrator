@@ -167,3 +167,7 @@ RepositoryGraph adapter。Provider、Jira、Pi、Docker、workspace 与 runtime 
 
 下一阶段应该定义 controlled runtime binding policy 和 application service：消费已验证的 `PlanExecutionIntent`，构建现有
 runtime request，持久化 start，并支持 recovery；这些部署选择不能被塞进 CLI。
+
+它还必须把 intent 当作 binding-time evidence，而不是永久通行证。产生副作用前，run preparation 必须重新验证
+source repository，在 approved base commit 上 provision orchestrator-owned integration checkout，让 task worktree
+从该 checkout 派生，然后持久化并启动 run。只解析 intent fingerprint 不等于 execution-time revalidation。

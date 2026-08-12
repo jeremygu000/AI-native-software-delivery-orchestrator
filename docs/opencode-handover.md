@@ -151,6 +151,20 @@ Stage 20 is **Controlled Runtime Binding and Start**. It should consume a verifi
 workspace, lease, command, sandbox, model, and verification collaborators, construct the existing
 runtime request, persist the start boundary, and expose a recoverable `forge run` path.
 
+The Stage 20 P1 is execution-time freshness. An intent is evidence from bind time, not a permanent
+pass. Run preparation must revalidate the source immediately before side effects, provision an
+orchestrator-owned integration checkout at the approved base commit, derive every task worktree from
+that checkout, persist an atomic-ish run creation boundary, and only then call
+`OrchestrationRuntime.startRun()`. A direct `parsePlanExecutionIntent()` -> `startRun()` path is
+forbidden.
+
+Stage 20 integration tests must include two real clones sharing one origin with a different physical
+root, a dirty-state-only mismatch, mutation between bind and run preparation, wrong integration
+checkout base commit, and task workspace ancestry from the trusted checkout. The run record should
+retain execution/plan/approval/claim fingerprints. Current CLI shared-resource input is already
+canonicalized by `SharedResourceRegistry`; future adapters must not hash arbitrary reordered arrays
+without the same normalization.
+
 Do not let the CLI manually assemble those collaborators. Do not add GitHub/webhook/PR/Jira product
 integration yet. Do not broaden sandbox permissions merely to make runtime binding convenient.
 

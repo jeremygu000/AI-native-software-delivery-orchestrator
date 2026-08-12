@@ -560,8 +560,23 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
     composition/I/O boundary and must not assemble runtime bindings itself.
 20. **Controlled Runtime Binding and Start:** consume a verified `PlanExecutionIntent`, apply an
     explicit deployment policy for agent, workspace, lease, command, sandbox, model, and verification
-    bindings, create the existing runtime request, persist the start boundary, and expose the first
-    recoverable `forge run` workflow without introducing a hidden CLI orchestrator.
+    bindings, revalidate execution authority immediately before side effects, provision an
+    orchestrator-owned integration checkout at the approved base commit, derive task worktrees from
+    that checkout, create the existing runtime request, persist the start boundary, and expose the
+    first recoverable `forge run` workflow without introducing a hidden CLI orchestrator. The
+    authority chain must be explicit:
+
+    ```text
+    PlanExecutionIntent
+            -> fresh source-repository revalidation
+            -> trusted integration checkout at approved baseCommit
+            -> task worktrees derived from that checkout
+            -> atomic-ish persisted run creation
+            -> OrchestrationRuntime.startRun()
+    ```
+
+    A previously valid intent is not a permanent repository lock or permission token. Parsing its
+    fingerprint alone is insufficient at run time.
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
 non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before

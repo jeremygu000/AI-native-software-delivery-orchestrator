@@ -63,3 +63,9 @@ PlanArtifact -> PlanApproval -> repository/policy revalidation
 
 Runtime startup remains a later composition step. This prevents a reviewed plan from silently running
 against different source bytes, facts, policies, or under a reused approval.
+
+`PlanExecutionIntent` proves authority at binding time, not indefinitely. Stage 20 must revalidate
+authority immediately before run creation and connect the approved source snapshot to an
+orchestrator-owned integration checkout at the approved base commit. Task worktrees must derive from
+that checkout. Simply parsing a stored intent and calling `startRun()` would leave an unguarded
+bind-to-run time-of-check/time-of-use window.

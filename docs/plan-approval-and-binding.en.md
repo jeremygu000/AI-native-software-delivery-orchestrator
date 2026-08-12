@@ -200,3 +200,8 @@ Stage 19 deliberately does not implement:
 The next stage should define a controlled runtime binding policy and application service that consumes
 a verified `PlanExecutionIntent`, constructs the existing runtime request, persists the start, and
 supports recovery without moving those choices into the CLI.
+
+It must also treat the intent as binding-time evidence rather than a permanent pass. Immediately before
+side effects, run preparation must revalidate the source repository, provision an orchestrator-owned
+integration checkout at the approved base commit, derive task worktrees from that checkout, and then
+persist/start the run. Parsing the intent fingerprint alone is not execution-time revalidation.

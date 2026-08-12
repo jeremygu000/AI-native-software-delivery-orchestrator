@@ -1636,3 +1636,18 @@ CLOSED**。
 两项非阻塞 test-organization 改进登记到 Stage 20 integration coverage：其一，用两份真实、共享同一 origin 的 clone
 做端到端测试并证明 binder 拒绝第二份 clone；其二，只改变 dirty state 的隔离测试。现有测试已经分别证明底层语义与
 production comparison 存在，因此这两项不会重新打开 Stage 19。
+
+针对 commit `9982ddd749ba5e30ea7d6beb7bbf37c03c1d8476` 的最终 whole-architecture Review 再次给出
+Stage 19 **PASS / CLOSED**，并更准确地定义 Stage 20 P1：`PlanExecutionIntent` 只证明 bind 时 repository、facts
+与 policy 匹配；它不是 repository lock，可能在数秒或数小时后才被消费。Stage 20 必须在副作用前重新验证 authority，
+provision 一个 base commit 与 approved artifact 一致的 orchestrator-owned integration checkout，让 task worktree 从
+该 checkout 派生，持久化 run-creation boundary，然后才能调用现有 runtime。不能只 parse intent 就调用
+`startRun()`。
+
+Review 也把 shared-resource policy fingerprint 的 representation sensitivity 列为可能的 P2。当前 CLI production
+path 已经 semantic canonical：`SharedResourceRegistry` 会 normalize/sort file/path pattern，并按 ID 排序 definition；
+planning 与 binding 都使用 `registry.list()`，因此 JSON input 重新排序不会导致误拒绝。Generic binder 仍接收
+`unknown` policy 并 hash array representation，所以未来任何不经过 registry 的 adapter 必须用同一 domain registry
+或专用 authority fingerprint function 做 canonicalization。这是 future-adapter contract concern，不是 Stage 19
+defect。当前也不需要单独持久化 intent：same-run rebinding 会重新加载并验证 durable artifact/approval/claim，并生成
+相同 execution fingerprint。未来 run record 应保存 execution、plan、approval 与 claim fingerprint 以便 traceability。
