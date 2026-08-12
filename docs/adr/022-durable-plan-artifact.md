@@ -62,11 +62,10 @@ replaced.
   write. That stronger guarantee is outside the current single-user local threat model.
 - Runtime binding must recapture the snapshot and facts, compare all binding fields, and fail closed.
   Stage 18 supplies `repositoryBindingMismatches` and tests it, but deliberately has no production
-  caller because it does not start a run. Stage 19's `PlanExecutionBinder` must call it and reject any
-  `repositoryId`, `baseCommit`, `workingTreeFingerprint`, or `factsFingerprint` mismatch before it
-  creates a runtime request.
-- Approval records are deliberately deferred to the next stage and must reference the exact
-  `planFingerprint`, artifact ID, and revision.
+  caller because it does not start a run. Stage 19's `PlanExecutionBinder` calls it and rejects any
+  `repositoryId`, physical `repositoryRoot`, `baseCommit`, `workingTreeFingerprint`, dirty-state, or
+  `factsFingerprint` mismatch before it creates execution authority evidence.
+- Stage 19 approval records reference the exact `planFingerprint`, artifact ID, and revision.
 
 ## Consequences
 

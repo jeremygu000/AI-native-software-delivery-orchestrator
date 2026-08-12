@@ -385,12 +385,21 @@ describe('PlanArtifact', () => {
         {
           ...snapshot,
           repositoryId: `sha256:${'4'.repeat(64)}`,
+          repositoryRoot: '/other-clone',
           baseCommit: '5'.repeat(40),
-          workingTreeFingerprint: `sha256:${'6'.repeat(64)}`
+          workingTreeFingerprint: `sha256:${'6'.repeat(64)}`,
+          dirty: false
         },
         changedGraph
       )
-    ).toEqual(['repository-id', 'base-commit', 'working-tree', 'repository-facts']);
+    ).toEqual([
+      'repository-id',
+      'repository-root',
+      'base-commit',
+      'working-tree',
+      'repository-dirty-state',
+      'repository-facts'
+    ]);
     expect(repositoryBindingMismatches(artifact, snapshot, graph())).toEqual([]);
   });
 

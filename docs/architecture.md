@@ -348,9 +348,9 @@ two snapshots and rejects a repository that changes between them. Artifacts are 
 publishing the artifact cannot invalidate its own snapshot; confinement is checked before destination
 creation, after creation, and immediately before the temporary-file write. Portable NFD-normalized,
 lowercased path collisions and Git submodules also fail closed. `repositoryBindingMismatches` is a
-tested binder contract with no Stage 18 production caller; Stage 19's `PlanExecutionBinder` must reject
-any repository ID, base commit, working-tree fingerprint, or Repository Facts fingerprint mismatch
-before runtime binding. Artifacts are ready for approval and runtime binding, but are not approval and
+tested binder contract with no Stage 18 production caller; Stage 19's `PlanExecutionBinder` rejects
+any repository ID, physical repository root, base commit, working-tree fingerprint, dirty-state, or
+Repository Facts fingerprint mismatch before execution binding. Artifacts are ready for approval and runtime binding, but are not approval and
 the command intentionally does not call `OrchestrationRuntime.startRun()`.
 
 Tasks move through `INTEGRATING` after verification and before completion. Each task executes in an
@@ -554,8 +554,14 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
 19. **Approval and Execution Binding:** persist a provider-neutral human approval tied to the exact
     artifact ID, revision, and plan fingerprint; reload and verify the artifact; recapture repository
     snapshot and Repository Facts; revalidate shared-resource and verification authority; reject every
-    mismatch; and produce one canonical runtime request through `PlanExecutionBinder`. The CLI remains
-    a composition/I/O boundary and must not assemble runtime bindings itself.
+    mismatch; atomically claim the approval for one run; and produce one canonical
+    `PlanExecutionIntent` through `PlanExecutionBinder`. **Complete.** The intent is authority
+    evidence, not `StartRuntimeRunRequest`. The CLI remains a
+    composition/I/O boundary and must not assemble runtime bindings itself.
+20. **Controlled Runtime Binding and Start:** consume a verified `PlanExecutionIntent`, apply an
+    explicit deployment policy for agent, workspace, lease, command, sandbox, model, and verification
+    bindings, create the existing runtime request, persist the start boundary, and expose the first
+    recoverable `forge run` workflow without introducing a hidden CLI orchestrator.
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
 non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before

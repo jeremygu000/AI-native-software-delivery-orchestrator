@@ -4,7 +4,12 @@ import { join, resolve } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { AutonomousPlanningError } from '@ai-native-software-delivery-orchestrator/planning';
+import {
+  AutonomousPlanningError,
+  type PlanApproval,
+  PlanExecutionBindingError,
+  type PlanExecutionIntent
+} from '@ai-native-software-delivery-orchestrator/planning';
 import {
   analyzeRepository,
   ProjectGraphError
@@ -430,5 +435,162 @@ describe('forge analyze', () => {
       ])
     ).rejects.toThrow('Expected a positive integer, received 0');
     expect(planRepository).not.toHaveBeenCalled();
+  });
+
+  it('creates an exact approval through the CLI composition boundary', async () => {
+    let output = '';
+    const approval = {
+      schemaVersion: 1,
+      approvalId: 'approval-1',
+      artifactId: 'plan-1',
+      artifactRevision: 2,
+      planFingerprint: `sha256:${'1'.repeat(64)}`,
+      approvedBy: 'reviewer@example.com',
+      approvedAt: '2026-08-13T01:00:00.000Z',
+      approvalFingerprint: `sha256:${'2'.repeat(64)}`
+    } as const satisfies PlanApproval;
+    const approvePlan = vi.fn(async () => approval);
+    const program = createForgeProgram({
+      cwd: '/workspace',
+      approvePlan,
+      writeOutput: (value) => {
+        output += value;
+      }
+    });
+
+    await program.parseAsync([
+      'node',
+      'forge',
+      'approve',
+      'plan-1',
+      '--revision',
+      '2',
+      '--approval-id',
+      'approval-1',
+      '--approved-by',
+      'reviewer@example.com',
+      '--repository',
+      'repo',
+      '--plan-directory',
+      'artifacts'
+    ]);
+
+    expect(approvePlan).toHaveBeenCalledWith({
+      artifactId: 'plan-1',
+      artifactRevision: 2,
+      approvalId: 'approval-1',
+      approvedBy: 'reviewer@example.com',
+      repositoryPath: '/workspace/repo',
+      planDirectory: '/workspace/artifacts'
+    });
+    expect(JSON.parse(output)).toEqual(approval);
+  });
+
+  it('binds an approved plan without assembling runtime task bindings in the CLI', async () => {
+    let output = '';
+    // This test isolates CLI routing; schema integrity is covered by PlanExecutionBinder tests.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+    const intent = {
+      schemaVersion: 1,
+      runId: 'run-1',
+      boundAt: '2026-08-13T02:00:00.000Z',
+      artifact: { artifactId: 'plan-1' },
+      approval: { approvalId: 'approval-1' },
+      approvalClaim: { approvalId: 'approval-1', runId: 'run-1' },
+      executionFingerprint: `sha256:${'3'.repeat(64)}`
+    } as unknown as PlanExecutionIntent;
+    const bindPlan = vi.fn(async () => intent);
+    const program = createForgeProgram({
+      cwd: '/workspace',
+      bindPlan,
+      writeOutput: (value) => {
+        output += value;
+      }
+    });
+
+    await program.parseAsync([
+      'node',
+      'forge',
+      'bind',
+      'plan-1',
+      '--approval',
+      'approval-1',
+      '--run-id',
+      'run-1',
+      '--revision',
+      '2',
+      '--repository',
+      'repo',
+      '--shared-resources',
+      'shared-resources.json',
+      '--plan-directory',
+      'artifacts'
+    ]);
+
+    expect(bindPlan).toHaveBeenCalledWith({
+      artifactId: 'plan-1',
+      artifactRevision: 2,
+      approvalId: 'approval-1',
+      runId: 'run-1',
+      repositoryPath: '/workspace/repo',
+      sharedResourcesPath: '/workspace/shared-resources.json',
+      planDirectory: '/workspace/artifacts'
+    });
+    expect(JSON.parse(output)).toEqual(intent);
+  });
+
+  it('requires approval actor and binding identities before invoking adapters', async () => {
+    const approvePlan = vi.fn();
+    const bindPlan = vi.fn();
+    const approveProgram = createForgeProgram({ approvePlan, bindPlan });
+    approveProgram.commands.find((command) => command.name() === 'approve')!.exitOverride();
+
+    await expect(
+      approveProgram.parseAsync(['node', 'forge', 'approve', 'plan-1'])
+    ).rejects.toMatchObject({ code: 'commander.missingMandatoryOptionValue' });
+
+    const bindProgram = createForgeProgram({ approvePlan, bindPlan });
+    bindProgram.commands.find((command) => command.name() === 'bind')!.exitOverride();
+    await expect(bindProgram.parseAsync(['node', 'forge', 'bind', 'plan-1'])).rejects.toMatchObject(
+      {
+        code: 'commander.missingMandatoryOptionValue'
+      }
+    );
+    expect(approvePlan).not.toHaveBeenCalled();
+    expect(bindPlan).not.toHaveBeenCalled();
+  });
+
+  it('prints deterministic execution-binding rejection diagnostics', async () => {
+    let errorOutput = '';
+    const program = createForgeProgram({
+      bindPlan: async () => {
+        throw new PlanExecutionBindingError('Repository changed', [
+          'working-tree',
+          'verification-policy'
+        ]);
+      }
+    });
+    program.exitOverride();
+    program.configureOutput({
+      writeErr: (value) => {
+        errorOutput += value;
+      }
+    });
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'forge',
+        'bind',
+        'plan-1',
+        '--approval',
+        'approval-1',
+        '--run-id',
+        'run-1'
+      ])
+    ).rejects.toMatchObject({ code: 'commander.error' });
+    expect(errorOutput).toContain('BINDING_REJECTED: Repository changed');
+    expect(errorOutput).toContain('working-tree');
+    expect(errorOutput).toContain('verification-policy');
   });
 });

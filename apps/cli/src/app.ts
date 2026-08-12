@@ -17,10 +17,16 @@ import {
   AutonomousPlanPhase,
   AutonomousPlanningError,
   assertStableRepositorySnapshot,
+  createPlanApproval,
   createPlanArtifact,
+  PlanExecutionBinder,
+  PlanExecutionBindingError,
+  type PlanApproval,
+  type PlanExecutionIntent,
   type PlanArtifact
 } from '@ai-native-software-delivery-orchestrator/planning';
 import {
+  JsonFilePlanApprovalStore,
   JsonFilePlanArtifactStore,
   resolvePlanArtifactDirectory
 } from '@ai-native-software-delivery-orchestrator/persistence';
@@ -50,6 +56,23 @@ export interface ForgeProgramDependencies {
     readonly planDirectory?: string;
     readonly semanticReviewAuthorized: true;
   }) => Promise<PlanArtifact>;
+  readonly approvePlan?: (request: {
+    readonly artifactId: string;
+    readonly artifactRevision: number;
+    readonly approvalId: string;
+    readonly approvedBy: string;
+    readonly repositoryPath: string;
+    readonly planDirectory?: string;
+  }) => Promise<PlanApproval>;
+  readonly bindPlan?: (request: {
+    readonly artifactId: string;
+    readonly artifactRevision: number;
+    readonly approvalId: string;
+    readonly runId: string;
+    readonly repositoryPath: string;
+    readonly sharedResourcesPath?: string;
+    readonly planDirectory?: string;
+  }) => Promise<PlanExecutionIntent>;
   readonly writeOutput?: (output: string) => void;
 }
 
@@ -91,6 +114,11 @@ interface SerializableProjectGraph {
   readonly fileDependencies?: readonly { readonly from: string; readonly to: string }[];
   readonly symbolReferences?: readonly { readonly from: string; readonly to: string }[];
 }
+
+const verificationPolicy = {
+  version: 1,
+  autonomousRules: ['package-script-required', 'free-form-command-forbidden']
+} as const;
 
 const createRepositoryPlan = async (request: {
   readonly specificationPath: string;
@@ -140,10 +168,7 @@ const createRepositoryPlan = async (request: {
     repository: analysis.graph,
     repositorySnapshot,
     sharedResourcePolicy: registry.list(),
-    verificationPolicy: {
-      version: 1,
-      autonomousRules: ['package-script-required', 'free-form-command-forbidden']
-    },
+    verificationPolicy,
     preparedPlan
   });
   const artifactDirectory = await resolvePlanArtifactDirectory(
@@ -165,6 +190,77 @@ export const loadSharedResourceRegistry = async (
   const source = await readFile(configurationPath, 'utf8');
   const configuration: unknown = JSON.parse(source);
   return new SharedResourceRegistry(sharedResourceRegistryConfigSchema.parse(configuration));
+};
+
+const planStores = async (request: {
+  readonly repositoryPath: string;
+  readonly planDirectory?: string;
+}) => {
+  const snapshot = await new GitRepositorySnapshotProvider().capture({
+    repositoryPath: request.repositoryPath
+  });
+  const directory = await resolvePlanArtifactDirectory(snapshot, request.planDirectory);
+  return {
+    artifactStore: new JsonFilePlanArtifactStore(directory, snapshot.repositoryRoot),
+    approvalStore: new JsonFilePlanApprovalStore(directory, snapshot.repositoryRoot),
+    snapshot
+  };
+};
+
+const approveRepositoryPlan = async (request: {
+  readonly artifactId: string;
+  readonly artifactRevision: number;
+  readonly approvalId: string;
+  readonly approvedBy: string;
+  readonly repositoryPath: string;
+  readonly planDirectory?: string;
+}): Promise<PlanApproval> => {
+  const { artifactStore, approvalStore } = await planStores(request);
+  const artifact = await artifactStore.load(request.artifactId, request.artifactRevision);
+  if (artifact === undefined) {
+    throw new Error(
+      `Plan artifact not found: ${request.artifactId} revision ${request.artifactRevision}`
+    );
+  }
+  const approval = createPlanApproval({
+    approvalId: request.approvalId,
+    artifact,
+    approvedBy: request.approvedBy,
+    approvedAt: new Date().toISOString()
+  });
+  await approvalStore.save(approval);
+  return approval;
+};
+
+const bindRepositoryPlan = async (request: {
+  readonly artifactId: string;
+  readonly artifactRevision: number;
+  readonly approvalId: string;
+  readonly runId: string;
+  readonly repositoryPath: string;
+  readonly sharedResourcesPath?: string;
+  readonly planDirectory?: string;
+}): Promise<PlanExecutionIntent> => {
+  const [stores, registry] = await Promise.all([
+    planStores(request),
+    loadSharedResourceRegistry(request.sharedResourcesPath)
+  ]);
+  return new PlanExecutionBinder({
+    artifactStore: stores.artifactStore,
+    approvalStore: stores.approvalStore,
+    snapshotProvider: new GitRepositorySnapshotProvider(),
+    factsProvider: {
+      analyze: async (repository) => (await analyzeRepository(repository.repositoryPath)).graph
+    }
+  }).bind({
+    artifactId: request.artifactId,
+    artifactRevision: request.artifactRevision,
+    approvalId: request.approvalId,
+    runId: request.runId,
+    repository: { repositoryPath: request.repositoryPath },
+    sharedResourcePolicy: registry.list(),
+    verificationPolicy
+  });
 };
 
 const parsePositiveInteger = (value: string): number => {
@@ -212,6 +308,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
   const cwd = dependencies.cwd ?? process.cwd();
   const analyze = dependencies.analyzeRepository ?? analyzeRepository;
   const planRepository = dependencies.planRepository ?? createRepositoryPlan;
+  const approvePlan = dependencies.approvePlan ?? approveRepositoryPlan;
+  const bindPlan = dependencies.bindPlan ?? bindRepositoryPlan;
   const writeOutput =
     dependencies.writeOutput ?? ((output: string) => process.stdout.write(output));
 
@@ -295,6 +393,91 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
                 : '';
             program.error(
               `PLANNING_REJECTED: ${error.message}\n${JSON.stringify(error.diagnostics, null, 2)}${missingRegistryHint}`
+            );
+          }
+          throw error;
+        }
+      }
+    );
+
+  program
+    .command('approve')
+    .description('Approve one exact immutable plan artifact revision')
+    .argument('<artifact-id>', 'plan artifact ID')
+    .requiredOption('--approved-by <actor>', 'provider-neutral identity of the approving actor')
+    .option('--approval-id <id>', 'approval record ID', randomUUID())
+    .option('--revision <number>', 'plan artifact revision', parsePositiveInteger, 1)
+    .option('-r, --repository <path>', 'repository associated with the plan', cwd)
+    .option('--plan-directory <path>', 'directory containing immutable plan artifacts')
+    .action(
+      async (
+        artifactId: string,
+        options: {
+          approvedBy: string;
+          approvalId: string;
+          revision: number;
+          repository: string;
+          planDirectory?: string;
+        }
+      ) => {
+        const approval = await approvePlan({
+          artifactId,
+          artifactRevision: options.revision,
+          approvalId: options.approvalId,
+          approvedBy: options.approvedBy,
+          repositoryPath: resolve(cwd, options.repository),
+          ...(options.planDirectory === undefined
+            ? {}
+            : { planDirectory: resolve(cwd, options.planDirectory) })
+        });
+        writeOutput(`${JSON.stringify(approval, null, 2)}\n`);
+      }
+    );
+
+  program
+    .command('bind')
+    .description('Bind an exact approved plan to current repository and policy authority')
+    .argument('<artifact-id>', 'plan artifact ID')
+    .requiredOption('--approval <id>', 'exact approval record ID')
+    .requiredOption('--run-id <id>', 'stable runtime run identity used for single-use claiming')
+    .option('--revision <number>', 'plan artifact revision', parsePositiveInteger, 1)
+    .option('-r, --repository <path>', 'repository to revalidate', cwd)
+    .option(
+      '--shared-resources <path>',
+      'current JSON shared-resource policy to revalidate against the artifact'
+    )
+    .option('--plan-directory <path>', 'directory containing plan and approval records')
+    .action(
+      async (
+        artifactId: string,
+        options: {
+          approval: string;
+          runId: string;
+          revision: number;
+          repository: string;
+          sharedResources?: string;
+          planDirectory?: string;
+        }
+      ) => {
+        try {
+          const intent = await bindPlan({
+            artifactId,
+            artifactRevision: options.revision,
+            approvalId: options.approval,
+            runId: options.runId,
+            repositoryPath: resolve(cwd, options.repository),
+            ...(options.sharedResources === undefined
+              ? {}
+              : { sharedResourcesPath: resolve(cwd, options.sharedResources) }),
+            ...(options.planDirectory === undefined
+              ? {}
+              : { planDirectory: resolve(cwd, options.planDirectory) })
+          });
+          writeOutput(`${JSON.stringify(intent, null, 2)}\n`);
+        } catch (error) {
+          if (error instanceof PlanExecutionBindingError) {
+            program.error(
+              `BINDING_REJECTED: ${error.message}\n${JSON.stringify(error.mismatches, null, 2)}`
             );
           }
           throw error;

@@ -20,5 +20,5 @@
       "path": "../task-impact/tsconfig.lib.json"
     }
   ],
-  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"]
+  "exclude": ["src/**/*.fixture.ts", "src/**/*.spec.ts", "src/**/*.test.ts"]
 }

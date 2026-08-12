@@ -201,8 +201,10 @@ The next stage must create an approval record that references the exact artifact
 - Artifact files are immutable by application behavior, not protected from an OS-level administrator.
 - Pathname rechecks mitigate ordinary symlink races but are not atomic directory-descriptor
   confinement against a hostile local process. That is outside the current single-user threat model.
-- Fingerprints are content identities, not signatures.
+- Fingerprints are content identities, not signatures; a writer with direct storage access can
+  recompute them after editing JSON.
 - `repositoryBindingMismatches` is implemented and tested but has no production caller in Stage 18.
-  Stage 19's `PlanExecutionBinder` must reject any `repositoryId`, `baseCommit`,
-  `workingTreeFingerprint`, or `factsFingerprint` mismatch before creating a runtime request. Human
-  approval and that mandatory binder call site remain Stage 19.
+  Stage 19's `PlanExecutionBinder` rejects any `repositoryId`, physical `repositoryRoot`,
+  `baseCommit`, `workingTreeFingerprint`, dirty-state, or `factsFingerprint` mismatch before creating
+  execution authority evidence. Human approval and that mandatory binder call site are implemented in
+  Stage 19.

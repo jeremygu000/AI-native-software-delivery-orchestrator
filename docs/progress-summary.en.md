@@ -1793,7 +1793,90 @@ Stage 19 is **Approval + Execution Binding**. `PlanApproval` remains a separate 
 recording the exact artifact ID, revision, `planFingerprint`, approving actor, and approval time; it is
 not an `approved: true` flag embedded in the immutable PlanArtifact. `PlanExecutionBinder` must load and
 verify that exact artifact, validate the exact approval, recapture repository snapshot and Repository
-Facts, reject all four repository binding mismatches, revalidate current shared-resource and
+Facts, reject every repository binding mismatch, revalidate current shared-resource and
 verification authority fingerprints, and only then produce one canonical runtime request. The CLI may
 compose I/O and adapters but must not manually assemble agent, workspace, lease, command-policy,
 sandbox, model, or runtime bindings.
+
+## Stage 19: Plan Approval and Execution Binding
+
+Stage 19 is complete and independently reviewed. It closes the deterministic approval
+half of the Plan-to-Run boundary without pretending that an approved plan is already a runnable
+deployment request.
+
+`PlanApproval` is a separate schema-versioned, fingerprinted record. It binds a provider-neutral actor
+and approval time to the exact artifact ID, revision, and `planFingerprint`. Artifact content remains
+immutable. Approval before artifact creation, content tampering, malformed identity, or any artifact
+ID/revision/fingerprint mismatch fails closed. The actor string is intentionally not a GitHub, Jira,
+SSO, or Pi type; authentication and signature policy remain adapter/deployment concerns.
+
+`PlanApprovalClaim` adds one atomic single-run consumption boundary. `JsonFilePlanApprovalStore`
+publishes approvals and claims through the same temporary-file plus hard-link strategy used by durable
+artifacts. Identical approval writes are idempotent. A same-run claim retry returns the original claim
+and timestamp, while a different run is rejected. A dedicated simultaneous two-run test proves that
+exactly one atomic publication wins. Corrupt JSON, nested fingerprint damage, filename/payload
+disagreement, path traversal, and repository-internal storage fail closed with approval-specific
+errors.
+
+`PlanExecutionBinder` now provides the mandatory Stage 18 repository comparison call site. It loads
+and validates the exact artifact and approval, captures Git evidence, rebuilds Repository Facts,
+captures Git evidence again, rejects a moving repository, compares repository ID, base commit,
+working-tree fingerprint, and facts fingerprint, and revalidates current shared-resource and
+verification-policy fingerprints. Only after every check passes does it atomically claim the approval
+and return a fingerprinted `PlanExecutionIntent`. A failed repository or policy check leaves the
+approval unclaimed. The intent parser validates the fingerprints of its nested artifact, approval,
+and claim as well as cross-record identity and the outer execution fingerprint.
+
+The CLI adds `forge approve` and `forge bind`. `BINDING_REJECTED` reports deterministic mismatch IDs.
+The CLI remains a composition and JSON-I/O boundary; it does not construct agent, workspace, Write
+Guard, command, sandbox, model, verification, or Git-integration bindings. `PlanExecutionIntent` is
+therefore authority evidence, not `StartRuntimeRunRequest`, and `forge run` remains deferred until a
+controlled runtime binding policy exists.
+
+ADR-023 records this boundary. Standalone beginner-oriented guides are available in
+[English](./plan-approval-and-binding.en.md) and
+[Chinese](./plan-approval-and-binding.zh.md).
+
+The Stage 19 local gate passes with 34 test files and 452 tests. Coverage is 95.82% statements, 91.02%
+branches, 96.70% functions, and 95.79% lines. The planning-only gate passes 54 tests at 98.38%
+statements, 95.07% branches, 97.84% functions, and 98.54% lines. `pnpm check`, `pnpm build`, and
+`git diff --check` pass. Self-analysis reports 14 projects, 104 files, 1,490 symbols, 49 project
+dependencies, 205 file dependencies, 2,716 symbol references, and the same two known root
+configuration diagnostics. The ingestion-and-matching research repository remains stable at three
+projects, 1,010 files, 7,617 symbols, three project dependencies, 3,592 file dependencies, 13,893
+symbol references, and the known 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic. No live Pi call was
+needed because approval and binding are deterministic authority operations.
+
+Stage 20 should implement **Controlled Runtime Binding and Start**: consume a verified execution
+intent, apply an explicit deployment policy for the existing runtime's agent/workspace/lease/command/
+sandbox/model/verification collaborators, persist the start boundary, and expose the first recoverable
+`forge run` workflow. It must preserve the current rule that the CLI cannot become a hidden
+orchestrator.
+
+### Stage 19 independent-review hardening
+
+The first independent review found one High correctness gap: execution binding compared stable
+repository identity, commit, content, and facts but did not compare the physical repository root. Two
+clones of the same remote could therefore bind the same artifact when their bytes matched, even though
+Stage 20 would create real workspaces from a different location. `repositoryBindingMismatches` now
+also requires the exact real `repositoryRoot`. It additionally compares the recorded dirty state so
+every snapshot authority field has an explicit binding check. A dedicated binder test reproduces the
+same-origin/same-content/different-root case and proves rejection occurs before approval claim.
+
+The review's Medium observations were also closed. Documentation now states precisely that SHA-256
+fingerprints are not signatures: a direct JSON-store writer can recompute them, so the local threat
+model depends on filesystem access control and binder cross-checks. Unused Stage 19 barrel exports
+were removed; internal schemas, mismatch types, integrity errors, and provider ports remain private
+until a real cross-package consumer exists. Approval and claim stores now have dedicated symlink
+TOCTOU regression cases, and a separately self-consistent approval test locks the pure
+`artifact-revision` mismatch branch.
+
+The follow-up review independently reproduced the 452-test gate and planning-only coverage, verified
+the real-path origin of `repositoryRoot`, the exact pre-claim rejection path, export usability after
+declaration emit, both dynamic approval/claim TOCTOU injections, and the revision-only mismatch. It
+found no remaining correctness or architecture issue and approved Stage 19 as **PASS / CLOSED**.
+
+Two non-blocking test-organization improvements are registered for Stage 20 integration coverage:
+one end-to-end test should create two real clones with the same origin and prove the binder rejects the
+second clone, and one isolated test should change only dirty state. Existing tests already prove the
+two underlying halves and the production comparisons are present, so these do not reopen Stage 19.

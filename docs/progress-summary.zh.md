@@ -1566,6 +1566,73 @@ artifact authority 和本地 persistence，不是 model behavior。
 Stage 19 正式定义为 **Approval + Execution Binding**。`PlanApproval` 是独立、provider-neutral 的事实记录，必须包含
 准确 artifact ID、revision、`planFingerprint`、approving actor 与 approval time；它不能成为嵌入 immutable
 PlanArtifact 的 `approved: true` flag。`PlanExecutionBinder` 必须加载并验证该准确 artifact、验证 exact approval、重新
-抓取 repository snapshot 与 Repository Facts、拒绝四类 repository binding mismatch、重新验证当前 shared-resource
+抓取 repository snapshot 与 Repository Facts、拒绝所有 repository binding mismatch、重新验证当前 shared-resource
 与 verification authority fingerprint，然后才能生成唯一 canonical runtime request。CLI 只负责 composition/I/O，
 不能手工拼装 agent、workspace、lease、command-policy、sandbox、model 或 runtime binding。
+
+## Stage 19：Plan Approval 与 Execution Binding
+
+Stage 19 已完成并通过独立 Review。它关闭 Plan-to-Run boundary 中 deterministic approval 的一半，但不会
+假装“approved plan”已经是可运行的 deployment request。
+
+`PlanApproval` 是独立、带 schema version 和 fingerprint 的记录。它把 provider-neutral actor 与 approval time
+绑定到准确 artifact ID、revision 和 `planFingerprint`，不会修改 immutable artifact。Approval time 早于 artifact、
+content tampering、非法 identity，以及 artifact ID/revision/fingerprint mismatch 都会 fail closed。Actor string
+有意不采用 GitHub、Jira、SSO 或 Pi type；authentication 与 signature policy 仍属于 adapter/deployment concern。
+
+`PlanApprovalClaim` 增加 atomic single-run consumption boundary。`JsonFilePlanApprovalStore` 使用 durable artifact
+相同的 temporary file + hard-link 方式发布 approval 与 claim。相同 approval 写入是 idempotent；same-run claim retry
+返回原 claim 和 timestamp；different run 会被拒绝。专门的双 run 并发测试证明只有一个 atomic publication 能成功。
+Corrupt JSON、nested fingerprint 损坏、filename/payload 不一致、path traversal 与 repository 内 storage 都会用
+approval-specific error fail closed。
+
+`PlanExecutionBinder` 是 Stage 18 repository comparison contract 的 mandatory production call site。它加载并验证
+准确 artifact/approval，抓取 Git evidence，重建 Repository Facts，再抓一次 Git evidence并拒绝 moving repository；
+随后比较 repository ID、base commit、working-tree fingerprint、facts fingerprint，以及当前 shared-resource 与
+verification-policy fingerprint。只有所有检查通过后，系统才原子 claim approval 并返回带 fingerprint 的
+`PlanExecutionIntent`。Repository/policy 检查失败不会消耗 approval。Intent parser 同时校验 nested artifact、
+approval、claim 各自的 fingerprint、cross-record identity 与外层 execution fingerprint。
+
+CLI 新增 `forge approve` 和 `forge bind`；`BINDING_REJECTED` 会输出稳定 mismatch ID。CLI 仍只负责 composition 和
+JSON I/O，不会构建 agent、workspace、Write Guard、command、sandbox、model、verification 或 Git integration
+binding。因此 `PlanExecutionIntent` 是 authority evidence，不是 `StartRuntimeRunRequest`；在 controlled runtime
+binding policy 出现前，`forge run` 继续延后。
+
+ADR-023 记录该边界。独立初学者培训文档见
+[英文](./plan-approval-and-binding.en.md)与[中文](./plan-approval-and-binding.zh.md)。
+
+Stage 19 local gate 有 34 个 test file、452 个 test 全部通过。覆盖率为 statement 95.82%、branch 91.02%、
+function 96.70%、line 95.79%。Planning-only gate 有 54 个 test，覆盖率为 statement 98.38%、branch 95.07%、
+function 97.84%、line 98.54%。`pnpm check`、`pnpm build` 与 `git diff --check` 通过。Self-analysis 得到 14 个
+project、104 个 file、1,490 个 symbol、49 条 project dependency、205 条 file dependency、2,716 条 symbol
+reference，以及同样两个已知 root configuration diagnostic。Ingestion-and-matching 研究仓库保持 3 个 project、
+1,010 个 file、7,617 个 symbol、3 条 project dependency、3,592 条 file dependency、13,893 条 symbol
+reference，以及已知的 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic。本阶段不需要 live Pi call，因为 approval
+与 binding 是 deterministic authority operation。
+
+Stage 20 应实现 **Controlled Runtime Binding and Start**：消费已验证 execution intent，通过明确 deployment policy
+提供现有 runtime 所需的 agent/workspace/lease/command/sandbox/model/verification collaborator，持久化 start
+boundary，并提供第一个 recoverable `forge run` workflow。必须继续保证 CLI 不会成为 hidden orchestrator。
+
+### Stage 19 独立 Review 加固
+
+第一次独立 Review 发现一个 High correctness gap：execution binding 会比较稳定 repository identity、commit、content
+与 facts，却没有比较物理 repository root。同一 remote 的两份 clone 在 bytes 相同时可能绑定同一个 artifact，虽然
+Stage 20 会从不同位置创建真实 workspace。`repositoryBindingMismatches` 现在也强制准确 real `repositoryRoot`；同时
+新增 recorded dirty-state 比较，让每个 snapshot authority field 都有明确 binding check。专门的 binder 测试复现
+same-origin/same-content/different-root 场景，并证明系统会在 approval claim 前拒绝。
+
+Review 的 Medium observation 也全部关闭。文档现在明确说明 SHA-256 fingerprint 不是 signature：有 JSON store
+直接写权限的人可以重新计算它，因此 local threat model 依赖 filesystem access control 与 binder cross-check。
+未被真实跨 package 使用的 Stage 19 barrel export 已删除；internal schema、mismatch type、integrity error 与 provider
+port 在出现真实 consumer 前保持 private。Approval/claim store 新增专属 symlink TOCTOU regression case，并用一个
+能通过自身 fingerprint 校验的 approval 单独锁定纯 `artifact-revision` mismatch branch。
+
+Follow-up Review 独立重现了 452-test gate 与 planning-only coverage，并验证 `repositoryRoot` 确实来自 realpath、
+准确 pre-claim rejection path、declaration emit 后 public API 可用、approval/claim 两条 dynamic TOCTOU injection，
+以及 revision-only mismatch。Review 没有发现剩余 correctness 或 architecture 问题，并批准 Stage 19 **PASS /
+CLOSED**。
+
+两项非阻塞 test-organization 改进登记到 Stage 20 integration coverage：其一，用两份真实、共享同一 origin 的 clone
+做端到端测试并证明 binder 拒绝第二份 clone；其二，只改变 dirty state 的隔离测试。现有测试已经分别证明底层语义与
+production comparison 存在，因此这两项不会重新打开 Stage 19。

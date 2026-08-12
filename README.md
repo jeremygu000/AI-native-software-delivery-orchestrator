@@ -7,7 +7,7 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–18 establish the deterministic analysis, planning, review, dispatch, write-safety, recovery,
+Milestones 1–19 establish the deterministic analysis, planning, approval, dispatch, write-safety, recovery,
 and local Git workspace core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
@@ -55,11 +55,14 @@ and local Git workspace core:
 - immutable, JSON-safe PlanArtifact revisions bound to the planning source, Git commit and working-tree
   bytes, Repository Facts, shared-resource policy, verification policy, and complete planning decision;
   `forge plan` stores them atomically under `~/.forge/plans/<repository-id>` by default;
+- immutable provider-neutral approvals tied to an exact artifact revision and fingerprint, atomic
+  single-run approval claims, and execution binding that recaptures Git and Repository Facts and
+  revalidates shared-resource and verification policy before producing a `PlanExecutionIntent`;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestones 12–18 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
+Milestones 12–19 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
 concurrent local agent execution, and an autonomous Pi-backed planning and review path. Planning and execution
-remain separate: `forge plan` does not create worktrees, acquire leases, dispatch coding agents, run
+remain separate: `forge plan`, `forge approve`, and `forge bind` do not create worktrees, acquire leases, dispatch coding agents, run
 verification, or integrate Git work. Cross-process coordination, explicit model routing/failover,
 runtime CLI commands, integration checkout provisioning, and automatic conflict repair remain deferred.
 
@@ -84,6 +87,8 @@ node apps/cli/dist/main.js --help
 pnpm exec forge analyze .
 pnpm exec forge analyze . --full
 pnpm exec forge plan request.md --repository . --max-concurrency 2 --semantic-review
+pnpm exec forge approve <artifact-id> --approved-by reviewer@example.com --repository .
+pnpm exec forge bind <artifact-id> --approval <approval-id> --run-id <run-id> --repository .
 ```
 
 ## Workspace
@@ -122,6 +127,7 @@ Standalone training guides:
 - [Autonomous Planning](docs/autonomous-planning.en.md)
 - [Semantic Plan Review](docs/semantic-plan-review.en.md) / [中文](docs/semantic-plan-review.zh.md)
 - [Durable Plan Artifact](docs/plan-artifact.en.md) / [中文](docs/plan-artifact.zh.md)
+- [Plan Approval and Execution Binding](docs/plan-approval-and-binding.en.md) / [中文](docs/plan-approval-and-binding.zh.md)
 
 Continuation agents must read the [OpenCode engineering handover](docs/opencode-handover.md) before
 changing the current uncommitted milestone state.

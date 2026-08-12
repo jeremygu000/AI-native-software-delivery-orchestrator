@@ -41,3 +41,13 @@ export type {
   PlanArtifactStore,
   RepositoryBindingMismatch
 } from './lib/plan-artifact.js';
+export {
+  areEquivalentApprovalClaims,
+  createPlanApproval,
+  createPlanApprovalClaim,
+  parsePlanApproval,
+  parsePlanApprovalClaim
+} from './lib/plan-approval.js';
+export type { PlanApproval, PlanApprovalClaim, PlanApprovalStore } from './lib/plan-approval.js';
+export { PlanExecutionBinder, PlanExecutionBindingError } from './lib/plan-execution-binder.js';
+export type { PlanExecutionIntent } from './lib/plan-execution-binder.js';

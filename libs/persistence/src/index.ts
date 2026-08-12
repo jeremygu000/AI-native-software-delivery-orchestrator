@@ -4,6 +4,7 @@ export {
   PersistenceReplayError
 } from './lib/drizzle-sqlite-orchestration-persistence.js';
 export {
+  JsonFilePlanApprovalStore,
   JsonFilePlanArtifactStore,
   PlanArtifactStoreError,
   resolvePlanArtifactDirectory

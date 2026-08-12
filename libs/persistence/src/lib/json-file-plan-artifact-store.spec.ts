@@ -6,7 +6,11 @@ import type {
   PreparedOrchestrationPlan,
   PlanArtifact
 } from '@ai-native-software-delivery-orchestrator/planning';
-import { createPlanArtifact } from '@ai-native-software-delivery-orchestrator/planning';
+import {
+  createPlanApproval,
+  createPlanApprovalClaim,
+  createPlanArtifact
+} from '@ai-native-software-delivery-orchestrator/planning';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const fileSystemHooks = vi.hoisted(() => ({
@@ -33,7 +37,9 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 });
 
 import {
+  JsonFilePlanApprovalStore,
   JsonFilePlanArtifactStore,
+  PlanApprovalStoreError,
   PlanArtifactStoreError,
   resolvePlanArtifactDirectory
 } from './json-file-plan-artifact-store.js';
@@ -255,4 +261,151 @@ describe('JsonFilePlanArtifactStore', () => {
       readFile(join(repositoryRoot, 'plans', 'plan-1.r1.json'), 'utf8')
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
+});
+
+describe('JsonFilePlanApprovalStore', () => {
+  const approval = () =>
+    createPlanApproval({
+      approvalId: 'approval-1',
+      artifact: artifact(),
+      approvedBy: 'reviewer@example.com',
+      approvedAt: '2026-08-13T01:00:00.000Z'
+    });
+
+  it('atomically saves and loads an exact approval', async () => {
+    const store = new JsonFilePlanApprovalStore(await createDirectory());
+    const record = approval();
+
+    await store.save(record);
+
+    await expect(store.load('approval-1')).resolves.toEqual(record);
+    expect(JSON.parse(await readFile(store.pathFor('approval-1'), 'utf8'))).toEqual(record);
+  });
+
+  it('treats identical approval retries as idempotent and rejects replacement', async () => {
+    const store = new JsonFilePlanApprovalStore(await createDirectory());
+    const record = approval();
+    await expect(Promise.all([store.save(record), store.save(record)])).resolves.toEqual([
+      undefined,
+      undefined
+    ]);
+
+    await expect(
+      store.save(
+        createPlanApproval({
+          approvalId: 'approval-1',
+          artifact: artifact(),
+          approvedBy: 'other-reviewer@example.com',
+          approvedAt: '2026-08-13T01:00:00.000Z'
+        })
+      )
+    ).rejects.toThrow('Plan approval is immutable');
+  });
+
+  it('claims an approval once, permits same-run retry, and rejects cross-run replay', async () => {
+    const store = new JsonFilePlanApprovalStore(await createDirectory());
+    const record = approval();
+    await store.save(record);
+    const first = createPlanApprovalClaim({
+      approval: record,
+      runId: 'run-1',
+      claimedAt: '2026-08-13T02:00:00.000Z'
+    });
+    const retry = createPlanApprovalClaim({
+      approval: record,
+      runId: 'run-1',
+      claimedAt: '2026-08-13T03:00:00.000Z'
+    });
+
+    await expect(store.claim(first)).resolves.toEqual(first);
+    await expect(store.claim(retry)).resolves.toEqual(first);
+    await expect(store.loadClaim('approval-1')).resolves.toEqual(first);
+    await expect(
+      store.claim(
+        createPlanApprovalClaim({
+          approval: record,
+          runId: 'run-2',
+          claimedAt: '2026-08-13T03:00:00.000Z'
+        })
+      )
+    ).rejects.toThrow('already claimed by another run');
+  });
+
+  it('atomically grants only one of two simultaneous cross-run claims', async () => {
+    const store = new JsonFilePlanApprovalStore(await createDirectory());
+    const record = approval();
+    await store.save(record);
+    const claims = ['run-1', 'run-2'].map((runId) =>
+      createPlanApprovalClaim({
+        approval: record,
+        runId,
+        claimedAt: '2026-08-13T02:00:00.000Z'
+      })
+    );
+
+    const results = await Promise.allSettled(claims.map((claim) => store.claim(claim)));
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const persisted = await store.loadClaim('approval-1');
+    expect(persisted).toBeDefined();
+    expect(['run-1', 'run-2']).toContain(persisted?.runId);
+  });
+
+  it('fails closed for corrupted records, mismatched keys, and traversal IDs', async () => {
+    const directory = await createDirectory();
+    const store = new JsonFilePlanApprovalStore(directory);
+    await writeFile(store.pathFor('approval-1'), '{', 'utf8');
+    await expect(store.load('approval-1')).rejects.toBeInstanceOf(SyntaxError);
+
+    await writeFile(store.pathFor('approval-2'), JSON.stringify(approval()), 'utf8');
+    await expect(store.load('approval-2')).rejects.toThrow('does not match its file name');
+    expect(() => store.pathFor('../escape')).toThrow(PlanApprovalStoreError);
+    expect(() => store.claimPathFor('../escape')).toThrow(PlanApprovalStoreError);
+  });
+
+  it('uses approval-specific errors when storage resolves inside the repository', async () => {
+    const repositoryRoot = await createDirectory();
+    const store = new JsonFilePlanApprovalStore(join(repositoryRoot, 'approvals'), repositoryRoot);
+
+    await expect(store.save(approval())).rejects.toBeInstanceOf(PlanApprovalStoreError);
+  });
+
+  it.each(['approval', 'claim'] as const)(
+    'rechecks confinement when an %s store ancestor becomes a repository symlink',
+    async (operation) => {
+      const repositoryRoot = await createDirectory();
+      const externalRoot = await createDirectory();
+      const missingAncestor = join(externalRoot, 'future');
+      const directory = join(missingAncestor, 'plans');
+      const store = new JsonFilePlanApprovalStore(directory, repositoryRoot);
+      const record = approval();
+      if (operation === 'claim') {
+        await store.save(record);
+      }
+      fileSystemHooks.afterMkdir = async () => {
+        fileSystemHooks.afterMkdir = undefined;
+        await rm(missingAncestor, { recursive: true });
+        await symlink(repositoryRoot, missingAncestor);
+      };
+
+      const action =
+        operation === 'approval'
+          ? store.save(record)
+          : store.claim(
+              createPlanApprovalClaim({
+                approval: record,
+                runId: 'run-1',
+                claimedAt: '2026-08-13T02:00:00.000Z'
+              })
+            );
+
+      await expect(action).rejects.toBeInstanceOf(PlanApprovalStoreError);
+      const escapedPath =
+        operation === 'approval'
+          ? join(repositoryRoot, 'plans', 'approval.approval-1.json')
+          : join(repositoryRoot, 'plans', 'approval.approval-1.claim.json');
+      await expect(readFile(escapedPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+  );
 });

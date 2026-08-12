@@ -186,7 +186,8 @@ snapshot 仍匹配，才能绑定成 canonical runtime request。
 - Artifact file 由应用行为保证不可变，但无法阻止 OS administrator 删除。
 - Pathname recheck 能降低普通 symlink race，但不能提供抵御 hostile local process 的 atomic
   directory-descriptor confinement；这超出当前 single-user threat model。
-- Fingerprint 是 content identity，不是 signature。
+- Fingerprint 是 content identity，不是 signature；有 JSON storage 直接写权限的人可以在修改后重新计算它。
 - `repositoryBindingMismatches` 已实现并测试，但 Stage 18 没有 production caller。Stage 19 的
-  `PlanExecutionBinder` 必须在创建 runtime request 前拒绝任何 `repositoryId`、`baseCommit`、
-  `workingTreeFingerprint` 或 `factsFingerprint` mismatch；human approval 与这个强制调用点属于 Stage 19。
+  Stage 19 的 `PlanExecutionBinder` 会拒绝任何 `repositoryId`、物理 `repositoryRoot`、`baseCommit`、
+  `workingTreeFingerprint`、dirty-state 或 `factsFingerprint` mismatch；human approval 与该强制调用点已经在
+  Stage 19 实现。

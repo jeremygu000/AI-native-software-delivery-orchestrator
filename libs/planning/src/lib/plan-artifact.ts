@@ -303,8 +303,10 @@ export interface PlanArtifactStore {
 
 export type RepositoryBindingMismatch =
   | 'repository-id'
+  | 'repository-root'
   | 'base-commit'
   | 'working-tree'
+  | 'repository-dirty-state'
   | 'repository-facts';
 
 export class PlanArtifactIntegrityError extends Error {
@@ -489,11 +491,17 @@ export const repositoryBindingMismatches = (
   if (artifact.repository.repositoryId !== snapshot.repositoryId) {
     mismatches.push('repository-id');
   }
+  if (artifact.repository.repositoryRoot !== snapshot.repositoryRoot) {
+    mismatches.push('repository-root');
+  }
   if (artifact.repository.baseCommit !== snapshot.baseCommit) {
     mismatches.push('base-commit');
   }
   if (artifact.repository.workingTreeFingerprint !== snapshot.workingTreeFingerprint) {
     mismatches.push('working-tree');
+  }
+  if (artifact.repository.dirty !== snapshot.dirty) {
+    mismatches.push('repository-dirty-state');
   }
   if (artifact.repository.factsFingerprint !== repositoryFactsFingerprint(graph)) {
     mismatches.push('repository-facts');
