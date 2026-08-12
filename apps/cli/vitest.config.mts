@@ -7,6 +7,18 @@ export default defineConfig(() => ({
   cacheDir: '../../node_modules/.vite/apps/cli',
   resolve: {
     alias: {
+      '@ai-native-software-delivery-orchestrator/agent-runtime': resolve(
+        import.meta.dirname,
+        '../../libs/agent-runtime/src/index.ts'
+      ),
+      '@ai-native-software-delivery-orchestrator/conflict-engine': resolve(
+        import.meta.dirname,
+        '../../libs/conflict-engine/src/index.ts'
+      ),
+      '@ai-native-software-delivery-orchestrator/dag': resolve(
+        import.meta.dirname,
+        '../../libs/dag/src/index.ts'
+      ),
       '@ai-native-software-delivery-orchestrator/domain': resolve(
         import.meta.dirname,
         '../../libs/domain/src/index.ts'
@@ -14,6 +26,18 @@ export default defineConfig(() => ({
       '@ai-native-software-delivery-orchestrator/repository-analysis': resolve(
         import.meta.dirname,
         '../../libs/repository-analysis/src/index.ts'
+      ),
+      '@ai-native-software-delivery-orchestrator/planning': resolve(
+        import.meta.dirname,
+        '../../libs/planning/src/index.ts'
+      ),
+      '@ai-native-software-delivery-orchestrator/scheduler': resolve(
+        import.meta.dirname,
+        '../../libs/scheduler/src/index.ts'
+      ),
+      '@ai-native-software-delivery-orchestrator/task-impact': resolve(
+        import.meta.dirname,
+        '../../libs/task-impact/src/index.ts'
       )
     }
   },

@@ -43,7 +43,9 @@ implementation 乱序修改 workspace。
 
 ## Tool policy
 
-Pi 使用 `noTools: "all"` 启动。唯一 custom tool 是：
+Pi 使用 `noTools: "builtin"` 启动。这个配置会禁用 Pi built-in tool，同时保留显式注册的 custom
+tool。同一组受控名称也会作为 Pi 的显式 `tools` allowlist 传入，因此无关的 extension/custom definition
+不能进入 session registry。受控 tool 是：
 
 ```text
 forge_read
@@ -81,10 +83,12 @@ Pi adapter test 使用 deterministic Pi session gateway，不调用 authenticate
 Vertical runtime test 组合 mock Pi gateway、real SQLite persistence、InMemoryWriteGuard、real Git worktree、
 verifier 和 fast-forward integration。冲突 Pi write 保持文件不变，并产生 persisted runtime blocker。
 
-Production Pi SDK gateway 通过 injected session factory 测试，断言 `noTools: "all"` 和 custom-tool allowlist。
+Production Pi SDK gateway 通过 injected session factory 测试，断言 `noTools: "builtin"` 和 custom-tool allowlist。
 Deterministic unit test 会执行每个已注册 custom-tool definition，并验证 provider-neutral call 和 error-result
 mapping。乱序 gateway test 还证明 durable session establishment 前的 tool call 会返回 error，不会修改文件或
-acquire lease。测试不启动 real authenticated model。
+acquire lease。另一个 integration test 会调用真实 Pi SDK session constructor，并使用内存 settings/session
+storage，验证所有受控 coding tool 与 planning fact tool 都真实存在，同时 built-in `bash` 不存在。测试不启动
+real authenticated model。
 
 完整 solution-style repository-analysis regression test 使用 scoped 30-second timeout。它会打开本仓库完整的
 TypeScript workspace，在 load 下可能合理地超过 Vitest 默认的 five-second timeout；更大的 timeout 不影响普通

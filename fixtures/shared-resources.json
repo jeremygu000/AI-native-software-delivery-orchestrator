@@ -1,0 +1,10 @@
+{
+  "resources": [
+    {
+      "id": "lockfile",
+      "files": ["pnpm-lock.yaml"],
+      "paths": ["packages/*/package.json"],
+      "concurrency": "exclusive"
+    }
+  ]
+}

@@ -45,7 +45,10 @@ agent failure because Pi may still mutate the workspace.
 
 ## Tool policy
 
-Pi starts with `noTools: "all"`. The only custom tools are:
+Pi starts with `noTools: "builtin"`. This disables Pi's built-in tools while preserving explicitly
+registered custom tools. The same controlled names are supplied as Pi's explicit `tools` allowlist,
+which filters unrelated extension/custom definitions from the session registry. The controlled tools
+are:
 
 ```text
 forge_read
@@ -88,11 +91,13 @@ neutral session/observed-impact evidence. A vertical runtime test combines the m
 SQLite persistence, InMemoryWriteGuard, real Git worktrees, verifier, and fast-forward integration.
 A conflicting Pi write leaves the file unchanged and produces a persisted runtime blocker.
 
-The production Pi SDK gateway is tested through an injected session factory that asserts `noTools: "all"`
+The production Pi SDK gateway is tested through an injected session factory that asserts `noTools: "builtin"`
 and the custom-tool allowlist. Deterministic unit tests execute every registered custom-tool definition
 and verify its provider-neutral call and error-result mapping. An out-of-order gateway test also proves
 that a pre-establishment tool call returns an error without changing a file or acquiring a lease. No
-test starts a real authenticated model.
+test starts a real authenticated model. A separate integration test does invoke the real Pi SDK session
+constructor with in-memory settings/session storage and verifies that every controlled coding tool and
+planning fact tool is present while built-in `bash` is absent.
 
 The complete solution-style repository-analysis regression test has a scoped 30-second timeout. It
 opens this repository's full TypeScript workspace and can legitimately exceed Vitest's default

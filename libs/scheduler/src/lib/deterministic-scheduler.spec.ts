@@ -6,9 +6,10 @@ import type {
   TaskContract,
   TaskState
 } from '@ai-native-software-delivery-orchestrator/domain';
+import { SchedulerInputError } from '@ai-native-software-delivery-orchestrator/domain';
 import { describe, expect, it } from 'vitest';
 
-import { DeterministicScheduler, SchedulerInputError } from './deterministic-scheduler.js';
+import { DeterministicScheduler } from './deterministic-scheduler.js';
 
 const scheduler = new DeterministicScheduler();
 

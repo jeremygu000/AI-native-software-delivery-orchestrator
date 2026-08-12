@@ -7,8 +7,8 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–14 establish the deterministic analysis, dispatch, write-safety, recovery, local
-Git workspace core:
+Milestones 1–16 establish the deterministic analysis, planning, dispatch, write-safety, recovery,
+and local Git workspace core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
 - pnpm workspaces for dependency management;
@@ -36,20 +36,24 @@ Git workspace core:
   conflicts, and leases, including verified Scheduler decision replay;
 - isolated Git worktrees with phase-aware integration blocking, rebase, fast-forward-only integration,
   explicit resume/abort, and dirty-workspace disposal protection;
-- a serial application orchestration runtime that coordinates Scheduler, workspaces, leases,
+- an application orchestration runtime that coordinates Scheduler, workspaces, leases,
   persistence, verification, and provider-neutral fake agents, with durable agent attempts and
-  deterministic multi-resource lease plans;
+  deterministic multi-resource lease plans; independent agent calls may overlap while lifecycle and
+  Git integration operations remain serialized;
 - a Pi-backed `AgentRunner` with controlled filesystem tools, policy-controlled fixed commands, and
   optional hardened validation sandbox profiles; Pi built-in mutation and shell tools are disabled;
+- an autonomous Plan phase that turns a user request or Markdown specification into validated Task
+  Contracts, resolves them against Repository Facts, analyzes impact and conflicts, and produces a
+  Scheduler preview through a bounded deterministic revision loop;
+- a working `forge plan <specification.md>` command whose Pi planner can inspect only paginated,
+  read-only Repository Facts tools and cannot mutate the repository or execute commands;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestones 12–14 add a Pi adapter, policy-controlled `forge_command`, trusted-local developer execution,
-and optional hardened validation sandbox profiles behind the runtime's provider-neutral `AgentRunner` port.
-They do not execute an authenticated
-production model by default, provide unrestricted shell access, offer portable process isolation,
-coordinate processes, provision integration checkouts, or automate conflict repair.
-The CLI still exposes `plan` as a discoverable placeholder until there is a tested task-spec input
-path and end-to-end runtime command.
+Milestones 12–16 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
+concurrent local agent execution, and an autonomous Pi-backed planning path. Planning and execution
+remain separate: `forge plan` does not create worktrees, acquire leases, dispatch coding agents, run
+verification, or integrate Git work. Cross-process coordination, explicit model routing/failover,
+runtime CLI commands, integration checkout provisioning, and automatic conflict repair remain deferred.
 
 Pi remains a coding-agent engine behind the runtime: it cannot own scheduling, leases, workspaces,
 persistence, Git integration, final verification, or recovery. `forge_command` selects only a policy
@@ -71,6 +75,7 @@ pnpm build
 node apps/cli/dist/main.js --help
 pnpm exec forge analyze .
 pnpm exec forge analyze . --full
+pnpm exec forge plan request.md --repository . --max-concurrency 2
 ```
 
 ## Workspace
@@ -86,8 +91,9 @@ libs/scheduler  Event-driven deterministic dispatch decisions
 libs/runtime-guard  In-process exclusive lease acquisition and lifecycle
 libs/persistence  SQLite/Drizzle run evidence, recovery, and replay verification
 libs/workspace-git  Local isolated Git worktree and integration lifecycle
-libs/orchestration-runtime  Serial application layer for deterministic runtime choreography
+libs/orchestration-runtime  Concurrent-agent application layer with serialized lifecycle choreography
 libs/agent-runtime  Pi adapter, controlled tools, and execution profile adapters
+libs/planning  Autonomous proposal validation, revision, analysis, and schedule preparation
 docs/adr     Architecture decisions
 ```
 
@@ -105,6 +111,7 @@ Standalone training guides:
 - [Orchestration Runtime](docs/orchestration-runtime.en.md) / [中文](docs/orchestration-runtime.zh.md)
 - [Controlled Agent Commands](docs/controlled-agent-commands.en.md) / [中文](docs/controlled-agent-commands.zh.md)
 - [Sandboxed Agent Commands](docs/sandboxed-agent-commands.en.md) / [中文](docs/sandboxed-agent-commands.zh.md)
+- [Autonomous Planning](docs/autonomous-planning.en.md)
 
 Continuation agents must read the [OpenCode engineering handover](docs/opencode-handover.md) before
 changing the current uncommitted milestone state.

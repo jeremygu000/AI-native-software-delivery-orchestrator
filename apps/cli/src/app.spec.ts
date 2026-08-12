@@ -1,15 +1,22 @@
-import { resolve } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { AutonomousPlanningError } from '@ai-native-software-delivery-orchestrator/planning';
 import {
   analyzeRepository,
   ProjectGraphError
 } from '@ai-native-software-delivery-orchestrator/repository-analysis';
 
-import { createForgeProgram } from './app.js';
+import { createForgeProgram, loadSharedResourceRegistry } from './app.js';
 
 const fixturePath = resolve(import.meta.dirname, '../../../fixtures/pnpm-workspace');
+const sharedResourceFixturePath = resolve(
+  import.meta.dirname,
+  '../../../fixtures/shared-resources.json'
+);
 
 describe('forge analyze', () => {
   it('analyzes a real pnpm workspace and prints a stable project graph', async () => {
@@ -201,15 +208,176 @@ describe('forge analyze', () => {
     }
   });
 
-  it('keeps planning explicitly unavailable', async () => {
-    const program = createForgeProgram();
-    program.exitOverride();
-    program.configureOutput({ writeErr: () => undefined });
+  it('plans a Markdown specification against an explicit repository and prints JSON-safe impact', async () => {
+    let output = '';
+    const planRepository = vi.fn(async () => ({
+      attempts: 2,
+      specification: { tasks: [] },
+      impacts: [
+        {
+          taskId: 'task-a',
+          projectsRead: new Set(['project-a']),
+          projectsWritten: new Set<string>(),
+          explicitProjectsWritten: new Set<string>(),
+          filesRead: new Set(['file-a']),
+          filesWritten: new Set<string>(),
+          explicitFilesWritten: new Set<string>(),
+          globFilesWritten: new Set<string>(),
+          symbolDerivedFilesWritten: new Set<string>(),
+          symbolsRead: new Set<string>(),
+          symbolsWritten: new Set<string>(),
+          sharedResources: new Set<string>(),
+          sharedResourceAccesses: [],
+          downstreamProjects: new Set<string>(),
+          riskSignals: []
+        }
+      ],
+      hardConflicts: [],
+      riskConflicts: [],
+      executionPlan: { waves: [{ index: 0, taskIds: ['task-a'] }] },
+      schedule: { maxConcurrency: 4 }
+    }));
+    const program = createForgeProgram({
+      cwd: '/workspace',
+      planRepository,
+      writeOutput: (value) => {
+        output += value;
+      }
+    });
 
-    await expect(program.parseAsync(['node', 'forge', 'plan', 'tasks.yaml'])).rejects.toMatchObject(
+    await program.parseAsync([
+      'node',
+      'forge',
+      'plan',
+      'request.md',
+      '--repository',
+      'repo',
+      '--shared-resources',
+      'shared-resources.json',
+      '--max-attempts',
+      '5',
+      '--max-concurrency',
+      '4'
+    ]);
+
+    expect(planRepository).toHaveBeenCalledWith({
+      specificationPath: '/workspace/request.md',
+      repositoryPath: '/workspace/repo',
+      sharedResourcesPath: '/workspace/shared-resources.json',
+      maxAttempts: 5,
+      maxConcurrency: 4
+    });
+    expect(JSON.parse(output)).toMatchObject({
+      attempts: 2,
+      impacts: [{ projectsRead: ['project-a'], filesRead: ['file-a'] }],
+      schedule: { maxConcurrency: 4 }
+    });
+  });
+
+  it('prints deterministic planning rejection diagnostics', async () => {
+    let errorOutput = '';
+    const program = createForgeProgram({
+      planRepository: async () => {
+        throw new AutonomousPlanningError(2, [
+          { code: 'INVALID_PLANNER_OUTPUT', detail: 'Expected JSON.' }
+        ]);
+      }
+    });
+    program.exitOverride();
+    program.configureOutput({
+      writeErr: (value) => {
+        errorOutput += value;
+      }
+    });
+
+    await expect(program.parseAsync(['node', 'forge', 'plan', 'request.md'])).rejects.toMatchObject(
       {
         code: 'commander.error'
       }
     );
+    expect(errorOutput).toContain('PLANNING_REJECTED');
+    expect(errorOutput).toContain('INVALID_PLANNER_OUTPUT');
+  });
+
+  it('explains that unknown shared resources require a CLI policy file', async () => {
+    let errorOutput = '';
+    const program = createForgeProgram({
+      planRepository: async () => {
+        throw new AutonomousPlanningError(1, [
+          {
+            code: 'UNKNOWN_SHARED_RESOURCE',
+            detail: 'Unknown shared resource: lockfile',
+            taskId: 'task-a',
+            resourceIds: ['lockfile']
+          }
+        ]);
+      }
+    });
+    program.exitOverride();
+    program.configureOutput({
+      writeErr: (value) => {
+        errorOutput += value;
+      }
+    });
+
+    await expect(program.parseAsync(['node', 'forge', 'plan', 'request.md'])).rejects.toMatchObject(
+      { code: 'commander.error' }
+    );
+    expect(errorOutput).toContain('No shared-resource policy was configured');
+    expect(errorOutput).toContain('--shared-resources <path>');
+  });
+
+  it('loads shared-resource policy for the real CLI composition root', async () => {
+    const registry = await loadSharedResourceRegistry(sharedResourceFixturePath);
+
+    expect(registry.list()).toEqual([
+      {
+        id: 'lockfile',
+        files: ['pnpm-lock.yaml'],
+        paths: ['packages/*/package.json'],
+        concurrency: 'exclusive'
+      }
+    ]);
+    expect((await loadSharedResourceRegistry(undefined)).list()).toEqual([]);
+  });
+
+  it('propagates missing, malformed, and invalid shared-resource policy errors', async () => {
+    await expect(
+      loadSharedResourceRegistry(join(tmpdir(), 'forge-missing-shared-resources.json'))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const directory = await mkdtemp(join(tmpdir(), 'forge-shared-resources-'));
+    const malformedPath = join(directory, 'malformed.json');
+    const invalidPath = join(directory, 'invalid.json');
+    try {
+      await writeFile(malformedPath, '{', 'utf8');
+      await writeFile(invalidPath, JSON.stringify({ resources: [{ id: '' }] }), 'utf8');
+
+      await expect(loadSharedResourceRegistry(malformedPath)).rejects.toBeInstanceOf(SyntaxError);
+      await expect(loadSharedResourceRegistry(invalidPath)).rejects.toMatchObject({
+        name: 'ZodError'
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('does not mask planner infrastructure errors', async () => {
+    const failure = new Error('model unavailable');
+    const program = createForgeProgram({
+      planRepository: async () => Promise.reject(failure)
+    });
+
+    await expect(program.parseAsync(['node', 'forge', 'plan', 'request.md'])).rejects.toBe(failure);
+  });
+
+  it('rejects invalid positive-integer plan options before invoking planning', async () => {
+    const planRepository = vi.fn();
+    const program = createForgeProgram({ planRepository });
+
+    await expect(
+      program.parseAsync(['node', 'forge', 'plan', 'request.md', '--max-attempts', '0'])
+    ).rejects.toThrow('Expected a positive integer, received 0');
+    expect(planRepository).not.toHaveBeenCalled();
   });
 });

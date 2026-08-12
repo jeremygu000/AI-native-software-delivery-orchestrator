@@ -1209,7 +1209,7 @@ Only then does the durable attempt become `RUNNING`. The adapter passes the task
 but does not allow Pi to choose scheduling, leases, workspaces, persistence, verification, Git
 integration, or recovery policy.
 
-Pi starts with `noTools: "all"`. The only available tools are `forge_read`, `forge_list`,
+Pi starts with `noTools: "builtin"`. The only available tools are `forge_read`, `forge_list`,
 `forge_find`, `forge_edit`, and `forge_write`. The mutation tools go through `AgentToolRuntime`, which
 keeps paths inside the task workspace, resolves files to resources, acquires and persists write leases,
 and records observed file writes. A conflicting tool write leaves the file unchanged and returns a
@@ -1228,9 +1228,9 @@ This stage does not provide an authenticated production model setup, a command s
 cancellation policy, network/environment/secrets policy, automatic external-blocker retry, observed
 scope replanning, or concurrent execution. Those are later runtime hardening stages.
 
-The Pi SDK is configured with `noTools: "all"`; only the orchestrator's custom `forge_*` tools are
-registered. Production Pi sessions are not started in CI. An injected session factory verifies the SDK
-tool configuration, while deterministic tests execute each custom tool definition and cover its
+The Pi SDK is configured with `noTools: "builtin"`; this disables built-ins while retaining the
+orchestrator's custom `forge_*` tools. Production Pi model calls are not started in CI. An injected
+session factory verifies the SDK tool configuration, while deterministic tests execute each custom tool definition and cover its
 controlled call and error-result mapping. The runner rejects an out-of-order pre-establishment tool
 call before it can acquire a lease or modify a workspace. The real solution-style repository-analysis
 regression test now has a scoped 30-second timeout because full-workspace TypeScript analysis can
@@ -1509,3 +1509,126 @@ recover verified local orchestration evidence from SQLite, integrate one local t
 and route mock Pi tool intent through controlled leases and workspace writes. It still does not run an
 authenticated production coding agent, observe complete real-write scope, or coordinate multiple
 processes.**
+
+## Stage 16: Autonomous Plan Phase
+
+The project can now turn a user request or Markdown specification into a deterministically validated,
+repository-aware execution proposal. This closes the gap between “understand this repository” and
+“here are the tasks that may safely enter orchestration.”
+
+The new `libs/planning` package is an application layer, not a model or domain package. It defines a
+provider-neutral `PlannerAgent` port and treats every proposal as untrusted `unknown` input. A proposal
+must pass this complete pipeline:
+
+```text
+user request / Markdown specification
+                 |
+                 v
+        PlannerAgent proposal
+        (untrusted JSON value)
+                 |
+                 v
+        Task Contract validation
+                 |
+                 v
+          functional DAG check
+                 |
+                 v
+ repository-backed verification check
+                 |
+                 v
+ selector resolution + predicted impact
+                 |
+                 v
+       hard/risk conflict analysis
+                 |
+                 v
+       Scheduler plan validation
+                 |
+                 v
+      prepared orchestration plan
+```
+
+Malformed JSON, invalid Task Contracts, missing dependencies, dependency cycles, unresolved exact
+selectors, unknown shared resources, nonexistent package scripts, and unschedulable constraint
+combinations are rejected before dispatch. These failures become structured diagnostics. The planner
+may receive those diagnostics and revise its proposal, but the loop is bounded by a positive
+`maxAttempts`. Exhaustion fails closed with `AutonomousPlanningError`. Provider or authentication
+failure propagates immediately because it is not a task-plan mistake that a revision can repair.
+
+Pi is the first Planner adapter, but Pi concerns remain inside `libs/agent-runtime`. An isolated
+resource loader disables project context files, extensions, skills, prompt templates, and themes;
+the planning session also starts with every built-in tool disabled. It receives only three Repository
+Facts tools:
+
+- `forge_projects` lists exact project/package facts;
+- `forge_files` filters and pages file identities;
+- `forge_symbols` searches and pages symbol identities.
+
+These tools query the already-built in-memory `RepositoryGraph`. They do not read arbitrary live
+filesystem paths, execute commands, or mutate a workspace. Stable pagination prevents a large symbol
+graph from being copied into one prompt. Pi session/message/tool types never enter domain or planning
+contracts.
+
+`forge plan <specification.md>` is now a real command. It reads Markdown, analyzes the selected
+repository, uses the configured Pi model, runs the bounded validation/revision loop, and emits JSON-safe
+Task Contracts, predicted impacts, structurally separate hard and risk conflicts, schedule options,
+and an explanatory execution-wave preview. Both `--max-attempts` and `--max-concurrency` require
+positive integers.
+
+This stage deliberately stops before execution. The prepared plan still needs run identity, agent and
+worktree binding, canonical lease plans, command policy, persistence, and a user-visible approval/run
+workflow before it can be passed to `OrchestrationRuntime.startRun()`. `forge plan` therefore does not
+create worktrees, acquire leases, dispatch coding agents, run verification, commit code, or integrate
+Git. Planning waves remain explanations, not runtime barriers.
+
+The CLI accepts an optional JSON shared-resource policy through `--shared-resources`. If omitted, it
+deliberately uses an empty registry and explains the missing-policy cause when a plan names an unknown
+resource. Command verification rules
+remain structural contracts and are not yet mapped to fixed runtime command-policy IDs. Explicit model
+routing/failover, plan persistence, human approval, automated reviewer revision, and runtime
+`run/status/resume/cancel` commands are also deferred.
+
+The first independent Stage 16 review found three blocking integration defects. First, Pi SDK 0.73.1
+interprets `noTools: "all"` as an empty allowlist that also filters custom tools, so both the earlier
+coding adapter and the new planning adapter could expose no tools in a real session. Both now use
+`noTools: "builtin"`, and a non-mocked SDK integration test proves that all controlled coding and
+planning tools enter the session while built-in `bash` remains absent. Both adapters also pass their
+controlled names through Pi's explicit `tools` allowlist, excluding unrelated extension/custom tool
+definitions from the registry. Second, the CLI test resolver
+now includes the planning package's transitive DAG source dependency, restoring clean-checkout test
+behavior without prebuilt package output. Third, planning catches only `SchedulerInputError` as a
+correctable proposal rejection; unexpected scheduler defects propagate immediately.
+
+The same hardening added a static planning resource loader that never performs Pi's project/global
+resource discovery, server-side pagination caps for project/file/symbol tools, the shared-resource
+policy option above, and a type-level warning that `PreparedOrchestrationPlan` is still unbound and not
+runnable. A known selector limitation remains: globs only resolve existing facts, so a glob describing
+files that will be created later is rejected until an explicit planned-creation selector is designed.
+
+The independent repair review approved Stage 16 for closure. Its two non-blocking test suggestions
+were also added before handoff: CLI tests now lock in direct propagation of missing-file, malformed-JSON,
+and schema-validation policy errors, while fact-tool tests cover zero, negative, fractional, non-finite,
+non-numeric, and over-maximum pagination limits. These tests add regression protection without changing
+the reviewed production behavior.
+
+The detailed beginner-oriented explanation is in
+[Autonomous Planning](./autonomous-planning.en.md). ADR-020 records the trust boundary, revision rules,
+and the separation between a prepared plan and runtime authority.
+
+The final local quality gate has 377 passing tests. Coverage is 96.51% statements, 91.66% branches,
+97.35% functions, and 96.49% lines. The planning package's standalone gate reaches 100% in every
+category; agent-runtime's standalone branch coverage is 90.79%.
+`pnpm check`, `pnpm build`, and `git diff --check` pass.
+
+Repository Facts regression checks also pass. Self-analysis now reports 14 projects, 89 files, 1,251
+symbols, 46 project dependencies, 158 file dependencies, 2,265 symbol references, and two known root
+configuration diagnostics. The active ingestion-and-matching research repository reports three
+projects, 1,010 files, 7,617 symbols, three project dependencies, 3,592 file dependencies, 13,893
+symbol references, and the same known `UNCOVERED_TYPESCRIPT_FILES` warning for 25 API script files.
+
+A live Pi-backed `forge plan` smoke test against that research repository was not run. It would send
+repository-derived project/file/symbol facts to the currently configured external model destination,
+and this session did not have explicit authorization for that data egress. Deterministic fake-planner,
+Pi gateway/tool, isolated resource-loader, CLI composition, and rejection-path tests are complete; an
+authorized live-model smoke remains a review/deployment check rather than an unstated success claim.

@@ -192,6 +192,13 @@ export interface SchedulerDecision {
   readonly taskDecisions: readonly SchedulerTaskDecision[];
 }
 
+export class SchedulerInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SchedulerInputError';
+  }
+}
+
 export interface Scheduler {
   createInitialPlan(
     tasks: readonly TaskContract[],

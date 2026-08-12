@@ -38,6 +38,9 @@
     },
     {
       "path": "./libs/agent-runtime"
+    },
+    {
+      "path": "./libs/planning"
     }
   ]
 }

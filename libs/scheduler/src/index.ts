@@ -1,1 +1,1 @@
-export { DeterministicScheduler, SchedulerInputError } from './lib/deterministic-scheduler.js';
+export { DeterministicScheduler } from './lib/deterministic-scheduler.js';

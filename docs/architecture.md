@@ -25,14 +25,13 @@ libs/
   task-impact/          Contract selector resolution, impact expansion, resource registry
   conflict-engine/      Hard constraints and explainable deterministic scoring
 
-  # Added in later milestones when each boundary has real behaviour:
+  planning/             Autonomous proposal validation and deterministic plan preparation
   scheduler/            Event-driven dependency- and conflict-aware dispatch
   runtime-guard/        Hierarchical write leases
   persistence/          Drizzle repositories backed by SQLite
-   workspace-git/        Cohesive isolated-worktree and Git integration adapter
-  verification/         Structured command verification
-  agent-runtime/        Provider-neutral coding-agent execution
-  provider/             Model-provider ports and adapters
+  workspace-git/        Cohesive isolated-worktree and Git integration adapter
+  orchestration-runtime/ Application workflow and serialized lifecycle evidence
+  agent-runtime/        Pi and command-sandbox adapters behind provider-neutral ports
 ```
 
 Libraries are introduced when they own meaningful behaviour. Domain concepts are grouped rather
@@ -43,10 +42,13 @@ and `git` packages.
 ## Dependency direction
 
 ```text
-CLI / outer adapters
+CLI / Pi adapters
         |
         v
-analysis, impact, conflict, scheduler, guard, persistence
+planning / orchestration runtime
+        |
+        v
+analysis, impact, conflict, scheduler, guard, persistence, workspace-git
         |                  |
         v                  v
        DAG ------------> Domain
@@ -284,6 +286,51 @@ initial wave-shaped visualization, but runtime dispatch is event-driven. Task co
 lease release, conflict changes, verification results, and observed scope expansion trigger a new
 decision. A wave is never a barrier that forces unrelated ready work to wait.
 
+`libs/planning` now implements this boundary as an application phase. A provider-neutral
+`PlannerAgent` receives the original user request or Markdown specification, the current
+`RepositoryGraph`, the allowed shared-resource IDs, and diagnostics from the preceding attempt. Its
+proposal is untrusted `unknown` data. The phase accepts it only after this deterministic pipeline:
+
+```text
+request / Markdown
+        |
+        v
+PlannerAgent proposal (untrusted JSON)
+        |
+        v
+Task Contract schema -> functional DAG -> verification references
+        |
+        v
+Repository selector resolution -> predicted impact -> pairwise conflicts
+        |
+        v
+Scheduler createInitialPlan
+        |
+        +--> prepared orchestration plan
+        |
+        +--> structured diagnostics -> bounded planner revision
+```
+
+Malformed output, invalid contracts, missing dependencies, cycles, unresolved exact selectors,
+unknown shared resources, missing package scripts, and unschedulable combinations never cross the
+planning boundary. A bounded attempt count prevents an unproductive model loop. Planner transport
+failure remains an infrastructure error and is not disguised as a request for model revision.
+
+The first provider adapter is `PiPlanningAgent` inside `libs/agent-runtime`. It uses an isolated Pi
+static resource loader that performs no project/global resource discovery and supplies no context
+files, extensions, skills, prompt templates, themes, or appended prompts. It starts Pi with
+`noTools: "builtin"`, disabling built-ins while preserving explicitly supplied custom tools, and
+uses an explicit `tools` allowlist to enable only three paginated in-memory Repository Facts
+queries: list projects, page/filter files, and search/page symbols. These tools do not read the live
+filesystem, run commands, or mutate anything. Pi session and message types remain inside the adapter.
+The planner package and domain contracts contain no Pi or model-provider types.
+
+`forge plan <specification.md>` is now a real planning composition root. It analyzes the selected
+repository, runs the bounded planning phase, and prints JSON-safe contracts, predicted impacts,
+hard conflicts, risk conflicts, schedule options, and an explanatory execution-wave preview. The
+result is ready for runtime-specific identity and workspace binding; the command intentionally does
+not call `OrchestrationRuntime.startRun()` yet.
+
 Tasks move through `INTEGRATING` after verification and before completion. Each task executes in an
 isolated Git worktree. Workspace integration now uses a separate persisted phase lifecycle:
 `READY_TO_INTEGRATE`, `INTEGRATION_BLOCKED`, and `INTEGRATED`. An integration block retains structured
@@ -332,8 +379,9 @@ mutate persistence directly, decide scheduling, or claim final verification.
 
 `libs/agent-runtime` now provides the first backend implementation. `PiAgentRunner` uses a private Pi
 session gateway and exposes only `forge_read`, `forge_list`, `forge_find`, `forge_edit`, and
-`forge_write`. Pi sessions start with `noTools: "all"`: there is no built-in Pi `bash`, `edit`, or
-`write` capability. Mutation routes through `AgentToolRuntime`, which scopes paths to one workspace,
+`forge_write`. Pi sessions start with `noTools: "builtin"` plus an explicit `forge_*` allowlist: there
+is no built-in Pi `bash`, `edit`, or `write` capability. Mutation routes through `AgentToolRuntime`,
+which scopes paths to one workspace,
 acquires/persists write leases, and returns observed file evidence. The gateway maps Pi SDK types only
 inside `agent-runtime`; domain and orchestration runtime remain provider-neutral.
 
@@ -457,9 +505,20 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
    **Complete for the local SQLite scope.**
 10. **Workspace and Git:** isolated worktrees, rebase, integration, and disposal behind ports.
     **Complete for the local single-repository Git scope.**
-11. **Orchestration runtime:** a local application layer that composes Scheduler, WorkspaceManager,
-    WriteGuard, persistence, verification, and a provider-neutral fake agent. The first runtime is
-    serial and recovery-only for in-flight work; it does not run a real coding agent. **In progress.**
+11. **Orchestration runtime:** compose Scheduler, WorkspaceManager, WriteGuard, persistence,
+    verification, and provider-neutral agents with durable attempts. **Complete for the local
+    runtime scope.**
+12. **Pi coding adapter:** controlled read/write tools behind `AgentRunner`; built-in mutation and
+    shell access remain disabled. **Complete.**
+13. **Controlled commands:** fixed policy command IDs, trusted path, bounded output, and timeout
+    termination. **Complete.**
+14. **Execution profiles:** trusted-local development plus optional Docker/macOS read-only validation
+    adapters. **Complete.**
+15. **Parallel local agents:** overlap independent agent calls while serializing lifecycle evidence,
+    verification, commit, and Git integration. **Complete.**
+16. **Autonomous Plan phase:** bounded Planner revision, deterministic contract/DAG/resource/
+    verification validation, impact/conflict analysis, schedule preparation, and real `forge plan`.
+    **Complete pending independent review.**
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
 non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before

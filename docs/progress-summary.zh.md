@@ -1068,7 +1068,7 @@ Pi gateway 创建 session 后调用带 provider-neutral session ref 的 `onStart
 `RUNNING`。Adapter 把 task goal 作为 Pi prompt，但 Pi 不能选择 scheduling、lease、workspace、persistence、
 verification、Git integration 或 recovery policy。
 
-Pi 使用 `noTools: "all"` 启动。唯一可用 tool 是 `forge_read`、`forge_list`、`forge_find`、`forge_edit` 和
+Pi 使用 `noTools: "builtin"` 启动。唯一可用 tool 是 `forge_read`、`forge_list`、`forge_find`、`forge_edit` 和
 `forge_write`。Mutation tool 经过 `AgentToolRuntime`：它把 path 限制在 task workspace 内，把 file resolve 成
 resource，acquire/persist write lease，并记录 observed file write。冲突 tool write 不修改文件，返回 runtime
 blocker，不允许 unsafe retry。没有 unrestricted shell、Pi built-in edit/write 或 agent-controlled Git lifecycle。
@@ -1084,8 +1084,8 @@ Pi intent 到 integrated repository change 和 durable evidence 的完整 contro
 network/environment/secrets policy、automatic external-blocker retry、observed scope replanning 或 concurrent
 execution。这些是后续 runtime hardening stage。
 
-Pi SDK 使用 `noTools: "all"` 配置；只有 orchestrator 的 custom `forge_*` tool 会被注册。CI 不启动
-production Pi session。Injected session factory 验证 SDK tool configuration；deterministic test 会执行每个
+Pi SDK 使用 `noTools: "builtin"` 配置；这个配置禁用 built-in tool，同时保留 orchestrator 的 custom
+`forge_*` tool。CI 不启动 production Pi model call。Injected session factory 验证 SDK tool configuration；deterministic test 会执行每个
 custom tool definition，并覆盖 controlled call 和 error-result mapping。Runner 会拒绝乱序的 pre-establishment
 tool call，避免它 acquire lease 或修改 workspace。真实 solution-style repository-analysis regression test 现在使用
 scoped 30-second timeout，因为 full-workspace TypeScript analysis 在 load 下可能合理地超过 Vitest 默认 five-second limit。
@@ -1327,3 +1327,113 @@ invalid binding 和 real SQLite replay。
 经过验证的 local orchestration evidence，用 Git integrate 一个 local task worktree，并把 mock Pi tool intent
 经过 controlled lease 和 workspace write。它仍不会运行 authenticated production coding agent、观察完整 real-write
 scope 或协调多个 process。**
+
+## 阶段十六:自主 Plan 阶段
+
+项目现在可以把用户请求或 Markdown specification 转换成经过确定性验证、理解仓库结构的 execution
+proposal。这补上了“理解仓库”和“形成可以进入编排的安全任务”之间缺失的一层。
+
+新增的 `libs/planning` 是 application layer，不是 model package，也不是 domain package。它定义
+provider-neutral `PlannerAgent` port，并把每次 proposal 都当作不可信的 `unknown` 输入。Proposal 必须通过
+完整流水线：
+
+```text
+用户请求 / Markdown specification
+                 |
+                 v
+        PlannerAgent proposal
+          （不可信 JSON）
+                 |
+                 v
+        Task Contract 验证
+                 |
+                 v
+          functional DAG 检查
+                 |
+                 v
+    基于 Repository Facts 的 verification 检查
+                 |
+                 v
+       selector 解析 + predicted impact
+                 |
+                 v
+         hard/risk conflict 分析
+                 |
+                 v
+         Scheduler plan 验证
+                 |
+                 v
+        prepared orchestration plan
+```
+
+Malformed JSON、无效 Task Contract、缺失 dependency、dependency cycle、无法唯一解析的 exact
+selector、未知 shared resource、不存在的 package script，以及无法调度的 constraint 组合都会在 dispatch
+前被拒绝。这些错误会变成 structured diagnostic。Planner 可以收到 diagnostic 后重写 proposal，但循环受正数
+`maxAttempts` 限制。次数耗尽后会 fail closed，并抛出 `AutonomousPlanningError`。Provider 或 authentication
+失败会立即向外传播，因为这不是重写 task plan 能修复的问题。
+
+Pi 是第一个 Planner adapter，但所有 Pi concern 仍留在 `libs/agent-runtime`。Isolated resource loader 会禁用
+project context file、extension、skill、prompt template 和 theme；Planning session 启动时也会禁用全部 built-in
+tool，只提供三个 Repository Facts tool：
+
+- `forge_projects` 列出准确 project/package facts；
+- `forge_files` 按 project/path prefix 过滤并分页读取 file identity；
+- `forge_symbols` 搜索并分页读取 symbol identity。
+
+这些工具查询已经构建好的内存 `RepositoryGraph`。它们不能读取任意 live filesystem path、不能运行
+command，也不能修改 workspace。Stable pagination 避免把大型 symbol graph 一次性塞进 prompt。Pi 的
+session、message 和 tool type 不会进入 domain 或 planning contract。
+
+`forge plan <specification.md>` 现在是真实命令。它读取 Markdown，分析目标仓库，使用已配置的 Pi model，
+执行有限次验证/修订循环，最后输出可 JSON 序列化的 Task Contract、predicted impact、结构上分离的 hard/risk
+conflict、schedule option 和解释性 execution-wave preview。`--max-attempts` 与 `--max-concurrency` 都必须是
+正整数。
+
+本阶段有意停在 execution 前。Prepared plan 仍需绑定 run identity、agent、worktree、canonical lease plan、
+command policy 和 persistence，并需要用户可见的 approve/run workflow，之后才能交给
+`OrchestrationRuntime.startRun()`。因此 `forge plan` 不会创建 worktree、申请 lease、dispatch coding agent、
+运行 verification、commit 代码或执行 Git integration。Planning wave 仍然只是解释，不是 runtime barrier。
+
+CLI 现在可以通过 `--shared-resources` 读取可选的 JSON shared-resource policy。没有提供时会有意使用 empty
+registry；如果 plan 引用了未知 resource，CLI 会明确提示缺少 policy file，而不是只让用户误以为 planner
+输出错误。Command verification 仍只是结构化 contract，尚未映射到 fixed runtime
+command-policy ID。Explicit model routing/failover、plan persistence、human approval、自动 reviewer revision，以及
+runtime `run/status/resume/cancel` command 也仍未实现。
+
+第一次 Stage 16 独立 Review 发现了三个阻塞性 integration defect。第一，Pi SDK 0.73.1 会把
+`noTools: "all"` 解释为空 allowlist，连 custom tool 也一起过滤，因此之前的 coding adapter 和新的 planning
+adapter 在真实 session 中都可能没有任何 tool。两者现已改用 `noTools: "builtin"`；一条不 mock SDK 的
+integration test 会验证所有受控 coding/planning tool 都真实进入 session，同时 built-in `bash` 不存在。两个
+adapter 还会把受控名称作为 Pi 的显式 `tools` allowlist，排除无关 extension/custom tool definition。第二，
+CLI test resolver 已补上 planning 的传递 DAG source dependency，因此 clean checkout 不需要预先 build package
+output 也能测试。第三，planning 只会把 `SchedulerInputError` 当作可修订的 proposal rejection；unexpected
+scheduler defect 会立即向外传播。
+
+同一轮加固还引入了完全不执行 Pi project/global resource discovery 的 static planning resource loader、
+project/file/symbol tool 的服务端 pagination cap、上述 shared-resource policy 入口，以及
+`PreparedOrchestrationPlan` 尚未绑定 runtime、不能直接执行的类型注释。一个已知 selector 限制仍保留：glob
+目前只能解析已经存在的 repository fact；如果 glob 只描述未来将创建的文件，在设计 planned-creation
+selector 前仍会被拒绝。
+
+独立修复复审已经同意关闭 Stage 16。复审留下的两个非阻塞测试建议也在交接前补齐：CLI test 现在锁定
+missing file、malformed JSON 和 schema validation policy error 都会直接向外传播；fact-tool test 则覆盖
+zero、negative、fractional、non-finite、non-numeric 和超过上限的 pagination limit。这些 test 只增加回归
+保护，不改变已经通过复审的 production behavior。
+
+更详细的初学者说明见英文文档 [Autonomous Planning](./autonomous-planning.en.md)。ADR-020 记录 trust
+boundary、revision rule，以及 prepared plan 与 runtime authority 之间的边界。
+
+最终 local quality gate 有 377 个 test 全部通过。覆盖率为语句 96.51%、分支 91.66%、函数 97.35%、行
+96.49%。`planning` package 的 standalone gate 四项均达到 100%；`agent-runtime` standalone 分支覆盖率为
+90.79%。`pnpm check`、`pnpm build` 和 `git diff --check` 均通过。
+
+Repository Facts regression 也通过。Self-analysis 当前得到 14 个 project、89 个 file、1,251 个 symbol、
+46 条 project dependency、158 条 file dependency、2,265 条 symbol reference，以及两个已知 root
+configuration diagnostic。活跃的 ingestion-and-matching 研究仓库得到 3 个 project、1,010 个 file、7,617
+个 symbol、3 条 project dependency、3,592 条 file dependency、13,893 条 symbol reference，以及同一个已知
+`UNCOVERED_TYPESCRIPT_FILES` warning：API 的 25 个 script file 未被现有 tsconfig 覆盖。
+
+本次没有对该研究仓库执行 live Pi-backed `forge plan` smoke test。该操作会把 repository-derived
+project/file/symbol facts 发送给当前配置的 external model destination，而本 session 没有得到该数据外发的明确
+授权。Deterministic fake-planner、Pi gateway/tool、isolated resource-loader、CLI composition 和 rejection
+path test 已完成；经过授权的 live-model smoke 是后续 review/deployment check，不能在这里被暗示为已经成功。

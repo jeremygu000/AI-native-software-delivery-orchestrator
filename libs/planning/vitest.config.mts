@@ -2,11 +2,15 @@ import { resolve } from 'node:path';
 
 import { defineConfig } from 'vitest/config';
 
-export default defineConfig(() => ({
+export default defineConfig({
   root: import.meta.dirname,
-  cacheDir: '../../node_modules/.vite/libs/agent-runtime',
+  cacheDir: '../../node_modules/.vite/libs/planning',
   resolve: {
     alias: {
+      '@ai-native-software-delivery-orchestrator/conflict-engine': resolve(
+        import.meta.dirname,
+        '../conflict-engine/src/index.ts'
+      ),
       '@ai-native-software-delivery-orchestrator/dag': resolve(
         import.meta.dirname,
         '../dag/src/index.ts'
@@ -14,18 +18,6 @@ export default defineConfig(() => ({
       '@ai-native-software-delivery-orchestrator/domain': resolve(
         import.meta.dirname,
         '../domain/src/index.ts'
-      ),
-      '@ai-native-software-delivery-orchestrator/persistence': resolve(
-        import.meta.dirname,
-        '../persistence/src/index.ts'
-      ),
-      '@ai-native-software-delivery-orchestrator/planning': resolve(
-        import.meta.dirname,
-        '../planning/src/index.ts'
-      ),
-      '@ai-native-software-delivery-orchestrator/runtime-guard': resolve(
-        import.meta.dirname,
-        '../runtime-guard/src/index.ts'
       ),
       '@ai-native-software-delivery-orchestrator/scheduler': resolve(
         import.meta.dirname,
@@ -38,9 +30,8 @@ export default defineConfig(() => ({
     }
   },
   test: {
-    name: 'agent-runtime',
+    name: 'planning',
     watch: false,
-    globals: true,
     environment: 'node',
     include: ['src/**/*.spec.ts'],
     reporters: ['default'],
@@ -57,4 +48,4 @@ export default defineConfig(() => ({
       }
     }
   }
-}));
+});

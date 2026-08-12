@@ -11,6 +11,7 @@ import {
   type ScheduleOptions,
   type TaskContract,
   type TaskState,
+  SchedulerInputError,
   scheduleOptionsSchema,
   schedulerEventSchema,
   schedulerSnapshotSchema
@@ -57,13 +58,6 @@ interface SchedulingInputs {
   readonly hardConflicts: readonly HardTaskConflict[];
   readonly riskConflicts: readonly RiskTaskConflict[];
   readonly options: ScheduleOptions;
-}
-
-export class SchedulerInputError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'SchedulerInputError';
-  }
 }
 
 const toTaskStateMap = (snapshot: SchedulerSnapshot): Map<string, TaskState> => {

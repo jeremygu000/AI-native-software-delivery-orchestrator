@@ -131,7 +131,8 @@ export class PiCodingAgentGateway implements PiSessionGateway {
   }): Promise<{ readonly sessionId: string }> {
     const { session } = await this.#createSession({
       cwd: options.cwd,
-      noTools: 'all',
+      noTools: 'builtin',
+      tools: [...options.tools],
       customTools: createControlledPiTools(options.executeTool)
     });
     session.setActiveToolsByName([...options.tools]);

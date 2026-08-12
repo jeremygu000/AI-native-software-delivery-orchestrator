@@ -130,7 +130,8 @@ describe('PiCodingAgentGateway', () => {
 
     expect(options).toMatchObject({
       cwd: '/workspace',
-      noTools: 'all',
+      noTools: 'builtin',
+      tools: ['forge_read', 'forge_list', 'forge_find', 'forge_edit', 'forge_write'],
       customTools: expect.arrayContaining([
         expect.objectContaining({ name: 'forge_read' }),
         expect.objectContaining({ name: 'forge_edit' }),

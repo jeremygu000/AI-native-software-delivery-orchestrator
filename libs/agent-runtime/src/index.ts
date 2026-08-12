@@ -9,3 +9,14 @@ export type {
   PiToolCall,
   PiToolResult
 } from './lib/pi-gateway.js';
+export {
+  createPlanningFactTools,
+  PiPlanningAgent,
+  PiPlanningGatewayAdapter
+} from './lib/pi-planning-agent.js';
+export type {
+  PiPlanningGateway,
+  PiPlanningSessionFactory,
+  PiPlanningToolCall,
+  PiPlanningToolResult
+} from './lib/pi-planning-agent.js';

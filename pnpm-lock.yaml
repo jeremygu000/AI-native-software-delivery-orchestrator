@@ -54,12 +54,27 @@ importers:
 
   apps/cli:
     dependencies:
+      '@ai-native-software-delivery-orchestrator/agent-runtime':
+        specifier: workspace:*
+        version: link:../../libs/agent-runtime
+      '@ai-native-software-delivery-orchestrator/conflict-engine':
+        specifier: workspace:*
+        version: link:../../libs/conflict-engine
       '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../../libs/domain
+      '@ai-native-software-delivery-orchestrator/planning':
+        specifier: workspace:*
+        version: link:../../libs/planning
       '@ai-native-software-delivery-orchestrator/repository-analysis':
         specifier: workspace:*
         version: link:../../libs/repository-analysis
+      '@ai-native-software-delivery-orchestrator/scheduler':
+        specifier: workspace:*
+        version: link:../../libs/scheduler
+      '@ai-native-software-delivery-orchestrator/task-impact':
+        specifier: workspace:*
+        version: link:../../libs/task-impact
       commander:
         specifier: 15.0.0
         version: 15.0.0
@@ -69,6 +84,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../domain
+      '@ai-native-software-delivery-orchestrator/planning':
+        specifier: workspace:*
+        version: link:../planning
       '@mariozechner/pi-coding-agent':
         specifier: 0.73.1
         version: 0.73.1(ws@8.21.3)(zod@4.4.3)
@@ -153,6 +171,28 @@ importers:
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
+
+  libs/planning:
+    dependencies:
+      '@ai-native-software-delivery-orchestrator/dag':
+        specifier: workspace:*
+        version: link:../dag
+      '@ai-native-software-delivery-orchestrator/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@ai-native-software-delivery-orchestrator/task-impact':
+        specifier: workspace:*
+        version: link:../task-impact
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@ai-native-software-delivery-orchestrator/conflict-engine':
+        specifier: workspace:*
+        version: link:../conflict-engine
+      '@ai-native-software-delivery-orchestrator/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
 
   libs/repository-analysis:
     dependencies:

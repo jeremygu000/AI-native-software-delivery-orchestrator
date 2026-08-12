@@ -10,10 +10,25 @@
   "exclude": [],
   "references": [
     {
+      "path": "../../libs/agent-runtime/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/conflict-engine/tsconfig.lib.json"
+    },
+    {
       "path": "../../libs/domain/tsconfig.lib.json"
     },
     {
+      "path": "../../libs/planning/tsconfig.lib.json"
+    },
+    {
       "path": "../../libs/repository-analysis/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/scheduler/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/task-impact/tsconfig.lib.json"
     }
   ]
 }
