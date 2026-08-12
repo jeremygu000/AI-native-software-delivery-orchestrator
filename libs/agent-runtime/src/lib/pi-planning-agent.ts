@@ -27,6 +27,7 @@ interface PiPlanningSessionFacade {
   setActiveToolsByName(toolNames: string[]): void;
   prompt(prompt: string): Promise<void>;
   assistantMessages(): readonly PiPlanningAssistantMessage[];
+  dispose(): void;
 }
 
 export type PiPlanningSessionFactory = (
@@ -173,6 +174,7 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
           sessionId: session.sessionId,
           setActiveToolsByName: (toolNames) => session.setActiveToolsByName(toolNames),
           prompt: (prompt) => session.prompt(prompt),
+          dispose: () => session.dispose(),
           assistantMessages: () =>
             session.state.messages.flatMap((message) =>
               message.role === 'assistant'
@@ -207,23 +209,27 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
       tools: toolNames,
       customTools: createPlanningFactTools(options.executeTool)
     });
-    session.setActiveToolsByName(toolNames);
-    await session.prompt(options.prompt);
-    const message = session.assistantMessages().at(-1);
-    if (message === undefined) {
-      throw new Error('Pi planner returned no assistant response');
+    try {
+      session.setActiveToolsByName(toolNames);
+      await session.prompt(options.prompt);
+      const message = session.assistantMessages().at(-1);
+      if (message === undefined) {
+        throw new Error('Pi planner returned no assistant response');
+      }
+      if (message.stopReason === 'error' || message.stopReason === 'aborted') {
+        throw new Error(message.errorMessage ?? `Pi planner stopped with ${message.stopReason}`);
+      }
+      const output = message.content
+        .flatMap((content) => (content.type === 'text' && 'text' in content ? [content.text] : []))
+        .join('\n')
+        .trim();
+      if (output.length === 0) {
+        throw new Error('Pi planner returned no text response');
+      }
+      return { sessionId: session.sessionId, output };
+    } finally {
+      session.dispose();
     }
-    if (message.stopReason === 'error' || message.stopReason === 'aborted') {
-      throw new Error(message.errorMessage ?? `Pi planner stopped with ${message.stopReason}`);
-    }
-    const output = message.content
-      .flatMap((content) => (content.type === 'text' && 'text' in content ? [content.text] : []))
-      .join('\n')
-      .trim();
-    if (output.length === 0) {
-      throw new Error('Pi planner returned no text response');
-    }
-    return { sessionId: session.sessionId, output };
   }
 }
 
@@ -267,6 +273,8 @@ const buildPrompt = (request: PlannerProposalRequest): string => {
     '{"tasks":[{"id":"stable-id","title":"...","goal":"...","description":"optional","dependencies":[],"expectedReads":[{"type":"project|file|glob|symbol|shared-resource","value":"exact selector"}],"expectedWrites":[],"sharedResources":[],"verification":[{"type":"package-script","packageName":"...","script":"..."}],"priority":0}]}',
     'Use forge_projects, forge_files, and forge_symbols to inspect deterministic repository facts.',
     'Exact project, file, and symbol selectors must resolve to one fact. Glob selectors may match many files.',
+    'Every task must define at least one package-script verification backed by repository facts.',
+    'Never emit free-form command verification. Autonomous planning does not authorize command strings.',
     'Do not invent shared-resource IDs. Do not use tools other than the three repository-fact tools.',
     `Known shared-resource IDs: ${JSON.stringify(request.sharedResourceIds)}`,
     `Repository: ${request.repository.repositoryPath}`,

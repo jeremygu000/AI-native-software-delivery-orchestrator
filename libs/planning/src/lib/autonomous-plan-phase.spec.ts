@@ -260,9 +260,7 @@ describe('AutonomousPlanPhase', () => {
           })
         )
       )
-      .mockResolvedValueOnce(
-        specification(task({ verification: [{ type: 'command', command: 'pnpm check' }] }))
-      );
+      .mockResolvedValueOnce(specification(task()));
 
     await createPhase({ propose }).create(request);
 
@@ -270,6 +268,50 @@ describe('AutonomousPlanPhase', () => {
       {
         code: 'INVALID_VERIFICATION',
         detail: 'Package missing-package matched 0 repository projects.',
+        taskId: 'task-a'
+      }
+    ]);
+  });
+
+  it('requires autonomous tasks to define package-script verification', async () => {
+    const propose = vi
+      .fn()
+      .mockResolvedValueOnce(specification(task({ verification: [] })))
+      .mockResolvedValueOnce(specification(task()));
+
+    await createPhase({ propose }).create(request);
+
+    expect(propose.mock.calls[1][0].previousDiagnostics).toEqual([
+      {
+        code: 'INVALID_VERIFICATION',
+        detail: 'Autonomous tasks must define at least one package-script verification rule.',
+        taskId: 'task-a'
+      }
+    ]);
+  });
+
+  it('rejects free-form command verification even when a package script is also present', async () => {
+    const propose = vi
+      .fn()
+      .mockResolvedValueOnce(
+        specification(
+          task({
+            verification: [
+              { type: 'package-script', packageName: 'api', script: 'test' },
+              { type: 'command', command: 'pnpm check' }
+            ]
+          })
+        )
+      )
+      .mockResolvedValueOnce(specification(task()));
+
+    await createPhase({ propose }).create(request);
+
+    expect(propose.mock.calls[1][0].previousDiagnostics).toEqual([
+      {
+        code: 'INVALID_VERIFICATION',
+        detail:
+          'Autonomous planning cannot use free-form command verification; use a repository package script.',
         taskId: 'task-a'
       }
     ]);

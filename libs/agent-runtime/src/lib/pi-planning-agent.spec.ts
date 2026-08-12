@@ -110,6 +110,8 @@ describe('PiPlanningAgent', () => {
         expect(prompt).toContain('Markdown specification (request.md)');
         expect(prompt).toContain('Known shared-resource IDs: ["database-schema"]');
         expect(prompt).toContain('UNRESOLVED_SELECTOR');
+        expect(prompt).toContain('Every task must define at least one package-script verification');
+        expect(prompt).toContain('Never emit free-form command verification');
         calls.push({ name: 'forge_projects' });
         expect(JSON.parse((await executeTool(calls.at(-1)!)).content).items).toHaveLength(1);
         calls.push({ name: 'forge_files', projectId: 'project:api', limit: 2 });
@@ -382,11 +384,13 @@ describe('PiPlanningGatewayAdapter', () => {
   it('starts with no built-in tools and extracts the final assistant text', async () => {
     const setActiveToolsByName = vi.fn();
     const prompt = vi.fn(async () => undefined);
+    const dispose = vi.fn();
     const createSession = vi.fn(async () => ({
       session: {
         sessionId: 'session-1',
         setActiveToolsByName,
         prompt,
+        dispose,
         assistantMessages: () => [
           {
             role: 'assistant' as const,
@@ -417,15 +421,18 @@ describe('PiPlanningGatewayAdapter', () => {
       'forge_symbols'
     ]);
     expect(prompt).toHaveBeenCalledWith('plan this');
+    expect(dispose).toHaveBeenCalledOnce();
     expect(result).toEqual({ sessionId: 'session-1', output: '{"tasks":[]}' });
   });
 
   it('fails when Pi reports an aborted response', async () => {
+    const dispose = vi.fn();
     const gateway = new PiPlanningGatewayAdapter(async () => ({
       session: {
         sessionId: 'session-1',
         setActiveToolsByName: () => undefined,
         prompt: async () => undefined,
+        dispose,
         assistantMessages: () => [
           {
             role: 'assistant',
@@ -440,6 +447,26 @@ describe('PiPlanningGatewayAdapter', () => {
     await expect(
       gateway.generate({ cwd: '/repo', prompt: 'plan', executeTool: async () => ({ content: '' }) })
     ).rejects.toThrow('cancelled');
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('disposes the planning session when prompting fails', async () => {
+    const failure = new Error('provider unavailable');
+    const dispose = vi.fn();
+    const gateway = new PiPlanningGatewayAdapter(async () => ({
+      session: {
+        sessionId: 'session-1',
+        setActiveToolsByName: () => undefined,
+        prompt: async () => Promise.reject(failure),
+        dispose,
+        assistantMessages: () => []
+      }
+    }));
+
+    await expect(
+      gateway.generate({ cwd: '/repo', prompt: 'plan', executeTool: async () => ({ content: '' }) })
+    ).rejects.toBe(failure);
+    expect(dispose).toHaveBeenCalledOnce();
   });
 
   it('fails when Pi produces no assistant response', async () => {
@@ -448,6 +475,7 @@ describe('PiPlanningGatewayAdapter', () => {
         sessionId: 'session-1',
         setActiveToolsByName: () => undefined,
         prompt: async () => undefined,
+        dispose: () => undefined,
         assistantMessages: () => []
       }
     }));
@@ -458,6 +486,7 @@ describe('PiPlanningGatewayAdapter', () => {
   });
 
   it('fails when Pi produces no text and reports stop errors without provider detail', async () => {
+    const dispose = vi.fn();
     const messages = [
       {
         role: 'assistant' as const,
@@ -475,6 +504,7 @@ describe('PiPlanningGatewayAdapter', () => {
         sessionId: 'session-1',
         setActiveToolsByName: () => undefined,
         prompt: async () => undefined,
+        dispose,
         assistantMessages: () => [messages.shift()!]
       }
     }));
@@ -482,6 +512,7 @@ describe('PiPlanningGatewayAdapter', () => {
 
     await expect(gateway.generate(request)).rejects.toThrow('Pi planner returned no text response');
     await expect(gateway.generate(request)).rejects.toThrow('Pi planner stopped with error');
+    expect(dispose).toHaveBeenCalledTimes(2);
   });
 
   it('maps every registered repository-fact tool call without adding mutation tools', async () => {

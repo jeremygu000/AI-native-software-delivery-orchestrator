@@ -187,8 +187,21 @@ const verificationDiagnostics = (
 ): readonly PlanningDiagnostic[] => {
   const diagnostics: PlanningDiagnostic[] = [];
   for (const task of [...tasks].toSorted((left, right) => compareStrings(left.id, right.id))) {
+    if (!task.verification.some((verification) => verification.type === 'package-script')) {
+      diagnostics.push({
+        code: 'INVALID_VERIFICATION',
+        detail: 'Autonomous tasks must define at least one package-script verification rule.',
+        taskId: task.id
+      });
+    }
     for (const verification of task.verification) {
-      if (verification.type !== 'package-script') {
+      if (verification.type === 'command') {
+        diagnostics.push({
+          code: 'INVALID_VERIFICATION',
+          detail:
+            'Autonomous planning cannot use free-form command verification; use a repository package script.',
+          taskId: task.id
+        });
         continue;
       }
       const projects = [...repository.projects.values()].filter(

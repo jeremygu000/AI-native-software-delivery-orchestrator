@@ -312,7 +312,8 @@ Scheduler createInitialPlan
 ```
 
 Malformed output, invalid contracts, missing dependencies, cycles, unresolved exact selectors,
-unknown shared resources, missing package scripts, and unschedulable combinations never cross the
+unknown shared resources, autonomous tasks without package-script verification, free-form command
+verification, missing package scripts, and unschedulable combinations never cross the
 planning boundary. A bounded attempt count prevents an unproductive model loop. Planner transport
 failure remains an infrastructure error and is not disguised as a request for model revision.
 
@@ -323,7 +324,8 @@ files, extensions, skills, prompt templates, themes, or appended prompts. It sta
 uses an explicit `tools` allowlist to enable only three paginated in-memory Repository Facts
 queries: list projects, page/filter files, and search/page symbols. These tools do not read the live
 filesystem, run commands, or mutate anything. Pi session and message types remain inside the adapter.
-The planner package and domain contracts contain no Pi or model-provider types.
+Each one-response planning session is disposed after success or failure. The planner package and
+domain contracts contain no Pi or model-provider types.
 
 `forge plan <specification.md>` is now a real planning composition root. It analyzes the selected
 repository, runs the bounded planning phase, and prints JSON-safe contracts, predicted impacts,

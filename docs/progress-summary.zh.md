@@ -1396,8 +1396,9 @@ command policy 和 persistence，并需要用户可见的 approve/run workflow�
 
 CLI 现在可以通过 `--shared-resources` 读取可选的 JSON shared-resource policy。没有提供时会有意使用 empty
 registry；如果 plan 引用了未知 resource，CLI 会明确提示缺少 policy file，而不是只让用户误以为 planner
-输出错误。Command verification 仍只是结构化 contract，尚未映射到 fixed runtime
-command-policy ID。Explicit model routing/failover、plan persistence、human approval、自动 reviewer revision，以及
+输出错误。Command verification 仍可供非 autonomous 的 Task Contract caller 表达，但 autonomous planning 会
+拒绝它；未来只有选择 validated command-policy ID、而不是携带 executable text 的新规则才能重新开放。
+Explicit model routing/failover、plan persistence、human approval、自动 reviewer revision，以及
 runtime `run/status/resume/cancel` command 也仍未实现。
 
 第一次 Stage 16 独立 Review 发现了三个阻塞性 integration defect。第一，Pi SDK 0.73.1 会把
@@ -1420,15 +1421,22 @@ missing file、malformed JSON 和 schema validation policy error 都会直接向
 zero、negative、fractional、non-finite、non-numeric 和超过上限的 pagination limit。这些 test 只增加回归
 保护，不改变已经通过复审的 production behavior。
 
+最后一次 Plan-to-Run closure review 又发现两个 verification authority 缺口和一个 provider lifecycle 缺口。
+现在每个 autonomous task 都必须至少包含一条由 Repository Facts 验证的 package-script rule；任何 free-form
+command verification 都会被拒绝，即使同一个 task 还带有合法 package script。这个 policy 只放在
+`libs/planning`，没有修改通用 Task Contract，因此 manual 或未来 non-autonomous workflow 仍保留原有 domain
+表达能力。Pi planning adapter 也会通过 `finally` 在成功、provider failure 或 malformed response 后 dispose
+每一个 one-response session。Planner prompt 会说明同样限制，但真正的 authority 仍是 deterministic validation。
+
 更详细的初学者说明见英文文档 [Autonomous Planning](./autonomous-planning.en.md)。ADR-020 记录 trust
 boundary、revision rule，以及 prepared plan 与 runtime authority 之间的边界。
 
-最终 local quality gate 有 377 个 test 全部通过。覆盖率为语句 96.51%、分支 91.66%、函数 97.35%、行
-96.49%。`planning` package 的 standalone gate 四项均达到 100%；`agent-runtime` standalone 分支覆盖率为
+最终 local quality gate 有 380 个 test 全部通过。覆盖率为语句 96.48%、分支 91.67%、函数 97.20%、行
+96.46%。`planning` package 的 standalone gate 四项均达到 100%；`agent-runtime` standalone 分支覆盖率为
 90.79%。`pnpm check`、`pnpm build` 和 `git diff --check` 均通过。
 
-Repository Facts regression 也通过。Self-analysis 当前得到 14 个 project、89 个 file、1,251 个 symbol、
-46 条 project dependency、158 条 file dependency、2,265 条 symbol reference，以及两个已知 root
+Repository Facts regression 也通过。Self-analysis 当前得到 14 个 project、89 个 file、1,252 个 symbol、
+46 条 project dependency、158 条 file dependency、2,266 条 symbol reference，以及两个已知 root
 configuration diagnostic。活跃的 ingestion-and-matching 研究仓库得到 3 个 project、1,010 个 file、7,617
 个 symbol、3 条 project dependency、3,592 条 file dependency、13,893 条 symbol reference，以及同一个已知
 `UNCOVERED_TYPESCRIPT_FILES` warning：API 的 25 个 script file 未被现有 tsconfig 覆盖。

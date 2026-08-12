@@ -21,7 +21,8 @@ Each proposal must pass, in order:
 
 1. Task Contract schema validation.
 2. Functional DAG validation.
-3. Repository-backed package-script verification validation.
+3. Autonomous verification policy: every task must name at least one repository-backed package
+   script, and free-form command verification is rejected.
 4. Predicted-impact calculation and repository/shared-resource selector resolution in one
    `TaskImpactAnalyzer` pass.
 5. Pairwise conflict analysis with immediate hard/risk structural separation.
@@ -53,7 +54,10 @@ persistence, and Git integration remain runtime responsibilities.
   SDK.
 - The CLI accepts an optional JSON shared-resource registry through `--shared-resources`. Omitting it
   deliberately selects an empty registry; rejection output explains how to provide the policy.
-- Command verification entries are structurally valid but are not yet mapped to runtime command-policy
-  IDs or executed by `forge plan`.
+- The provider-neutral Task Contract retains command verification for non-autonomous callers, but the
+  autonomous boundary rejects it. A future autonomous command verifier must select a validated
+  command-policy ID rather than provide executable text.
+- Each one-response Pi planning session is disposed after output extraction or failure; revision
+  attempts do not retain completed provider sessions.
 - A prepared plan still needs run metadata and `RuntimeTaskBinding[]` before
   `OrchestrationRuntime.startRun()` can execute it.

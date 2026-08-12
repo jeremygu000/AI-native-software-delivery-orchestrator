@@ -1584,8 +1584,9 @@ Git. Planning waves remain explanations, not runtime barriers.
 
 The CLI accepts an optional JSON shared-resource policy through `--shared-resources`. If omitted, it
 deliberately uses an empty registry and explains the missing-policy cause when a plan names an unknown
-resource. Command verification rules
-remain structural contracts and are not yet mapped to fixed runtime command-policy IDs. Explicit model
+resource. Command verification remains available to non-autonomous Task Contract callers, but
+autonomous planning rejects it until a future rule can select a validated command-policy ID instead
+of executable text. Explicit model
 routing/failover, plan persistence, human approval, automated reviewer revision, and runtime
 `run/status/resume/cancel` commands are also deferred.
 
@@ -1612,17 +1613,26 @@ and schema-validation policy errors, while fact-tool tests cover zero, negative,
 non-numeric, and over-maximum pagination limits. These tests add regression protection without changing
 the reviewed production behavior.
 
+A final Plan-to-Run closure review identified two verification-authority gaps and one provider
+lifecycle gap. Autonomous planning now requires at least one repository-backed package-script rule on
+every task and rejects every free-form command verification, including tasks that also contain a valid
+package script. This policy lives in `libs/planning`, not the general Task Contract, so manual or future
+non-autonomous workflows retain their existing domain representation. The Pi planning adapter also
+disposes each one-response session in a `finally` block after success, provider failure, or malformed
+response handling. The Planner prompt states the same restrictions, but deterministic validation is
+the authority.
+
 The detailed beginner-oriented explanation is in
 [Autonomous Planning](./autonomous-planning.en.md). ADR-020 records the trust boundary, revision rules,
 and the separation between a prepared plan and runtime authority.
 
-The final local quality gate has 377 passing tests. Coverage is 96.51% statements, 91.66% branches,
-97.35% functions, and 96.49% lines. The planning package's standalone gate reaches 100% in every
+The final local quality gate has 380 passing tests. Coverage is 96.48% statements, 91.67% branches,
+97.20% functions, and 96.46% lines. The planning package's standalone gate reaches 100% in every
 category; agent-runtime's standalone branch coverage is 90.79%.
 `pnpm check`, `pnpm build`, and `git diff --check` pass.
 
-Repository Facts regression checks also pass. Self-analysis now reports 14 projects, 89 files, 1,251
-symbols, 46 project dependencies, 158 file dependencies, 2,265 symbol references, and two known root
+Repository Facts regression checks also pass. Self-analysis now reports 14 projects, 89 files, 1,252
+symbols, 46 project dependencies, 158 file dependencies, 2,266 symbol references, and two known root
 configuration diagnostics. The active ingestion-and-matching research repository reports three
 projects, 1,010 files, 7,617 symbols, three project dependencies, 3,592 file dependencies, 13,893
 symbol references, and the same known `UNCOVERED_TYPESCRIPT_FILES` warning for 25 API script files.

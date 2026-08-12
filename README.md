@@ -46,7 +46,9 @@ and local Git workspace core:
   Contracts, resolves them against Repository Facts, analyzes impact and conflicts, and produces a
   Scheduler preview through a bounded deterministic revision loop;
 - a working `forge plan <specification.md>` command whose Pi planner can inspect only paginated,
-  read-only Repository Facts tools and cannot mutate the repository or execute commands;
+  read-only Repository Facts tools and cannot mutate the repository or execute commands; every
+  autonomous task must reference a discovered package script for verification, while free-form
+  command verification fails closed;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
 Milestones 12–16 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,

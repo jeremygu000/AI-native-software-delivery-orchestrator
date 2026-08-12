@@ -37,8 +37,10 @@ like JSON.
 1. **JSON and Task Contract shape** — every required field, selector, dependency, and verification
    rule must satisfy the Zod schemas.
 2. **Functional dependency graph** — dependencies must exist and tasks must not form a cycle.
-3. **Verification references** — a package-script rule must name exactly one discovered project and
-   a script that exists in that project's `package.json` facts.
+3. **Verification authority** — every autonomous task must define at least one package-script rule.
+   Each rule must name exactly one discovered project and a script present in that project's
+   `package.json` facts. Free-form command verification is rejected even though the general Task
+   Contract retains that variant for non-autonomous callers.
 4. **Impact and selector resolution** — one impact-analysis pass resolves project, file, glob,
    symbol, and shared-resource selectors while calculating predicted read/write scope. Exact
    selectors must resolve without zero or multiple matches. Globs may match many existing files.
@@ -71,6 +73,10 @@ The planning session receives only:
 The tools query the immutable in-memory `RepositoryGraph`. They do not inspect an unanalysed live
 filesystem, execute a command, or write a file. Pagination keeps a large repository from being copied
 into one enormous prompt, while stable ID ordering makes repeated queries deterministic.
+
+Each proposal uses a one-response Pi session. The adapter disposes that session after successful
+output extraction and in every failure path, so bounded revisions do not accumulate completed
+provider sessions.
 
 Pi-specific sessions, messages, tool definitions, and response extraction remain inside
 `agent-runtime`. The `PlannerAgent` interface exposes none of them.
@@ -118,11 +124,12 @@ This preserves the boundary between “is this plan valid?” and “is this con
 ## Tested edge cases
 
 Tests cover valid plans, fenced JSON, malformed JSON, invalid contracts, missing dependencies, cycles,
-unresolved selectors, unknown shared resources, missing package scripts, hard/risk separation,
+unresolved selectors, unknown shared resources, missing and empty package-script verification,
+free-form command rejection, hard/risk separation,
 Scheduler rejection and revision, exhausted attempts, provider failure propagation, fact-tool
 pagination, server-side limit clamping and filtering, symbol lookup, disabled built-in Pi tools,
-missing/empty/error responses, policy-file loading, CLI serialization, CLI rejection diagnostics, and
-invalid numeric options. A non-mocked Pi SDK integration test proves that the Stage 12–15 coding tools
+missing/empty/error responses, session disposal on success/failure, policy-file loading, CLI
+serialization, CLI rejection diagnostics, and invalid numeric options. A non-mocked Pi SDK integration test proves that the Stage 12–15 coding tools
 and Stage 16 fact tools actually enter the live session registry while built-in `bash` remains absent.
 
 ## Known limitations
@@ -130,7 +137,8 @@ and Stage 16 fact tools actually enter the live session registry while built-in 
 - Globs currently describe existing repository facts. A glob intended only for files that will be
   created later resolves to zero facts and is rejected; a future selector needs explicit
   “planned creation” semantics.
-- Command verification is not executed and is not yet mapped to fixed runtime command-policy IDs.
+- Autonomous command verification remains unavailable until a future contract can select a fixed,
+  validated command-policy ID instead of carrying executable text.
 - The Planner cannot start, resume, cancel, or inspect a runtime run.
 - Planning output is not persisted.
 - There is no human approval checkpoint or automated review-agent loop.
