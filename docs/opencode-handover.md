@@ -13,10 +13,10 @@ updated: 2026-08-13
 
 ## Immediate state
 
-Work in `~/Desktop/apra_new/apra-amcos-admin-coding-orchestrator` on `main`. Stage 18 is committed at
-`65b8204e2eeb5134d311a49a57c4acc04ae9658a`. Stage 19 is complete and independently reviewed in the
-working tree. It remains intentionally uncommitted pending explicit user approval. Preserve all
-tracked and untracked changes.
+Work in `~/Desktop/apra_new/apra-amcos-admin-coding-orchestrator` on `main`. Stage 19 and its final
+architecture notes are committed through `290f44a5c66a53502ea7b049d7ad760b2c385813`. Stage 20 is complete
+and independently reviewed in the working tree. It remains intentionally uncommitted pending explicit
+user approval. Preserve all tracked and untracked changes.
 
 Do not commit unless the user explicitly approves it after review. Repository-local commit identity
 must remain `JeremyGu2021 <isdance2004.yg@gmail.com>`. The remote is
@@ -27,9 +27,11 @@ Before editing, read:
 - `docs/architecture.md`;
 - `docs/adr/022-durable-plan-artifact.md`;
 - `docs/adr/023-plan-approval-and-execution-binding.md`;
+- `docs/adr/024-controlled-runtime-binding-and-start.md`;
 - `docs/plan-artifact.en.md` or `.zh.md`;
 - `docs/plan-approval-and-binding.en.md` or `.zh.md`;
-- the Stage 18 and Stage 19 sections in both progress summaries.
+- `docs/controlled-runtime-start.en.md` or `.zh.md`;
+- the Stage 19 and Stage 20 sections in both progress summaries.
 
 ## Source-of-truth order
 
@@ -52,7 +54,7 @@ without a demonstrated requirement.
 
 ## Completed architecture
 
-Stages 1–18 are committed and reviewed:
+Stages 1–19 are committed and reviewed:
 
 ```text
 Repository Facts -> Task Impact -> Conflict Engine -> Scheduler
@@ -64,106 +66,93 @@ Write Guard -> Persistence/Replay -> Git Worktrees -> Runtime
 Pi Adapter -> Controlled Commands -> Execution Profiles -> Parallel Agents
                                                     |
                                                     v
-Autonomous Plan -> Semantic Review -> Durable PlanArtifact
+Autonomous Plan -> Semantic Review -> Durable PlanArtifact -> Approval/Binding
 ```
 
 Core deterministic packages must remain free of LLM, provider, Jira, pnpm, Git implementation,
 filesystem storage, and CLI concerns. Pi stays inside `libs/agent-runtime`. Repository-provider details
 stay inside `libs/repository-analysis`. Filesystem and SQLite mechanics stay inside persistence.
 
-## Stage 19 working tree
+## Stage 20 working tree
 
-Stage 19 adds:
+Stage 20 adds:
 
-- provider-neutral, fingerprinted `PlanApproval` and `PlanApprovalClaim` contracts;
-- atomic immutable JSON approval storage and single-run claiming;
-- `PlanExecutionBinder`, which reloads exact evidence, recaptures Git before and after RepositoryGraph
-  rebuilding, rejects repository/facts/policy mismatch, and claims only after validation;
-- fingerprinted `PlanExecutionIntent` with nested integrity and cross-record validation;
-- `forge approve` and `forge bind` composition commands;
-- ADR-023 and bilingual training/progress documentation.
+- `RunPreparation`, which revalidates execution authority immediately before side effects;
+- an orchestrator-owned integration checkout at the approved base commit and deterministic task
+  worktree bindings derived from it;
+- durable `RunAuthorityEvidence` in SQLite and identical-authority `startOrResumeRun()` semantics;
+- persisted lease hydration plus correct terminal run-state finalization;
+- `LocalRuntimeStarter`, which composes controlled Pi tools, Write Guard, Scheduler, SQLite, Git, and
+  post-agent pnpm verification outside the CLI;
+- a real `forge run` command for clean approved snapshots;
+- ADR-024 and bilingual training/progress documentation.
 
-The binding flow is:
+The run flow is:
 
 ```text
-PlanArtifact + PlanApproval
-          |
-          v
-snapshot A -> RepositoryGraph rebuild -> snapshot B
-          |
-          v
-repository/facts/policy comparison
-          |
-          v
-atomic approval claim for runId
-          |
-          v
-PlanExecutionIntent
+PlanExecutionIntent -> fresh binder revalidation
+          -> clean approved baseCommit checkout
+          -> deterministic task/impact/lease/workspace bindings
+          -> durable run authority
+          -> OrchestrationRuntime.startOrResumeRun()
 ```
 
-The claim is deliberately written last. Same-run retry is idempotent and returns the original claim;
-different-run replay is rejected. `PlanExecutionIntent` is not `StartRuntimeRunRequest` and does not
-start a process.
+Dirty artifacts are rejected until exact working-tree materialization exists. Successful changes stay
+on the run-specific integration branch; Stage 20 does not publish them to the user's branch or remote.
 
 ## Current verification baseline
 
-Stage 19 currently passes:
+Stage 20 currently passes:
 
 ```text
-pnpm check       34 files / 452 tests
-coverage         95.82% statements / 91.02% branches / 96.70% functions / 95.79% lines
-planning gate    54 tests / 98.38% / 95.07% / 97.84% / 98.54%
+pnpm check       38 files / 491 tests
+coverage         95.44% statements / 90.90% branches / 96.51% functions / 95.39% lines
+run-preparation  19 tests / 100% / 98.33% / 100% / 100%
 pnpm build       pass
 git diff --check pass
 ```
 
-Self-analysis: 14 projects, 104 files, 1,490 symbols, 49 project dependencies, 205 file dependencies,
-2,716 symbol references, two known root configuration diagnostics.
+Self-analysis: 15 projects, 114 files, 1,620 symbols, 59 project dependencies, 241 file dependencies,
+3,007 symbol references, two known root configuration diagnostics.
 
 Research analysis at `~/Desktop/apra_new/apra-amcos-admin-ingestion-and-matching`: 3 projects, 1,010
 files, 7,617 symbols, 3 project dependencies, 3,592 file dependencies, 13,893 symbol references, and
 the known 25-file API scripts coverage diagnostic.
 
-## Accepted review result
+## Review state
 
-Stage 19 passed independent review and follow-up verification. The review confirmed:
+Stage 19 passed independent review and follow-up verification. Stage 20 also passed follow-up review;
+its initial C1 and H1-H3 findings are closed. Its evidence confirms:
 
-- nested fingerprint and cross-record integrity;
-- approval-before-artifact and exact artifact binding;
-- claim atomicity under simultaneous different-run requests;
-- same-run idempotency and cross-run replay rejection;
-- claim ordering after all repository and policy checks;
-- moving-repository rejection around RepositoryGraph analysis;
-- repository ID/root, base commit, working tree, dirty state, Repository Facts, and both policy
-  mismatches;
-- filesystem confinement and error-class correctness;
-- CLI boundary discipline and absence of runtime binding assembly;
-- provider-neutral types and unnecessary re-exports;
-- tests that exercise failures rather than only happy paths.
+- stale-intent and dirty-snapshot rejection before checkout creation;
+- checkout base/ref/path confinement and exact retry;
+- exact runtime task/conflict/schedule/impact/lease/workspace comparison;
+- durable authority migration, corruption rejection, and changed-authority retry rejection;
+- real controlled Pi edit through worktree, lease, verification, commit, integration, and SQLite;
+- real same-origin/different-clone rejection and dirty-state-only binding coverage;
+- complete project gates and research-repository analysis.
+- process-wide serialization of concurrent local start/resume calls, with a two-runtime
+  `PREPARING` recovery test proving one dispatch;
+- run/task commit trailers and rejection of foreign or unrelated integration history;
+- minimal verification environment, strict package/script identifiers, ACTIVE-only lease hydration,
+  and explicit NULL/malformed authority recovery tests;
+- real clean-at-bind/dirty-before-start rejection before checkout provision.
 
-Stage 20 should add two non-blocking integration tests: two real clones sharing one origin must reach
-the binder and reject the different physical root, and dirty-state-only mismatch must be isolated.
+The reviewer should specifically challenge recovery semantics, clean-only scope, checkout
+confinement, runtime request equality, lease hydration, package verification, and whether CLI
+composition remains thin.
 
-## Next stage after explicit commit approval
+Non-blocking follow-ups retained for later work are strict Git trailer parsing, the deliberately strict
+all-commits-must-have-a-trailer recovery policy, Windows/configurable pnpm executable-path support, and
+possible minimal-environment hardening for trusted Git subprocesses. Do not reopen Stage 20 for these
+unless a concrete bypass is demonstrated.
 
-Stage 20 is **Controlled Runtime Binding and Start**. It should consume a verified
-`PlanExecutionIntent`, apply an explicit deployment policy for the existing runtime's agent,
-workspace, lease, command, sandbox, model, and verification collaborators, construct the existing
-runtime request, persist the start boundary, and expose a recoverable `forge run` path.
+## Next stage after review and explicit commit approval
 
-The Stage 20 P1 is execution-time freshness. An intent is evidence from bind time, not a permanent
-pass. Run preparation must revalidate the source immediately before side effects, provision an
-orchestrator-owned integration checkout at the approved base commit, derive every task worktree from
-that checkout, persist an atomic-ish run creation boundary, and only then call
-`OrchestrationRuntime.startRun()`. A direct `parsePlanExecutionIntent()` -> `startRun()` path is
-forbidden.
-
-Stage 20 integration tests must include two real clones sharing one origin with a different physical
-root, a dirty-state-only mismatch, mutation between bind and run preparation, wrong integration
-checkout base commit, and task workspace ancestry from the trusted checkout. The run record should
-retain execution/plan/approval/claim fingerprints. Current CLI shared-resource input is already
-canonicalized by `SharedResourceRegistry`; future adapters must not hash arbitrary reordered arrays
-without the same normalization.
+Stage 21 should add **Run Operations and Recovery Control**: `forge status`, explicit resume/cancel
+semantics, `UNKNOWN` attempt resolution, safe integration-block handling, and useful multi-failure
+diagnostics over the Stage 20 durable run. It must not publish branches or introduce GitHub/Jira
+triggers until local operator control is complete.
 
 Do not let the CLI manually assemble those collaborators. Do not add GitHub/webhook/PR/Jira product
 integration yet. Do not broaden sandbox permissions merely to make runtime binding convenient.

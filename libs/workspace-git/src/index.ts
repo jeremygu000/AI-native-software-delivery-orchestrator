@@ -8,3 +8,4 @@ export {
   GitRepositorySnapshotProvider,
   type GitSnapshotCommandRunner
 } from './lib/git-repository-snapshot-provider.js';
+export { GitIntegrationCheckoutProvisioner } from './lib/git-integration-checkout-provisioner.js';

@@ -35,7 +35,8 @@ import {
   taskStateSchema,
   writeLeaseSchema,
   taskWorkspaceSchema,
-  agentExecutionAttemptSchema
+  agentExecutionAttemptSchema,
+  runAuthorityEvidenceSchema
 } from '@ai-native-software-delivery-orchestrator/domain';
 
 const runs = sqliteTable('orchestration_runs', {
@@ -43,6 +44,7 @@ const runs = sqliteTable('orchestration_runs', {
   repositoryId: text('repository_id').notNull(),
   state: text('state').notNull(),
   createdAt: text('created_at').notNull(),
+  authorityJson: text('authority_json'),
   tasksJson: text('tasks_json').notNull(),
   hardConflictsJson: text('hard_conflicts_json').notNull(),
   riskConflictsJson: text('risk_conflicts_json').notNull(),
@@ -157,6 +159,9 @@ const isTaskConflicts = (value: unknown): value is readonly TaskConflict[] =>
 const isScheduleOptions = (value: unknown): value is RecoveredRun['scheduleOptions'] =>
   scheduleOptionsSchema.safeParse(value).success;
 
+const isRunAuthorityEvidence = (value: unknown): value is RecoveredRun['run']['authority'] =>
+  runAuthorityEvidenceSchema.safeParse(value).success;
+
 const isSchedulerSnapshot = (value: unknown): value is SchedulerSnapshot =>
   schedulerSnapshotSchema.safeParse(value).success;
 
@@ -265,6 +270,7 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
         repository_id TEXT NOT NULL,
         state TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        authority_json TEXT,
         tasks_json TEXT NOT NULL,
         hard_conflicts_json TEXT NOT NULL,
         risk_conflicts_json TEXT NOT NULL,
@@ -325,12 +331,25 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
         PRIMARY KEY (run_id, attempt_id)
       );
     `);
+    const runColumns = this.#sqlite.prepare('PRAGMA table_info(orchestration_runs)').all();
+    if (
+      !runColumns.some(
+        (column) =>
+          typeof column === 'object' &&
+          column !== null &&
+          'name' in column &&
+          column.name === 'authority_json'
+      )
+    ) {
+      this.#sqlite.exec('ALTER TABLE orchestration_runs ADD COLUMN authority_json TEXT');
+    }
   }
 
   async createRun(request: CreatePersistedRunRequest): Promise<void> {
     this.#assertRunId(request.run.id);
     taskSpecificationSchema.parse({ tasks: request.tasks });
     scheduleOptionsSchema.parse(request.scheduleOptions);
+    runAuthorityEvidenceSchema.parse(request.run.authority);
     await this.#exclusiveReevaluation(() =>
       this.#sqlite.transaction(() => {
         this.#db
@@ -340,6 +359,7 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
             repositoryId: request.run.repositoryId,
             state: request.run.state,
             createdAt: request.run.createdAt,
+            authorityJson: stringify(request.run.authority),
             tasksJson: stringify(request.tasks),
             hardConflictsJson: stringify(request.hardConflicts),
             riskConflictsJson: stringify(request.riskConflicts),
@@ -690,7 +710,8 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
         id: run.id,
         repositoryId: run.repositoryId,
         state: this.#decodeRunState(run.state),
-        createdAt: run.createdAt
+        createdAt: run.createdAt,
+        authority: decode(run.authorityJson ?? '', isRunAuthorityEvidence, 'run authority evidence')
       },
       tasks: decode(run.tasksJson, isTaskContracts, 'task contracts'),
       hardConflicts: decode(run.hardConflictsJson, isTaskConflicts, 'hard conflicts').filter(

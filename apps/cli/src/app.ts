@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import {
   PiPlanningAgent,
@@ -37,11 +38,19 @@ import {
 } from '@ai-native-software-delivery-orchestrator/repository-analysis';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
 import {
+  LocalRuntimeBindingPolicy,
+  LocalRuntimeStarter,
+  RunPreparation
+} from '@ai-native-software-delivery-orchestrator/run-preparation';
+import {
   RepositoryTaskImpactAnalyzer,
   SharedResourceRegistry,
   sharedResourceRegistryConfigSchema
 } from '@ai-native-software-delivery-orchestrator/task-impact';
-import { GitRepositorySnapshotProvider } from '@ai-native-software-delivery-orchestrator/workspace-git';
+import {
+  GitIntegrationCheckoutProvisioner,
+  GitRepositorySnapshotProvider
+} from '@ai-native-software-delivery-orchestrator/workspace-git';
 import { Command } from 'commander';
 
 export interface ForgeProgramDependencies {
@@ -73,6 +82,16 @@ export interface ForgeProgramDependencies {
     readonly sharedResourcesPath?: string;
     readonly planDirectory?: string;
   }) => Promise<PlanExecutionIntent>;
+  readonly runPlan?: (request: {
+    readonly artifactId: string;
+    readonly artifactRevision: number;
+    readonly approvalId: string;
+    readonly runId: string;
+    readonly repositoryPath: string;
+    readonly sharedResourcesPath?: string;
+    readonly planDirectory?: string;
+    readonly runDirectory?: string;
+  }) => Promise<unknown>;
   readonly writeOutput?: (output: string) => void;
 }
 
@@ -263,6 +282,70 @@ const bindRepositoryPlan = async (request: {
   });
 };
 
+const runRepositoryPlan = async (request: {
+  readonly artifactId: string;
+  readonly artifactRevision: number;
+  readonly approvalId: string;
+  readonly runId: string;
+  readonly repositoryPath: string;
+  readonly sharedResourcesPath?: string;
+  readonly planDirectory?: string;
+  readonly runDirectory?: string;
+}): Promise<unknown> => {
+  const [stores, registry] = await Promise.all([
+    planStores(request),
+    loadSharedResourceRegistry(request.sharedResourcesPath)
+  ]);
+  let currentGraph: RepositoryGraph | undefined;
+  const binder = new PlanExecutionBinder({
+    artifactStore: stores.artifactStore,
+    approvalStore: stores.approvalStore,
+    snapshotProvider: new GitRepositorySnapshotProvider(),
+    factsProvider: {
+      analyze: async (repository) => {
+        currentGraph = (await analyzeRepository(repository.repositoryPath)).graph;
+        return currentGraph;
+      }
+    }
+  });
+  const bind = () =>
+    binder.bind({
+      artifactId: request.artifactId,
+      artifactRevision: request.artifactRevision,
+      approvalId: request.approvalId,
+      runId: request.runId,
+      repository: { repositoryPath: request.repositoryPath },
+      sharedResourcePolicy: registry.list(),
+      verificationPolicy
+    });
+  const intent = await bind();
+  const runDirectory = resolve(
+    request.runDirectory ??
+      join(homedir(), '.forge', 'runs', intent.artifact.repository.repositoryId.replace(':', '-'))
+  );
+  return new RunPreparation({
+    authority: { revalidate: bind },
+    checkouts: new GitIntegrationCheckoutProvisioner(runDirectory),
+    bindings: new LocalRuntimeBindingPolicy({ workspaceRoot: runDirectory }),
+    runtime: {
+      startOrResumeRun: async (runtimeRequest) => {
+        if (currentGraph === undefined) {
+          throw new Error('Repository Facts were not available after execution revalidation');
+        }
+        const runtime = new LocalRuntimeStarter({
+          graph: currentGraph,
+          databasePath: join(runDirectory, request.runId, 'run.sqlite')
+        });
+        try {
+          return await runtime.startOrResumeRun(runtimeRequest);
+        } finally {
+          runtime.close();
+        }
+      }
+    }
+  }).start(intent);
+};
+
 const parsePositiveInteger = (value: string): number => {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -310,6 +393,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
   const planRepository = dependencies.planRepository ?? createRepositoryPlan;
   const approvePlan = dependencies.approvePlan ?? approveRepositoryPlan;
   const bindPlan = dependencies.bindPlan ?? bindRepositoryPlan;
+  const runPlan = dependencies.runPlan ?? runRepositoryPlan;
   const writeOutput =
     dependencies.writeOutput ?? ((output: string) => process.stdout.write(output));
 
@@ -478,6 +562,62 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           if (error instanceof PlanExecutionBindingError) {
             program.error(
               `BINDING_REJECTED: ${error.message}\n${JSON.stringify(error.mismatches, null, 2)}`
+            );
+          }
+          throw error;
+        }
+      }
+    );
+
+  program
+    .command('run')
+    .description('Revalidate and execute one exact approved plan in isolated Git worktrees')
+    .argument('<artifact-id>', 'plan artifact ID')
+    .requiredOption('--approval <id>', 'exact approval record ID')
+    .requiredOption('--run-id <id>', 'stable runtime run identity')
+    .option('--revision <number>', 'plan artifact revision', parsePositiveInteger, 1)
+    .option('-r, --repository <path>', 'repository to revalidate and execute', cwd)
+    .option('--shared-resources <path>', 'current JSON shared-resource policy')
+    .option('--plan-directory <path>', 'directory containing plan and approval records')
+    .option(
+      '--run-directory <path>',
+      'directory for integration checkout, task worktrees, and run DB'
+    )
+    .action(
+      async (
+        artifactId: string,
+        options: {
+          approval: string;
+          runId: string;
+          revision: number;
+          repository: string;
+          sharedResources?: string;
+          planDirectory?: string;
+          runDirectory?: string;
+        }
+      ) => {
+        try {
+          const result = await runPlan({
+            artifactId,
+            artifactRevision: options.revision,
+            approvalId: options.approval,
+            runId: options.runId,
+            repositoryPath: resolve(cwd, options.repository),
+            ...(options.sharedResources === undefined
+              ? {}
+              : { sharedResourcesPath: resolve(cwd, options.sharedResources) }),
+            ...(options.planDirectory === undefined
+              ? {}
+              : { planDirectory: resolve(cwd, options.planDirectory) }),
+            ...(options.runDirectory === undefined
+              ? {}
+              : { runDirectory: resolve(cwd, options.runDirectory) })
+          });
+          writeOutput(`${JSON.stringify(result, null, 2)}\n`);
+        } catch (error) {
+          if (error instanceof PlanExecutionBindingError) {
+            program.error(
+              `RUN_BINDING_REJECTED: ${error.message}\n${JSON.stringify(error.mismatches, null, 2)}`
             );
           }
           throw error;

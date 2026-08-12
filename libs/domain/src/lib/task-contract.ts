@@ -25,8 +25,14 @@ export const verificationRuleSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('package-script'),
-    packageName: z.string().trim().min(1),
-    script: z.string().trim().min(1)
+    packageName: z
+      .string()
+      .trim()
+      .regex(/^(?:@[A-Za-z0-9][A-Za-z0-9._-]*\/)?[A-Za-z0-9][A-Za-z0-9._-]*$/),
+    script: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9:._-]*$/)
   })
 ]);
 

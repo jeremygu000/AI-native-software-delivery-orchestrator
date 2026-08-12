@@ -91,6 +91,7 @@ const assertResource = (resource: WritableResource): void => {
 export interface InMemoryWriteGuardOptions {
   readonly now?: () => Date;
   readonly createLeaseId?: () => string;
+  readonly initialLeases?: readonly WriteLease[];
 }
 
 export class WriteGuardInputError extends Error {
@@ -110,6 +111,17 @@ export class InMemoryWriteGuard implements WriteGuard {
   constructor(options: InMemoryWriteGuardOptions = {}) {
     this.#now = options.now ?? (() => new Date());
     this.#createLeaseId = options.createLeaseId ?? (() => `lease-${this.#nextLeaseNumber++}`);
+    for (const lease of options.initialLeases ?? []) {
+      if (this.#leases.has(lease.id)) {
+        throw new WriteGuardInputError(`Duplicate initial lease ID: ${lease.id}`);
+      }
+      assertResource(lease.resource);
+      this.#leases.set(lease.id, cloneLease(lease));
+      const generatedSequence = /^lease-(\d+)$/.exec(lease.id)?.[1];
+      if (generatedSequence !== undefined) {
+        this.#nextLeaseNumber = Math.max(this.#nextLeaseNumber, Number(generatedSequence) + 1);
+      }
+    }
   }
 
   async acquire(request: WriteLeaseRequest): Promise<WriteLeaseResult> {

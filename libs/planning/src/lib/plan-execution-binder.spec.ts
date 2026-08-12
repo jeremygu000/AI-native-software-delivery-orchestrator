@@ -230,6 +230,27 @@ describe('PlanExecutionBinder', () => {
     await expect(approvalStore.loadClaim('approval-1')).resolves.toBeUndefined();
   });
 
+  it('rejects a repository whose dirty state alone differs from the approved snapshot', async () => {
+    const artifact = approvalTestArtifact();
+    const approvalStore = new MemoryApprovalStore(approvalFor(artifact));
+    const changedDirtyState: RepositorySnapshot = {
+      repositoryId: artifact.repository.repositoryId,
+      repositoryRoot: artifact.repository.repositoryRoot,
+      baseCommit: artifact.repository.baseCommit,
+      workingTreeFingerprint: artifact.repository.workingTreeFingerprint,
+      dirty: !artifact.repository.dirty
+    };
+
+    await expect(
+      binderFor({
+        artifact,
+        approvalStore,
+        snapshots: [changedDirtyState, changedDirtyState]
+      }).bind(request)
+    ).rejects.toMatchObject({ mismatches: ['repository-dirty-state'] });
+    await expect(approvalStore.loadClaim('approval-1')).resolves.toBeUndefined();
+  });
+
   it('rejects changed Repository Facts even when Git evidence is unchanged', async () => {
     const artifact = approvalTestArtifact();
     const originalGraph = approvalTestGraph();

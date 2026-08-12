@@ -539,9 +539,56 @@ describe('forge analyze', () => {
     expect(JSON.parse(output)).toEqual(intent);
   });
 
+  it('routes forge run through the plan-to-runtime composition boundary', async () => {
+    let output = '';
+    const result = { run: { id: 'run-1', state: 'COMPLETED' } };
+    const runPlan = vi.fn(async () => result);
+    const program = createForgeProgram({
+      cwd: '/workspace',
+      runPlan,
+      writeOutput: (value) => {
+        output += value;
+      }
+    });
+
+    await program.parseAsync([
+      'node',
+      'forge',
+      'run',
+      'plan-1',
+      '--approval',
+      'approval-1',
+      '--run-id',
+      'run-1',
+      '--revision',
+      '2',
+      '--repository',
+      'repo',
+      '--shared-resources',
+      'shared-resources.json',
+      '--plan-directory',
+      'artifacts',
+      '--run-directory',
+      'runs'
+    ]);
+
+    expect(runPlan).toHaveBeenCalledWith({
+      artifactId: 'plan-1',
+      artifactRevision: 2,
+      approvalId: 'approval-1',
+      runId: 'run-1',
+      repositoryPath: '/workspace/repo',
+      sharedResourcesPath: '/workspace/shared-resources.json',
+      planDirectory: '/workspace/artifacts',
+      runDirectory: '/workspace/runs'
+    });
+    expect(JSON.parse(output)).toEqual(result);
+  });
+
   it('requires approval actor and binding identities before invoking adapters', async () => {
     const approvePlan = vi.fn();
     const bindPlan = vi.fn();
+    const runPlan = vi.fn();
     const approveProgram = createForgeProgram({ approvePlan, bindPlan });
     approveProgram.commands.find((command) => command.name() === 'approve')!.exitOverride();
 
@@ -556,8 +603,14 @@ describe('forge analyze', () => {
         code: 'commander.missingMandatoryOptionValue'
       }
     );
+    const runProgram = createForgeProgram({ approvePlan, bindPlan, runPlan });
+    runProgram.commands.find((command) => command.name() === 'run')!.exitOverride();
+    await expect(runProgram.parseAsync(['node', 'forge', 'run', 'plan-1'])).rejects.toMatchObject({
+      code: 'commander.missingMandatoryOptionValue'
+    });
     expect(approvePlan).not.toHaveBeenCalled();
     expect(bindPlan).not.toHaveBeenCalled();
+    expect(runPlan).not.toHaveBeenCalled();
   });
 
   it('prints deterministic execution-binding rejection diagnostics', async () => {

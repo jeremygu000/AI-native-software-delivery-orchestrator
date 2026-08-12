@@ -72,6 +72,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/repository-analysis':
         specifier: workspace:*
         version: link:../../libs/repository-analysis
+      '@ai-native-software-delivery-orchestrator/run-preparation':
+        specifier: workspace:*
+        version: link:../../libs/run-preparation
       '@ai-native-software-delivery-orchestrator/scheduler':
         specifier: workspace:*
         version: link:../../libs/scheduler
@@ -223,6 +226,33 @@ importers:
       yaml:
         specifier: 2.8.1
         version: 2.8.1
+
+  libs/run-preparation:
+    dependencies:
+      '@ai-native-software-delivery-orchestrator/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
+      '@ai-native-software-delivery-orchestrator/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@ai-native-software-delivery-orchestrator/orchestration-runtime':
+        specifier: workspace:*
+        version: link:../orchestration-runtime
+      '@ai-native-software-delivery-orchestrator/persistence':
+        specifier: workspace:*
+        version: link:../persistence
+      '@ai-native-software-delivery-orchestrator/planning':
+        specifier: workspace:*
+        version: link:../planning
+      '@ai-native-software-delivery-orchestrator/runtime-guard':
+        specifier: workspace:*
+        version: link:../runtime-guard
+      '@ai-native-software-delivery-orchestrator/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
+      '@ai-native-software-delivery-orchestrator/workspace-git':
+        specifier: workspace:*
+        version: link:../workspace-git
 
   libs/runtime-guard:
     dependencies:

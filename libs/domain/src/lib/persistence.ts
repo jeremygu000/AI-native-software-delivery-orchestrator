@@ -12,14 +12,37 @@ import type { TaskContract } from './task-contract.js';
 import type { TaskState } from './task-state.js';
 import type { WriteLease } from './write-lease.js';
 import type { TaskWorkspace } from './workspace.js';
+import { z } from 'zod';
 
 export type OrchestrationRunState = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+
+const digestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+const recordIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+
+export const runAuthorityEvidenceSchema = z.object({
+  artifactId: recordIdSchema,
+  artifactRevision: z.int().positive(),
+  approvalId: recordIdSchema,
+  planFingerprint: digestSchema,
+  approvalFingerprint: digestSchema,
+  claimFingerprint: digestSchema,
+  executionFingerprint: digestSchema,
+  repositoryRoot: z.string().trim().min(1),
+  baseCommit: z.string().regex(/^[0-9a-f]{40,64}$/),
+  workingTreeFingerprint: digestSchema,
+  repositoryFactsFingerprint: digestSchema,
+  sharedResourcePolicyFingerprint: digestSchema,
+  verificationPolicyFingerprint: digestSchema
+});
+
+export type RunAuthorityEvidence = z.infer<typeof runAuthorityEvidenceSchema>;
 
 export interface PersistedRun {
   readonly id: string;
   readonly repositoryId: string;
   readonly state: OrchestrationRunState;
   readonly createdAt: string;
+  readonly authority: RunAuthorityEvidence;
 }
 
 export interface CreatePersistedRunRequest {

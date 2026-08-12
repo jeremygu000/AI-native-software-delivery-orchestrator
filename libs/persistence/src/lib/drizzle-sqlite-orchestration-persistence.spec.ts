@@ -36,7 +36,22 @@ const createRunRequest = (id = 'run-1'): CreatePersistedRunRequest => ({
     id,
     repositoryId: 'repository-1',
     state: 'ACTIVE',
-    createdAt: '2026-08-11T00:00:00.000Z'
+    createdAt: '2026-08-11T00:00:00.000Z',
+    authority: {
+      artifactId: 'plan-1',
+      artifactRevision: 1,
+      approvalId: 'approval-1',
+      planFingerprint: `sha256:${'1'.repeat(64)}`,
+      approvalFingerprint: `sha256:${'2'.repeat(64)}`,
+      claimFingerprint: `sha256:${'3'.repeat(64)}`,
+      executionFingerprint: `sha256:${'4'.repeat(64)}`,
+      repositoryRoot: '/repository',
+      baseCommit: '5'.repeat(40),
+      workingTreeFingerprint: `sha256:${'6'.repeat(64)}`,
+      repositoryFactsFingerprint: `sha256:${'7'.repeat(64)}`,
+      sharedResourcePolicyFingerprint: `sha256:${'8'.repeat(64)}`,
+      verificationPolicyFingerprint: `sha256:${'9'.repeat(64)}`
+    }
   },
   tasks: [task('A'), task('B', ['A'])],
   hardConflicts: [
@@ -194,7 +209,12 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     const recovered = await persistence.recoverRun('run-1');
 
     expect(recovered).toMatchObject({
-      run: { id: 'run-1', repositoryId: 'repository-1', state: 'COMPLETED' },
+      run: {
+        id: 'run-1',
+        repositoryId: 'repository-1',
+        state: 'COMPLETED',
+        authority: createRunRequest().run.authority
+      },
       tasks: [task('A'), task('B', ['A'])],
       scheduleOptions: { maxConcurrency: 2 },
       events: [
@@ -216,6 +236,95 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     expect(recovered?.leases[0]?.lease.acquiredAt).toEqual(new Date('2026-08-11T00:00:00.000Z'));
     expect(recovered?.leases[0]?.lease.staleEvidence).toBe('Agent process exited.');
     persistence.close();
+  });
+
+  it('rejects corrupted durable run authority evidence', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'orchestration-persistence-'));
+    const filename = join(directory, 'corrupt-authority.sqlite');
+    try {
+      const writer = new DrizzleSqliteOrchestrationPersistence(filename);
+      await writer.createRun(createRunRequest());
+      writer.close();
+
+      const sqlite = new Database(filename);
+      sqlite
+        .prepare("UPDATE orchestration_runs SET authority_json = '{}' WHERE id = 'run-1'")
+        .run();
+      sqlite.close();
+
+      const reader = new DrizzleSqliteOrchestrationPersistence(filename);
+      await expect(reader.recoverRun('run-1')).rejects.toThrow(
+        'Invalid persisted run authority evidence'
+      );
+      reader.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['NULL', 'NULL'],
+    ['malformed JSON', "'{'"]
+  ])('rejects %s durable run authority evidence', async (_case, replacement) => {
+    const directory = mkdtempSync(join(tmpdir(), 'orchestration-persistence-'));
+    const filename = join(directory, 'invalid-authority.sqlite');
+    try {
+      const writer = new DrizzleSqliteOrchestrationPersistence(filename);
+      await writer.createRun(createRunRequest());
+      writer.close();
+
+      const sqlite = new Database(filename);
+      sqlite.exec(
+        `UPDATE orchestration_runs SET authority_json = ${replacement} WHERE id = 'run-1'`
+      );
+      sqlite.close();
+
+      const reader = new DrizzleSqliteOrchestrationPersistence(filename);
+      await expect(reader.recoverRun('run-1')).rejects.toThrow(
+        'Invalid persisted run authority evidence'
+      );
+      reader.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('adds the authority column when opening a pre-Stage-20 run database', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'orchestration-persistence-'));
+    const filename = join(directory, 'legacy.sqlite');
+    try {
+      const sqlite = new Database(filename);
+      sqlite.exec(`
+        CREATE TABLE orchestration_runs (
+          id TEXT PRIMARY KEY NOT NULL,
+          repository_id TEXT NOT NULL,
+          state TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          tasks_json TEXT NOT NULL,
+          hard_conflicts_json TEXT NOT NULL,
+          risk_conflicts_json TEXT NOT NULL,
+          schedule_options_json TEXT NOT NULL
+        )
+      `);
+      sqlite.close();
+
+      const persistence = new DrizzleSqliteOrchestrationPersistence(filename);
+      persistence.close();
+      const migrated = new Database(filename);
+      const columns = migrated.prepare('PRAGMA table_info(orchestration_runs)').all();
+      migrated.close();
+      expect(
+        columns.some(
+          (column) =>
+            typeof column === 'object' &&
+            column !== null &&
+            'name' in column &&
+            column.name === 'authority_json'
+        )
+      ).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('recovers persisted state after reopening a SQLite file', async () => {

@@ -1899,3 +1899,118 @@ function. This is a future-adapter contract concern, not a Stage 19 defect. Dura
 also unnecessary now: same-run rebinding reloads and revalidates durable artifact/approval/claim
 evidence and regenerates the same execution fingerprint. The future run record should persist the
 execution, plan, approval, and claim fingerprints for traceability.
+
+## Stage 20: Controlled Runtime Binding and Start
+
+Stage 20 is complete and independently reviewed. It provides the first real,
+recoverable `forge run` path while keeping orchestration out of Commander and out of the Pi adapter.
+
+`RunPreparation` revalidates the claimed execution through `PlanExecutionBinder` immediately before
+any execution side effect. A valid old intent is rejected if current Git source, physical repository
+root, Repository Facts, shared-resource policy, or verification policy no longer matches. Clean-only
+execution is explicit: a dirty PlanArtifact fails before checkout creation because Stage 20 cannot yet
+materialize the exact approved dirty/untracked byte set in an isolated worktree.
+
+`GitIntegrationCheckoutProvisioner` creates a run-specific `forge/integration/<run-id>` checkout at
+the approved base commit outside the source repository. Exact retries reuse it; wrong commit/branch,
+invalid run identity, source-internal checkout roots, and symlink escape fail closed. Every task
+worktree derives from that checkout and approved commit. The source checkout is never the agent or
+integration workspace.
+
+`LocalRuntimeBindingPolicy` reconstructs predicted impacts, derives canonical lease plans, and creates
+deterministic agent/workspace identities. Before dispatch, `RunPreparation` independently compares
+the durable authority record, tasks, hard/risk conflicts, schedule, impacts, lease plans, and Git
+workspace bindings against the approved intent. Empty write sets now produce valid empty lease plans;
+unexpected writes still require runtime acquisition.
+
+`RunAuthorityEvidence` is persisted in SQLite with artifact/revision/approval identity and the plan,
+approval, claim, execution, working-tree, Repository Facts, shared-resource, and verification-policy
+fingerprints. Existing databases receive the new column; legacy rows without valid authority fail
+recovery explicitly. `startOrResumeRun()` returns an identical terminal run without dispatching again,
+resumes matching ACTIVE evidence, and rejects a same-ID request with changed authority. Persisted
+leases hydrate the restarted local guard. The runtime now also finalizes durable run state to
+`COMPLETED` or `FAILED` instead of leaving completed task snapshots under an `ACTIVE` run row.
+
+`LocalRuntimeStarter` composes the existing Scheduler, SQLite adapter, Write Guard, Git workspace
+manager, controlled Pi agent, and post-agent pnpm package-script verifier. The default agent binding
+does not grant `forge_command`; verification remains an orchestrator-owned fixed argument-vector
+process. Successful output remains in the run integration checkout and is not pushed or merged into
+the user's branch.
+
+The two Stage 19 test-organization follow-ups are closed: one real integration test creates two clones
+with the same origin and bytes and proves the second physical root is rejected before claim; another
+changes only dirty state. A real local runtime test performs a controlled Pi edit through task
+worktree creation, lease enforcement, verification, commit, serial integration, SQLite recovery, and
+identical retry.
+
+ADR-024 records the boundary. Beginner-oriented mechanism guides are available in
+[English](./controlled-runtime-start.en.md) and [Chinese](./controlled-runtime-start.zh.md).
+
+The Stage 20 follow-up gate passes with 38 test files and 491 tests. Coverage is 95.44% statements,
+90.90% branches, 96.51% functions, and 95.39% lines; the new `run-preparation` package independently reaches
+100% statements, 98.33% branches, 100% functions, and 100% lines. `pnpm check`, `pnpm build`, CLI help,
+and `git diff --check` pass. Self-analysis now reports 15 projects, 114 files, 1,620 symbols, 59 project
+dependencies, 241 file dependencies, 3,007 symbol references, and the same two known configuration
+diagnostics. The ingestion-and-matching research repository reports three projects, 1,010 files, 7,617
+symbols, three project dependencies, 3,592 file dependencies, 13,893 symbol references, and the known
+25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic.
+
+No live external Pi model call was made against the research repository. The end-to-end runtime test
+uses a controlled Pi gateway and real filesystem/Git/SQLite/pnpm operations. A live `forge run` would
+perform model-backed code changes and therefore requires an intentionally prepared and approved
+artifact rather than using the research repository as an uncontrolled mutation target.
+
+Known deferred work remains distributed/cross-process lease fencing, dirty-snapshot materialization,
+agent cancellation and `UNKNOWN` resolution, multi-failure aggregation, publication/PR integration,
+and GitHub/Jira/provider triggers. These limits do not weaken the local clean-snapshot authority chain;
+they define the next productization stages.
+
+### Stage 20 independent-review hardening
+
+The first independent review reproduced the original 484-test evidence and found one Critical local
+recovery race. Two concurrent callers could both observe one durable `PREPARING` attempt and invoke the
+external agent before SQLite's later optimistic checks detected contention. Every `startRun()` and
+`startOrResumeRun()` entry now uses a process-wide queue keyed by repository and run identity. A
+regression test concurrently starts two separate runtime instances against the same recovered attempt
+and proves exactly one agent dispatch. This closes duplicate dispatch inside one process without
+misrepresenting it as cross-process fencing.
+
+Integration recovery now distinguishes ordinary foreign commits from Forge progress. Runtime-created
+task commits contain exact `Forge-Run-Id` and `Forge-Task-Id` trailers, and checkout reuse verifies every
+commit after the approved base. Legitimate integrated history remains reusable; a clean manual commit
+and completely unrelated history both fail closed. The trailer is provenance metadata, not a signature
+against a direct Git writer who deliberately forges it.
+
+Verification no longer inherits the parent process environment. It receives only `CI=1` and a trusted
+`PATH`, and package/script identifiers have explicit character allowlists. A real child-process test
+sets an invalid parent `NODE_OPTIONS` and proves the approved pnpm script still succeeds without
+inheriting it. Lease hydration now explicitly selects only ACTIVE leases. SQLite recovery adds direct
+NULL and malformed-JSON authority tests.
+
+Finally, a real Git integration test binds while clean, changes the repository to dirty, then calls
+`RunPreparation`; the fresh `PlanExecutionBinder` rejects before checkout provision. Unused new barrel
+exports were removed. These fixes close C1 and H1-H3 from the initial review and cover M1-M5 without
+expanding Stage 20 scope.
+
+### Stage 20 follow-up review: PASS / CLOSED
+
+The follow-up reviewer independently reproduced the 491-test gate and exact coverage numbers. Three
+adversarial experiments then used real SQLite persistence: two runtime instances concurrently resumed
+the same `PREPARING` attempt and produced exactly one agent call; a changed-authority request waited
+behind an in-flight run and was still rejected; and a failed queued operation did not poison or
+deadlock the next request. This confirms that the module-level queue is shared across runtime
+instances, releases correctly after rejection, and does not bypass authority checks.
+
+A mutation test temporarily restored parent-environment inheritance. The new `NODE_OPTIONS` regression
+test failed immediately and passed again after restoring the whitelist, proving that it detects the
+intended security regression. The real Git clean-at-bind/dirty-before-start test, ACTIVE-only lease
+hydration, NULL/malformed SQLite authority tests, identifier allowlists, unrelated-history rejection,
+and public-export cleanup were also verified directly. Stage 20 is therefore **PASS / CLOSED**, and
+Stage 21 may begin.
+
+Four non-blocking follow-ups remain registered rather than changing reviewed Stage 20 code: use strict
+Git trailer parsing if the provenance format grows; retain the fail-closed rule that every post-base
+commit must carry the run trailer; make verification executable-path construction portable to Windows
+and configurable for Corepack/Volta/custom pnpm installations; and decide in a later security review
+whether trusted Git subprocesses should also receive a minimal environment. None is an observed Stage
+20 authorization or duplicate-dispatch bypass.

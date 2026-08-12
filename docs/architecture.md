@@ -487,6 +487,45 @@ persisted reevaluation stores the Scheduler input snapshot, event, transitions, 
 one sequence number, then recovery replays the same call and verifies the saved decision. ADR-013
 defines this replay boundary.
 
+## Controlled Plan-to-Run boundary
+
+`libs/run-preparation` is the application composition boundary between a fingerprinted
+`PlanExecutionIntent` and `OrchestrationRuntime`. It re-runs the deterministic execution binder
+immediately before side effects, rejects dirty approved snapshots until exact materialization exists,
+provisions an orchestrator-owned integration checkout at the approved commit, derives task worktrees
+from that checkout, and validates the complete runtime request against the approved decision.
+
+```text
+PlanExecutionIntent
+        -> fresh repository/facts/policy revalidation
+        -> clean-snapshot materialization at approved baseCommit
+        -> deterministic task/impact/lease/workspace bindings
+        -> durable RunAuthorityEvidence
+        -> OrchestrationRuntime.startOrResumeRun()
+```
+
+The run record retains artifact, approval, claim, execution, repository, facts, and policy identity.
+Identical terminal retries do not redispatch agents; changed authority under the same run ID fails
+closed. All local start/resume entry points use one process-wide repository/run lifecycle queue, so
+concurrent callers cannot both resume the same `PREPARING` attempt and dispatch it twice. Persisted
+ACTIVE leases hydrate the restarted in-memory guard; released and stale leases remain evidence but are
+not loaded as active authority. This is recoverable single-process coordination, not cross-process or
+distributed lease fencing.
+
+Task commits carry exact run/task trailers. Reusing an integration checkout whose HEAD advanced past
+the approved base requires every intervening commit to carry the requested run trailer. This rejects
+ordinary foreign commits while preserving legitimate retries. The marker is not a cryptographic
+signature against a writer who can deliberately forge the trailer.
+
+The pnpm verifier accepts schema-restricted package and script identifiers, invokes pnpm without a
+shell, and supplies only `CI` plus a trusted executable `PATH`; it does not inherit the orchestrator's
+arbitrary environment.
+
+The source repository is never an execution workspace. Successful work accumulates on the run's
+integration branch and is not automatically published to a user branch or remote. The CLI only
+selects paths and adapters; scheduling, lease, verification, Git integration, and recovery remain in
+their application/domain components. ADR-024 defines this boundary.
+
 ## Persistence boundary
 
 `libs/persistence` implements an SQLite/Drizzle run adapter using `better-sqlite3`. It persists
@@ -572,11 +611,12 @@ Yarn, or tool-specific providers are added only when a concrete product requirem
             -> trusted integration checkout at approved baseCommit
             -> task worktrees derived from that checkout
             -> atomic-ish persisted run creation
-            -> OrchestrationRuntime.startRun()
+            -> OrchestrationRuntime.startOrResumeRun()
     ```
 
     A previously valid intent is not a permanent repository lock or permission token. Parsing its
-    fingerprint alone is insufficient at run time.
+    fingerprint alone is insufficient at run time. **Complete for clean local Git snapshots.** Dirty
+    snapshot materialization, distributed fencing, and publication remain deferred.
 
 Every milestone must pass formatting, TypeScript 7 type checking, type-aware linting,
 non-interactive tests, project-wide coverage thresholds, and a forced clean-equivalent build before

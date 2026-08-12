@@ -33,6 +33,18 @@ describe('taskContractSchema', () => {
     );
   });
 
+  it.each([
+    ['package name', { packageName: 'core;touch-pwned', script: 'test' }],
+    ['package script', { packageName: 'core', script: 'test && touch-pwned' }]
+  ])('rejects unsafe %s characters before verification', (_case, rule) => {
+    expect(
+      taskContractSchema.safeParse({
+        ...validTask,
+        verification: [{ type: 'package-script', ...rule }]
+      }).success
+    ).toBe(false);
+  });
+
   it('rejects a self dependency', () => {
     const result = taskContractSchema.safeParse({ ...validTask, dependencies: ['T1'] });
 

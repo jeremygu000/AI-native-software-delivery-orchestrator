@@ -28,6 +28,32 @@ import type {
 } from '@ai-native-software-delivery-orchestrator/domain';
 
 const compareIds = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+const sameRuntimeEvidence = (left: unknown, right: unknown): boolean =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+const lifecycleTails = new Map<string, Promise<void>>();
+
+const serializeRunLifecycle = async <T>(
+  lifecycleKey: string,
+  operation: () => Promise<T>
+): Promise<T> => {
+  const previous = lifecycleTails.get(lifecycleKey) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => undefined).then(() => gate);
+  lifecycleTails.set(lifecycleKey, tail);
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (lifecycleTails.get(lifecycleKey) === tail) {
+      lifecycleTails.delete(lifecycleKey);
+    }
+  }
+};
 
 export interface RuntimeTaskBinding {
   readonly taskId: string;
@@ -91,6 +117,12 @@ export class OrchestrationRuntime {
   }
 
   async startRun(request: StartRuntimeRunRequest): Promise<RecoveredRuntimeRun> {
+    return serializeRunLifecycle(`${request.run.repositoryId}\0${request.run.id}`, () =>
+      this.#startRun(request)
+    );
+  }
+
+  async #startRun(request: StartRuntimeRunRequest): Promise<RecoveredRuntimeRun> {
     const bindings = this.#bindingsByTask(request);
     await this.#persistence.createRun(request);
     const state = {
@@ -109,6 +141,37 @@ export class OrchestrationRuntime {
     await this.#recordEvent(state, { type: 'run-started' });
     await this.#drain(state);
     return this.#recoveredState(state.snapshot, request.run.id);
+  }
+
+  async startOrResumeRun(request: StartRuntimeRunRequest): Promise<RecoveredRuntimeRun> {
+    return serializeRunLifecycle(`${request.run.repositoryId}\0${request.run.id}`, () =>
+      this.#startOrResumeRun(request)
+    );
+  }
+
+  async #startOrResumeRun(request: StartRuntimeRunRequest): Promise<RecoveredRuntimeRun> {
+    this.#bindingsByTask(request);
+    const evidence = await this.#persistence.recoverRun(request.run.id);
+    if (evidence === undefined) {
+      return this.#startRun(request);
+    }
+    this.#assertRunRequestEvidence(evidence, request);
+    if (evidence.run.state !== 'ACTIVE') {
+      const recovered = await this.recoverRun(request.run.id);
+      if (recovered === undefined) {
+        throw new OrchestrationRuntimeInputError(
+          `Run disappeared during recovery: ${request.run.id}`
+        );
+      }
+      return recovered;
+    }
+    const resumed = await this.#recoverAndResumeRun(request);
+    if (resumed === undefined) {
+      throw new OrchestrationRuntimeInputError(
+        `Run disappeared during recovery: ${request.run.id}`
+      );
+    }
+    return resumed;
   }
 
   async recoverRun(runId: string): Promise<RecoveredRuntimeRun | undefined> {
@@ -174,6 +237,14 @@ export class OrchestrationRuntime {
   }
 
   async recoverAndResumeRun(
+    request: StartRuntimeRunRequest
+  ): Promise<RecoveredRuntimeRun | undefined> {
+    return serializeRunLifecycle(`${request.run.repositoryId}\0${request.run.id}`, () =>
+      this.#recoverAndResumeRun(request)
+    );
+  }
+
+  async #recoverAndResumeRun(
     request: StartRuntimeRunRequest
   ): Promise<RecoveredRuntimeRun | undefined> {
     const recovered = await this.recoverRun(request.run.id);
@@ -244,6 +315,21 @@ export class OrchestrationRuntime {
     return bindings;
   }
 
+  #assertRunRequestEvidence(recovered: RecoveredRun, request: StartRuntimeRunRequest): void {
+    if (
+      recovered.run.repositoryId !== request.run.repositoryId ||
+      !sameRuntimeEvidence(recovered.run.authority, request.run.authority) ||
+      !sameRuntimeEvidence(recovered.tasks, request.tasks) ||
+      !sameRuntimeEvidence(recovered.hardConflicts, request.hardConflicts) ||
+      !sameRuntimeEvidence(recovered.riskConflicts, request.riskConflicts) ||
+      !sameRuntimeEvidence(recovered.scheduleOptions, request.scheduleOptions)
+    ) {
+      throw new OrchestrationRuntimeInputError(
+        `Existing run authority does not match retry request: ${request.run.id}`
+      );
+    }
+  }
+
   async #drain(state: RuntimeState): Promise<void> {
     const executing = new Set<Promise<{ readonly error?: unknown }>>();
     let fatalError: Error | undefined;
@@ -279,8 +365,20 @@ export class OrchestrationRuntime {
         break;
       }
     }
+    await this.#finalizeRunState(state);
     if (fatalError !== undefined) {
       throw new OrchestrationRuntimeInputError(fatalError.message);
+    }
+  }
+
+  async #finalizeRunState(state: RuntimeState): Promise<void> {
+    const states = state.snapshot.taskStates.map(({ state: taskState }) => taskState);
+    if (states.some((taskState) => taskState === 'FAILED')) {
+      await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+      return;
+    }
+    if (states.every((taskState) => taskState === 'COMPLETED' || taskState === 'CANCELLED')) {
+      await this.#persistence.updateRunState(state.request.run.id, 'COMPLETED');
     }
   }
 
@@ -465,7 +563,7 @@ export class OrchestrationRuntime {
       }
       await this.#workspaceManager.commit({
         workspace,
-        message: `forge: ${task.id}`
+        message: `forge: ${task.id}\n\nForge-Run-Id: ${state.request.run.id}\nForge-Task-Id: ${task.id}`
       });
       this.#setState(state, taskId, 'INTEGRATING');
       await this.#recordEvent(state, {

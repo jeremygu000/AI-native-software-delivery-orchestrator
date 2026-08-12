@@ -125,6 +125,19 @@ describe('WriteLease contract', () => {
     ]);
   });
 
+  it('permits an empty lease plan for a task with no predicted writes', () => {
+    const plan = taskLeasePlanFromPredictedImpact({
+      taskId: 'task-1',
+      projectsWritten: new Set(),
+      filesWritten: new Set(),
+      symbolDerivedFilesWritten: new Set(),
+      symbolsWritten: new Set(),
+      sharedResources: new Set()
+    });
+
+    expect(taskLeasePlanSchema.parse(plan).predictedResources).toEqual([]);
+  });
+
   it('uses symbol-derived file IDs without parsing colon-containing symbol paths', () => {
     const plan = taskLeasePlanFromPredictedImpact({
       taskId: 'task-1',

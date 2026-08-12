@@ -299,7 +299,22 @@ const request = (tasks: readonly TaskContract[]): StartRuntimeRunRequest => ({
     id: 'run-1',
     repositoryId: 'repository-1',
     state: 'ACTIVE',
-    createdAt: '2026-08-12T00:00:00.000Z'
+    createdAt: '2026-08-12T00:00:00.000Z',
+    authority: {
+      artifactId: 'plan-1',
+      artifactRevision: 1,
+      approvalId: 'approval-1',
+      planFingerprint: `sha256:${'1'.repeat(64)}`,
+      approvalFingerprint: `sha256:${'2'.repeat(64)}`,
+      claimFingerprint: `sha256:${'3'.repeat(64)}`,
+      executionFingerprint: `sha256:${'4'.repeat(64)}`,
+      repositoryRoot: '/repository',
+      baseCommit: '5'.repeat(40),
+      workingTreeFingerprint: `sha256:${'6'.repeat(64)}`,
+      repositoryFactsFingerprint: `sha256:${'7'.repeat(64)}`,
+      sharedResourcePolicyFingerprint: `sha256:${'8'.repeat(64)}`,
+      verificationPolicyFingerprint: `sha256:${'9'.repeat(64)}`
+    }
   },
   tasks,
   hardConflicts: [],
@@ -626,7 +641,7 @@ describe('OrchestrationRuntime', () => {
     });
   });
 
-  it('resumes a PREPARING attempt after recovery without duplicating dispatch evidence', async () => {
+  it('serializes concurrent PREPARING recovery without dispatching the agent twice', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(request([task('A')]));
     await persistence.persistDispatch({
@@ -683,20 +698,35 @@ describe('OrchestrationRuntime', () => {
         }
       ]
     });
-    const runtime = new OrchestrationRuntime({
-      scheduler: new DeterministicScheduler(),
-      persistence,
-      workspaceManager: new MemoryWorkspaceManager(),
-      writeGuard: new MemoryWriteGuard(),
-      agentRunner: new FakeAgentRunner(),
-      verifier: new FakeTaskVerifier(),
-      now: () => new Date('2026-08-12T00:00:00.000Z')
+    const runAgent = vi.fn(async (agentRequest: Parameters<AgentRunner['run']>[0]) => {
+      await agentRequest.onStarted({});
+      return { status: 'completed' as const };
     });
+    const createResumingRuntime = () =>
+      new OrchestrationRuntime({
+        scheduler: new DeterministicScheduler(),
+        persistence,
+        workspaceManager: new MemoryWorkspaceManager(),
+        writeGuard: new MemoryWriteGuard(),
+        agentRunner: { run: runAgent },
+        verifier: new FakeTaskVerifier(),
+        now: () => new Date('2026-08-12T00:00:00.000Z')
+      });
+    const firstRuntime = createResumingRuntime();
+    const secondRuntime = createResumingRuntime();
 
-    await expect(runtime.recoverAndResumeRun(request([task('A')]))).resolves.toMatchObject({
+    const runRequest = request([task('A')]);
+    const [first, second] = await Promise.all([
+      firstRuntime.startOrResumeRun(runRequest),
+      secondRuntime.startOrResumeRun(runRequest)
+    ]);
+
+    expect(first).toMatchObject({
       snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] },
       attempts: [{ attempt: { state: 'COMPLETED', revision: 4 } }]
     });
+    expect(second.run.state).toBe('COMPLETED');
+    expect(runAgent).toHaveBeenCalledOnce();
     expect(persistence.reevaluations[0]?.event.sequence).toBe(1);
   });
 
@@ -1348,6 +1378,40 @@ describe('OrchestrationRuntime', () => {
       { taskId: 'B', state: 'CANCELLED' }
     ]);
     expect(persistence.workspaces).toHaveLength(1);
+  });
+
+  it('returns a completed run on an identical retry without dispatching the agent again', async () => {
+    const runAgent = vi.fn(async (agentRequest: Parameters<AgentRunner['run']>[0]) => {
+      await agentRequest.onStarted({});
+      return { status: 'completed' as const };
+    });
+    const runtime = createRuntime(undefined, undefined, undefined, { run: runAgent });
+    const runRequest = request([task('A')]);
+
+    await runtime.startOrResumeRun(runRequest);
+    const retried = await runtime.startOrResumeRun(runRequest);
+
+    expect(retried.run.state).toBe('COMPLETED');
+    expect(runAgent).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a retry when durable execution authority differs', async () => {
+    const runtime = createRuntime();
+    const runRequest = request([task('A')]);
+    await runtime.startOrResumeRun(runRequest);
+
+    await expect(
+      runtime.startOrResumeRun({
+        ...runRequest,
+        run: {
+          ...runRequest.run,
+          authority: {
+            ...runRequest.run.authority,
+            executionFingerprint: `sha256:${'e'.repeat(64)}`
+          }
+        }
+      })
+    ).rejects.toThrow('Existing run authority does not match retry request');
   });
 
   it('fails a task after verification without attempting integration', async () => {

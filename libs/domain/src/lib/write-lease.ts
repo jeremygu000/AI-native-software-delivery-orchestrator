@@ -144,7 +144,7 @@ export const taskLeasePlanFromPredictedImpact = (impact: {
 export const taskLeasePlanSchema = z
   .object({
     taskId: nonEmptyStringSchema,
-    predictedResources: z.array(writableResourceSchema).min(1),
+    predictedResources: z.array(writableResourceSchema),
     source: z.enum(['predicted-impact', 'manual', 'runtime-derived'])
   })
   .superRefine((plan, context) => {

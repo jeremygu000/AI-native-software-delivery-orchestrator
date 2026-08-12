@@ -37,6 +37,34 @@ const createGuard = () => {
 };
 
 describe('InMemoryWriteGuard', () => {
+  it('hydrates durable active leases and preserves their exclusion on recovery', async () => {
+    const guard = new InMemoryWriteGuard({
+      initialLeases: [
+        {
+          id: 'lease-existing',
+          runId: 'run-existing',
+          agentId: 'agent-existing',
+          taskId: 'task-existing',
+          resource: { type: 'project', projectId: 'core' },
+          mode: 'exclusive',
+          version: 1,
+          state: 'ACTIVE',
+          acquiredAt: new Date('2026-08-13T00:00:00.000Z'),
+          lastHeartbeatAt: new Date('2026-08-13T00:00:00.000Z')
+        }
+      ]
+    });
+
+    await expect(
+      guard.acquire({
+        runId: 'run-2',
+        agentId: 'agent-2',
+        taskId: 'task-2',
+        resource: { type: 'file', projectId: 'core', fileId: 'core:file.ts' },
+        mode: 'exclusive'
+      })
+    ).resolves.toEqual({ status: 'blocked', conflictingLeaseIds: ['lease-existing'] });
+  });
   it('grants an exclusive lease with a stable lifecycle record', async () => {
     const guard = createGuard();
 

@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.lib.tsbuildinfo",
+    "emitDeclarationOnly": false,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../agent-runtime/tsconfig.lib.json" },
+    { "path": "../domain/tsconfig.lib.json" },
+    { "path": "../orchestration-runtime/tsconfig.lib.json" },
+    { "path": "../planning/tsconfig.lib.json" },
+    { "path": "../persistence/tsconfig.lib.json" },
+    { "path": "../runtime-guard/tsconfig.lib.json" },
+    { "path": "../scheduler/tsconfig.lib.json" },
+    { "path": "../workspace-git/tsconfig.lib.json" }
+  ],
+  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"]
+}

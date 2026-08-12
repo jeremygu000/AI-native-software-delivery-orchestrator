@@ -27,6 +27,10 @@ export default defineConfig(() => ({
         import.meta.dirname,
         '../../libs/repository-analysis/src/index.ts'
       ),
+      '@ai-native-software-delivery-orchestrator/run-preparation': resolve(
+        import.meta.dirname,
+        '../../libs/run-preparation/src/index.ts'
+      ),
       '@ai-native-software-delivery-orchestrator/planning': resolve(
         import.meta.dirname,
         '../../libs/planning/src/index.ts'

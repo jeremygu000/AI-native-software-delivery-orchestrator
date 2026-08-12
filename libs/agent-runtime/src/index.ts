@@ -9,6 +9,7 @@ export type {
   PiToolCall,
   PiToolResult
 } from './lib/pi-gateway.js';
+export { PiCodingAgentGateway } from './lib/pi-gateway.js';
 export {
   createPlanningFactTools,
   PiPlanningAgent,

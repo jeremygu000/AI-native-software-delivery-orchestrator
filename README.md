@@ -58,13 +58,18 @@ and local Git workspace core:
 - immutable provider-neutral approvals tied to an exact artifact revision and fingerprint, atomic
   single-run approval claims, and execution binding that recaptures Git and Repository Facts and
   revalidates shared-resource and verification policy before producing a `PlanExecutionIntent`;
+- a recoverable `forge run` path that revalidates authority immediately before execution, creates an
+  orchestrator-owned integration checkout at the approved commit, derives isolated task worktrees,
+  persists complete run authority, dispatches controlled Pi agents, verifies package scripts, and
+  serially integrates successful work;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestones 12–19 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
+Milestones 12–20 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
 concurrent local agent execution, and an autonomous Pi-backed planning and review path. Planning and execution
-remain separate: `forge plan`, `forge approve`, and `forge bind` do not create worktrees, acquire leases, dispatch coding agents, run
-verification, or integrate Git work. Cross-process coordination, explicit model routing/failover,
-runtime CLI commands, integration checkout provisioning, and automatic conflict repair remain deferred.
+remain separate: `forge plan`, `forge approve`, and `forge bind` do not create worktrees, acquire leases,
+dispatch coding agents, run verification, or integrate Git work. `forge run` is the explicit side-effect
+boundary and currently accepts only clean approved snapshots. Cross-process coordination, explicit
+model routing/failover, dirty-snapshot materialization, publication, and automatic conflict repair remain deferred.
 
 Pi remains a coding-agent engine behind the runtime: it cannot own scheduling, leases, workspaces,
 persistence, Git integration, final verification, or recovery. `forge_command` selects only a policy
@@ -89,6 +94,7 @@ pnpm exec forge analyze . --full
 pnpm exec forge plan request.md --repository . --max-concurrency 2 --semantic-review
 pnpm exec forge approve <artifact-id> --approved-by reviewer@example.com --repository .
 pnpm exec forge bind <artifact-id> --approval <approval-id> --run-id <run-id> --repository .
+pnpm exec forge run <artifact-id> --approval <approval-id> --run-id <run-id> --repository .
 ```
 
 ## Workspace
@@ -107,6 +113,7 @@ libs/workspace-git  Local isolated Git worktree and integration lifecycle
 libs/orchestration-runtime  Concurrent-agent application layer with serialized lifecycle choreography
 libs/agent-runtime  Pi adapter, controlled tools, and execution profile adapters
 libs/planning  Autonomous proposal validation, revision, analysis, and schedule preparation
+libs/run-preparation  Fresh authority validation, runtime binding policy, and local runtime composition
 docs/adr     Architecture decisions
 ```
 
@@ -128,6 +135,7 @@ Standalone training guides:
 - [Semantic Plan Review](docs/semantic-plan-review.en.md) / [中文](docs/semantic-plan-review.zh.md)
 - [Durable Plan Artifact](docs/plan-artifact.en.md) / [中文](docs/plan-artifact.zh.md)
 - [Plan Approval and Execution Binding](docs/plan-approval-and-binding.en.md) / [中文](docs/plan-approval-and-binding.zh.md)
+- [Controlled Runtime Binding and Start](docs/controlled-runtime-start.en.md) / [中文](docs/controlled-runtime-start.zh.md)
 
 Continuation agents must read the [OpenCode engineering handover](docs/opencode-handover.md) before
 changing the current uncommitted milestone state.

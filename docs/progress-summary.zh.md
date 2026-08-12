@@ -1651,3 +1651,94 @@ planning 与 binding 都使用 `registry.list()`，因此 JSON input 重新排�
 或专用 authority fingerprint function 做 canonicalization。这是 future-adapter contract concern，不是 Stage 19
 defect。当前也不需要单独持久化 intent：same-run rebinding 会重新加载并验证 durable artifact/approval/claim，并生成
 相同 execution fingerprint。未来 run record 应保存 execution、plan、approval 与 claim fingerprint 以便 traceability。
+
+## Stage 20：受控 Runtime Binding 与启动
+
+Stage 20 已完成并通过独立 Review。它提供第一条真实、可恢复的 `forge run` 路径，同时没有把
+orchestration 塞进 Commander 或 Pi adapter。
+
+`RunPreparation` 会在任何 execution side effect 之前，立即通过 `PlanExecutionBinder` 重新验证已 claim 的 execution。
+如果当前 Git source、物理 repository root、Repository Facts、shared-resource policy 或 verification policy 不再一致，
+旧 intent 即使 fingerprint 合法也会被拒绝。Clean-only execution 是明确边界：dirty PlanArtifact 会在创建 checkout 前
+失败，因为 Stage 20 还不能在隔离 worktree 中准确 materialize approved dirty/untracked bytes。
+
+`GitIntegrationCheckoutProvisioner` 会在 source repository 外、approved base commit 上创建 run-specific
+`forge/integration/<run-id>` checkout。完全相同的 retry 可以复用；错误 commit/branch、非法 run identity、位于 source
+内部的 checkout root 与 symlink escape 都 fail closed。每个 task worktree 都从该 checkout 与 approved commit 派生，
+source checkout 永远不是 agent 或 integration workspace。
+
+`LocalRuntimeBindingPolicy` 恢复 predicted impact、派生 canonical lease plan，并生成 deterministic agent/workspace
+identity。Dispatch 前，`RunPreparation` 会独立比较 durable authority、task、hard/risk conflict、schedule、impact、lease
+plan 与 Git workspace binding。空 write set 现在可以生成合法空 lease plan；任何意外写入仍必须动态 acquire。
+
+`RunAuthorityEvidence` 会持久化到 SQLite，包含 artifact/revision/approval identity，以及 plan、approval、claim、
+execution、working-tree、Repository Facts、shared-resource 与 verification-policy fingerprint。旧数据库会增加新 column；
+缺少合法 authority 的 legacy row 会明确拒绝 recovery。`startOrResumeRun()` 对相同 terminal run 不会再次 dispatch，
+会恢复匹配的 ACTIVE evidence，并拒绝同 run ID 但 authority 变化的 request。Persisted lease 会重新载入 local guard。
+Runtime 还补齐了 durable run state 收尾，不再出现 task snapshot 已完成而 run row 仍为 `ACTIVE` 的情况。
+
+`LocalRuntimeStarter` 组合既有 Scheduler、SQLite adapter、Write Guard、Git workspace manager、受控 Pi agent 与
+post-agent pnpm package-script verifier。默认 agent binding 不授予 `forge_command`；verification 继续由 orchestrator 用
+固定参数数组执行。成功输出保留在 run integration checkout，不会 push 或 merge 到用户 branch。
+
+Stage 19 的两项 test-organization follow-up 已关闭：真实 integration test 会创建两份共享相同 origin 和 bytes 的 clone，
+并证明第二个物理 root 会在 claim 前被拒绝；另一个测试只改变 dirty state。真实 local runtime test 则完整经过受控 Pi
+edit、task worktree、lease、verification、commit、串行 integration、SQLite recovery 与 identical retry。
+
+ADR-024 记录此边界。面向初学者的机制说明见[英文](./controlled-runtime-start.en.md)与
+[中文](./controlled-runtime-start.zh.md)。
+
+Stage 20 follow-up gate 有 38 个 test file、491 个 test 全部通过。覆盖率为 statement 95.44%、branch 90.90%、function
+96.51%、line 95.39%；新增 `run-preparation` package 独立达到 statement 100%、branch 98.33%、function 100%、line
+100%。`pnpm check`、`pnpm build`、CLI help 与 `git diff --check` 通过。Self-analysis 得到 15 个 project、114 个 file、
+1,620 个 symbol、59 条 project dependency、241 条 file dependency、3,007 条 symbol reference，以及同样两个已知
+configuration diagnostic。Ingestion-and-matching 研究仓库得到 3 个 project、1,010 个 file、7,617 个 symbol、3 条
+project dependency、3,592 条 file dependency、13,893 条 symbol reference，以及已知的 25-file
+`UNCOVERED_TYPESCRIPT_FILES` diagnostic。
+
+本轮没有在研究仓库执行 live external Pi model call。端到端 runtime test 使用 controlled Pi gateway 与真实
+filesystem/Git/SQLite/pnpm 操作。真实 `forge run` 会执行 model-backed code change，因此必须针对有意准备并批准的
+artifact 执行，不能把研究仓库当作未受控 mutation target。
+
+仍明确延后的工作包括 distributed/cross-process lease fencing、dirty-snapshot materialization、agent cancellation 与
+`UNKNOWN` resolution、multi-failure aggregation、publication/PR integration，以及 GitHub/Jira/provider trigger。这些限制
+不会削弱 local clean-snapshot authority chain，而是定义后续 productization stage。
+
+### Stage 20 独立 Review 加固
+
+第一次独立 Review 重现了原始 484-test evidence，并发现一个 Critical local recovery race：两个并发 caller 可以同时
+看到同一个 durable `PREPARING` attempt，并在 SQLite 后续 optimistic check 检测到竞争之前分别调用 external agent。
+现在每个 `startRun()` 与 `startOrResumeRun()` 都会进入以 repository/run identity 为 key 的 process-wide queue。回归测试
+会让两个独立 runtime instance 并发恢复同一个 attempt，并证明 agent 只 dispatch 一次。它关闭同一 process 内的重复
+dispatch，但不会被描述为 cross-process fencing。
+
+Integration recovery 现在可以区分普通 foreign commit 与 Forge 进度。Runtime 创建的 task commit 带准确的
+`Forge-Run-Id`、`Forge-Task-Id` trailer；checkout reuse 会验证 approved base 之后的每个 commit。合法 integrated history
+仍可复用，干净的人工 commit 与完全 unrelated history 都 fail closed。Trailer 是 provenance metadata，不是抵御直接 Git
+writer 故意伪造的 signature。
+
+Verification 不再继承父进程环境，只接收 `CI=1` 与 trusted `PATH`；package/script identifier 也增加明确字符 allowlist。
+真实 child-process 测试会给父进程设置非法 `NODE_OPTIONS`，并证明 approved pnpm script 不继承它且仍能成功。Lease
+hydration 现在明确只选择 ACTIVE lease；SQLite recovery 也增加 NULL 与 malformed JSON authority 的直接测试。
+
+最后，真实 Git integration test 会在 clean 状态完成 bind，随后把 repository 改为 dirty，再调用 `RunPreparation`；fresh
+`PlanExecutionBinder` 会在 checkout provision 之前拒绝。没有真实跨 package consumer 的新增 barrel export 已删除。这些
+改动关闭初审的 C1 与 H1-H3，并在不扩大 Stage 20 scope 的前提下处理 M1-M5。
+
+### Stage 20 Follow-up Review：PASS / CLOSED
+
+Follow-up reviewer 独立重现了 491-test gate 与完全一致的 coverage，并用真实 SQLite persistence 完成三组对抗实验：
+两个 runtime instance 并发恢复同一 `PREPARING` attempt 时只产生一次 agent call；authority 变化的请求排在 in-flight
+run 后仍会被拒绝；前一个排队操作失败也不会污染或永久阻塞后一个请求。这证明 module-level queue 会跨 runtime
+instance 共享，reject 后正确释放，并且不会绕过 authority check。
+
+Reviewer 还做了 mutation test，临时恢复父进程 environment inheritance；新增 `NODE_OPTIONS` regression test 立即
+失败，还原 whitelist 后重新通过，证明测试能真实捕获目标安全退化。真实 Git clean-at-bind/dirty-before-start 测试、
+ACTIVE-only lease hydration、SQLite NULL/malformed authority 测试、identifier allowlist、unrelated-history rejection 与
+public export 清理也都被直接核实。Stage 20 因此正式 **PASS / CLOSED**，可以开始 Stage 21。
+
+四项非阻塞 follow-up 被登记为技术债，而不是继续改变刚通过 Review 的 Stage 20 实现：若 provenance format 扩展，改用
+严格 Git trailer parser；继续保留所有 post-base commit 必须带 run trailer 的 fail-closed 规则；让 verification
+executable PATH 在 Windows 上可移植，并支持 Corepack、Volta 或自定义 pnpm 路径；在后续 security review 中决定
+trusted Git subprocess 是否也应使用 minimal environment。当前没有证据表明这些事项能绕过 Stage 20 authority 或造成
+重复 dispatch。
