@@ -48,6 +48,13 @@ task budget check, repair-iteration allocation, and insert in one serialized tra
 attempt revisions may update lifecycle evidence only; builder/repair lineage, agent, workspace, parent
 review subject, and repair iteration are immutable.
 
+Verification now has its own durable evidence record. A passed record binds run/task/attempt identity,
+workspace ID and revision, exact worktree content fingerprint, verification policy fingerprint, verified-at
+time, and a self fingerprint. It is exact-idempotent by run and attempt. `TaskVerificationEvidenceFactory`
+accepts an actual `RepositorySnapshot` rather than inventing content identity. Repair dispatch remains
+locked until the runtime persists this evidence after verification and supplies its fingerprint when it
+constructs a new review subject.
+
 ## Consequences
 
 - Code review becomes durable, structured, provider-neutral evidence.

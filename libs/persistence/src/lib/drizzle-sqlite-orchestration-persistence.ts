@@ -8,6 +8,7 @@ import type {
   TaskCodeReviewStore,
   TaskRepairAttemptStore,
   TaskRepairAdmissionStore,
+  TaskVerificationEvidenceStore,
   OrchestrationRunState,
   PersistedReevaluation,
   PersistedTaskConflict,
@@ -25,7 +26,8 @@ import type {
   SchedulerSnapshot,
   Scheduler,
   TaskState,
-  TaskConflict
+  TaskConflict,
+  TaskVerificationEvidence
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
   scheduleOptionsSchema,
@@ -37,6 +39,7 @@ import {
   taskCodeReviewSchema,
   taskCodeReviewSubjectSchema,
   taskRepairAttemptSchema,
+  taskVerificationEvidenceSchema,
   taskDecisionsWithTransitions,
   taskSpecificationSchema,
   taskContractSchema,
@@ -100,6 +103,13 @@ const taskRepairAttempts = sqliteTable('task_repair_attempts', {
   runId: text('run_id').notNull(),
   attemptId: text('attempt_id').notNull(),
   attemptJson: text('attempt_json').notNull()
+});
+
+const taskVerificationEvidence = sqliteTable('task_verification_evidence', {
+  runId: text('run_id').notNull(),
+  evidenceId: text('evidence_id').notNull(),
+  attemptId: text('attempt_id').notNull(),
+  evidenceJson: text('evidence_json').notNull()
 });
 
 const taskConflicts = sqliteTable('task_conflicts', {
@@ -205,6 +215,9 @@ const isTaskCodeReviewSubject = (value: unknown): value is PersistedTaskCodeRevi
 const isTaskRepairAttempt = (value: unknown): value is PersistedTaskRepairAttempt['attempt'] =>
   taskRepairAttemptSchema.safeParse(value).success;
 
+const isTaskVerificationEvidence = (value: unknown): value is TaskVerificationEvidence =>
+  taskVerificationEvidenceSchema.safeParse(value).success;
+
 const isWriteLease = (value: unknown): value is PersistedWriteLease['lease'] =>
   writeLeaseSchema.safeParse(value).success;
 
@@ -304,7 +317,8 @@ export class DrizzleSqliteOrchestrationPersistence
     OrchestrationPersistence,
     TaskCodeReviewStore,
     TaskRepairAttemptStore,
-    TaskRepairAdmissionStore
+    TaskRepairAdmissionStore,
+    TaskVerificationEvidenceStore
 {
   readonly #sqlite: Database.Database;
   readonly #db;
@@ -366,6 +380,13 @@ export class DrizzleSqliteOrchestrationPersistence
         run_id TEXT NOT NULL,
         attempt_id TEXT NOT NULL,
         attempt_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, attempt_id)
+      );
+      CREATE TABLE IF NOT EXISTS task_verification_evidence (
+        run_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
         PRIMARY KEY (run_id, attempt_id)
       );
       CREATE TABLE IF NOT EXISTS task_conflicts (
@@ -1145,6 +1166,58 @@ export class DrizzleSqliteOrchestrationPersistence
         runId: record.runId,
         attempt: decode(record.attemptJson, isTaskRepairAttempt, 'task repair attempt')
       }));
+  }
+
+  async persistVerificationEvidence(evidence: TaskVerificationEvidence): Promise<void> {
+    taskVerificationEvidenceSchema.parse(evidence);
+    this.#sqlite.transaction(() => {
+      this.#assertRunExists(evidence.runId);
+      const existing = this.#db
+        .select()
+        .from(taskVerificationEvidence)
+        .where(
+          and(
+            eq(taskVerificationEvidence.runId, evidence.runId),
+            eq(taskVerificationEvidence.attemptId, evidence.attemptId)
+          )
+        )
+        .get();
+      if (existing !== undefined) {
+        const stored = decode(
+          existing.evidenceJson,
+          isTaskVerificationEvidence,
+          'task verification evidence'
+        );
+        if (canonicalPlainStringify(stored) !== canonicalPlainStringify(evidence)) {
+          throw new PersistenceInputError(
+            'Verification evidence attempt already recorded with different evidence'
+          );
+        }
+        return;
+      }
+      this.#db
+        .insert(taskVerificationEvidence)
+        .values({
+          runId: evidence.runId,
+          evidenceId: evidence.id,
+          attemptId: evidence.attemptId,
+          evidenceJson: stringify(evidence)
+        })
+        .run();
+    })();
+  }
+
+  async recoverVerificationEvidence(runId: string): Promise<readonly TaskVerificationEvidence[]> {
+    this.#assertRunId(runId);
+    return this.#db
+      .select()
+      .from(taskVerificationEvidence)
+      .where(eq(taskVerificationEvidence.runId, runId))
+      .orderBy(asc(taskVerificationEvidence.attemptId))
+      .all()
+      .map((record) =>
+        decode(record.evidenceJson, isTaskVerificationEvidence, 'task verification evidence')
+      );
   }
 
   async replayRun(

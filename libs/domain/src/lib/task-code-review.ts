@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { TaskImpact } from './conflict.js';
 import type { AgentExecutionAttempt } from './agent-execution.js';
 import type { RepositoryGraph } from './repository-graph.js';
+import type { RepositorySnapshot } from './repository-graph.js';
 import type { TaskContract } from './task-contract.js';
 import type { TaskWorkspace } from './workspace.js';
 
@@ -19,6 +20,16 @@ export const taskCodeReviewSubjectSchema = z.object({
 });
 
 export type TaskCodeReviewSubject = z.infer<typeof taskCodeReviewSubjectSchema>;
+
+export interface TaskCodeReviewSubjectProvider {
+  createSubject(request: {
+    readonly builderAttempt: AgentExecutionAttempt;
+    readonly workspace: TaskWorkspace;
+    readonly impact: TaskImpact;
+    readonly workspaceSnapshot: RepositorySnapshot;
+    readonly verificationFingerprint: string;
+  }): TaskCodeReviewSubject;
+}
 
 export const taskCodeReviewFindingSchema = z.object({
   id: nonEmptyStringSchema,

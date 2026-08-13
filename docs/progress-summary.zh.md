@@ -1878,3 +1878,9 @@ repair admission 现在是 exact-once durable evidence。对同一个 parent rev
 attempt，而不会分配新的 iteration 或再次消耗 budget。SQLite 在一个 serialized transaction 内查找 parent review
 subject、检查 task budget、分配 iteration 并存储 attempt。后续 revision 可以增加 lifecycle evidence，但不能改变
 repair lineage identity。实际 repair dispatch、post-repair reconciliation、verification 与 re-review 仍刻意未实现。
+
+下一个 prerequisite 也已完成：passed verification 可以作为独立的 exact-idempotent evidence 存储。其 identity
+包含 run/task/attempt、workspace revision、实际 worktree-content fingerprint、verification-policy fingerprint、
+verified-at time 与 self fingerprint。factory 使用真实 Git snapshot，而不是派生 placeholder。repair dispatch
+仍保持锁定，直到 runtime composition 在每次 verification 后持久化该 evidence，并把它的 fingerprint 写入新的
+review subject。

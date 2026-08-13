@@ -15,6 +15,7 @@ import type { TaskWorkspace } from './workspace.js';
 import type { TaskCodeReview } from './task-code-review.js';
 import type { TaskCodeReviewSubject } from './task-code-review.js';
 import type { TaskRepairAttempt } from './task-repair-attempt.js';
+import type { TaskVerificationEvidence } from './task-verification-evidence.js';
 import { z } from 'zod';
 
 export type OrchestrationRunState = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
@@ -181,6 +182,11 @@ export interface TaskRepairAdmissionStore extends TaskRepairAttemptStore {
     readonly attempt: TaskRepairAttempt;
     readonly maxRepairs: number;
   }): Promise<TaskRepairAttempt>;
+}
+
+export interface TaskVerificationEvidenceStore {
+  persistVerificationEvidence(evidence: TaskVerificationEvidence): Promise<void>;
+  recoverVerificationEvidence(runId: string): Promise<readonly TaskVerificationEvidence[]>;
 }
 
 export const taskDecisionsWithTransitions = (

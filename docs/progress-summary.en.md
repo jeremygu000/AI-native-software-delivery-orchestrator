@@ -2172,3 +2172,9 @@ repair attempt rather than allocating another iteration or consuming budget agai
 up the parent review subject, checks the task budget, allocates an iteration, and stores the attempt. Later
 revisions may add lifecycle evidence but cannot alter repair lineage identity. Actual repair dispatch,
 post-repair reconciliation, verification, and re-review remain deliberately unimplemented.
+
+The next prerequisite is also complete: passed verification can be stored independently as exact-idempotent
+evidence. Its identity includes run/task/attempt, workspace revision, actual worktree-content fingerprint,
+verification-policy fingerprint, verified-at time, and self fingerprint. The factory consumes a real Git
+snapshot instead of deriving a placeholder. Repair dispatch is still locked until runtime composition
+persists this evidence after each verification and uses its fingerprint in the new review subject.

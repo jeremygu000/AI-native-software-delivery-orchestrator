@@ -386,6 +386,34 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     persistence.close();
   });
 
+  it('persists exact-idempotent verification evidence by execution attempt', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const evidence = {
+      id: 'verification-1',
+      runId: 'run-1',
+      taskId: 'A',
+      attemptId: 'attempt-A',
+      workspaceId: 'workspace-A',
+      workspaceRevision: 1,
+      workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
+      verificationPolicyFingerprint: `sha256:${'b'.repeat(64)}`,
+      status: 'passed' as const,
+      verifiedAt: '2026-08-13T00:02:00.000Z',
+      fingerprint: `sha256:${'c'.repeat(64)}`
+    };
+    await persistence.createRun(createRunRequest());
+    await persistence.persistVerificationEvidence(evidence);
+    await expect(persistence.persistVerificationEvidence(evidence)).resolves.toBeUndefined();
+    await expect(
+      persistence.persistVerificationEvidence({
+        ...evidence,
+        workspaceChangeFingerprint: `sha256:${'d'.repeat(64)}`
+      })
+    ).rejects.toThrow(PersistenceInputError);
+    await expect(persistence.recoverVerificationEvidence('run-1')).resolves.toEqual([evidence]);
+    persistence.close();
+  });
+
   it('admits exactly one repair attempt for an idempotent parent review retry', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     const subject = {
