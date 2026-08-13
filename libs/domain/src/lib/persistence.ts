@@ -13,6 +13,7 @@ import type { TaskState } from './task-state.js';
 import type { WriteLease } from './write-lease.js';
 import type { TaskWorkspace } from './workspace.js';
 import type { TaskCodeReview } from './task-code-review.js';
+import type { TaskCodeReviewSubject } from './task-code-review.js';
 import { z } from 'zod';
 
 export type OrchestrationRunState = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
@@ -86,6 +87,8 @@ export interface PersistedTaskCodeReview {
   readonly runId: string;
   readonly taskId: string;
   readonly iteration: number;
+  /** Undefined only for legacy evidence created before review-subject binding existed. */
+  readonly subject?: TaskCodeReviewSubject;
   readonly review: TaskCodeReview;
 }
 

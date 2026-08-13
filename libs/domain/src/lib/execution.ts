@@ -14,7 +14,6 @@ import type { WritableResource } from './write-lease.js';
 import type { TaskContract } from './task-contract.js';
 import { taskStateSchema } from './task-state.js';
 import type { TaskWorkspace } from './workspace.js';
-import type { TaskCodeReviewer } from './task-code-review.js';
 
 const taskIdSchema = z.string().trim().min(1);
 
@@ -285,23 +284,4 @@ export type TaskVerificationResult =
 
 export interface TaskVerifier {
   verify(request: TaskVerificationRequest): Promise<TaskVerificationResult>;
-}
-
-export interface TaskRepairRequest {
-  readonly runId: string;
-  readonly task: TaskContract;
-  readonly workspace: TaskWorkspace;
-  readonly impact: TaskImpact;
-  readonly instructions: string;
-  readonly onStarted: (evidence: { readonly sessionRef?: AgentSessionRef }) => Promise<void>;
-}
-
-export interface TaskRepairRunner {
-  repair(request: TaskRepairRequest): Promise<AgentRunResult>;
-}
-
-export interface TaskReviewLoop {
-  readonly reviewer: TaskCodeReviewer;
-  readonly repairRunner: TaskRepairRunner;
-  readonly maxRepairs: number;
 }

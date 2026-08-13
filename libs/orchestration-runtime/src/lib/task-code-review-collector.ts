@@ -1,4 +1,5 @@
 import {
+  assertTaskCodeReviewFindingEvidence,
   parseTaskCodeReview,
   type TaskCodeReviewer,
   type TaskCodeReviewRequest,
@@ -20,10 +21,12 @@ export class TaskCodeReviewCollector {
 
   async collect(request: TaskCodeReviewRequest) {
     const review = parseTaskCodeReview(await this.#reviewer.review(request));
+    assertTaskCodeReviewFindingEvidence(review, request.repository);
     await this.#store.persistReview({
       runId: request.runId,
       taskId: request.task.id,
       iteration: request.iteration,
+      subject: request.subject,
       review
     });
     return review;

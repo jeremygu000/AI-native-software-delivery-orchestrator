@@ -32,6 +32,7 @@ import {
   taskConflictSchema,
   taskImpactSchema,
   taskCodeReviewSchema,
+  taskCodeReviewSubjectSchema,
   taskDecisionsWithTransitions,
   taskSpecificationSchema,
   taskContractSchema,
@@ -87,6 +88,7 @@ const taskCodeReviews = sqliteTable('task_code_reviews', {
   runId: text('run_id').notNull(),
   taskId: text('task_id').notNull(),
   iteration: integer('iteration').notNull(),
+  subjectJson: text('subject_json'),
   reviewJson: text('review_json').notNull()
 });
 
@@ -186,6 +188,9 @@ const isTaskImpact = (value: unknown): value is PersistedTaskImpact['impact'] =>
 
 const isTaskCodeReview = (value: unknown): value is PersistedTaskCodeReview['review'] =>
   taskCodeReviewSchema.safeParse(value).success;
+
+const isTaskCodeReviewSubject = (value: unknown): value is PersistedTaskCodeReview['subject'] =>
+  taskCodeReviewSubjectSchema.safeParse(value).success;
 
 const isWriteLease = (value: unknown): value is PersistedWriteLease['lease'] =>
   writeLeaseSchema.safeParse(value).success;
@@ -336,6 +341,7 @@ export class DrizzleSqliteOrchestrationPersistence
         run_id TEXT NOT NULL,
         task_id TEXT NOT NULL,
         iteration INTEGER NOT NULL,
+        subject_json TEXT,
         review_json TEXT NOT NULL,
         PRIMARY KEY (run_id, task_id, iteration)
       );
@@ -389,6 +395,18 @@ export class DrizzleSqliteOrchestrationPersistence
       )
     ) {
       this.#sqlite.exec('ALTER TABLE task_conflicts ADD COLUMN effective_from_sequence INTEGER');
+    }
+    const reviewColumns = this.#sqlite.prepare('PRAGMA table_info(task_code_reviews)').all();
+    if (
+      !reviewColumns.some(
+        (column) =>
+          typeof column === 'object' &&
+          column !== null &&
+          'name' in column &&
+          column.name === 'subject_json'
+      )
+    ) {
+      this.#sqlite.exec('ALTER TABLE task_code_reviews ADD COLUMN subject_json TEXT');
     }
   }
 
@@ -584,6 +602,10 @@ export class DrizzleSqliteOrchestrationPersistence
       throw new PersistenceInputError('Task code review requires a task ID and positive iteration');
     }
     taskCodeReviewSchema.parse(record.review);
+    if (record.subject === undefined) {
+      throw new PersistenceInputError('New task code review evidence requires a review subject');
+    }
+    taskCodeReviewSubjectSchema.parse(record.subject);
     this.#sqlite.transaction(() => {
       this.#assertRunExists(record.runId);
       const existing = this.#db
@@ -599,9 +621,13 @@ export class DrizzleSqliteOrchestrationPersistence
         .get();
       if (
         existing !== undefined &&
-        canonicalPlainStringify(
-          decode(existing.reviewJson, isTaskCodeReview, 'task code review')
-        ) !== canonicalPlainStringify(record.review)
+        (existing.subjectJson === null ||
+          canonicalPlainStringify(
+            decode(existing.reviewJson, isTaskCodeReview, 'task code review')
+          ) !== canonicalPlainStringify(record.review) ||
+          canonicalPlainStringify(
+            decode(existing.subjectJson, isTaskCodeReviewSubject, 'task code review subject')
+          ) !== canonicalPlainStringify(record.subject))
       ) {
         throw new PersistenceInputError(
           'Task code review iteration already recorded with different evidence'
@@ -613,6 +639,7 @@ export class DrizzleSqliteOrchestrationPersistence
           runId: record.runId,
           taskId: record.taskId,
           iteration: record.iteration,
+          subjectJson: stringify(record.subject),
           reviewJson: stringify(record.review)
         })
         .onConflictDoNothing()
@@ -943,6 +970,15 @@ export class DrizzleSqliteOrchestrationPersistence
         runId: review.runId,
         taskId: review.taskId,
         iteration: review.iteration,
+        ...(review.subjectJson === null
+          ? {}
+          : {
+              subject: decode(
+                review.subjectJson,
+                isTaskCodeReviewSubject,
+                'task code review subject'
+              )
+            }),
         review: decode(review.reviewJson, isTaskCodeReview, 'task code review')
       }));
   }

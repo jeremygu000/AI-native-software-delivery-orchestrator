@@ -274,16 +274,25 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
       summary: 'Implementation matches the task contract.',
       findings: []
     };
+    const subject = {
+      builderAttemptId: 'attempt-A',
+      workspaceId: 'workspace-A',
+      workspaceRevision: 1,
+      workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
+      impactFingerprint: `sha256:${'b'.repeat(64)}`,
+      verificationFingerprint: `sha256:${'c'.repeat(64)}`
+    };
     await persistence.createRun(createRunRequest());
-    await persistence.persistReview({ runId: 'run-1', taskId: 'A', iteration: 1, review });
+    await persistence.persistReview({ runId: 'run-1', taskId: 'A', iteration: 1, subject, review });
     await expect(
-      persistence.persistReview({ runId: 'run-1', taskId: 'A', iteration: 1, review })
+      persistence.persistReview({ runId: 'run-1', taskId: 'A', iteration: 1, subject, review })
     ).resolves.toBeUndefined();
     await expect(
       persistence.persistReview({
         runId: 'run-1',
         taskId: 'A',
         iteration: 1,
+        subject,
         review: {
           recommendation: 'repair',
           summary: 'Changed evidence.',
@@ -299,9 +308,21 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         }
       })
     ).rejects.toThrow(PersistenceInputError);
+    await expect(
+      persistence.persistReview({ runId: 'run-1', taskId: 'B', iteration: 1, review })
+    ).rejects.toThrow('requires a review subject');
     await expect(persistence.recoverReviews('run-1')).resolves.toMatchObject([
-      { taskId: 'A', iteration: 1, review }
+      { taskId: 'A', iteration: 1, subject, review }
     ]);
+    await expect(
+      persistence.persistReview({
+        runId: 'run-1',
+        taskId: 'A',
+        iteration: 1,
+        subject: { ...subject, workspaceChangeFingerprint: `sha256:${'d'.repeat(64)}` },
+        review
+      })
+    ).rejects.toThrow(PersistenceInputError);
     persistence.close();
   });
 

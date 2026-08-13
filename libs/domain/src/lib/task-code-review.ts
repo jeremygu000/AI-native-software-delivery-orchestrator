@@ -1,10 +1,24 @@
 import { z } from 'zod';
 
 import type { TaskImpact } from './conflict.js';
+import type { AgentExecutionAttempt } from './agent-execution.js';
+import type { RepositoryGraph } from './repository-graph.js';
 import type { TaskContract } from './task-contract.js';
 import type { TaskWorkspace } from './workspace.js';
 
 const nonEmptyStringSchema = z.string().trim().min(1);
+const fingerprintSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+
+export const taskCodeReviewSubjectSchema = z.object({
+  builderAttemptId: nonEmptyStringSchema,
+  workspaceId: nonEmptyStringSchema,
+  workspaceRevision: z.int().positive(),
+  workspaceChangeFingerprint: fingerprintSchema,
+  impactFingerprint: fingerprintSchema,
+  verificationFingerprint: fingerprintSchema
+});
+
+export type TaskCodeReviewSubject = z.infer<typeof taskCodeReviewSubjectSchema>;
 
 export const taskCodeReviewFindingSchema = z.object({
   id: nonEmptyStringSchema,
@@ -56,6 +70,9 @@ export interface TaskCodeReviewRequest {
   readonly task: TaskContract;
   readonly workspace: TaskWorkspace;
   readonly impact: TaskImpact;
+  readonly builderAttempt: AgentExecutionAttempt;
+  readonly subject: TaskCodeReviewSubject;
+  readonly repository: Pick<RepositoryGraph, 'files' | 'symbols'>;
   readonly iteration: number;
 }
 
@@ -89,4 +106,34 @@ export const parseTaskCodeReview = (value: unknown): TaskCodeReview => {
     throw new TaskCodeReviewError(parsed.error.issues);
   }
   return parsed.data;
+};
+
+export const assertTaskCodeReviewFindingEvidence = (
+  review: TaskCodeReview,
+  repository: Pick<RepositoryGraph, 'files' | 'symbols'>
+): void => {
+  const issues: z.core.$ZodIssue[] = [];
+  for (const [findingIndex, finding] of review.findings.entries()) {
+    for (const [fileIndex, fileId] of finding.fileIds.entries()) {
+      if (!repository.files.has(fileId)) {
+        issues.push({
+          code: 'custom',
+          path: ['findings', findingIndex, 'fileIds', fileIndex],
+          message: `Code review references unknown file: ${fileId}`
+        });
+      }
+    }
+    for (const [symbolIndex, symbolId] of finding.symbolIds.entries()) {
+      if (!repository.symbols.has(symbolId)) {
+        issues.push({
+          code: 'custom',
+          path: ['findings', findingIndex, 'symbolIds', symbolIndex],
+          message: `Code review references unknown symbol: ${symbolId}`
+        });
+      }
+    }
+  }
+  if (issues.length > 0) {
+    throw new TaskCodeReviewError(issues);
+  }
 };

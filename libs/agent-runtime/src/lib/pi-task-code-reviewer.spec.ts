@@ -69,6 +69,27 @@ const request: TaskCodeReviewRequest = {
       generatedFilesChanged: new Set()
     }
   },
+  builderAttempt: {
+    id: 'attempt-1',
+    runId: 'run-1',
+    taskId: 'task-1',
+    agentId: 'agent-1',
+    workspaceId: 'workspace-1',
+    leasePlanFingerprint: 'lease-plan-1',
+    state: 'COMPLETED',
+    revision: 1,
+    startedAt: new Date('2026-08-13T00:00:00.000Z'),
+    completedAt: new Date('2026-08-13T00:01:00.000Z')
+  },
+  subject: {
+    builderAttemptId: 'attempt-1',
+    workspaceId: 'workspace-1',
+    workspaceRevision: 1,
+    workspaceChangeFingerprint: `sha256:${'1'.repeat(64)}`,
+    impactFingerprint: `sha256:${'2'.repeat(64)}`,
+    verificationFingerprint: `sha256:${'3'.repeat(64)}`
+  },
+  repository: { files: new Map(), symbols: new Map() },
   iteration: 1
 };
 

@@ -106,7 +106,9 @@ export const createControlledPiTools = (
 
 /** Defines only the workspace-inspection tools safe for advisory reviewer sessions. */
 export const createReadOnlyPiTools = (executeTool: (call: PiToolCall) => Promise<PiToolResult>) =>
-  createControlledPiTools(executeTool).slice(0, 3);
+  createControlledPiTools(executeTool).filter((tool) =>
+    ['forge_read', 'forge_list', 'forge_find'].includes(tool.name)
+  );
 
 export class PiCodingAgentGateway implements PiSessionGateway {
   readonly #createSession: PiSessionFactory;

@@ -2147,6 +2147,13 @@ The reviewer session defines and activates only these three read-only tools rath
 tool set and relying on an active-tool filter. A real Pi SDK regression test verifies that no built-in
 shell or Forge edit, write, or command tool is active.
 
+Every review is now bound to the builder attempt, workspace identity and revision, workspace-change
+fingerprint, observed-impact fingerprint, and verification fingerprint. A changed subject at the same
+review iteration fails closed, and findings that cite unknown repository file or symbol IDs are rejected
+before persistence. This is evidence binding only: no current integration path uses review acceptance as
+authority. The next repair increment must first produce durable workspace-change and verification
+fingerprints for the exact output it proposes to review or integrate.
+
 The reviewer cannot write files, run commands, approve integration, or dispatch repair. Repair is not yet
 implemented: the existing runtime has one durable builder-attempt lineage per task, while a safe repair
 loop requires separately modeled repair attempts, a bounded budget, repeat verification and review,

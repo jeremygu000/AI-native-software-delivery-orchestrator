@@ -23,6 +23,14 @@ the same task iteration. `PiTaskCodeReviewer` creates an isolated Pi session who
 custom tool sets contain only `forge_read`, `forge_list`, and `forge_find`; it exposes neither write nor
 command tools. A real Pi SDK regression test verifies this active tool boundary.
 
+Every new review record also requires a subject binding: builder-attempt ID, workspace ID and revision,
+workspace-change fingerprint, observed-impact fingerprint, and verification fingerprint. The store treats
+any subject change at the same run/task/iteration as different evidence and fails closed. The collector
+rejects finding file and symbol IDs that do not exist in its approved repository facts. A review record is
+not yet an integration admission decision; before repair or integration can use it, the composition layer
+must produce the exact workspace-change and verification evidence fingerprints from durable Git and
+verification results.
+
 The initial Stage 22 boundary deliberately does not dispatch repair. Existing execution persistence
 assumes one agent-attempt lineage per task. Repair needs a separately modeled attempt lineage, budget,
 re-verification, re-review, recovery behavior, and integration admission rule. It must not be added by

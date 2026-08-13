@@ -1857,6 +1857,12 @@ collector 会解析这份不可信 response，并按 run、task 和 review itera
 reviewer session 只定义并激活这三个只读 tool，而不是先定义更宽的 tool set 后依赖 active-tool filter。
 真实 Pi SDK regression test 会验证没有 built-in shell，也没有 Forge edit、write 或 command tool 处于 active 状态。
 
+每份 review 现在绑定 builder attempt、workspace identity 与 revision、workspace-change fingerprint、
+observed-impact fingerprint 和 verification fingerprint。同一 review iteration 的 subject 变化会 fail closed；
+引用不存在 repository file 或 symbol ID 的 finding 会在 persistence 前被拒绝。这只是 evidence binding：现有
+integration path 尚未把 review acceptance 作为 authority。下一次 repair increment 必须先为 exact output 产出
+durable workspace-change 与 verification fingerprint，才能 review 或 integrate。
+
 reviewer 不能写文件、运行 command、批准 integration 或 dispatch repair。repair 目前尚未实现：现有 runtime
 对每个 task 只有一条 durable builder-attempt lineage，而安全 repair loop 需要独立建模 repair attempt、bounded
 budget、再次 verification 与 review、recovery semantic 及 integration-admission rule。ADR-025 记录了此
