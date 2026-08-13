@@ -172,6 +172,35 @@ const conflictRecord = (): PersistedTaskConflict => ({
   conflict: createRunRequest().hardConflicts[0]
 });
 
+const runtimeConflictMutation = (taskB = 'B'): PersistedTaskConflict => ({
+  runId: 'run-1',
+  taskA: 'A',
+  taskB,
+  effectiveFromSequence: 1,
+  conflict: {
+    taskA: 'A',
+    taskB,
+    score: 100,
+    severity: 'hard',
+    reasons: [
+      {
+        type: 'same-file',
+        score: 100,
+        detail: 'Observed runtime scope conflicts with another task lease-plan resource.',
+        resourceIds: ['core:file']
+      }
+    ],
+    constraints: [
+      {
+        type: 'runtime-scope-expansion',
+        detail: 'Observed runtime scope expansion must be reconciled before future dispatch.',
+        resourceIds: ['core:file']
+      }
+    ],
+    recommendedAction: 'serialize'
+  }
+});
+
 const leaseRecord = (): PersistedWriteLease => ({
   runId: 'run-1',
   lease: {
@@ -537,6 +566,28 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     const recovered = await persistence.recoverRun('run-1');
     expect(recovered?.events).toHaveLength(1);
     expect(recovered?.transitions).toHaveLength(2);
+    persistence.close();
+  });
+
+  it('requires exact runtime conflict mutations for an idempotent reevaluation retry', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const record: PersistedReevaluation = {
+      ...reevaluation(),
+      runtimeConflicts: [runtimeConflictMutation()]
+    };
+    await persistence.createRun(createRunRequest());
+
+    await persistence.persistReevaluation(record);
+    await expect(persistence.persistReevaluation(record)).resolves.toBeUndefined();
+    await expect(
+      persistence.persistReevaluation({
+        ...record,
+        runtimeConflicts: [runtimeConflictMutation('C')]
+      })
+    ).rejects.toThrow('Scheduler event sequence 1 already recorded with different evidence');
+    await expect(persistence.recoverRun('run-1')).resolves.toMatchObject({
+      conflicts: [{ taskA: 'A', taskB: 'B', effectiveFromSequence: 1 }]
+    });
     persistence.close();
   });
 

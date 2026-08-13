@@ -230,6 +230,17 @@ const canonicalTransitions = (
       })
   );
 
+const canonicalRuntimeConflicts = (conflicts: readonly PersistedTaskConflict[]): string =>
+  canonicalPlainStringify(
+    conflicts
+      .map(({ runId: _runId, ...conflict }) => conflict)
+      .toSorted((left, right) => {
+        const leftKey = `${left.taskA}\u0000${left.taskB}`;
+        const rightKey = `${right.taskA}\u0000${right.taskB}`;
+        return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+      })
+  );
+
 const decode = <T>(value: string, predicate: (parsed: unknown) => parsed is T, name: string): T => {
   const parsed = parse(value, name);
   if (!predicate(parsed)) {
@@ -1026,6 +1037,28 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
       )
       .orderBy(asc(taskTransitions.ordinal))
       .all();
+    const runtimeConflicts = this.#db
+      .select()
+      .from(taskConflicts)
+      .where(
+        and(
+          eq(taskConflicts.runId, reevaluation.event.runId),
+          eq(taskConflicts.effectiveFromSequence, reevaluation.event.sequence)
+        )
+      )
+      .orderBy(asc(taskConflicts.taskA), asc(taskConflicts.taskB))
+      .all()
+      .map((record) => ({
+        runId: record.runId,
+        taskA: record.taskA,
+        taskB: record.taskB,
+        effectiveFromSequence: record.effectiveFromSequence ?? undefined,
+        conflict: decode(
+          record.conflictJson,
+          (value): value is TaskConflict => taskConflictSchema.safeParse(value).success,
+          'task conflict'
+        )
+      }));
     if (
       event === undefined ||
       decision === undefined ||
@@ -1043,7 +1076,9 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
       canonicalDecisionStringify(
         decode(decision.decisionJson, isSchedulerDecision, 'scheduler decision')
       ) !== canonicalDecisionStringify(reevaluation.decision.decision) ||
-      canonicalTransitions(transitions) !== canonicalTransitions(reevaluation.transitions)
+      canonicalTransitions(transitions) !== canonicalTransitions(reevaluation.transitions) ||
+      canonicalRuntimeConflicts(runtimeConflicts) !==
+        canonicalRuntimeConflicts(reevaluation.runtimeConflicts ?? [])
     ) {
       throw new PersistenceInputError(
         `Scheduler event sequence ${reevaluation.event.sequence} already recorded with different evidence`

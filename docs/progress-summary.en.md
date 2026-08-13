@@ -2128,3 +2128,9 @@ uses them. Replay applies each mutation only from its `effectiveFromSequence`, s
 decisions without incorrectly leaking a later conflict into earlier scheduling. Expansion matching now
 compares actual `WritableResource` values against other tasks' canonical lease plans, preserving project,
 file, and symbol hierarchy instead of relying on a file-ID-only comparison.
+
+The durable retry boundary also includes runtime conflict mutations. A retry for an already committed
+scheduler sequence succeeds only when its event, snapshot, transitions, decision, and same-sequence
+runtime conflicts are exact evidence matches; a changed mutation set fails closed. This preserves the
+run's uncertain-commit idempotency rule while leaving later observations for an already serialized task
+pair as diagnostic follow-up rather than rewriting its initial conflict evidence.

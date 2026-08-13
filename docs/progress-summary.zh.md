@@ -1841,3 +1841,8 @@ runtime scope conflict 现在会作为 mutation，在首次使用它的同一个
 只从其 `effectiveFromSequence` 起应用 mutation，因此能重现历史 decision，而不会把后来的 conflict 错误带入
 更早的 scheduling。expansion matching 现在将实际 `WritableResource` 与其他 task 的 canonical lease plan
 比较，保留 project、file 和 symbol hierarchy，而不再只比较 file ID。
+
+durable retry boundary 也包含 runtime conflict mutation。已经提交的 scheduler sequence 只有在 event、
+snapshot、transition、decision 和同 sequence runtime conflict 都是 exact evidence match 时才允许 retry；
+mutation set 变化会 fail closed。这保留了 run uncertain-commit idempotency rule；对于已经 serialize 的
+task pair，后续 observation 仍属于 diagnostic follow-up，而不会重写最初 conflict evidence。
