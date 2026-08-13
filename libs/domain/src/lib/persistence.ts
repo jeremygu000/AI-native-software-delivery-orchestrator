@@ -36,7 +36,8 @@ export const runAuthorityEvidenceSchema = z.object({
   workingTreeFingerprint: digestSchema,
   repositoryFactsFingerprint: digestSchema,
   sharedResourcePolicyFingerprint: digestSchema,
-  verificationPolicyFingerprint: digestSchema
+  verificationPolicyFingerprint: digestSchema,
+  codeReviewPolicyFingerprint: digestSchema
 });
 
 export type RunAuthorityEvidence = z.infer<typeof runAuthorityEvidenceSchema>;

@@ -55,3 +55,5 @@ export {
   PlanExecutionBindingError
 } from './lib/plan-execution-binder.js';
 export type { PlanExecutionIntent } from './lib/plan-execution-binder.js';
+export { codeReviewPolicyFingerprint, codeReviewPolicySchema } from './lib/code-review-policy.js';
+export type { CodeReviewPolicy } from './lib/code-review-policy.js';

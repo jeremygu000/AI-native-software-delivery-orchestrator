@@ -84,5 +84,16 @@ export const approvalTestArtifact = (artifactId = 'plan-1') =>
     repositorySnapshot: snapshot,
     sharedResourcePolicy: [],
     verificationPolicy: { version: 1 },
+    codeReviewPolicy: {
+      version: 1,
+      reviewer: {
+        implementation: 'pi-task-code-reviewer',
+        provider: 'pi',
+        model: 'test-model',
+        toolProfile: 'workspace-read-only-v1',
+        outputSchemaVersion: 1,
+        promptVersion: 'v1'
+      }
+    },
     preparedPlan
   });

@@ -51,7 +51,8 @@ const createRunRequest = (id = 'run-1'): CreatePersistedRunRequest => ({
       workingTreeFingerprint: `sha256:${'6'.repeat(64)}`,
       repositoryFactsFingerprint: `sha256:${'7'.repeat(64)}`,
       sharedResourcePolicyFingerprint: `sha256:${'8'.repeat(64)}`,
-      verificationPolicyFingerprint: `sha256:${'9'.repeat(64)}`
+      verificationPolicyFingerprint: `sha256:${'9'.repeat(64)}`,
+      codeReviewPolicyFingerprint: `sha256:${'a'.repeat(64)}`
     }
   },
   tasks: [task('A'), task('B', ['A'])],

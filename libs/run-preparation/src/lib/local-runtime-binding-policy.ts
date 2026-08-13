@@ -52,7 +52,8 @@ const authorityEvidence = (intent: PlanExecutionIntent): RunAuthorityEvidence =>
   workingTreeFingerprint: intent.artifact.repository.workingTreeFingerprint,
   repositoryFactsFingerprint: intent.artifact.repository.factsFingerprint,
   sharedResourcePolicyFingerprint: intent.artifact.authority.sharedResourcePolicyFingerprint,
-  verificationPolicyFingerprint: intent.artifact.authority.verificationPolicyFingerprint
+  verificationPolicyFingerprint: intent.artifact.authority.verificationPolicyFingerprint,
+  codeReviewPolicyFingerprint: intent.artifact.authority.codeReviewPolicyFingerprint
 });
 
 const hardConflict = (conflict: unknown): HardTaskConflict => {

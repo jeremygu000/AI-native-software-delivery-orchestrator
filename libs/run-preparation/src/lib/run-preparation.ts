@@ -117,7 +117,8 @@ export class RunPreparation {
       workingTreeFingerprint: intent.artifact.repository.workingTreeFingerprint,
       repositoryFactsFingerprint: intent.artifact.repository.factsFingerprint,
       sharedResourcePolicyFingerprint: intent.artifact.authority.sharedResourcePolicyFingerprint,
-      verificationPolicyFingerprint: intent.artifact.authority.verificationPolicyFingerprint
+      verificationPolicyFingerprint: intent.artifact.authority.verificationPolicyFingerprint,
+      codeReviewPolicyFingerprint: intent.artifact.authority.codeReviewPolicyFingerprint
     };
     if (fingerprintPlanValue(request.run.authority) !== fingerprintPlanValue(expectedAuthority)) {
       throw new RunPreparationError('Runtime durable authority does not match execution intent');

@@ -46,6 +46,17 @@ const intent = (dirty = false): PlanExecutionIntent => {
     },
     sharedResourcePolicy: [],
     verificationPolicy: { version: 1 },
+    codeReviewPolicy: {
+      version: 1,
+      reviewer: {
+        implementation: 'test',
+        provider: 'test',
+        model: 'test',
+        toolProfile: 'workspace-read-only-v1',
+        outputSchemaVersion: 1,
+        promptVersion: 'v1'
+      }
+    },
     preparedPlan: {
       attempts: 1,
       specification: {
@@ -267,7 +278,8 @@ const runtimeRequest = (authority: PlanExecutionIntent): StartRuntimeRunRequest 
       workingTreeFingerprint: authority.artifact.repository.workingTreeFingerprint,
       repositoryFactsFingerprint: authority.artifact.repository.factsFingerprint,
       sharedResourcePolicyFingerprint: authority.artifact.authority.sharedResourcePolicyFingerprint,
-      verificationPolicyFingerprint: authority.artifact.authority.verificationPolicyFingerprint
+      verificationPolicyFingerprint: authority.artifact.authority.verificationPolicyFingerprint,
+      codeReviewPolicyFingerprint: authority.artifact.authority.codeReviewPolicyFingerprint
     }
   },
   tasks: authority.artifact.decision.specification.tasks,

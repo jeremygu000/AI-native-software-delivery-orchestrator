@@ -236,7 +236,8 @@ describe('forge analyze', () => {
       },
       authority: {
         sharedResourcePolicyFingerprint: `sha256:${'6'.repeat(64)}`,
-        verificationPolicyFingerprint: `sha256:${'7'.repeat(64)}`
+        verificationPolicyFingerprint: `sha256:${'7'.repeat(64)}`,
+        codeReviewPolicyFingerprint: `sha256:${'8'.repeat(64)}`
       },
       decision: {
         attempts: 2,

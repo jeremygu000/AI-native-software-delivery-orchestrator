@@ -130,6 +130,17 @@ const artifact = (content = 'Change A.'): PlanArtifact =>
     },
     sharedResourcePolicy: [],
     verificationPolicy: { version: 1 },
+    codeReviewPolicy: {
+      version: 1,
+      reviewer: {
+        implementation: 'test',
+        provider: 'test',
+        model: 'test',
+        toolProfile: 'workspace-read-only-v1',
+        outputSchemaVersion: 1,
+        promptVersion: 'v1'
+      }
+    },
     preparedPlan
   });
 

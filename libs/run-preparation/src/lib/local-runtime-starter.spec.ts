@@ -38,6 +38,17 @@ const verificationPolicy = {
     pidLimit: 256
   }
 } as const;
+const codeReviewPolicy = {
+  version: 1,
+  reviewer: {
+    implementation: 'pi-task-code-reviewer',
+    provider: 'pi',
+    model: 'test-model',
+    toolProfile: 'workspace-read-only-v1',
+    outputSchemaVersion: 1,
+    promptVersion: 'v1'
+  }
+} as const;
 const git = (cwd: string, args: readonly string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
@@ -74,7 +85,8 @@ const authority = (commit: string): RunAuthorityEvidence => ({
   workingTreeFingerprint: `sha256:${'5'.repeat(64)}`,
   repositoryFactsFingerprint: `sha256:${'6'.repeat(64)}`,
   sharedResourcePolicyFingerprint: `sha256:${'7'.repeat(64)}`,
-  verificationPolicyFingerprint: fingerprintPlanValue(verificationPolicy)
+  verificationPolicyFingerprint: fingerprintPlanValue(verificationPolicy),
+  codeReviewPolicyFingerprint: fingerprintPlanValue(codeReviewPolicy)
 });
 
 afterEach(() => {
@@ -217,17 +229,34 @@ describe('LocalRuntimeStarter', () => {
             'example.invalid/changed-verifier@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
         }
       },
+      codeReviewPolicy,
       verificationSandbox: { execute: executeVerification }
     });
     await expect(wrongRuntime.startOrResumeRun(request)).rejects.toThrow(
       'Runtime verification policy does not match durable execution authority'
     );
     wrongRuntime.close();
+    const wrongReviewRuntime = new LocalRuntimeStarter({
+      graph,
+      databasePath,
+      gateway,
+      verificationPolicy,
+      codeReviewPolicy: {
+        ...codeReviewPolicy,
+        reviewer: { ...codeReviewPolicy.reviewer, model: 'changed-model' }
+      },
+      verificationSandbox: { execute: executeVerification }
+    });
+    await expect(wrongReviewRuntime.startOrResumeRun(request)).rejects.toThrow(
+      'Runtime code review policy does not match durable execution authority'
+    );
+    wrongReviewRuntime.close();
     const runtime = new LocalRuntimeStarter({
       graph,
       databasePath,
       gateway,
       verificationPolicy,
+      codeReviewPolicy,
       verificationSandbox: { execute: executeVerification }
     });
 
@@ -340,7 +369,8 @@ describe('LocalRuntimeStarter', () => {
     const starter = new LocalRuntimeStarter({
       graph,
       databasePath: join(databaseDirectory, 'run.sqlite'),
-      verificationPolicy
+      verificationPolicy,
+      codeReviewPolicy
     });
     starter.close();
   });

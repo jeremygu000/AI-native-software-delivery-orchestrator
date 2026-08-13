@@ -151,6 +151,18 @@ const verificationPolicy = {
   }
 } as const;
 
+const codeReviewPolicy = {
+  version: 1,
+  reviewer: {
+    implementation: 'pi-task-code-reviewer',
+    provider: 'pi',
+    model: 'configured-pi-model',
+    toolProfile: 'workspace-read-only-v1',
+    outputSchemaVersion: 1,
+    promptVersion: 'v1'
+  }
+} as const;
+
 const createRepositoryPlan = async (request: {
   readonly specificationPath: string;
   readonly repositoryPath: string;
@@ -200,6 +212,7 @@ const createRepositoryPlan = async (request: {
     repositorySnapshot,
     sharedResourcePolicy: registry.list(),
     verificationPolicy,
+    codeReviewPolicy,
     preparedPlan
   });
   const artifactDirectory = await resolvePlanArtifactDirectory(
@@ -290,7 +303,8 @@ const bindRepositoryPlan = async (request: {
     runId: request.runId,
     repository: { repositoryPath: request.repositoryPath },
     sharedResourcePolicy: registry.list(),
-    verificationPolicy
+    verificationPolicy,
+    codeReviewPolicy
   });
 };
 
@@ -328,7 +342,8 @@ const runRepositoryPlan = async (request: {
       runId: request.runId,
       repository: { repositoryPath: request.repositoryPath },
       sharedResourcePolicy: registry.list(),
-      verificationPolicy
+      verificationPolicy,
+      codeReviewPolicy
     });
   const intent = await bind();
   const runDirectory = resolve(
@@ -347,7 +362,8 @@ const runRepositoryPlan = async (request: {
         const runtime = new LocalRuntimeStarter({
           graph: currentGraph,
           databasePath: join(runDirectory, request.runId, 'run.sqlite'),
-          verificationPolicy
+          verificationPolicy,
+          codeReviewPolicy
         });
         try {
           return await runtime.startOrResumeRun(runtimeRequest);

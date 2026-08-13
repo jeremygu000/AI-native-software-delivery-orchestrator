@@ -1905,3 +1905,8 @@ scheduler-visible repair phase，`forge run` 才能自动消费这些 feedback e
 在最终 repair-scheduler composition 建立两侧共同的 evidence contract 前，builder 与 repair path 的 lease
 release 仍刻意保持独立。最终 Stage 22 increment 必须增加并行且可恢复的 repair view：当 blocker lease
 释放时用 CAS 恢复 BLOCKED repair；不得把 repair state 塞进原始 builder task-state snapshot。
+
+code review policy 现在是独立于 verification policy 的 approved authority。其 semantic fingerprint 绑定
+reviewer implementation、provider、model、read-only tool profile、review schema version 与 prompt version，
+并排除 transient session 与 path。artifact creation、execution binding、durable run authority 和 local startup
+都会独立拒绝 code-review-policy drift。

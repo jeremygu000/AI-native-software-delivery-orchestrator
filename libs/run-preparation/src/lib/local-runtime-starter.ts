@@ -20,6 +20,10 @@ import type {
 import { OrchestrationRuntime } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 import { fingerprintPlanValue } from '@ai-native-software-delivery-orchestrator/planning';
+import {
+  codeReviewPolicyFingerprint,
+  type CodeReviewPolicy
+} from '@ai-native-software-delivery-orchestrator/planning';
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
 import {
@@ -152,6 +156,7 @@ export interface LocalRuntimeStarterOptions {
   readonly graph: RepositoryGraph;
   readonly databasePath: string;
   readonly verificationPolicy: SandboxedVerificationPolicy;
+  readonly codeReviewPolicy: CodeReviewPolicy;
   readonly verificationSandbox?: AgentCommandSandbox;
   readonly gateway?: PiSessionGateway;
 }
@@ -161,6 +166,7 @@ export class LocalRuntimeStarter implements RuntimeStarter {
   readonly #graph: RepositoryGraph;
   readonly #gateway: PiSessionGateway;
   readonly #verificationPolicy: SandboxedVerificationPolicy;
+  readonly #codeReviewPolicy: CodeReviewPolicy;
   readonly #verificationSandbox: AgentCommandSandbox | undefined;
 
   constructor(options: LocalRuntimeStarterOptions) {
@@ -169,6 +175,7 @@ export class LocalRuntimeStarter implements RuntimeStarter {
     this.#graph = options.graph;
     this.#gateway = options.gateway ?? new PiCodingAgentGateway();
     this.#verificationPolicy = options.verificationPolicy;
+    this.#codeReviewPolicy = options.codeReviewPolicy;
     this.#verificationSandbox = options.verificationSandbox;
   }
 
@@ -178,6 +185,12 @@ export class LocalRuntimeStarter implements RuntimeStarter {
       request.run.authority.verificationPolicyFingerprint
     ) {
       throw new Error('Runtime verification policy does not match durable execution authority');
+    }
+    if (
+      codeReviewPolicyFingerprint(this.#codeReviewPolicy) !==
+      request.run.authority.codeReviewPolicyFingerprint
+    ) {
+      throw new Error('Runtime code review policy does not match durable execution authority');
     }
     const recovered = await this.#persistence.recoverRun(request.run.id);
     const writeGuard = new InMemoryWriteGuard({

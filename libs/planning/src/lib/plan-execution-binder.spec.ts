@@ -133,7 +133,18 @@ const request = {
   runId: 'run-1',
   repository: { repositoryPath: '/repo' },
   sharedResourcePolicy: [],
-  verificationPolicy: { version: 1 }
+  verificationPolicy: { version: 1 },
+  codeReviewPolicy: {
+    version: 1,
+    reviewer: {
+      implementation: 'pi-task-code-reviewer',
+      provider: 'pi',
+      model: 'test-model',
+      toolProfile: 'workspace-read-only-v1',
+      outputSchemaVersion: 1,
+      promptVersion: 'v1'
+    }
+  }
 };
 
 describe('PlanExecutionBinder', () => {
@@ -193,7 +204,8 @@ describe('PlanExecutionBinder', () => {
       binder.bind({
         ...request,
         sharedResourcePolicy: [{ id: 'changed' }],
-        verificationPolicy: { version: 2 }
+        verificationPolicy: { version: 2 },
+        codeReviewPolicy: request.codeReviewPolicy
       })
     ).rejects.toMatchObject({
       mismatches: [
@@ -206,6 +218,21 @@ describe('PlanExecutionBinder', () => {
         'verification-policy'
       ]
     });
+    await expect(approvalStore.loadClaim('approval-1')).resolves.toBeUndefined();
+  });
+
+  it('rejects semantic code review policy drift before claiming approval', async () => {
+    const artifact = approvalTestArtifact();
+    const approvalStore = new MemoryApprovalStore(approvalFor(artifact));
+    await expect(
+      binderFor({ artifact, approvalStore }).bind({
+        ...request,
+        codeReviewPolicy: {
+          ...request.codeReviewPolicy,
+          reviewer: { ...request.codeReviewPolicy.reviewer, model: 'changed-model' }
+        }
+      })
+    ).rejects.toMatchObject({ mismatches: ['code-review-policy'] });
     await expect(approvalStore.loadClaim('approval-1')).resolves.toBeUndefined();
   });
 

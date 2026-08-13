@@ -89,7 +89,8 @@ export const planArtifactSchema = z
     repository: repositorySnapshotSchema.extend({ factsFingerprint: digestSchema }),
     authority: z.object({
       sharedResourcePolicyFingerprint: digestSchema,
-      verificationPolicyFingerprint: digestSchema
+      verificationPolicyFingerprint: digestSchema,
+      codeReviewPolicyFingerprint: digestSchema
     }),
     decision: z.object({
       attempts: z.int().positive(),
@@ -293,6 +294,7 @@ export interface CreatePlanArtifactRequest {
   readonly repositorySnapshot: RepositorySnapshot;
   readonly sharedResourcePolicy: unknown;
   readonly verificationPolicy: unknown;
+  readonly codeReviewPolicy: unknown;
   readonly preparedPlan: PreparedOrchestrationPlan;
 }
 
@@ -460,7 +462,8 @@ export const createPlanArtifact = (request: CreatePlanArtifactRequest): PlanArti
     },
     authority: {
       sharedResourcePolicyFingerprint: fingerprintPlanValue(request.sharedResourcePolicy),
-      verificationPolicyFingerprint: fingerprintPlanValue(request.verificationPolicy)
+      verificationPolicyFingerprint: fingerprintPlanValue(request.verificationPolicy),
+      codeReviewPolicyFingerprint: fingerprintPlanValue(request.codeReviewPolicy)
     },
     decision
   };

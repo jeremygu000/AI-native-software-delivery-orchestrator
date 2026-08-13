@@ -86,6 +86,13 @@ a parallel repair view, resume `BLOCKED` repair attempts with compare-and-swap w
 released, and reconstruct that view during recovery. It must not represent repair as a synthetic builder
 task transition.
 
+Automated code review has an independent semantic authority policy. Its fingerprint covers reviewer
+implementation, provider, model identity, read-only tool profile, output schema version, and prompt
+version; it excludes session IDs, timestamps, temporary paths, and other incidental runtime values. Plan
+artifacts, execution binding, durable run authority, and local runtime startup all bind and revalidate
+this `codeReviewPolicyFingerprint` separately from verification policy. Review/repair composition must
+fail closed when that policy drifts.
+
 ## Consequences
 
 - Code review becomes durable, structured, provider-neutral evidence.

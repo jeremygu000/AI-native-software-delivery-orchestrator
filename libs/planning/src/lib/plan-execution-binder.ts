@@ -79,7 +79,8 @@ export type PlanExecutionBindingMismatch =
   | RepositoryBindingMismatch
   | PlanApprovalMismatch
   | 'shared-resource-policy'
-  | 'verification-policy';
+  | 'verification-policy'
+  | 'code-review-policy';
 
 export class PlanExecutionBindingError extends Error {
   readonly mismatches: readonly PlanExecutionBindingMismatch[];
@@ -99,6 +100,7 @@ export interface BindPlanExecutionRequest {
   readonly repository: RepositoryContext;
   readonly sharedResourcePolicy: unknown;
   readonly verificationPolicy: unknown;
+  readonly codeReviewPolicy: unknown;
 }
 
 export class PlanExecutionBinder {
@@ -165,6 +167,12 @@ export class PlanExecutionBinder {
       fingerprintPlanValue(request.verificationPolicy)
     ) {
       mismatches.push('verification-policy');
+    }
+    if (
+      artifact.authority.codeReviewPolicyFingerprint !==
+      fingerprintPlanValue(request.codeReviewPolicy)
+    ) {
+      mismatches.push('code-review-policy');
     }
     if (mismatches.length > 0) {
       throw new PlanExecutionBindingError(

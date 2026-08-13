@@ -2202,3 +2202,8 @@ Lease release remains deliberately separate between builder and repair paths unt
 composition establishes their shared evidence contract. The final Stage 22 increment must add a parallel,
 recoverable repair view that resumes blocked repairs by CAS when their blocker lease is released; it must
 not insert repair states into the original builder task-state snapshot.
+
+Code review policy is now a separate approved authority from verification policy. Its semantic fingerprint
+binds reviewer implementation, provider, model, read-only tool profile, review schema version, and prompt
+version, while excluding transient sessions and paths. Artifact creation, execution binding, durable run
+authority, and local startup all reject review-policy drift independently of verifier-policy drift.

@@ -21,6 +21,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RunPreparation } from './run-preparation.js';
 
 const directories: string[] = [];
+const codeReviewPolicy = {
+  version: 1,
+  reviewer: {
+    implementation: 'test',
+    provider: 'test',
+    model: 'test',
+    toolProfile: 'workspace-read-only-v1',
+    outputSchemaVersion: 1,
+    promptVersion: 'v1'
+  }
+};
 const git = (cwd: string, args: readonly string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
@@ -176,6 +187,7 @@ describe('same-origin clone execution binding', () => {
       repositorySnapshot: snapshotA,
       sharedResourcePolicy: [],
       verificationPolicy: { version: 1 },
+      codeReviewPolicy,
       preparedPlan
     });
     const approval = createPlanApproval({
@@ -200,7 +212,8 @@ describe('same-origin clone execution binding', () => {
         runId: 'run-1',
         repository: { repositoryPath: cloneB },
         sharedResourcePolicy: [],
-        verificationPolicy: { version: 1 }
+        verificationPolicy: { version: 1 },
+        codeReviewPolicy
       })
     ).rejects.toMatchObject({ mismatches: ['repository-root'] });
     expect(approvalStore.claimValue).toBeUndefined();
@@ -233,6 +246,7 @@ describe('same-origin clone execution binding', () => {
       repositorySnapshot: snapshot,
       sharedResourcePolicy: [],
       verificationPolicy: { version: 1 },
+      codeReviewPolicy,
       preparedPlan
     });
     const approval = createPlanApproval({
@@ -254,7 +268,8 @@ describe('same-origin clone execution binding', () => {
       runId: 'run-1',
       repository: { repositoryPath },
       sharedResourcePolicy: [],
-      verificationPolicy: { version: 1 }
+      verificationPolicy: { version: 1 },
+      codeReviewPolicy
     };
     const intent = await binder.bind(bindRequest);
     writeFileSync(join(repositoryPath, 'dirty.txt'), 'changed after approval\n');
