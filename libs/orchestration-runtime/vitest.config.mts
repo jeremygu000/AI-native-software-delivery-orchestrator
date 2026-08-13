@@ -6,6 +6,7 @@ export default defineConfig(() => ({
   root: import.meta.dirname,
   cacheDir: '../../node_modules/.vite/libs/orchestration-runtime',
   resolve: {
+    conditions: ['@ai-native-software-delivery-orchestrator/source'],
     alias: {
       '@ai-native-software-delivery-orchestrator/agent-runtime': resolve(
         import.meta.dirname,
@@ -35,6 +36,11 @@ export default defineConfig(() => ({
         import.meta.dirname,
         '../workspace-git/src/index.ts'
       )
+    }
+  },
+  ssr: {
+    resolve: {
+      conditions: ['@ai-native-software-delivery-orchestrator/source']
     }
   },
   test: {
