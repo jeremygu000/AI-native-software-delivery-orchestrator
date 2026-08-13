@@ -2166,3 +2166,9 @@ repair budget, session/failure evidence, and separate SQLite storage. An integra
 accepts only a durable `accept` review whose builder attempt, workspace revision/change, impact, and
 verification subject exactly equals the current output. Repair, re-verification, and re-review dispatch
 remain the next composition step.
+
+Repair admission is now exact-once durable evidence. Retrying the same parent review returns the existing
+repair attempt rather than allocating another iteration or consuming budget again. SQLite atomically looks
+up the parent review subject, checks the task budget, allocates an iteration, and stores the attempt. Later
+revisions may add lifecycle evidence but cannot alter repair lineage identity. Actual repair dispatch,
+post-repair reconciliation, verification, and re-review remain deliberately unimplemented.

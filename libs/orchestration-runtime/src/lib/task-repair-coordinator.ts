@@ -2,7 +2,7 @@ import type {
   TaskCodeReview,
   TaskCodeReviewSubject,
   TaskRepairAttempt,
-  TaskRepairAttemptStore
+  TaskRepairAdmissionStore
 } from '@ai-native-software-delivery-orchestrator/domain';
 
 export class TaskRepairBudgetError extends Error {
@@ -20,13 +20,13 @@ export class TaskRepairAdmissionError extends Error {
 }
 
 export class TaskRepairCoordinator {
-  readonly #store: TaskRepairAttemptStore;
+  readonly #store: TaskRepairAdmissionStore;
   readonly #maxRepairs: number;
   readonly #now: () => Date;
   readonly #createId: () => string;
 
   constructor(options: {
-    readonly store: TaskRepairAttemptStore;
+    readonly store: TaskRepairAdmissionStore;
     readonly maxRepairs: number;
     readonly now?: () => Date;
     readonly createId: () => string;
@@ -54,12 +54,6 @@ export class TaskRepairCoordinator {
         'Only a repair recommendation may create a repair attempt'
       );
     }
-    const previous = await this.#store.recoverRepairAttempts(request.runId);
-    const taskAttempts = previous.filter(({ attempt }) => attempt.taskId === request.taskId);
-    if (taskAttempts.length >= this.#maxRepairs) {
-      throw new TaskRepairBudgetError(`Repair budget exhausted for task: ${request.taskId}`);
-    }
-    const repairIteration = taskAttempts.length + 1;
     const attempt: TaskRepairAttempt = {
       id: this.#createId(),
       runId: request.runId,
@@ -68,12 +62,18 @@ export class TaskRepairCoordinator {
       workspaceId: request.workspaceId,
       parentReviewIteration: request.reviewIteration,
       parentReviewSubject: request.subject,
-      repairIteration,
+      repairIteration: 1,
       state: 'PREPARING',
       revision: 1
     };
-    await this.#store.persistRepairAttempt({ runId: request.runId, attempt });
-    return attempt;
+    try {
+      return await this.#store.admitRepairAttempt({ attempt, maxRepairs: this.#maxRepairs });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Repair budget exhausted')) {
+        throw new TaskRepairBudgetError(error.message);
+      }
+      throw error;
+    }
   }
 
   async markStarted(attempt: TaskRepairAttempt, sessionRef?: TaskRepairAttempt['sessionRef']) {

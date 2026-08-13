@@ -1,4 +1,4 @@
-import type { TaskRepairAttemptStore } from '@ai-native-software-delivery-orchestrator/domain';
+import type { TaskRepairAdmissionStore } from '@ai-native-software-delivery-orchestrator/domain';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -30,7 +30,7 @@ const repairReview = {
   ]
 };
 
-const store = (): TaskRepairAttemptStore & { readonly records: any[] } => {
+const store = (): TaskRepairAdmissionStore & { readonly records: any[] } => {
   const records: any[] = [];
   return {
     records,
@@ -42,7 +42,26 @@ const store = (): TaskRepairAttemptStore & { readonly records: any[] } => {
         records.push(record);
       }
     },
-    recoverRepairAttempts: async (runId) => records.filter((record) => record.runId === runId)
+    recoverRepairAttempts: async (runId) => records.filter((record) => record.runId === runId),
+    admitRepairAttempt: async ({ attempt, maxRepairs }) => {
+      const taskAttempts = records.filter(
+        ({ attempt: stored }) => stored.taskId === attempt.taskId
+      );
+      const existing = taskAttempts.find(
+        ({ attempt: stored }) =>
+          stored.parentReviewIteration === attempt.parentReviewIteration &&
+          JSON.stringify(stored.parentReviewSubject) === JSON.stringify(attempt.parentReviewSubject)
+      );
+      if (existing !== undefined) {
+        return existing.attempt;
+      }
+      if (taskAttempts.length >= maxRepairs) {
+        throw new Error(`Repair budget exhausted for task: ${attempt.taskId}`);
+      }
+      const admitted = { ...attempt, repairIteration: taskAttempts.length + 1 };
+      records.push({ runId: attempt.runId, attempt: admitted });
+      return admitted;
+    }
   };
 };
 
@@ -87,6 +106,17 @@ describe('TaskRepairCoordinator', () => {
       state: 'COMPLETED',
       sessionRef: { value: 'session-1' }
     });
+    await expect(
+      coordinator.prepare({
+        runId: 'run-1',
+        taskId: 'task-1',
+        agentId: 'repair-agent',
+        workspaceId: 'workspace-1',
+        reviewIteration: 1,
+        review: repairReview,
+        subject
+      })
+    ).resolves.toMatchObject({ id: 'repair-1', repairIteration: 1 });
     await expect(
       coordinator.prepare({
         runId: 'run-1',

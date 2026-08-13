@@ -370,6 +370,72 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         attempt: { ...preparing, agentId: 'other' }
       })
     ).rejects.toThrow(PersistenceInputError);
+    await expect(
+      persistence.persistRepairAttempt({
+        runId: 'run-1',
+        attempt: {
+          ...completed,
+          revision: 3,
+          parentReviewSubject: {
+            ...subject,
+            workspaceChangeFingerprint: `sha256:${'d'.repeat(64)}`
+          }
+        }
+      })
+    ).rejects.toThrow('Repair attempt lineage cannot change across revisions');
+    persistence.close();
+  });
+
+  it('admits exactly one repair attempt for an idempotent parent review retry', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const subject = {
+      builderAttemptId: 'attempt-A',
+      workspaceId: 'workspace-A',
+      workspaceRevision: 1,
+      workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
+      impactFingerprint: `sha256:${'b'.repeat(64)}`,
+      verificationFingerprint: `sha256:${'c'.repeat(64)}`
+    };
+    const request = {
+      attempt: {
+        id: 'repair-first-request',
+        runId: 'run-1',
+        taskId: 'A',
+        agentId: 'repair-agent',
+        workspaceId: 'workspace-A',
+        parentReviewIteration: 1,
+        parentReviewSubject: subject,
+        repairIteration: 1,
+        state: 'PREPARING' as const,
+        revision: 1
+      },
+      maxRepairs: 1
+    };
+    await persistence.createRun(createRunRequest());
+    const [first, retry] = await Promise.all([
+      persistence.admitRepairAttempt(request),
+      persistence.admitRepairAttempt({
+        ...request,
+        attempt: { ...request.attempt, id: 'repair-retry-request' }
+      })
+    ]);
+    expect(first).toMatchObject({ id: 'repair-first-request', repairIteration: 1 });
+    expect(retry).toMatchObject({ id: 'repair-first-request', repairIteration: 1 });
+    await expect(persistence.recoverRepairAttempts('run-1')).resolves.toHaveLength(1);
+    await expect(
+      persistence.admitRepairAttempt({
+        ...request,
+        attempt: {
+          ...request.attempt,
+          id: 'repair-second-review',
+          parentReviewIteration: 2,
+          parentReviewSubject: {
+            ...subject,
+            workspaceChangeFingerprint: `sha256:${'d'.repeat(64)}`
+          }
+        }
+      })
+    ).rejects.toThrow('Repair budget exhausted for task: A');
     persistence.close();
   });
 

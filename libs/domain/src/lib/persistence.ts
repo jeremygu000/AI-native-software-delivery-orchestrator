@@ -176,6 +176,13 @@ export interface TaskRepairAttemptStore {
   recoverRepairAttempts(runId: string): Promise<readonly PersistedTaskRepairAttempt[]>;
 }
 
+export interface TaskRepairAdmissionStore extends TaskRepairAttemptStore {
+  admitRepairAttempt(request: {
+    readonly attempt: TaskRepairAttempt;
+    readonly maxRepairs: number;
+  }): Promise<TaskRepairAttempt>;
+}
+
 export const taskDecisionsWithTransitions = (
   decisions: readonly SchedulerTaskDecision[]
 ): readonly Extract<

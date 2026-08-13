@@ -1873,3 +1873,8 @@ boundary，以便下一次 Stage 22 increment 在不削弱 attempt provenance �
 evidence 和独立 SQLite storage。integration admission policy 只接受 builder attempt、workspace revision/change、
 impact 与 verification subject 都与 current output 精确匹配的 durable `accept` review。repair、再次 verification
 与再次 review 的 dispatch 仍是下一个 composition step。
+
+repair admission 现在是 exact-once durable evidence。对同一个 parent review 的 retry 会返回既有 repair
+attempt，而不会分配新的 iteration 或再次消耗 budget。SQLite 在一个 serialized transaction 内查找 parent review
+subject、检查 task budget、分配 iteration 并存储 attempt。后续 revision 可以增加 lifecycle evidence，但不能改变
+repair lineage identity。实际 repair dispatch、post-repair reconciliation、verification 与 re-review 仍刻意未实现。

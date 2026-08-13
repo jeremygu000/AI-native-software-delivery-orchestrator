@@ -42,6 +42,12 @@ and subject, plus a deterministic repair budget coordinator. It still does not d
 the current output; legacy, repair, and stale review evidence fail closed. A later composition increment
 must create durable workspace-change and verification evidence before invoking this gate around integration.
 
+Repair admission is durable and idempotent. One exact parent review iteration and subject can admit only
+one logical repair attempt: a retry returns the existing record. SQLite performs existing-admission lookup,
+task budget check, repair-iteration allocation, and insert in one serialized transaction. Subsequent
+attempt revisions may update lifecycle evidence only; builder/repair lineage, agent, workspace, parent
+review subject, and repair iteration are immutable.
+
 ## Consequences
 
 - Code review becomes durable, structured, provider-neutral evidence.

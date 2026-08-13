@@ -7,6 +7,7 @@ import type {
   OrchestrationPersistence,
   TaskCodeReviewStore,
   TaskRepairAttemptStore,
+  TaskRepairAdmissionStore,
   OrchestrationRunState,
   PersistedReevaluation,
   PersistedTaskConflict,
@@ -299,7 +300,11 @@ export class PersistenceReplayError extends Error {
 }
 
 export class DrizzleSqliteOrchestrationPersistence
-  implements OrchestrationPersistence, TaskCodeReviewStore, TaskRepairAttemptStore
+  implements
+    OrchestrationPersistence,
+    TaskCodeReviewStore,
+    TaskRepairAttemptStore,
+    TaskRepairAdmissionStore
 {
   readonly #sqlite: Database.Database;
   readonly #db;
@@ -1009,46 +1014,123 @@ export class DrizzleSqliteOrchestrationPersistence
     taskRepairAttemptSchema.parse(record.attempt);
     this.#sqlite.transaction(() => {
       this.#assertRunExists(record.runId);
-      const existing = this.#db
-        .select()
-        .from(taskRepairAttempts)
-        .where(
-          and(
-            eq(taskRepairAttempts.runId, record.runId),
-            eq(taskRepairAttempts.attemptId, record.attempt.id)
-          )
-        )
-        .get();
-      if (existing !== undefined) {
-        const stored = decode(existing.attemptJson, isTaskRepairAttempt, 'task repair attempt');
-        if (record.attempt.revision < stored.revision) {
-          throw new PersistenceInputError('Repair attempt revision regression rejected');
+      this.#persistRepairAttemptInTransaction(record);
+    })();
+  }
+
+  async admitRepairAttempt(request: {
+    readonly attempt: PersistedTaskRepairAttempt['attempt'];
+    readonly maxRepairs: number;
+  }): Promise<PersistedTaskRepairAttempt['attempt']> {
+    taskRepairAttemptSchema.parse(request.attempt);
+    if (!Number.isInteger(request.maxRepairs) || request.maxRepairs < 1) {
+      throw new PersistenceInputError('Repair budget must be a positive integer');
+    }
+    return this.#exclusiveReevaluation(() =>
+      this.#sqlite.transaction(() => {
+        this.#assertRunExists(request.attempt.runId);
+        const taskAttempts = this.#db
+          .select()
+          .from(taskRepairAttempts)
+          .where(eq(taskRepairAttempts.runId, request.attempt.runId))
+          .all()
+          .map((record) => decode(record.attemptJson, isTaskRepairAttempt, 'task repair attempt'))
+          .filter((attempt) => attempt.taskId === request.attempt.taskId);
+        const existing = taskAttempts.find((attempt) =>
+          this.#sameRepairAdmission(attempt, request.attempt)
+        );
+        if (existing !== undefined) {
+          return existing;
         }
-        if (
-          record.attempt.revision === stored.revision &&
-          canonicalPlainStringify(record.attempt) !== canonicalPlainStringify(stored)
-        ) {
+        if (taskAttempts.length >= request.maxRepairs) {
           throw new PersistenceInputError(
-            'Repair attempt revision already recorded with different evidence'
+            `Repair budget exhausted for task: ${request.attempt.taskId}`
           );
         }
-        if (record.attempt.revision === stored.revision) {
-          return;
-        }
+        const admitted = {
+          ...request.attempt,
+          repairIteration: taskAttempts.length + 1
+        };
+        this.#persistRepairAttemptInTransaction({ runId: admitted.runId, attempt: admitted });
+        return admitted;
+      })()
+    );
+  }
+
+  #sameRepairAdmission(
+    left: PersistedTaskRepairAttempt['attempt'],
+    right: PersistedTaskRepairAttempt['attempt']
+  ): boolean {
+    return (
+      left.runId === right.runId &&
+      left.taskId === right.taskId &&
+      left.parentReviewIteration === right.parentReviewIteration &&
+      canonicalPlainStringify(left.parentReviewSubject) ===
+        canonicalPlainStringify(right.parentReviewSubject)
+    );
+  }
+
+  #persistRepairAttemptInTransaction(record: PersistedTaskRepairAttempt): void {
+    this.#assertRunExists(record.runId);
+    const existing = this.#db
+      .select()
+      .from(taskRepairAttempts)
+      .where(
+        and(
+          eq(taskRepairAttempts.runId, record.runId),
+          eq(taskRepairAttempts.attemptId, record.attempt.id)
+        )
+      )
+      .get();
+    if (existing !== undefined) {
+      const stored = decode(existing.attemptJson, isTaskRepairAttempt, 'task repair attempt');
+      if (record.attempt.revision < stored.revision) {
+        throw new PersistenceInputError('Repair attempt revision regression rejected');
       }
-      this.#db
-        .insert(taskRepairAttempts)
-        .values({
-          runId: record.runId,
-          attemptId: record.attempt.id,
-          attemptJson: stringify(record.attempt)
-        })
-        .onConflictDoUpdate({
-          target: [taskRepairAttempts.runId, taskRepairAttempts.attemptId],
-          set: { attemptJson: stringify(record.attempt) }
-        })
-        .run();
-    })();
+      if (!this.#sameRepairLineage(stored, record.attempt)) {
+        throw new PersistenceInputError('Repair attempt lineage cannot change across revisions');
+      }
+      if (
+        record.attempt.revision === stored.revision &&
+        canonicalPlainStringify(record.attempt) !== canonicalPlainStringify(stored)
+      ) {
+        throw new PersistenceInputError(
+          'Repair attempt revision already recorded with different evidence'
+        );
+      }
+      if (record.attempt.revision === stored.revision) {
+        return;
+      }
+    }
+    this.#db
+      .insert(taskRepairAttempts)
+      .values({
+        runId: record.runId,
+        attemptId: record.attempt.id,
+        attemptJson: stringify(record.attempt)
+      })
+      .onConflictDoUpdate({
+        target: [taskRepairAttempts.runId, taskRepairAttempts.attemptId],
+        set: { attemptJson: stringify(record.attempt) }
+      })
+      .run();
+  }
+
+  #sameRepairLineage(
+    left: PersistedTaskRepairAttempt['attempt'],
+    right: PersistedTaskRepairAttempt['attempt']
+  ): boolean {
+    return (
+      left.id === right.id &&
+      left.runId === right.runId &&
+      left.taskId === right.taskId &&
+      left.agentId === right.agentId &&
+      left.workspaceId === right.workspaceId &&
+      left.parentReviewIteration === right.parentReviewIteration &&
+      left.repairIteration === right.repairIteration &&
+      canonicalPlainStringify(left.parentReviewSubject) ===
+        canonicalPlainStringify(right.parentReviewSubject)
+    );
   }
 
   async recoverRepairAttempts(runId: string): Promise<readonly PersistedTaskRepairAttempt[]> {
