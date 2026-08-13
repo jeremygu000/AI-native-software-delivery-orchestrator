@@ -10,6 +10,7 @@ import type {
   PersistedTaskWorkspace,
   PersistedWriteLease,
   RecoveredRun,
+  TaskRepairAttemptStore,
   TaskContract,
   TaskVerifier,
   TaskWorkspace,
@@ -373,6 +374,59 @@ class ConcurrentAgentRunner implements AgentRunner {
 }
 
 describe('OrchestrationRuntime', () => {
+  it('marks an interrupted repair attempt unknown during recovery without changing builder state', async () => {
+    const persistence = new MemoryPersistence();
+    const initialRuntime = createRuntime(persistence);
+    await initialRuntime.startRun(request([task('A')]));
+    const repairRecords: any[] = [
+      {
+        runId: 'run-1',
+        attempt: {
+          id: 'repair-1',
+          runId: 'run-1',
+          taskId: 'A',
+          agentId: 'repair-agent',
+          workspaceId: 'workspace-A',
+          parentReviewIteration: 1,
+          parentReviewSubject: {
+            builderAttemptId: 'attempt-1',
+            outputAttemptId: 'attempt-1',
+            workspaceId: 'workspace-A',
+            workspaceRevision: 1,
+            workspaceChangeFingerprint: `sha256:${'1'.repeat(64)}`,
+            impactFingerprint: `sha256:${'2'.repeat(64)}`,
+            verificationFingerprint: `sha256:${'3'.repeat(64)}`
+          },
+          repairIteration: 1,
+          state: 'RUNNING',
+          revision: 2,
+          startedAt: new Date('2026-08-12T00:00:00.000Z')
+        }
+      }
+    ];
+    const repairStore: TaskRepairAttemptStore = {
+      persistRepairAttempt: async (record) => {
+        repairRecords[0] = record;
+      },
+      recoverRepairAttempts: async () => repairRecords
+    };
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard: new MemoryWriteGuard(),
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      repairAttempts: repairStore,
+      now: () => new Date('2026-08-12T00:01:00.000Z')
+    });
+
+    await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
+      snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] },
+      repairAttempts: [{ attempt: { state: 'UNKNOWN', revision: 3 } }]
+    });
+  });
+
   it('fails before verification when reconciliation finds an unleased change', async () => {
     const persistence = new MemoryPersistence();
     const verifier = new FakeTaskVerifier();
