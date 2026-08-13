@@ -155,8 +155,8 @@ const codeReviewPolicy = {
   version: 1,
   reviewer: {
     implementation: 'pi-task-code-reviewer',
-    provider: 'pi',
-    model: 'configured-pi-model',
+    agentBackend: 'pi',
+    model: { provider: 'configured-provider', id: 'configured-review-model' },
     toolProfile: 'workspace-read-only-v1',
     outputSchemaVersion: 1,
     promptVersion: 'v1'

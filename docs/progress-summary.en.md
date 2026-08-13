@@ -2204,6 +2204,9 @@ recoverable repair view that resumes blocked repairs by CAS when their blocker l
 not insert repair states into the original builder task-state snapshot.
 
 Code review policy is now a separate approved authority from verification policy. Its semantic fingerprint
-binds reviewer implementation, provider, model, read-only tool profile, review schema version, and prompt
-version, while excluding transient sessions and paths. Artifact creation, execution binding, durable run
-authority, and local startup all reject review-policy drift independently of verifier-policy drift.
+binds reviewer implementation, agent backend, provider/model, read-only tool profile, review schema
+version, and prompt version, while excluding transient sessions and paths. Artifact creation, execution
+binding, durable run authority, and local startup all reject review-policy drift independently of verifier
+policy drift. The Pi reviewer resolves the approved provider/model through Pi's model registry and passes
+the exact resolved SDK model into its session; it fails closed rather than falling back to default Pi model
+selection when the approved model is unavailable.

@@ -6,13 +6,13 @@ const policy = {
   version: 1,
   reviewer: {
     implementation: 'pi-task-code-reviewer',
-    provider: 'pi',
-    model: 'model-a',
+    agentBackend: 'pi',
+    model: { provider: 'provider-a', id: 'model-a' },
     toolProfile: 'workspace-read-only-v1' as const,
     outputSchemaVersion: 1,
     promptVersion: 'v1'
   }
-};
+} as const;
 
 describe('CodeReviewPolicy', () => {
   it('fingerprints only semantic reviewer decision policy fields canonically', () => {
@@ -20,8 +20,8 @@ describe('CodeReviewPolicy', () => {
       codeReviewPolicyFingerprint({
         reviewer: {
           promptVersion: 'v1',
-          model: 'model-a',
-          provider: 'pi',
+          model: { provider: 'provider-a', id: 'model-a' },
+          agentBackend: 'pi',
           outputSchemaVersion: 1,
           implementation: 'pi-task-code-reviewer',
           toolProfile: 'workspace-read-only-v1'
@@ -30,7 +30,10 @@ describe('CodeReviewPolicy', () => {
       })
     );
     expect(
-      codeReviewPolicyFingerprint({ ...policy, reviewer: { ...policy.reviewer, model: 'model-b' } })
+      codeReviewPolicyFingerprint({
+        ...policy,
+        reviewer: { ...policy.reviewer, model: { provider: 'provider-a', id: 'model-b' } }
+      })
     ).not.toBe(codeReviewPolicyFingerprint(policy));
   });
 });

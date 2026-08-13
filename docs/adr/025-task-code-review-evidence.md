@@ -87,11 +87,13 @@ released, and reconstruct that view during recovery. It must not represent repai
 task transition.
 
 Automated code review has an independent semantic authority policy. Its fingerprint covers reviewer
-implementation, provider, model identity, read-only tool profile, output schema version, and prompt
+implementation, agent backend, provider/model identity, read-only tool profile, output schema version, and prompt
 version; it excludes session IDs, timestamps, temporary paths, and other incidental runtime values. Plan
 artifacts, execution binding, durable run authority, and local runtime startup all bind and revalidate
-this `codeReviewPolicyFingerprint` separately from verification policy. Review/repair composition must
-fail closed when that policy drifts.
+this `codeReviewPolicyFingerprint` separately from verification policy. The Pi reviewer resolves the
+approved provider and model ID through Pi's model registry and passes that exact SDK model to its session;
+an unavailable approved model fails closed rather than falling back to Pi settings. Review/repair
+composition must fail closed when that policy drifts.
 
 ## Consequences
 

@@ -22,8 +22,13 @@ export type {
   PiPlanningToolResult
 } from './lib/pi-planning-agent.js';
 export { PiSemanticPlanReviewer } from './lib/pi-semantic-plan-reviewer.js';
-export { PiTaskCodeReviewer, PiTaskCodeReviewGatewayAdapter } from './lib/pi-task-code-reviewer.js';
+export {
+  PiTaskCodeReviewer,
+  PiTaskCodeReviewGatewayAdapter,
+  PiCodeReviewModelResolver
+} from './lib/pi-task-code-reviewer.js';
 export type {
+  CodeReviewModelResolver,
   PiTaskCodeReviewGateway,
   PiTaskCodeReviewSessionFactory,
   TaskCodeReviewTools

@@ -11,6 +11,7 @@ import {
   taskSpecificationSchema
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { z } from 'zod';
+import { codeReviewPolicyFingerprint, codeReviewPolicySchema } from './code-review-policy.js';
 
 import {
   planningSourceSchema,
@@ -463,7 +464,9 @@ export const createPlanArtifact = (request: CreatePlanArtifactRequest): PlanArti
     authority: {
       sharedResourcePolicyFingerprint: fingerprintPlanValue(request.sharedResourcePolicy),
       verificationPolicyFingerprint: fingerprintPlanValue(request.verificationPolicy),
-      codeReviewPolicyFingerprint: fingerprintPlanValue(request.codeReviewPolicy)
+      codeReviewPolicyFingerprint: codeReviewPolicyFingerprint(
+        codeReviewPolicySchema.parse(request.codeReviewPolicy)
+      )
     },
     decision
   };

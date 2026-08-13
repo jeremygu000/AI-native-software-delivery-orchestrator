@@ -2,12 +2,13 @@ import type {
   TaskCodeReviewer,
   TaskCodeReviewRequest
 } from '@ai-native-software-delivery-orchestrator/domain';
-import { createAgentSession } from '@mariozechner/pi-coding-agent';
+import type { CodeReviewPolicy } from '@ai-native-software-delivery-orchestrator/planning';
+import { AuthStorage, createAgentSession, ModelRegistry } from '@mariozechner/pi-coding-agent';
 
 import { createIsolatedPlanningResourceLoader } from './pi-planning-agent.js';
 import { createReadOnlyPiTools, type PiToolCall, type PiToolResult } from './pi-gateway.js';
 
-type PiSdkSessionOptions = Parameters<typeof createAgentSession>[0];
+type PiSdkSessionOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 
 const compareText = (left: string, right: string): number =>
   left < right ? -1 : left > right ? 1 : 0;
@@ -22,6 +23,7 @@ export interface PiTaskCodeReviewGateway {
   generate(options: {
     readonly cwd: string;
     readonly prompt: string;
+    readonly model: PiSdkSessionOptions['model'];
     readonly executeTool: (call: PiToolCall) => Promise<PiToolResult>;
   }): Promise<{ readonly sessionId: string; readonly output: string }>;
 }
@@ -44,6 +46,26 @@ interface TaskCodeReviewSession {
 export type PiTaskCodeReviewSessionFactory = (
   options: PiSdkSessionOptions
 ) => Promise<{ readonly session: TaskCodeReviewSession }>;
+
+export interface CodeReviewModelResolver {
+  resolve(model: CodeReviewPolicy['reviewer']['model']): PiSdkSessionOptions['model'];
+}
+
+export class PiCodeReviewModelResolver implements CodeReviewModelResolver {
+  readonly #registry: Pick<ModelRegistry, 'find'>;
+
+  constructor(registry: Pick<ModelRegistry, 'find'> = ModelRegistry.create(AuthStorage.create())) {
+    this.#registry = registry;
+  }
+
+  resolve(model: CodeReviewPolicy['reviewer']['model']): PiSdkSessionOptions['model'] {
+    const resolved = this.#registry.find(model.provider, model.id);
+    if (resolved === undefined) {
+      throw new Error(`Approved code review model is unavailable: ${model.provider}/${model.id}`);
+    }
+    return resolved;
+  }
+}
 
 const buildPrompt = (request: TaskCodeReviewRequest): string =>
   [
@@ -71,13 +93,23 @@ const buildPrompt = (request: TaskCodeReviewRequest): string =>
 export class PiTaskCodeReviewer implements TaskCodeReviewer {
   readonly #gateway: PiTaskCodeReviewGateway;
   readonly #createTools: (request: TaskCodeReviewRequest) => TaskCodeReviewTools;
+  readonly #policy: CodeReviewPolicy;
+  readonly #modelResolver: CodeReviewModelResolver;
 
   constructor(options: {
     readonly gateway?: PiTaskCodeReviewGateway;
+    readonly policy: CodeReviewPolicy;
+    readonly modelResolver?: CodeReviewModelResolver;
     readonly createTools: (request: TaskCodeReviewRequest) => TaskCodeReviewTools;
   }) {
+    if (options.policy.reviewer.agentBackend !== 'pi') {
+      throw new Error('Unsupported code review agent backend');
+    }
+    const modelResolver = options.modelResolver ?? new PiCodeReviewModelResolver();
     this.#gateway = options.gateway ?? new PiTaskCodeReviewGatewayAdapter();
     this.#createTools = options.createTools;
+    this.#policy = options.policy;
+    this.#modelResolver = modelResolver;
   }
 
   async review(request: TaskCodeReviewRequest): Promise<unknown> {
@@ -85,6 +117,7 @@ export class PiTaskCodeReviewer implements TaskCodeReviewer {
     const result = await this.#gateway.generate({
       cwd: request.workspace.workspacePath,
       prompt: buildPrompt(request),
+      model: this.#modelResolver.resolve(this.#policy.reviewer.model),
       executeTool: async (call) => this.#executeTool(tools, call)
     });
     return result.output;
@@ -141,12 +174,14 @@ export class PiTaskCodeReviewGatewayAdapter implements PiTaskCodeReviewGateway {
   async generate(options: {
     readonly cwd: string;
     readonly prompt: string;
+    readonly model: PiSdkSessionOptions['model'];
     readonly executeTool: (call: PiToolCall) => Promise<PiToolResult>;
   }): Promise<{ readonly sessionId: string; readonly output: string }> {
     const toolNames = ['forge_read', 'forge_list', 'forge_find'];
     const resourceLoader = await createIsolatedPlanningResourceLoader();
     const { session } = await this.#createSession({
       cwd: options.cwd,
+      model: options.model,
       noTools: 'builtin',
       tools: [...toolNames],
       customTools: createReadOnlyPiTools(options.executeTool),

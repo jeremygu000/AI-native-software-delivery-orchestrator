@@ -11,9 +11,23 @@ vi.mock('@mariozechner/pi-coding-agent', async (importOriginal) => ({
 import type { PiTaskCodeReviewGateway } from './pi-task-code-reviewer.js';
 import {
   PiTaskCodeReviewer,
+  PiCodeReviewModelResolver,
   PiTaskCodeReviewGatewayAdapter,
   type PiTaskCodeReviewSessionFactory
 } from './pi-task-code-reviewer.js';
+
+const policy = {
+  version: 1,
+  reviewer: {
+    implementation: 'pi-task-code-reviewer',
+    agentBackend: 'pi' as const,
+    model: { provider: 'test-provider', id: 'test-model' },
+    toolProfile: 'workspace-read-only-v1' as const,
+    outputSchemaVersion: 1,
+    promptVersion: 'v1'
+  }
+};
+const modelResolver = { resolve: vi.fn(() => undefined) };
 
 const request: TaskCodeReviewRequest = {
   runId: 'run-1',
@@ -95,6 +109,15 @@ const request: TaskCodeReviewRequest = {
 };
 
 describe('PiTaskCodeReviewer', () => {
+  it('resolves the approved provider and model ID or fails closed when unavailable', () => {
+    const resolver = new PiCodeReviewModelResolver({
+      find: () => undefined
+    });
+    expect(() => resolver.resolve({ provider: 'test-provider', id: 'missing-model' })).toThrow(
+      'Approved code review model is unavailable'
+    );
+  });
+
   it('requests structured evidence through read-only workspace tools only', async () => {
     const generate = vi.fn(
       async (_options: Parameters<PiTaskCodeReviewGateway['generate']>[0]) => ({
@@ -104,6 +127,8 @@ describe('PiTaskCodeReviewer', () => {
     );
     const reviewer = new PiTaskCodeReviewer({
       gateway: { generate },
+      policy,
+      modelResolver,
       createTools: () => ({
         read: async () => 'value',
         list: async () => ['value.txt'],
@@ -114,6 +139,8 @@ describe('PiTaskCodeReviewer', () => {
     await expect(reviewer.review(request)).resolves.toContain('"recommendation":"accept"');
     const options = generate.mock.calls[0][0];
     expect(options.cwd).toBe('/workspace');
+    expect(modelResolver.resolve).toHaveBeenCalledWith(policy.reviewer.model);
+    expect(options.model).toBeUndefined();
     expect(options.prompt).toContain(
       'cannot write files, run commands, approve integration, or authorize repair'
     );
@@ -163,6 +190,7 @@ describe('PiTaskCodeReviewer', () => {
       gateway.generate({
         cwd: '/workspace',
         prompt: 'Review.',
+        model: undefined,
         executeTool: async () => ({ content: '' })
       })
     ).resolves.toMatchObject({
@@ -211,6 +239,7 @@ describe('PiTaskCodeReviewer', () => {
       gateway.generate({
         cwd: '/workspace',
         prompt: 'Review.',
+        model: undefined,
         executeTool: async () => ({ content: '' })
       })
     ).resolves.toMatchObject({ sessionId: 'default-review-session' });
@@ -239,6 +268,8 @@ describe('PiTaskCodeReviewer', () => {
       }
     });
     const reviewer = new PiTaskCodeReviewer({
+      policy,
+      modelResolver,
       createTools: () => ({
         read: async () => 'value',
         list: async () => ['value.txt'],
@@ -262,6 +293,28 @@ describe('PiTaskCodeReviewer', () => {
       'forge_list',
       'forge_find'
     ]);
+    expect(modelResolver.resolve).toHaveBeenCalledWith(policy.reviewer.model);
+    expect(createAgentSession.mock.calls.at(-1)?.[0]?.model).toBeUndefined();
+  });
+
+  it('fails closed when the approved review model cannot be resolved', async () => {
+    const reviewer = new PiTaskCodeReviewer({
+      policy,
+      modelResolver: {
+        resolve: () => {
+          throw new Error('Approved code review model is unavailable: test-provider/test-model');
+        }
+      },
+      createTools: () => ({
+        read: async () => 'value',
+        list: async () => ['value.txt'],
+        find: async () => [1]
+      })
+    });
+
+    await expect(reviewer.review(request)).rejects.toThrow(
+      'Approved code review model is unavailable'
+    );
   });
 
   it.each([
@@ -312,6 +365,7 @@ describe('PiTaskCodeReviewer', () => {
       gateway.generate({
         cwd: '/workspace',
         prompt: 'Review.',
+        model: undefined,
         executeTool: async () => ({ content: '' })
       })
     ).rejects.toThrow(Error);

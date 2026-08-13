@@ -10,7 +10,10 @@ import type {
   RunAuthorityEvidence
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
-import { fingerprintPlanValue } from '@ai-native-software-delivery-orchestrator/planning';
+import {
+  codeReviewPolicyFingerprint,
+  fingerprintPlanValue
+} from '@ai-native-software-delivery-orchestrator/planning';
 import type { StartRuntimeRunRequest } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 import { GitIntegrationCheckoutProvisioner } from '@ai-native-software-delivery-orchestrator/workspace-git';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -42,8 +45,8 @@ const codeReviewPolicy = {
   version: 1,
   reviewer: {
     implementation: 'pi-task-code-reviewer',
-    provider: 'pi',
-    model: 'test-model',
+    agentBackend: 'pi',
+    model: { provider: 'test-provider', id: 'test-model' },
     toolProfile: 'workspace-read-only-v1',
     outputSchemaVersion: 1,
     promptVersion: 'v1'
@@ -86,7 +89,7 @@ const authority = (commit: string): RunAuthorityEvidence => ({
   repositoryFactsFingerprint: `sha256:${'6'.repeat(64)}`,
   sharedResourcePolicyFingerprint: `sha256:${'7'.repeat(64)}`,
   verificationPolicyFingerprint: fingerprintPlanValue(verificationPolicy),
-  codeReviewPolicyFingerprint: fingerprintPlanValue(codeReviewPolicy)
+  codeReviewPolicyFingerprint: codeReviewPolicyFingerprint(codeReviewPolicy)
 });
 
 afterEach(() => {
@@ -243,7 +246,10 @@ describe('LocalRuntimeStarter', () => {
       verificationPolicy,
       codeReviewPolicy: {
         ...codeReviewPolicy,
-        reviewer: { ...codeReviewPolicy.reviewer, model: 'changed-model' }
+        reviewer: {
+          ...codeReviewPolicy.reviewer,
+          model: { provider: 'test-provider', id: 'changed-model' }
+        }
       },
       verificationSandbox: { execute: executeVerification }
     });

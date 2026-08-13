@@ -25,6 +25,7 @@ import {
   type RepositoryBindingMismatch,
   repositoryBindingMismatches
 } from './plan-artifact.js';
+import { codeReviewPolicyFingerprint, codeReviewPolicySchema } from './code-review-policy.js';
 
 const recordIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const digestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -170,7 +171,7 @@ export class PlanExecutionBinder {
     }
     if (
       artifact.authority.codeReviewPolicyFingerprint !==
-      fingerprintPlanValue(request.codeReviewPolicy)
+      codeReviewPolicyFingerprint(codeReviewPolicySchema.parse(request.codeReviewPolicy))
     ) {
       mismatches.push('code-review-policy');
     }

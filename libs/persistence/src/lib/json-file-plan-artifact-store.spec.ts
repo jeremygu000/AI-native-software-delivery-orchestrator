@@ -134,8 +134,8 @@ const artifact = (content = 'Change A.'): PlanArtifact =>
       version: 1,
       reviewer: {
         implementation: 'test',
-        provider: 'test',
-        model: 'test',
+        agentBackend: 'pi',
+        model: { provider: 'test', id: 'test' },
         toolProfile: 'workspace-read-only-v1',
         outputSchemaVersion: 1,
         promptVersion: 'v1'

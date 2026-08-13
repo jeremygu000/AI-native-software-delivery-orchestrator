@@ -65,7 +65,7 @@ and local Git workspace core:
 - Git-diff observed-impact reconciliation before verification: unleased actual changes fail closed,
   leased scope expansion produces sequenced durable runtime conflicts, and replay applies that changing
   conflict knowledge at the historical scheduler sequence;
-- independent semantic code-review policy binding: reviewer implementation/provider/model, read-only tool
+- independent semantic code-review policy binding: reviewer implementation/backend/provider/model, read-only tool
   profile, output schema, and prompt version are fingerprinted separately from verification policy and
   revalidated before local runtime startup;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
