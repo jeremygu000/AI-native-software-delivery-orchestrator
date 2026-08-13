@@ -2159,3 +2159,10 @@ implemented: the existing runtime has one durable builder-attempt lineage per ta
 loop requires separately modeled repair attempts, a bounded budget, repeat verification and review,
 recovery semantics, and an integration-admission rule. ADR-025 records this boundary so the next Stage 22
 increment can add repair without weakening attempt provenance.
+
+The next Stage 22 increment adds the first repair authority records without yet dispatching a repair
+agent. A `TaskRepairAttempt` has its own revisioned lineage, parent review iteration and subject, bounded
+repair budget, session/failure evidence, and separate SQLite storage. An integration admission policy now
+accepts only a durable `accept` review whose builder attempt, workspace revision/change, impact, and
+verification subject exactly equals the current output. Repair, re-verification, and re-review dispatch
+remain the next composition step.

@@ -1867,3 +1867,9 @@ reviewer 不能写文件、运行 command、批准 integration 或 dispatch repa
 对每个 task 只有一条 durable builder-attempt lineage，而安全 repair loop 需要独立建模 repair attempt、bounded
 budget、再次 verification 与 review、recovery semantic 及 integration-admission rule。ADR-025 记录了此
 boundary，以便下一次 Stage 22 increment 在不削弱 attempt provenance 的前提下实现 repair。
+
+下一次 Stage 22 increment 先加入 repair authority record，但尚不 dispatch repair agent。`TaskRepairAttempt`
+有独立的 revisioned lineage、parent review iteration 与 subject、bounded repair budget、session/failure
+evidence 和独立 SQLite storage。integration admission policy 只接受 builder attempt、workspace revision/change、
+impact 与 verification subject 都与 current output 精确匹配的 durable `accept` review。repair、再次 verification
+与再次 review 的 dispatch 仍是下一个 composition step。

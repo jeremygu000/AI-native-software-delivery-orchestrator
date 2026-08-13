@@ -36,6 +36,12 @@ assumes one agent-attempt lineage per task. Repair needs a separately modeled at
 re-verification, re-review, recovery behavior, and integration admission rule. It must not be added by
 silently reusing or overwriting the builder attempt.
 
+The next increment adds a separate revisioned `TaskRepairAttempt` lineage with a parent review iteration
+and subject, plus a deterministic repair budget coordinator. It still does not dispatch a coding agent.
+`assertTaskReviewIntegrationAdmission` admits only an `accept` review whose full subject exactly matches
+the current output; legacy, repair, and stale review evidence fail closed. A later composition increment
+must create durable workspace-change and verification evidence before invoking this gate around integration.
+
 ## Consequences
 
 - Code review becomes durable, structured, provider-neutral evidence.

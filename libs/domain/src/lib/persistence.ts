@@ -14,6 +14,7 @@ import type { WriteLease } from './write-lease.js';
 import type { TaskWorkspace } from './workspace.js';
 import type { TaskCodeReview } from './task-code-review.js';
 import type { TaskCodeReviewSubject } from './task-code-review.js';
+import type { TaskRepairAttempt } from './task-repair-attempt.js';
 import { z } from 'zod';
 
 export type OrchestrationRunState = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
@@ -92,6 +93,11 @@ export interface PersistedTaskCodeReview {
   readonly review: TaskCodeReview;
 }
 
+export interface PersistedTaskRepairAttempt {
+  readonly runId: string;
+  readonly attempt: TaskRepairAttempt;
+}
+
 export interface PersistedTaskConflict {
   readonly runId: string;
   readonly taskA: string;
@@ -163,6 +169,11 @@ export interface OrchestrationPersistence {
 export interface TaskCodeReviewStore {
   persistReview(review: PersistedTaskCodeReview): Promise<void>;
   recoverReviews(runId: string): Promise<readonly PersistedTaskCodeReview[]>;
+}
+
+export interface TaskRepairAttemptStore {
+  persistRepairAttempt(attempt: PersistedTaskRepairAttempt): Promise<void>;
+  recoverRepairAttempts(runId: string): Promise<readonly PersistedTaskRepairAttempt[]>;
 }
 
 export const taskDecisionsWithTransitions = (

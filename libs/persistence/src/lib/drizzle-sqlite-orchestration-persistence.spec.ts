@@ -326,6 +326,53 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     persistence.close();
   });
 
+  it('persists a separate revisioned repair attempt lineage', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const subject = {
+      builderAttemptId: 'attempt-A',
+      workspaceId: 'workspace-A',
+      workspaceRevision: 1,
+      workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
+      impactFingerprint: `sha256:${'b'.repeat(64)}`,
+      verificationFingerprint: `sha256:${'c'.repeat(64)}`
+    };
+    const preparing = {
+      id: 'repair-1',
+      runId: 'run-1',
+      taskId: 'A',
+      agentId: 'repair-agent',
+      workspaceId: 'workspace-A',
+      parentReviewIteration: 1,
+      parentReviewSubject: subject,
+      repairIteration: 1,
+      state: 'PREPARING' as const,
+      revision: 1
+    };
+    await persistence.createRun(createRunRequest());
+    await persistence.persistRepairAttempt({ runId: 'run-1', attempt: preparing });
+    await expect(
+      persistence.persistRepairAttempt({ runId: 'run-1', attempt: preparing })
+    ).resolves.toBeUndefined();
+    const completed = {
+      ...preparing,
+      state: 'COMPLETED' as const,
+      revision: 2,
+      startedAt: new Date('2026-08-13T00:00:00.000Z'),
+      completedAt: new Date('2026-08-13T00:01:00.000Z')
+    };
+    await persistence.persistRepairAttempt({ runId: 'run-1', attempt: completed });
+    await expect(persistence.recoverRepairAttempts('run-1')).resolves.toMatchObject([
+      { attempt: { id: 'repair-1', state: 'COMPLETED', parentReviewSubject: subject } }
+    ]);
+    await expect(
+      persistence.persistRepairAttempt({
+        runId: 'run-1',
+        attempt: { ...preparing, agentId: 'other' }
+      })
+    ).rejects.toThrow(PersistenceInputError);
+    persistence.close();
+  });
+
   it('rejects corrupted durable run authority evidence', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'orchestration-persistence-'));
     const filename = join(directory, 'corrupt-authority.sqlite');

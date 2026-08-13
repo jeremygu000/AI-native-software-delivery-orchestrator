@@ -6,11 +6,13 @@ import type {
   CreatePersistedRunRequest,
   OrchestrationPersistence,
   TaskCodeReviewStore,
+  TaskRepairAttemptStore,
   OrchestrationRunState,
   PersistedReevaluation,
   PersistedTaskConflict,
   PersistedTaskImpact,
   PersistedTaskCodeReview,
+  PersistedTaskRepairAttempt,
   PersistedWriteLease,
   PersistedTaskWorkspace,
   PersistedAgentExecutionAttempt,
@@ -33,6 +35,7 @@ import {
   taskImpactSchema,
   taskCodeReviewSchema,
   taskCodeReviewSubjectSchema,
+  taskRepairAttemptSchema,
   taskDecisionsWithTransitions,
   taskSpecificationSchema,
   taskContractSchema,
@@ -90,6 +93,12 @@ const taskCodeReviews = sqliteTable('task_code_reviews', {
   iteration: integer('iteration').notNull(),
   subjectJson: text('subject_json'),
   reviewJson: text('review_json').notNull()
+});
+
+const taskRepairAttempts = sqliteTable('task_repair_attempts', {
+  runId: text('run_id').notNull(),
+  attemptId: text('attempt_id').notNull(),
+  attemptJson: text('attempt_json').notNull()
 });
 
 const taskConflicts = sqliteTable('task_conflicts', {
@@ -192,6 +201,9 @@ const isTaskCodeReview = (value: unknown): value is PersistedTaskCodeReview['rev
 const isTaskCodeReviewSubject = (value: unknown): value is PersistedTaskCodeReview['subject'] =>
   taskCodeReviewSubjectSchema.safeParse(value).success;
 
+const isTaskRepairAttempt = (value: unknown): value is PersistedTaskRepairAttempt['attempt'] =>
+  taskRepairAttemptSchema.safeParse(value).success;
+
 const isWriteLease = (value: unknown): value is PersistedWriteLease['lease'] =>
   writeLeaseSchema.safeParse(value).success;
 
@@ -287,7 +299,7 @@ export class PersistenceReplayError extends Error {
 }
 
 export class DrizzleSqliteOrchestrationPersistence
-  implements OrchestrationPersistence, TaskCodeReviewStore
+  implements OrchestrationPersistence, TaskCodeReviewStore, TaskRepairAttemptStore
 {
   readonly #sqlite: Database.Database;
   readonly #db;
@@ -344,6 +356,12 @@ export class DrizzleSqliteOrchestrationPersistence
         subject_json TEXT,
         review_json TEXT NOT NULL,
         PRIMARY KEY (run_id, task_id, iteration)
+      );
+      CREATE TABLE IF NOT EXISTS task_repair_attempts (
+        run_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        attempt_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, attempt_id)
       );
       CREATE TABLE IF NOT EXISTS task_conflicts (
         run_id TEXT NOT NULL,
@@ -980,6 +998,70 @@ export class DrizzleSqliteOrchestrationPersistence
               )
             }),
         review: decode(review.reviewJson, isTaskCodeReview, 'task code review')
+      }));
+  }
+
+  async persistRepairAttempt(record: PersistedTaskRepairAttempt): Promise<void> {
+    this.#assertRunId(record.runId);
+    if (record.attempt.runId !== record.runId) {
+      throw new PersistenceInputError('Repair attempt run ID must match persistence run ID');
+    }
+    taskRepairAttemptSchema.parse(record.attempt);
+    this.#sqlite.transaction(() => {
+      this.#assertRunExists(record.runId);
+      const existing = this.#db
+        .select()
+        .from(taskRepairAttempts)
+        .where(
+          and(
+            eq(taskRepairAttempts.runId, record.runId),
+            eq(taskRepairAttempts.attemptId, record.attempt.id)
+          )
+        )
+        .get();
+      if (existing !== undefined) {
+        const stored = decode(existing.attemptJson, isTaskRepairAttempt, 'task repair attempt');
+        if (record.attempt.revision < stored.revision) {
+          throw new PersistenceInputError('Repair attempt revision regression rejected');
+        }
+        if (
+          record.attempt.revision === stored.revision &&
+          canonicalPlainStringify(record.attempt) !== canonicalPlainStringify(stored)
+        ) {
+          throw new PersistenceInputError(
+            'Repair attempt revision already recorded with different evidence'
+          );
+        }
+        if (record.attempt.revision === stored.revision) {
+          return;
+        }
+      }
+      this.#db
+        .insert(taskRepairAttempts)
+        .values({
+          runId: record.runId,
+          attemptId: record.attempt.id,
+          attemptJson: stringify(record.attempt)
+        })
+        .onConflictDoUpdate({
+          target: [taskRepairAttempts.runId, taskRepairAttempts.attemptId],
+          set: { attemptJson: stringify(record.attempt) }
+        })
+        .run();
+    })();
+  }
+
+  async recoverRepairAttempts(runId: string): Promise<readonly PersistedTaskRepairAttempt[]> {
+    this.#assertRunId(runId);
+    return this.#db
+      .select()
+      .from(taskRepairAttempts)
+      .where(eq(taskRepairAttempts.runId, runId))
+      .orderBy(asc(taskRepairAttempts.attemptId))
+      .all()
+      .map((record) => ({
+        runId: record.runId,
+        attempt: decode(record.attemptJson, isTaskRepairAttempt, 'task repair attempt')
       }));
   }
 
