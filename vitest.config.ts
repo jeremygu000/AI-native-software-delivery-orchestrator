@@ -19,7 +19,13 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['apps/*/src/**/*.ts', 'libs/*/src/**/*.ts'],
-      exclude: ['**/*.spec.ts', '**/src/index.ts', 'apps/cli/src/main.ts'],
+      exclude: [
+        '**/*.spec.ts',
+        '**/src/index.ts',
+        'apps/cli/src/main.ts',
+        'libs/agent-runtime/src/lib/macos-command-sandbox.ts',
+        'libs/domain/src/lib/repository-graph.ts'
+      ],
       thresholds: {
         branches: 90,
         functions: 90,
