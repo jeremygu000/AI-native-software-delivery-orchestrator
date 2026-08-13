@@ -35,6 +35,7 @@ const taskEventSchema = z.object({ taskId: taskIdSchema });
 
 export const schedulerEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('run-started') }),
+  z.object({ type: z.literal('runtime-reconciliation-recovered') }),
   taskEventSchema.extend({ type: z.literal('agent-completed'), state: z.literal('VERIFYING') }),
   taskEventSchema.extend({ type: z.literal('task-completed'), state: z.literal('COMPLETED') }),
   taskEventSchema.extend({ type: z.literal('task-failed'), state: z.literal('FAILED') }),
@@ -249,6 +250,24 @@ export type AgentRunResult =
 
 export interface AgentRunner {
   run(request: AgentRunRequest): Promise<AgentRunResult>;
+}
+
+export interface TaskImpactReconciliationRequest {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly impact: TaskImpact;
+  readonly reportedImpact?: ObservedTaskImpact;
+  readonly leases: readonly WriteLease[];
+  readonly workspace: TaskWorkspace;
+}
+
+export type TaskImpactReconciliationResult = {
+  readonly observed: ObservedTaskImpact;
+  readonly reconciliation: import('./conflict.js').TaskImpactReconciliation;
+};
+
+export interface TaskImpactReconciler {
+  reconcile(request: TaskImpactReconciliationRequest): Promise<TaskImpactReconciliationResult>;
 }
 
 export interface TaskVerificationRequest {

@@ -79,6 +79,17 @@ export type IntegrateTaskWorkspaceResult =
   | { readonly status: 'integrated'; readonly workspace: TaskWorkspace }
   | { readonly status: 'blocked'; readonly workspace: TaskWorkspace };
 
+export type WorkspaceChangeKind = 'created' | 'modified' | 'deleted';
+
+export interface WorkspaceChange {
+  readonly kind: WorkspaceChangeKind;
+  readonly path: string;
+}
+
+export interface WorkspaceChangeInspector {
+  inspect(workspace: TaskWorkspace): Promise<readonly WorkspaceChange[]>;
+}
+
 export type DisposeTaskWorkspaceResult =
   | { readonly status: 'disposed' }
   | { readonly status: 'dirty'; readonly paths: readonly string[] };

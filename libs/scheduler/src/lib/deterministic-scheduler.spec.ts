@@ -215,6 +215,33 @@ describe('DeterministicScheduler', () => {
     ]);
   });
 
+  it.each(['VERIFYING', 'INTEGRATING'] as const)(
+    'defers a new conflicting task while the other task is %s',
+    (activeState) => {
+      const decision = scheduler.reevaluate(
+        event('A'),
+        snapshot({ A: activeState, B: 'READY' }),
+        [task('A'), task('B')],
+        [hardConflict('A', 'B')],
+        [],
+        { maxConcurrency: 2 }
+      );
+
+      expect(startIds(decision)).toEqual([]);
+      expect(decision.taskDecisions).toContainEqual({
+        taskId: 'B',
+        action: 'defer',
+        reasons: [
+          {
+            type: 'hard-conflict',
+            conflictingTaskIds: ['A'],
+            constraintTypes: ['same-symbol-write']
+          }
+        ]
+      });
+    }
+  );
+
   it('applies hard serialization and risk staggering by priority then stable task ID', () => {
     const tasks = [task('C', [], 5), task('B', [], 5), task('A')];
     const decision = scheduler.reevaluate(

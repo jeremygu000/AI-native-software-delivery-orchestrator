@@ -1793,4 +1793,44 @@ source repository 共享的 `.git` metadata；真正 metadata isolation 需要 d
 
 Stage 20 在独立 follow-up Review 后为 **PASS / CLOSED**。建议下一 product stage 先做 **Observed Impact
 Reconciliation**：在 verification/integration 前，把实际 Git change 与 predicted impact、lease authority 对账。
-Run Operations and Recovery Control 排在该 authority gap 之后。
+
+## Stage 21：Observed Impact Reconciliation
+
+Stage 21 关闭了第一个 observed-effect authority 缺口。agent 完成后、verification 开始前，local runtime
+会让 Git 报告 task worktree 的真实变更路径，包括 untracked file。每个路径都通过已批准的 RepositoryGraph
+映射，而不是接受 model 提供的 identifier。结果会以 created、modified、deleted file 的 durable observed
+evidence 形式保存。
+
+reconciliation 会将每个实际写入文件与已批准的 predicted write scope 及此次 execution 持有的 ACTIVE
+write lease 对照。没有匹配 ACTIVE lease 的变更会在 verification 或 integration 前使 task fail。位于
+approved predicted impact 之外但仍有 lease 的文件，会明确保存为 `runtime-scope-expanded` evidence，而不会
+被静默当作已经批准的计划范围。
+
+lease 会一直保持 ACTIVE 到 reconciliation 完成。之后在 verification 前释放，因为 approved verifier 在独立的
+read-only Docker container 中运行，不能执行 repository write；这就是 controlled agent mutation 与
+verification 的边界。发现 unleased observed change 时，task 和 run 在该释放前已经失败，因此不会有后续 task
+dispatch 将已释放 resource 当作 failed run 中可安全继续工作的资源。
+
+如果 expansion 与另一 task 的 predicted write scope 重叠，runtime 会持久化 hard
+`runtime-scope-expansion` conflict。该 conflict 会加入下一次 scheduler reevaluation，因此仍处于
+verification 或 integration 的 task 也会阻止随后变为 eligible 的冲突 task 启动。scheduler 保留原有的
+concurrently selected task 排序，同时将 conflict protection 扩展到这些 in-flight lifecycle state。
+
+ACTIVE run restart 时，已持久化的 runtime conflict 会被重新读取，并在恢复 dispatch 前触发 durable
+`runtime-reconciliation-recovered` reevaluation。因此 runtime conflict collection 是刻意可变的 runtime state，
+并且与 approved immutable plan conflict 分离。
+
+实现将 Git parsing 保留在 `workspace-git`，graph/path ownership 放在 `run-preparation`，provider-neutral
+reconciliation contract 放在 `domain`。它暂不推断 symbol、dependency、manifest、generated output，也不会
+在实际 file scope 之外构造 dynamic conflict。cross-process write fencing、dirty snapshot materialization、
+cancellation/UNKNOWN reconciliation 和 operator workflow 仍属于后续 stage。
+
+verification boundary 仍有一项 non-blocking correctness limitation。task 的 execution lease 会在
+read-only verifier 开始前释放，这对 verifier mutation 是安全的；但该释放不能阻止另一项合法 task 在之后
+获得新 lease 并写入同一文件，因此 verifier 读到的内容未必是 immutable post-agent snapshot。后续 stage
+应评估 verification-read reservation 或 repository snapshot，使 verification 可以绑定到不可变状态。这不是
+authorization bypass：后续写入仍需要自己的 lease，且 verifier 不能写入。
+
+已通过 focused verification：TypeScript project-reference build、Oxlint、scheduler/runtime tests、真实
+local worktree/SQLite runtime test，以及新增 reconciliation tests，覆盖 actual-diff precedence、leased scope
+expansion 和 unleased-change rejection。

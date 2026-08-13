@@ -256,7 +256,15 @@ describe('LocalRuntimeStarter', () => {
     await expect(persistence.recoverRun('run-1')).resolves.toMatchObject({
       run: { authority: request.run.authority },
       workspaces: [{ workspace: { phase: 'INTEGRATED' } }],
-      attempts: [{ attempt: { state: 'COMPLETED', sessionRef: { value: 'session-1' } } }]
+      attempts: [{ attempt: { state: 'COMPLETED', sessionRef: { value: 'session-1' } } }],
+      impacts: [
+        {
+          impact: {
+            observed: { filesWritten: new Set(['core:value.txt']) },
+            reconciliation: { status: 'within-predicted-scope' }
+          }
+        }
+      ]
     });
     persistence.close();
   });

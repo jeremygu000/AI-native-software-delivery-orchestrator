@@ -2075,3 +2075,48 @@ Stage 20 is **PASS / CLOSED** after independent follow-up review. The recommende
 **Observed Impact Reconciliation**: compare actual Git changes with predicted impact and lease authority
 before allowing verification/integration. Run Operations and Recovery Control remains planned after that
 authority gap.
+
+## Stage 21: Observed Impact Reconciliation
+
+Stage 21 closes the first observed-effect authority gap. After an agent finishes but before verification,
+the local runtime asks Git for the task worktree's real changed paths, including untracked files. It maps
+each path through the approved RepositoryGraph rather than accepting a model-provided identifier. The
+result is durable observed evidence for created, modified, and deleted files.
+
+The reconciliation compares each actual written file with the approved predicted write scope and the
+ACTIVE write leases held for that execution. A change with no matching active lease fails the task before
+verification or integration. A leased file outside the approved predicted impact is retained explicitly
+as `runtime-scope-expanded` evidence. It is not silently treated as plan-approved.
+
+Leases remain ACTIVE through reconciliation. They are then released before verification because the
+approved verifier runs in a separate read-only Docker container and cannot perform repository writes;
+this is the boundary between controlled agent mutation and verification. An unleased observed change has
+already failed the task and run before that release occurs, so no later task dispatch is allowed to treat
+the released resource as safe work in the failed run.
+
+When expansion overlaps another task's predicted write scope, the runtime persists a hard
+`runtime-scope-expansion` conflict. That conflict is included in the next scheduler reevaluation, so a
+task that remains in verification or integration still prevents a newly eligible conflicting task from
+starting. The scheduler retains its established ordering for concurrently selected tasks while extending
+conflict protection through these in-flight lifecycle states.
+
+On an ACTIVE run restart, persisted runtime conflicts are reloaded and trigger a durable
+`runtime-reconciliation-recovered` reevaluation before dispatch resumes. Runtime conflict collections are
+therefore deliberately mutable runtime state, separate from the approved immutable plan conflicts.
+
+The implementation keeps Git parsing in `workspace-git`, graph/path ownership in `run-preparation`, and
+the provider-neutral reconciliation contract in `domain`. It does not infer symbols, dependencies,
+manifests, generated output, or dynamic conflicts beyond actual file scope. Cross-process write fencing,
+dirty snapshot materialization, cancellation/UNKNOWN reconciliation, and operator workflow remain later
+stages.
+
+One non-blocking correctness limitation remains at the verification boundary. Releasing a task's execution
+leases before its read-only verifier starts is safe against verifier mutation, but it does not preserve a
+read snapshot against another legitimate task write that acquires a new lease after the release. A later
+stage should evaluate verification-read reservations or a repository snapshot so verification can be tied
+to an immutable post-agent state. This is not an authorization bypass: the later write still requires its
+own lease and the verifier cannot write.
+
+Focused verification passes: TypeScript project-reference build, Oxlint, scheduler and runtime tests, the
+real local worktree/SQLite runtime test, and new reconciliation tests covering actual-diff precedence,
+leased scope expansion, and unleased-change rejection.

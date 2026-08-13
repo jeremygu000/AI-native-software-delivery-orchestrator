@@ -71,9 +71,16 @@ export const observedTaskImpactSchema = z.object({
   generatedFilesChanged: stringSetSchema
 });
 
+export const taskImpactReconciliationSchema = z.object({
+  status: z.enum(['within-predicted-scope', 'runtime-scope-expanded', 'unleased-change']),
+  expandedFileIds: stringSetSchema,
+  unleasedFileIds: stringSetSchema
+});
+
 export const taskImpactSchema = z.object({
   predicted: predictedTaskImpactSchema,
-  observed: observedTaskImpactSchema.optional()
+  observed: observedTaskImpactSchema.optional(),
+  reconciliation: taskImpactReconciliationSchema.optional()
 });
 
 export interface PredictedTaskImpact {
@@ -106,9 +113,16 @@ export interface ObservedTaskImpact {
   readonly generatedFilesChanged: ReadonlySet<FileId>;
 }
 
+export interface TaskImpactReconciliation {
+  readonly status: 'within-predicted-scope' | 'runtime-scope-expanded' | 'unleased-change';
+  readonly expandedFileIds: ReadonlySet<FileId>;
+  readonly unleasedFileIds: ReadonlySet<FileId>;
+}
+
 export interface TaskImpact {
   readonly predicted: PredictedTaskImpact;
   readonly observed?: ObservedTaskImpact;
+  readonly reconciliation?: TaskImpactReconciliation;
 }
 
 export type ConflictReasonType =

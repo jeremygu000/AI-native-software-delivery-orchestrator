@@ -4,6 +4,8 @@ import type {
   OrchestrationPersistence,
   PersistedReevaluation,
   PersistedDispatch,
+  PersistedTaskConflict,
+  PersistedTaskImpact,
   PersistedAgentExecutionAttempt,
   PersistedTaskWorkspace,
   PersistedWriteLease,
@@ -90,6 +92,8 @@ class MemoryPersistence implements OrchestrationPersistence {
   readonly workspaces: PersistedTaskWorkspace[] = [];
   readonly leases: PersistedWriteLease[] = [];
   readonly attempts: PersistedAgentExecutionAttempt[] = [];
+  readonly impacts: PersistedTaskImpact[] = [];
+  readonly conflicts: PersistedTaskConflict[] = [];
 
   async createRun(request: CreatePersistedRunRequest): Promise<void> {
     this.request = request;
@@ -106,9 +110,13 @@ class MemoryPersistence implements OrchestrationPersistence {
     }
   }
 
-  async persistImpact(): Promise<void> {}
+  async persistImpact(record: PersistedTaskImpact): Promise<void> {
+    this.impacts.push(record);
+  }
 
-  async persistConflict(): Promise<void> {}
+  async persistConflict(record: PersistedTaskConflict): Promise<void> {
+    this.conflicts.push(record);
+  }
 
   async persistLease(record: PersistedWriteLease): Promise<void> {
     const index = this.leases.findIndex((entry) => entry.lease.id === record.lease.id);
@@ -154,8 +162,8 @@ class MemoryPersistence implements OrchestrationPersistence {
       events: this.reevaluations.map(({ event }) => event),
       transitions: this.reevaluations.flatMap(({ transitions }) => transitions),
       decisions: this.reevaluations.map(({ decision }) => decision),
-      impacts: [],
-      conflicts: [],
+      impacts: this.impacts,
+      conflicts: this.conflicts,
       leases: this.leases,
       workspaces: this.workspaces,
       attempts: this.attempts
@@ -361,6 +369,119 @@ class ConcurrentAgentRunner implements AgentRunner {
 }
 
 describe('OrchestrationRuntime', () => {
+  it('fails before verification when reconciliation finds an unleased change', async () => {
+    const persistence = new MemoryPersistence();
+    const verifier = new FakeTaskVerifier();
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard: new MemoryWriteGuard(),
+      agentRunner: new FakeAgentRunner(),
+      verifier,
+      impactReconciler: {
+        reconcile: async ({ taskId }) => ({
+          observed: {
+            taskId,
+            filesRead: new Set(),
+            filesCreated: new Set(),
+            filesWritten: new Set(['project-A:unleased.txt']),
+            filesDeleted: new Set(),
+            symbolsWritten: new Set(),
+            dependencyRequests: new Set(),
+            manifestFilesChanged: new Set(),
+            generatedFilesChanged: new Set()
+          },
+          reconciliation: {
+            status: 'unleased-change',
+            expandedFileIds: new Set(['project-A:unleased.txt']),
+            unleasedFileIds: new Set(['project-A:unleased.txt'])
+          }
+        })
+      }
+    });
+
+    await expect(runtime.startRun(request([task('A')]))).resolves.toMatchObject({
+      run: { state: 'FAILED' },
+      snapshot: { taskStates: [{ taskId: 'A', state: 'FAILED' }] }
+    });
+    expect(persistence.impacts).toMatchObject([
+      { impact: { reconciliation: { status: 'unleased-change' } } }
+    ]);
+    expect(persistence.leases).toMatchObject([{ lease: { state: 'RELEASED' } }]);
+  });
+
+  it('persists a hard conflict for leased scope expansion before verification', async () => {
+    const persistence = new MemoryPersistence();
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard: new MemoryWriteGuard(),
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      impactReconciler: {
+        reconcile: async ({ taskId }) => ({
+          observed: {
+            taskId,
+            filesRead: new Set(),
+            filesCreated: new Set(['project-B:overlap.txt']),
+            filesWritten: new Set(['project-B:overlap.txt']),
+            filesDeleted: new Set(),
+            symbolsWritten: new Set(),
+            dependencyRequests: new Set(),
+            manifestFilesChanged: new Set(),
+            generatedFilesChanged: new Set()
+          },
+          reconciliation: {
+            status: 'runtime-scope-expanded',
+            expandedFileIds: new Set(['project-B:overlap.txt']),
+            unleasedFileIds: new Set()
+          }
+        })
+      }
+    });
+    const baseRun = request([task('A'), task('B')]);
+    const run: StartRuntimeRunRequest = {
+      ...baseRun,
+      taskBindings: baseRun.taskBindings.map((binding) =>
+        binding.taskId === 'B'
+          ? {
+              ...binding,
+              impact: {
+                predicted: {
+                  taskId: 'B',
+                  projectsRead: new Set<string>(),
+                  projectsWritten: new Set<string>(),
+                  explicitProjectsWritten: new Set<string>(),
+                  filesRead: new Set<string>(),
+                  filesWritten: new Set(['project-B:overlap.txt']),
+                  explicitFilesWritten: new Set(['project-B:overlap.txt']),
+                  globFilesWritten: new Set<string>(),
+                  symbolDerivedFilesWritten: new Set<string>(),
+                  symbolsRead: new Set<string>(),
+                  symbolsWritten: new Set<string>(),
+                  sharedResources: new Set<string>(),
+                  sharedResourceAccesses: [],
+                  downstreamProjects: new Set<string>(),
+                  riskSignals: []
+                }
+              }
+            }
+          : binding
+      )
+    };
+
+    await expect(runtime.startRun(run)).resolves.toMatchObject({ run: { state: 'COMPLETED' } });
+    expect(persistence.conflicts).toMatchObject([
+      {
+        taskA: 'A',
+        taskB: 'B',
+        conflict: { severity: 'hard', constraints: [{ type: 'runtime-scope-expansion' }] }
+      }
+    ]);
+  });
+
   it('runs independent task agents concurrently while serializing lifecycle operations', async () => {
     const persistence = new MemoryPersistence();
     const agent = new ConcurrentAgentRunner();
@@ -638,6 +759,92 @@ describe('OrchestrationRuntime', () => {
           }
         }
       ]
+    });
+  });
+
+  it('reapplies persisted runtime scope conflicts before resuming dispatch', async () => {
+    const persistence = new MemoryPersistence();
+    const run = request([task('A'), task('B')]);
+    await persistence.createRun(run);
+    await persistence.persistReevaluation({
+      event: {
+        runId: 'run-1',
+        sequence: 1,
+        occurredAt: '2026-08-12T00:00:00.000Z',
+        event: { type: 'agent-completed', taskId: 'A', state: 'VERIFYING' }
+      },
+      transitions: [],
+      decision: {
+        runId: 'run-1',
+        sequence: 1,
+        inputSnapshot: {
+          taskStates: [
+            { taskId: 'A', state: 'VERIFYING' },
+            { taskId: 'B', state: 'READY' }
+          ],
+          runtimeBlocks: []
+        },
+        decision: { taskDecisions: [] }
+      }
+    });
+    await persistence.persistConflict({
+      runId: 'run-1',
+      taskA: 'A',
+      taskB: 'B',
+      conflict: {
+        taskA: 'A',
+        taskB: 'B',
+        score: 100,
+        severity: 'hard',
+        reasons: [
+          {
+            type: 'same-file',
+            score: 100,
+            detail: 'Observed runtime scope overlaps another task predicted write scope.',
+            resourceIds: ['project-B:overlap.txt']
+          }
+        ],
+        constraints: [
+          {
+            type: 'runtime-scope-expansion',
+            detail: 'Observed runtime scope expansion must be reconciled before future dispatch.',
+            resourceIds: ['project-B:overlap.txt']
+          }
+        ],
+        recommendedAction: 'serialize'
+      }
+    });
+    const dispatch = vi.fn<AgentRunner['run']>();
+    const runtime = createRuntime(persistence, undefined, undefined, { run: dispatch });
+
+    await expect(runtime.startOrResumeRun(run)).resolves.toMatchObject({
+      snapshot: {
+        taskStates: [
+          { taskId: 'A', state: 'VERIFYING' },
+          { taskId: 'B', state: 'READY' }
+        ]
+      }
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(persistence.reevaluations.at(-1)).toMatchObject({
+      event: { event: { type: 'runtime-reconciliation-recovered' } },
+      decision: {
+        decision: {
+          taskDecisions: expect.arrayContaining([
+            {
+              taskId: 'B',
+              action: 'defer',
+              reasons: [
+                {
+                  type: 'hard-conflict',
+                  conflictingTaskIds: ['A'],
+                  constraintTypes: ['runtime-scope-expansion']
+                }
+              ]
+            }
+          ])
+        }
+      }
     });
   });
 

@@ -22,9 +22,13 @@ import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-deliv
 import { fingerprintPlanValue } from '@ai-native-software-delivery-orchestrator/planning';
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
-import { GitWorkspaceManager } from '@ai-native-software-delivery-orchestrator/workspace-git';
+import {
+  GitWorkspaceChangeInspector,
+  GitWorkspaceManager
+} from '@ai-native-software-delivery-orchestrator/workspace-git';
 
 import type { RuntimeStarter } from './run-preparation.js';
+import { RepositoryImpactReconciler } from './repository-impact-reconciler.js';
 
 const portable = (path: string): string => path.split(sep).join('/');
 
@@ -186,6 +190,10 @@ export class LocalRuntimeStarter implements RuntimeStarter {
       scheduler: new DeterministicScheduler(),
       persistence: this.#persistence,
       workspaceManager: new GitWorkspaceManager(),
+      impactReconciler: new RepositoryImpactReconciler({
+        changes: new GitWorkspaceChangeInspector(),
+        resources
+      }),
       writeGuard,
       agentRunner: new PiAgentRunner({
         gateway: this.#gateway,

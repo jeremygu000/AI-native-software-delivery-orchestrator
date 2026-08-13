@@ -468,6 +468,11 @@ export class DeterministicScheduler implements Scheduler {
     const runningTaskIds = [...states]
       .flatMap(([taskId, state]) => (state === 'RUNNING' ? [taskId] : []))
       .toSorted(compareIds);
+    const conflictActiveTaskIds = [...states]
+      .flatMap(([taskId, state]) =>
+        state === 'RUNNING' || state === 'VERIFYING' || state === 'INTEGRATING' ? [taskId] : []
+      )
+      .toSorted(compareIds);
     const candidateTasks: TaskContract[] = [];
 
     for (const task of [...inputs.taskById.values()].toSorted(compareTasks)) {
@@ -532,6 +537,7 @@ export class DeterministicScheduler implements Scheduler {
 
     for (const task of candidateTasks) {
       const activeTaskIds = [...runningTaskIds, ...selected];
+      const conflictingTaskIds = [...conflictActiveTaskIds, ...selected];
       if (activeTaskIds.length >= inputs.options.maxConcurrency) {
         decisions.push({
           taskId: task.id,
@@ -548,7 +554,7 @@ export class DeterministicScheduler implements Scheduler {
       }
       const hardConflicts = inputs.hardConflicts.filter((conflict) => {
         const otherTaskId = matchesPair(task.id, conflict);
-        return otherTaskId !== undefined && activeTaskIds.includes(otherTaskId);
+        return otherTaskId !== undefined && conflictingTaskIds.includes(otherTaskId);
       });
       if (hardConflicts.length > 0) {
         decisions.push({
@@ -571,7 +577,7 @@ export class DeterministicScheduler implements Scheduler {
       }
       const activeRisks = inputs.riskConflicts.filter((conflict) => {
         const otherTaskId = matchesPair(task.id, conflict);
-        return otherTaskId !== undefined && activeTaskIds.includes(otherTaskId);
+        return otherTaskId !== undefined && conflictingTaskIds.includes(otherTaskId);
       });
       const deferringRisks = activeRisks.filter(isDeferringRisk);
       if (deferringRisks.length > 0) {

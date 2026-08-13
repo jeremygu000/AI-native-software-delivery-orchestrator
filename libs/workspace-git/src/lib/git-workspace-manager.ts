@@ -8,6 +8,8 @@ import type {
   DisposeTaskWorkspaceResult,
   IntegrateTaskWorkspaceResult,
   TaskWorkspace,
+  WorkspaceChange,
+  WorkspaceChangeInspector,
   WorkspaceManager
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
@@ -403,5 +405,51 @@ export class GitWorkspaceManager implements WorkspaceManager {
 
   #git(cwd: string, args: readonly string[]): Promise<GitResult> {
     return this.#runner.run(cwd, args);
+  }
+}
+
+export class GitWorkspaceChangeInspector implements WorkspaceChangeInspector {
+  readonly #runner: GitCommandRunner;
+
+  constructor(runner: GitCommandRunner = new NativeGitCommandRunner()) {
+    this.#runner = runner;
+  }
+
+  async inspect(workspace: TaskWorkspace): Promise<readonly WorkspaceChange[]> {
+    const parsed = taskWorkspaceSchema.parse(workspace);
+    const { stdout } = await this.#runner.run(parsed.workspacePath, [
+      'diff',
+      '--name-status',
+      '--no-renames',
+      '-z',
+      parsed.baseRef
+    ]);
+    const entries = stdout.split('\0').filter(Boolean);
+    const changes: WorkspaceChange[] = [];
+    for (let index = 0; index < entries.length; index += 2) {
+      const status = entries[index];
+      const path = entries[index + 1];
+      if (status === undefined || path === undefined) {
+        throw new GitWorkspaceError(['diff', '--name-status'], 'Malformed Git name-status output.');
+      }
+      const kind = status.startsWith('A')
+        ? 'created'
+        : status.startsWith('D')
+          ? 'deleted'
+          : 'modified';
+      changes.push({ kind, path });
+    }
+    const untracked = await this.#runner.run(parsed.workspacePath, [
+      'ls-files',
+      '--others',
+      '--exclude-standard',
+      '-z'
+    ]);
+    for (const path of untracked.stdout.split('\0').filter(Boolean)) {
+      if (!changes.some((change) => change.path === path)) {
+        changes.push({ kind: 'created', path });
+      }
+    }
+    return changes.toSorted((left, right) => comparePaths(left.path, right.path));
   }
 }

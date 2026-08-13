@@ -6,6 +6,7 @@ import type { CreateTaskWorkspaceRequest } from '@ai-native-software-delivery-or
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  GitWorkspaceChangeInspector,
   GitWorkspaceError,
   GitWorkspaceManager,
   type GitCommandRunner
@@ -23,7 +24,9 @@ const createRepository = (): string => {
   git(directory, ['config', 'user.email', 'test@example.com']);
   git(directory, ['config', 'user.name', 'Test User']);
   writeFileSync(join(directory, 'value.txt'), 'base\n');
-  git(directory, ['add', 'value.txt']);
+  writeFileSync(join(directory, 'delete.txt'), 'delete me\n');
+  writeFileSync(join(directory, '.gitignore'), 'ignored.txt\n');
+  git(directory, ['add', 'value.txt', 'delete.txt', '.gitignore']);
   git(directory, ['commit', '-m', 'base']);
   return directory;
 };
@@ -118,6 +121,22 @@ describe('GitWorkspaceManager', () => {
     await expect(manager.commit({ workspace, message: 'no changes' })).resolves.toEqual(workspace);
     expect(git(workspace.workspacePath, ['log', '--oneline'])).toContain('base');
     await manager.dispose({ workspace, force: true, reason: 'Test cleanup.' });
+  });
+
+  it('reports modified, deleted, and untracked paths while excluding ignored paths', async () => {
+    const repositoryPath = createRepository();
+    const manager = new GitWorkspaceManager();
+    const workspace = await manager.create(request(repositoryPath));
+    writeFileSync(join(workspace.workspacePath, 'value.txt'), 'changed\n');
+    rmSync(join(workspace.workspacePath, 'delete.txt'));
+    writeFileSync(join(workspace.workspacePath, 'new.txt'), 'new\n');
+    writeFileSync(join(workspace.workspacePath, 'ignored.txt'), 'ignored\n');
+
+    await expect(new GitWorkspaceChangeInspector().inspect(workspace)).resolves.toEqual([
+      { kind: 'deleted', path: 'delete.txt' },
+      { kind: 'created', path: 'new.txt' },
+      { kind: 'modified', path: 'value.txt' }
+    ]);
   });
 
   it('preserves integration phase through rebase conflict, abort, resolve, and resume', async () => {

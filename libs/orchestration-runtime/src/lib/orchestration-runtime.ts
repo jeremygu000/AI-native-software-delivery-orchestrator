@@ -20,6 +20,7 @@ import type {
   SchedulerTaskDecision,
   TaskContract,
   TaskImpact,
+  TaskImpactReconciler,
   TaskVerifier,
   TaskLeasePlan,
   WriteLease,
@@ -91,6 +92,7 @@ export class OrchestrationRuntime {
   readonly #writeGuard: WriteGuard;
   readonly #agentRunner: AgentRunner;
   readonly #verifier: TaskVerifier;
+  readonly #impactReconciler: TaskImpactReconciler | undefined;
   readonly #now: () => Date;
   readonly #createAttemptId: () => string;
   #nextAttemptNumber = 1;
@@ -102,6 +104,7 @@ export class OrchestrationRuntime {
     readonly writeGuard: WriteGuard;
     readonly agentRunner: AgentRunner;
     readonly verifier: TaskVerifier;
+    readonly impactReconciler?: TaskImpactReconciler;
     readonly now?: () => Date;
     readonly createAttemptId?: () => string;
   }) {
@@ -111,6 +114,7 @@ export class OrchestrationRuntime {
     this.#writeGuard = options.writeGuard;
     this.#agentRunner = options.agentRunner;
     this.#verifier = options.verifier;
+    this.#impactReconciler = options.impactReconciler;
     this.#now = options.now ?? (() => new Date());
     this.#createAttemptId =
       options.createAttemptId ?? (() => `attempt-${this.#nextAttemptNumber++}`);
@@ -129,6 +133,8 @@ export class OrchestrationRuntime {
       request,
       bindings,
       tasksById: new Map(request.tasks.map((task) => [task.id, task])),
+      hardConflicts: [...request.hardConflicts],
+      riskConflicts: [...request.riskConflicts],
       attemptsByTask: new Map<string, AgentExecutionAttempt>(),
       snapshot: {
         taskStates: request.tasks.map((task) => ({ taskId: task.id, state: 'PENDING' as const })),
@@ -263,6 +269,18 @@ export class OrchestrationRuntime {
       request,
       bindings,
       tasksById: new Map(request.tasks.map((task) => [task.id, task])),
+      hardConflicts: [
+        ...request.hardConflicts,
+        ...evidence.conflicts.flatMap(({ conflict }) =>
+          conflict.severity === 'hard' ? [conflict] : []
+        )
+      ],
+      riskConflicts: [
+        ...request.riskConflicts,
+        ...evidence.conflicts.flatMap(({ conflict }) =>
+          conflict.severity === 'hard' ? [] : [conflict]
+        )
+      ],
       attemptsByTask: new Map(recovered.attempts.map(({ attempt }) => [attempt.taskId, attempt])),
       snapshot: recovered.snapshot,
       nextSequence: evidence.events.length + 1,
@@ -276,6 +294,7 @@ export class OrchestrationRuntime {
         .toSorted(compareIds),
       lifecycle: Promise.resolve()
     };
+    await this.#recordEvent(state, { type: 'runtime-reconciliation-recovered' });
     await this.#drain(state);
     return this.#recoveredState(state.snapshot, request.run.id);
   }
@@ -489,15 +508,52 @@ export class OrchestrationRuntime {
           completedAt: this.#now(),
           sessionRef: agentResult.sessionRef
         });
-        this.#setState(state, taskId, 'VERIFYING');
-        await this.#recordEvent(state, { type: 'agent-completed', taskId, state: 'VERIFYING' });
       }
-      const released = await this.#releaseLeasePlan([
+      const allLeases = [
         ...acquisition.leases,
         ...(agentResult.status === 'completed' || agentResult.status === 'blocked'
           ? (agentResult.additionalLeases ?? [])
           : [])
-      ]);
+      ];
+      if (agentResult.status === 'completed') {
+        const impact = binding.impact ?? { predicted: this.#emptyPredictedImpact(taskId) };
+        const reconciliation = await this.#reconcileImpact({
+          runId: state.request.run.id,
+          taskId,
+          impact,
+          reportedImpact: agentResult.observedImpact,
+          leases: allLeases,
+          workspace
+        });
+        await this.#persistence.persistImpact({
+          runId: state.request.run.id,
+          taskId,
+          impact: { ...impact, ...reconciliation }
+        });
+        if (reconciliation.reconciliation.status === 'unleased-change') {
+          await this.#persistAttempt(state, taskId, {
+            state: 'FAILED',
+            completedAt: this.#now(),
+            failure: {
+              type: 'execution-failed',
+              detail: `Observed changes lack active write leases: ${[...reconciliation.reconciliation.unleasedFileIds].join(', ')}`
+            }
+          });
+          this.#setState(state, taskId, 'FAILED');
+          await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
+        } else if (reconciliation.reconciliation.status === 'runtime-scope-expanded') {
+          await this.#persistRuntimeScopeConflicts(
+            state,
+            taskId,
+            reconciliation.reconciliation.expandedFileIds
+          );
+        }
+        if (this.#stateFor(state.snapshot, taskId) !== 'FAILED') {
+          this.#setState(state, taskId, 'VERIFYING');
+          await this.#recordEvent(state, { type: 'agent-completed', taskId, state: 'VERIFYING' });
+        }
+      }
+      const released = await this.#releaseLeasePlan(allLeases);
       if (released.status !== 'released') {
         for (const lease of released.leases) {
           await this.#persistence.persistLease({ runId: state.request.run.id, lease });
@@ -541,7 +597,11 @@ export class OrchestrationRuntime {
         });
         return;
       }
-      if (agentResult.observedImpact !== undefined) {
+      if (
+        agentResult.status === 'completed' &&
+        this.#impactReconciler === undefined &&
+        agentResult.observedImpact !== undefined
+      ) {
         await this.#persistence.persistImpact({
           runId: state.request.run.id,
           taskId,
@@ -550,6 +610,9 @@ export class OrchestrationRuntime {
             observed: agentResult.observedImpact
           }
         });
+      }
+      if (this.#stateFor(state.snapshot, taskId) === 'FAILED') {
+        return;
       }
       const verification = await this.#verifier.verify({
         runId: state.request.run.id,
@@ -590,8 +653,8 @@ export class OrchestrationRuntime {
       event,
       inputSnapshot,
       state.request.tasks,
-      state.request.hardConflicts,
-      state.request.riskConflicts,
+      state.hardConflicts,
+      state.riskConflicts,
       state.request.scheduleOptions
     );
     const sequence = state.nextSequence++;
@@ -903,6 +966,102 @@ export class OrchestrationRuntime {
     };
   }
 
+  async #reconcileImpact(
+    request: Parameters<NonNullable<TaskImpactReconciler>['reconcile']>[0]
+  ): Promise<Awaited<ReturnType<NonNullable<TaskImpactReconciler>['reconcile']>>> {
+    if (this.#impactReconciler === undefined) {
+      return {
+        observed: request.reportedImpact ?? {
+          taskId: request.taskId,
+          filesRead: new Set(),
+          filesCreated: new Set(),
+          filesWritten: new Set(),
+          filesDeleted: new Set(),
+          symbolsWritten: new Set(),
+          dependencyRequests: new Set(),
+          manifestFilesChanged: new Set(),
+          generatedFilesChanged: new Set()
+        },
+        reconciliation: {
+          status: 'within-predicted-scope',
+          expandedFileIds: new Set(),
+          unleasedFileIds: new Set()
+        }
+      };
+    }
+    return this.#impactReconciler.reconcile(request);
+  }
+
+  async #persistRuntimeScopeConflicts(
+    state: RuntimeState,
+    taskId: string,
+    fileIds: ReadonlySet<string>
+  ): Promise<void> {
+    for (const otherTaskId of [...state.tasksById.keys()]
+      .filter((id) => id !== taskId)
+      .toSorted(compareIds)) {
+      const otherImpact = state.bindings.get(otherTaskId)?.impact?.predicted;
+      if (otherImpact === undefined) {
+        continue;
+      }
+      const overlappingFileIds = [...fileIds].filter((fileId) =>
+        otherImpact.filesWritten.has(fileId)
+      );
+      if (overlappingFileIds.length === 0) {
+        continue;
+      }
+      await this.#persistence.persistConflict({
+        runId: state.request.run.id,
+        taskA: taskId < otherTaskId ? taskId : otherTaskId,
+        taskB: taskId < otherTaskId ? otherTaskId : taskId,
+        conflict: {
+          taskA: taskId < otherTaskId ? taskId : otherTaskId,
+          taskB: taskId < otherTaskId ? otherTaskId : taskId,
+          score: 100,
+          severity: 'hard',
+          reasons: [
+            {
+              type: 'same-file',
+              score: 100,
+              detail: 'Observed runtime scope overlaps another task predicted write scope.',
+              resourceIds: overlappingFileIds.toSorted(compareIds)
+            }
+          ],
+          constraints: [
+            {
+              type: 'runtime-scope-expansion',
+              detail: 'Observed runtime scope expansion must be reconciled before future dispatch.',
+              resourceIds: overlappingFileIds.toSorted(compareIds)
+            }
+          ],
+          recommendedAction: 'serialize'
+        }
+      });
+      state.hardConflicts.push({
+        taskA: taskId < otherTaskId ? taskId : otherTaskId,
+        taskB: taskId < otherTaskId ? otherTaskId : taskId,
+        score: 100,
+        severity: 'hard',
+        reasons: [
+          {
+            type: 'same-file',
+            score: 100,
+            detail: 'Observed runtime scope overlaps another task predicted write scope.',
+            resourceIds: overlappingFileIds.toSorted(compareIds)
+          }
+        ],
+        constraints: [
+          {
+            type: 'runtime-scope-expansion',
+            detail: 'Observed runtime scope expansion must be reconciled before future dispatch.',
+            resourceIds: overlappingFileIds.toSorted(compareIds)
+          }
+        ],
+        recommendedAction: 'serialize'
+      });
+    }
+  }
+
   async #withLifecycle<T>(state: RuntimeState, operation: () => Promise<T>): Promise<T> {
     const previous = state.lifecycle;
     let release: (() => void) | undefined;
@@ -933,6 +1092,8 @@ interface RuntimeState {
   readonly request: StartRuntimeRunRequest;
   readonly bindings: ReadonlyMap<string, RuntimeTaskBinding>;
   readonly tasksById: ReadonlyMap<string, TaskContract>;
+  readonly hardConflicts: import('@ai-native-software-delivery-orchestrator/domain').HardTaskConflict[];
+  readonly riskConflicts: import('@ai-native-software-delivery-orchestrator/domain').RiskTaskConflict[];
   readonly attemptsByTask: Map<string, AgentExecutionAttempt>;
   snapshot: SchedulerSnapshot;
   nextSequence: number;
