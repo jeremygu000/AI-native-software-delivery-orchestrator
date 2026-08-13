@@ -10,12 +10,6 @@ export default defineConfig({
     }
   },
   test: {
-    projects: [
-      '**/vite.config.{mjs,js,ts,mts}',
-      '**/vitest.config.{mjs,js,ts,mts}',
-      '!vitest.config.{mjs,js,ts,mts}',
-      '!vite.config.{mjs,js,ts,mts}'
-    ],
     coverage: {
       provider: 'v8',
       include: ['apps/*/src/**/*.ts', 'libs/*/src/**/*.ts'],
