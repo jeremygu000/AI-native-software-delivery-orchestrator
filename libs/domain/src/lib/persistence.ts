@@ -16,6 +16,7 @@ import type { TaskCodeReview } from './task-code-review.js';
 import type { TaskCodeReviewSubject } from './task-code-review.js';
 import type { TaskRepairAttempt } from './task-repair-attempt.js';
 import type { TaskVerificationEvidence } from './task-verification-evidence.js';
+import type { TaskRepairWorkItem } from './task-repair-work-item.js';
 import { z } from 'zod';
 
 export type OrchestrationRunState = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
@@ -185,6 +186,16 @@ export interface TaskRepairAdmissionStore extends TaskRepairAttemptStore {
   }): Promise<TaskRepairAttempt>;
 }
 
+/** Adds atomic persistence of immutable work inputs when a repair is admitted. */
+export interface TaskRepairWorkItemAdmissionStore extends TaskRepairAdmissionStore {
+  /** Atomically records the admitted lineage and its immutable resume inputs. */
+  admitRepairAttemptWithWorkItem(request: {
+    readonly attempt: TaskRepairAttempt;
+    readonly maxRepairs: number;
+    readonly createWorkItem: (attempt: TaskRepairAttempt) => TaskRepairWorkItem;
+  }): Promise<TaskRepairAttempt>;
+}
+
 export interface TaskRepairResumeStore extends TaskRepairAttemptStore {
   resumeRepairAttempt(request: {
     readonly runId: string;
@@ -196,6 +207,11 @@ export interface TaskRepairResumeStore extends TaskRepairAttemptStore {
     | { readonly status: 'not-blocked'; readonly state: TaskRepairAttempt['state'] }
     | { readonly status: 'version-conflict'; readonly actualRevision: number }
   >;
+}
+
+export interface TaskRepairWorkItemStore {
+  persistRepairWorkItem(item: TaskRepairWorkItem): Promise<void>;
+  recoverRepairWorkItems(runId: string): Promise<readonly TaskRepairWorkItem[]>;
 }
 
 export interface TaskVerificationEvidenceStore {

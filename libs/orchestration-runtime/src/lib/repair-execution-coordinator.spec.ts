@@ -170,6 +170,12 @@ const setup = () => {
   const { attempts, repairStore } = store();
   const repairs = new TaskRepairCoordinator({
     store: repairStore,
+    reviews: {
+      persistReview: async () => undefined,
+      recoverReviews: async () => [
+        { runId: 'run-1', taskId: 'task-1', iteration: 1, subject, review: repairReview }
+      ]
+    },
     maxRepairs: 1,
     createId: () => 'repair-1',
     now: () => new Date('2026-08-13T00:02:00.000Z')

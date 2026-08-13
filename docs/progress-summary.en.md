@@ -2210,3 +2210,36 @@ binding, durable run authority, and local startup all reject review-policy drift
 policy drift. The Pi reviewer resolves the approved provider/model through Pi's model registry and passes
 the exact resolved SDK model into its session; it fails closed rather than falling back to default Pi model
 selection when the approved model is unavailable.
+
+The final Stage 22 composition is now active in normal `forge run`. After builder verification, the runtime
+captures the real Git worktree, persists exact verification evidence, builds a review subject, and collects
+the approved read-only Pi review. It accepts integration only after a stored `accept` review exactly matches
+the current output subject. A `repair` review must itself be recovered as matching durable evidence before a
+repair can be admitted.
+
+Repair admission now atomically stores both the separate repair lineage and an immutable
+`TaskRepairWorkItem`. This item records the builder attempt, workspace, lease-plan and impact fingerprints,
+parent/next review iterations, and verification/review policy fingerprints needed to recover repair
+dispatch. The runtime executes the bounded repair through controlled agent tools, Stage 21 reconciliation,
+verification evidence, and re-review; only a fresh exact accepted review can then commit and integrate the
+repaired output. Builder task state remains independent from repair state throughout this loop.
+
+Repair scope expansion feeds Stage 21's durable runtime-conflict replay, while a lease block refreshes the
+parallel repair view without changing the builder snapshot. Restart recovery returns active repair attempts
+as `UNKNOWN` and fails closed. Automatic resumption of recovered `BLOCKED` repairs remains unimplemented
+because it must reconstruct all durable controlled-dispatch and lease-acquisition authority before it can
+retry safely. Stage 22 was verified with `pnpm check` (565 passed, 1 skipped, 90.07% branch coverage) and
+`pnpm build`.
+
+The repair coordinator now independently reads durable review evidence before admission. A caller cannot
+create a repair merely by supplying a `repair` value: the persisted task/iteration review must have the same
+seven-field subject. Immediately before commit and integration, the runtime captures the workspace again
+and rejects changed workspace identity, revision, or worktree fingerprint. This makes post-review output
+drift fail closed even if future runtime work adds an asynchronous mutation point. The hardening pass was
+verified with `pnpm check` (567 passed, 1 skipped, 90.05% branch coverage) and `pnpm build`.
+
+The review-to-integration drift guard also has a production-style regression test. It uses a real Git task
+worktree and controlled Pi builder edit, then has an accepted reviewer mutate that real worktree. The runtime
+rejects before integration, and the integration checkout remains unchanged. This closes the remaining Stage
+22 test-depth gap identified during independent review. The full suite now verifies `pnpm check` with 568
+passed, 1 skipped, and 90.01% branch coverage, plus `pnpm build`.

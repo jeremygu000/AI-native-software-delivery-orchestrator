@@ -5,7 +5,8 @@ import type {
   PersistedTaskImpact,
   PersistedWriteLease,
   PersistedAgentExecutionAttempt,
-  TaskContract
+  TaskContract,
+  TaskRepairAttempt
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
 import Database from 'better-sqlite3';
@@ -30,6 +31,20 @@ const task = (id: string, dependencies: readonly string[] = []): TaskContract =>
   expectedWrites: [],
   sharedResources: [],
   verification: []
+});
+
+const repairWorkItem = (admitted: TaskRepairAttempt) => ({
+  runId: admitted.runId,
+  taskId: admitted.taskId,
+  repairAttemptId: admitted.id,
+  builderAttemptId: 'attempt-A',
+  workspaceId: admitted.workspaceId,
+  leasePlanFingerprint: `sha256:${'d'.repeat(64)}`,
+  impactFingerprint: `sha256:${'e'.repeat(64)}`,
+  parentReviewIteration: admitted.parentReviewIteration,
+  reviewIteration: 2,
+  verificationPolicyFingerprint: `sha256:${'f'.repeat(64)}`,
+  codeReviewPolicyFingerprint: `sha256:${'1'.repeat(64)}`
 });
 
 const createRunRequest = (id = 'run-1'): CreatePersistedRunRequest => ({
@@ -451,6 +466,75 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         expectedRevision: 2
       })
     ).resolves.toMatchObject({ status: 'resumed', attempt: { state: 'PREPARING', revision: 3 } });
+    persistence.close();
+  });
+
+  it('persists exact-idempotent repair work items for durable dispatch recovery', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const item = {
+      runId: 'run-1',
+      taskId: 'A',
+      repairAttemptId: 'repair-1',
+      builderAttemptId: 'attempt-A',
+      workspaceId: 'workspace-A',
+      leasePlanFingerprint: `sha256:${'a'.repeat(64)}`,
+      impactFingerprint: `sha256:${'b'.repeat(64)}`,
+      parentReviewIteration: 1,
+      reviewIteration: 2,
+      verificationPolicyFingerprint: `sha256:${'c'.repeat(64)}`,
+      codeReviewPolicyFingerprint: `sha256:${'d'.repeat(64)}`
+    };
+    await persistence.createRun(createRunRequest());
+    await persistence.persistRepairWorkItem(item);
+    await expect(persistence.persistRepairWorkItem(item)).resolves.toBeUndefined();
+    await expect(persistence.recoverRepairWorkItems('run-1')).resolves.toEqual([item]);
+    await expect(
+      persistence.persistRepairWorkItem({ ...item, reviewIteration: 3 })
+    ).rejects.toThrow(PersistenceInputError);
+    persistence.close();
+  });
+
+  it('atomically admits a repair and its immutable work item', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const subject = {
+      builderAttemptId: 'attempt-A',
+      outputAttemptId: 'attempt-A',
+      workspaceId: 'workspace-A',
+      workspaceRevision: 1,
+      workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
+      impactFingerprint: `sha256:${'b'.repeat(64)}`,
+      verificationFingerprint: `sha256:${'c'.repeat(64)}`
+    };
+    const attempt = {
+      id: 'repair-1',
+      runId: 'run-1',
+      taskId: 'A',
+      agentId: 'repair-agent',
+      workspaceId: 'workspace-A',
+      parentReviewIteration: 1,
+      parentReviewSubject: subject,
+      repairIteration: 1,
+      state: 'PREPARING' as const,
+      revision: 1
+    };
+    await persistence.createRun(createRunRequest());
+    await expect(
+      persistence.admitRepairAttemptWithWorkItem({
+        attempt,
+        maxRepairs: 1,
+        createWorkItem: repairWorkItem
+      })
+    ).resolves.toMatchObject({ id: 'repair-1', repairIteration: 1 });
+    await expect(persistence.recoverRepairWorkItems('run-1')).resolves.toEqual([
+      repairWorkItem(attempt)
+    ]);
+    await expect(
+      persistence.admitRepairAttemptWithWorkItem({
+        attempt: { ...attempt, id: 'duplicate-request' },
+        maxRepairs: 1,
+        createWorkItem: repairWorkItem
+      })
+    ).resolves.toMatchObject({ id: 'repair-1' });
     persistence.close();
   });
 

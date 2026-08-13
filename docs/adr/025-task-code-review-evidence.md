@@ -86,6 +86,31 @@ a parallel repair view, resume `BLOCKED` repair attempts with compare-and-swap w
 released, and reconstruct that view during recovery. It must not represent repair as a synthetic builder
 task transition.
 
+Final composition now persists an immutable `TaskRepairWorkItem` in the same SQLite transaction that admits
+its repair attempt. It binds the repair attempt to the builder attempt, workspace, lease-plan and impact
+fingerprints, parent and next review iterations, and verification/review policy fingerprints. The runtime
+recovers this parallel work-item view with repair lineages; a repair cannot dispatch without its durable
+work item. Normal `forge run` now persists exact builder verification evidence, collects the first review,
+checks its durable subject before repair admission, executes one bounded repair/reverification/re-review
+cycle when required, and calls exact accepted-review admission immediately before commit and integration.
+
+Repair feedback remains parallel to builder state. Scope expansion is recorded through the Stage 21 runtime
+conflict replay path, and lease-block feedback refreshes the parallel repair view. Automatic restart resume
+of a recovered `BLOCKED` repair is still deliberately unavailable: it requires reconstructing the complete
+repair dispatch context, including controlled agent/session authority and lease acquisition, rather than
+silently re-running an uncertain external agent. `UNKNOWN` repair attempts remain fail-closed.
+
+Repair admission also owns its durable review-authority check rather than trusting its caller: the
+coordinator reads the persisted review iteration and requires an exact repair subject before it can create
+any repair lineage. Immediately before commit and integration, composition captures the workspace again and
+rejects a changed workspace ID, revision, or working-tree fingerprint. This closes the window between review
+collection and integration even if a future runtime change introduces an asynchronous writer there.
+
+The drift guard is also covered by a production-style local-runtime regression: a real Pi builder edits a
+real Git worktree, an accepted reviewer then mutates that same worktree, and the runtime rejects before
+integration while the integration checkout remains unchanged. This verifies the complete composition path,
+not only the admission coordinator in isolation.
+
 Automated code review has an independent semantic authority policy. Its fingerprint covers reviewer
 implementation, agent backend, provider/model identity, read-only tool profile, output schema version, and prompt
 version; it excludes session IDs, timestamps, temporary paths, and other incidental runtime values. Plan

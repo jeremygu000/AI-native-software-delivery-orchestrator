@@ -1,4 +1,5 @@
 import type {
+  TaskCodeReviewStore,
   TaskRepairAdmissionStore,
   TaskRepairResumeStore
 } from '@ai-native-software-delivery-orchestrator/domain';
@@ -33,6 +34,18 @@ const repairReview = {
     }
   ]
 };
+
+const reviewStore = (iterations: readonly number[] = [1]): TaskCodeReviewStore => ({
+  persistReview: async () => undefined,
+  recoverReviews: async () =>
+    iterations.map((iteration) => ({
+      runId: 'run-1',
+      taskId: 'task-1',
+      iteration,
+      subject,
+      review: repairReview
+    }))
+});
 
 const store = (): TaskRepairAdmissionStore &
   TaskRepairResumeStore & { readonly records: any[] } => {
@@ -96,6 +109,7 @@ describe('TaskRepairCoordinator', () => {
       () =>
         new TaskRepairCoordinator({
           store: store(),
+          reviews: reviewStore(),
           maxRepairs: 0,
           createId: () => 'unused'
         })
@@ -106,6 +120,7 @@ describe('TaskRepairCoordinator', () => {
     const evidence = store();
     const coordinator = new TaskRepairCoordinator({
       store: evidence,
+      reviews: reviewStore([1, 2]),
       maxRepairs: 1,
       createId: () => 'repair-1',
       now: () => new Date('2026-08-13T00:00:00.000Z')
@@ -159,6 +174,7 @@ describe('TaskRepairCoordinator', () => {
     const evidence = store();
     const coordinator = new TaskRepairCoordinator({
       store: evidence,
+      reviews: reviewStore(),
       maxRepairs: 2,
       createId: () => 'repair-1',
       now: () => new Date('2026-08-13T00:00:00.000Z')
@@ -189,10 +205,64 @@ describe('TaskRepairCoordinator', () => {
     });
   });
 
+  it('rejects a caller-supplied repair review without matching durable evidence', async () => {
+    const coordinator = new TaskRepairCoordinator({
+      store: store(),
+      reviews: { persistReview: async () => undefined, recoverReviews: async () => [] },
+      maxRepairs: 1,
+      createId: () => 'repair-1'
+    });
+    await expect(
+      coordinator.prepare({
+        runId: 'run-1',
+        taskId: 'task-1',
+        agentId: 'repair-agent',
+        workspaceId: 'workspace-1',
+        reviewIteration: 1,
+        review: repairReview,
+        subject
+      })
+    ).rejects.toThrow('No repair review matches');
+  });
+
+  it('fails closed when durable work-item admission is unavailable', async () => {
+    const coordinator = new TaskRepairCoordinator({
+      store: store(),
+      reviews: reviewStore(),
+      maxRepairs: 1,
+      createId: () => 'repair-1'
+    });
+    await expect(
+      coordinator.prepare({
+        runId: 'run-1',
+        taskId: 'task-1',
+        agentId: 'repair-agent',
+        workspaceId: 'workspace-1',
+        reviewIteration: 1,
+        review: repairReview,
+        subject,
+        createWorkItem: (attempt) => ({
+          runId: attempt.runId,
+          taskId: attempt.taskId,
+          repairAttemptId: attempt.id,
+          builderAttemptId: 'builder-1',
+          workspaceId: attempt.workspaceId,
+          leasePlanFingerprint: `sha256:${'1'.repeat(64)}`,
+          impactFingerprint: `sha256:${'2'.repeat(64)}`,
+          parentReviewIteration: attempt.parentReviewIteration,
+          reviewIteration: 2,
+          verificationPolicyFingerprint: `sha256:${'3'.repeat(64)}`,
+          codeReviewPolicyFingerprint: `sha256:${'4'.repeat(64)}`
+        })
+      })
+    ).rejects.toThrow('Repair work item admission store is unavailable');
+  });
+
   it('persists repair BLOCKED evidence and resumes the same attempt with compare-and-swap', async () => {
     const evidence = store();
     const coordinator = new TaskRepairCoordinator({
       store: evidence,
+      reviews: reviewStore(),
       maxRepairs: 1,
       createId: () => 'repair-1',
       now: () => new Date('2026-08-13T00:00:00.000Z')

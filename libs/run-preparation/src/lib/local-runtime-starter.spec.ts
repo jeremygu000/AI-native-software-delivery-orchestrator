@@ -3,7 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { PiSessionGateway } from '@ai-native-software-delivery-orchestrator/agent-runtime';
+import type {
+  CodeReviewModelResolver,
+  PiSessionGateway,
+  PiTaskCodeReviewGateway
+} from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import type {
   AgentCommandSandbox,
   RepositoryGraph,
@@ -52,6 +56,15 @@ const codeReviewPolicy = {
     promptVersion: 'v1'
   }
 } as const;
+const reviewGateway: PiTaskCodeReviewGateway = {
+  generate: async () => ({
+    sessionId: 'review-1',
+    output: '{"recommendation":"accept","summary":"Approved.","findings":[]}'
+  })
+};
+const reviewModelResolver: CodeReviewModelResolver = {
+  resolve: () => undefined
+};
 const git = (cwd: string, args: readonly string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
@@ -137,14 +150,16 @@ describe('LocalRuntimeStarter', () => {
       symbolReferences: [],
       diagnostics: []
     };
+    let agentRuns = 0;
     const gateway: PiSessionGateway = {
       start: async ({ executeTool, onStarted }) => {
         await onStarted('session-1');
+        const repair = agentRuns++ > 0;
         const result = await executeTool({
           name: 'forge_edit',
           path: 'value.txt',
-          expected: 'approved\n',
-          replacement: 'executed\n'
+          expected: repair ? 'executed\n' : 'approved\n',
+          replacement: repair ? 'repaired\n' : 'executed\n'
         });
         expect(result.isError).not.toBe(true);
         return { sessionId: 'session-1' };
@@ -233,7 +248,9 @@ describe('LocalRuntimeStarter', () => {
         }
       },
       codeReviewPolicy,
-      verificationSandbox: { execute: executeVerification }
+      verificationSandbox: { execute: executeVerification },
+      reviewGateway,
+      reviewModelResolver
     });
     await expect(wrongRuntime.startOrResumeRun(request)).rejects.toThrow(
       'Runtime verification policy does not match durable execution authority'
@@ -263,7 +280,17 @@ describe('LocalRuntimeStarter', () => {
       gateway,
       verificationPolicy,
       codeReviewPolicy,
-      verificationSandbox: { execute: executeVerification }
+      verificationSandbox: { execute: executeVerification },
+      reviewGateway: {
+        generate: async () => ({
+          sessionId: 'review-1',
+          output:
+            agentRuns < 2
+              ? '{"recommendation":"repair","summary":"Repair the value.","findings":[{"id":"finding-1","severity":"high","fileIds":["core:value.txt"],"symbolIds":[],"description":"Use repaired value."}]}'
+              : '{"recommendation":"accept","summary":"Approved.","findings":[]}'
+        })
+      },
+      reviewModelResolver
     });
 
     const result = await runtime.startOrResumeRun(request);
@@ -277,7 +304,7 @@ describe('LocalRuntimeStarter', () => {
       },
       snapshot: { taskStates: [{ taskId: 'task-1', state: 'COMPLETED' }] }
     });
-    expect(readFileSync(join(checkout.repositoryPath, 'value.txt'), 'utf8')).toBe('executed\n');
+    expect(readFileSync(join(checkout.repositoryPath, 'value.txt'), 'utf8')).toBe('repaired\n');
     expect(executeVerification).toHaveBeenCalledWith(
       expect.objectContaining({
         profile: verificationPolicy.executionProfile,
@@ -302,6 +329,147 @@ describe('LocalRuntimeStarter', () => {
       ]
     });
     persistence.close();
+  });
+
+  it('rejects a real task-worktree change after accepted review before integration', async () => {
+    const repository = createRepository();
+    const runRoot = mkdtempSync(join(tmpdir(), 'forge-local-runtime-drift-'));
+    directories.push(runRoot);
+    const checkout = await new GitIntegrationCheckoutProvisioner(runRoot).provision({
+      runId: 'run-drift',
+      sourceRepositoryPath: repository.path,
+      baseCommit: repository.commit
+    });
+    const workspacePath = join(runRoot, 'run-drift', 'tasks', 'task-1');
+    const graph: RepositoryGraph = {
+      repositoryPath: repository.path,
+      projects: new Map([
+        [
+          'core',
+          {
+            id: 'core',
+            name: 'core',
+            root: '.',
+            packageJsonPath: 'package.json',
+            dependencies: [],
+            scripts: { test: 'node -e "process.exit(0)"' },
+            sourceRoots: ['.'],
+            tsconfigPaths: []
+          }
+        ]
+      ]),
+      projectDependencies: [],
+      files: new Map([
+        [
+          'core:value.txt',
+          { id: 'core:value.txt', projectId: 'core', path: 'value.txt', isGenerated: false }
+        ]
+      ]),
+      symbols: new Map(),
+      fileDependencies: [],
+      symbolReferences: [],
+      diagnostics: []
+    };
+    const predicted = {
+      taskId: 'task-1',
+      projectsRead: new Set<string>(),
+      projectsWritten: new Set<string>(),
+      explicitProjectsWritten: new Set<string>(),
+      filesRead: new Set<string>(),
+      filesWritten: new Set(['core:value.txt']),
+      explicitFilesWritten: new Set(['core:value.txt']),
+      globFilesWritten: new Set<string>(),
+      symbolDerivedFilesWritten: new Set<string>(),
+      symbolsRead: new Set<string>(),
+      symbolsWritten: new Set<string>(),
+      sharedResources: new Set<string>(),
+      sharedResourceAccesses: [],
+      downstreamProjects: new Set<string>(),
+      riskSignals: []
+    };
+    const request: StartRuntimeRunRequest = {
+      run: {
+        id: 'run-drift',
+        repositoryId: `sha256:${'8'.repeat(64)}`,
+        state: 'ACTIVE',
+        createdAt: '2026-08-13T00:00:00.000Z',
+        authority: authority(repository.commit)
+      },
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Edit value',
+          goal: 'Edit the approved file',
+          dependencies: [],
+          expectedReads: [],
+          expectedWrites: [{ type: 'file', value: 'core:value.txt' }],
+          sharedResources: [],
+          verification: [{ type: 'package-script', packageName: 'core', script: 'test' }]
+        }
+      ],
+      hardConflicts: [],
+      riskConflicts: [],
+      scheduleOptions: { maxConcurrency: 1 },
+      taskBindings: [
+        {
+          taskId: 'task-1',
+          agentId: 'agent-1',
+          leasePlan: {
+            taskId: 'task-1',
+            predictedResources: [{ type: 'file', projectId: 'core', fileId: 'core:value.txt' }],
+            source: 'predicted-impact'
+          },
+          impact: { predicted },
+          workspace: {
+            id: 'workspace-1',
+            runId: 'run-drift',
+            taskId: 'task-1',
+            integrationRepositoryPath: checkout.repositoryPath,
+            workspacePath,
+            branchName: 'forge/task/run-drift/task-1',
+            baseRef: checkout.baseCommit,
+            integrationRef: checkout.integrationRef
+          }
+        }
+      ]
+    };
+    const starter = new LocalRuntimeStarter({
+      graph,
+      databasePath: join(runRoot, 'run-drift', 'run.sqlite'),
+      gateway: {
+        start: async ({ executeTool, onStarted }) => {
+          await onStarted('session-1');
+          await executeTool({
+            name: 'forge_edit',
+            path: 'value.txt',
+            expected: 'approved\n',
+            replacement: 'executed\n'
+          });
+          return { sessionId: 'session-1' };
+        }
+      },
+      verificationPolicy,
+      codeReviewPolicy,
+      verificationSandbox: {
+        execute: async () => ({ status: 'completed', exitCode: 0, stdout: '', stderr: '' })
+      },
+      reviewGateway: {
+        generate: async ({ cwd }) => {
+          writeFileSync(join(cwd, 'value.txt'), 'drifted-after-review\n');
+          return {
+            sessionId: 'review-1',
+            output: '{"recommendation":"accept","summary":"Approved.","findings":[]}'
+          };
+        }
+      },
+      reviewModelResolver
+    });
+
+    await expect(starter.startOrResumeRun(request)).rejects.toThrow(
+      'Task output changed after review'
+    );
+    expect(readFileSync(join(checkout.repositoryPath, 'value.txt'), 'utf8')).toBe('approved\n');
+    starter.close();
   });
 
   it('resolves existing and new files to their most specific project boundary', () => {

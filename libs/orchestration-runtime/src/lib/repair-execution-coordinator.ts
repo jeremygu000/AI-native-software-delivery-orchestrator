@@ -95,6 +95,7 @@ export class RepairExecutionCoordinator {
     readonly verificationPolicyFingerprint: string;
     readonly repository: Parameters<TaskCodeReviewCollector['collect']>[0]['repository'];
     readonly reviewIteration: number;
+    readonly feedback?: RepairRuntimeFeedback;
   }): Promise<TaskRepairExecutionResult> {
     let established = false;
     let running = await this.#repairs.markStarting(request.repair);
@@ -132,7 +133,7 @@ export class RepairExecutionCoordinator {
     if (result.status !== 'completed' || !established) {
       if (result.status === 'blocked') {
         await this.#repairs.markBlocked(running, result.leaseId);
-        await this.#feedback.leaseBlocked({
+        await (request.feedback ?? this.#feedback).leaseBlocked({
           runId: request.repair.runId,
           taskId: request.task.id,
           repairAttemptId: request.repair.id,
@@ -172,7 +173,7 @@ export class RepairExecutionCoordinator {
       }
     });
     if (reconciliation.reconciliation.status === 'runtime-scope-expanded') {
-      await this.#feedback.scopeExpanded({
+      await (request.feedback ?? this.#feedback).scopeExpanded({
         runId: request.repair.runId,
         taskId: request.task.id,
         expandedResources: reconciliation.expandedResources ?? []
@@ -194,7 +195,8 @@ export class RepairExecutionCoordinator {
     const evidence = this.#createVerificationEvidence({
       id: this.#createEvidenceId(),
       attempt: this.#asAgentAttempt(completed),
-      workspace: request.workspace,
+      // Git snapshot roots are canonical physical paths, unlike some supplied workspace paths.
+      workspace: { ...request.workspace, workspacePath: snapshot.repositoryRoot },
       snapshot,
       verificationPolicyFingerprint: request.verificationPolicyFingerprint,
       verifiedAt: this.#now()

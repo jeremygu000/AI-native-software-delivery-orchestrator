@@ -1912,3 +1912,32 @@ prompt version，并排除 transient session 与 path。artifact creation、exec
 local startup 都会独立拒绝 code-review-policy drift。Pi reviewer 会通过 Pi model registry 解析 approved
 provider/model，并将 exact resolved SDK model 传给 session；如果 approved model 不可用则 fail closed，不会
 回退到 Pi 默认 model selection。
+
+最终 Stage 22 composition 现已在正常 `forge run` 中启用。builder verification 后，runtime 会捕获真实 Git
+worktree、持久化 exact verification evidence、构造 review subject，并调用已批准的 read-only Pi review。只有
+持久化的 `accept` review 与当前 output subject 完全一致时，才能 integration。`repair` review 也必须先作为
+匹配的 durable evidence 被恢复和确认，才能 admission repair。
+
+repair admission 现在会在同一个 SQLite transaction 中保存独立 repair lineage 与不可变
+`TaskRepairWorkItem`。该 work item 记录 builder attempt、workspace、lease-plan 与 impact fingerprint、
+parent/next review iteration，以及 verification/review policy fingerprint，从而为 repair dispatch recovery
+提供所需输入。runtime 通过 controlled agent tools、Stage 21 reconciliation、verification evidence 和
+re-review 执行有界 repair；只有新的 exact accepted review 才能 commit 并 integration repaired output。整个
+loop 中 builder task state 始终与 repair state 分离。
+
+repair scope expansion 会进入 Stage 21 的 durable runtime-conflict replay；lease block 只刷新并行 repair
+view，不会改变 builder snapshot。restart recovery 会把 active repair 变为 `UNKNOWN` 并 fail closed。恢复后的
+`BLOCKED` repair 自动 resume 仍未实现，因为安全重试前必须重建所有 durable controlled-dispatch 与
+lease-acquisition authority。Stage 22 已通过 `pnpm check` 验证（565 passed、1 skipped、90.07% branch coverage）
+以及 `pnpm build`。
+
+repair coordinator 现在会在 admission 前独立读取 durable review evidence。调用方不能只传入一个 `repair`
+值就创建 repair：持久化的 task/iteration review 必须具有相同的七字段 subject。commit 和 integration 前，
+runtime 会再次 capture workspace；workspace identity、revision 或 worktree fingerprint 发生变化都会被拒绝。
+因此即使未来 runtime 增加 asynchronous mutation point，review 之后的 output drift 仍会 fail closed。本次
+hardening 已通过 `pnpm check` 验证（567 passed、1 skipped、90.05% branch coverage）以及 `pnpm build`。
+
+review-to-integration drift guard 现在也有 production-style regression test。该测试使用真实 Git task
+worktree 和 controlled Pi builder edit，再让已接受的 reviewer 修改同一个真实 worktree。runtime 会在
+integration 前拒绝，integration checkout 保持不变。这补齐了独立审查指出的最后一个 Stage 22 测试深度缺口。
+完整 suite 现已通过 `pnpm check` 验证（568 passed、1 skipped、90.01% branch coverage）以及 `pnpm build`。

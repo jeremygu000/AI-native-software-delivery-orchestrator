@@ -22,7 +22,9 @@ import type {
   TaskContract,
   TaskImpact,
   TaskImpactReconciler,
+  TaskCodeReviewSubject,
   TaskRepairAttemptStore,
+  TaskRepairWorkItemStore,
   TaskVerifier,
   TaskLeasePlan,
   WritableResource,
@@ -30,6 +32,9 @@ import type {
   WorkspaceManager,
   WriteGuard
 } from '@ai-native-software-delivery-orchestrator/domain';
+import { RepairExecutionCoordinator } from './repair-execution-coordinator.js';
+import { TaskRepairCoordinator } from './task-repair-coordinator.js';
+import { TaskOutputAdmissionCoordinator } from './task-output-admission-coordinator.js';
 
 const compareIds = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const sameRuntimeEvidence = (left: unknown, right: unknown): boolean =>
@@ -80,6 +85,7 @@ export interface RecoveredRuntimeRun {
   readonly leases: RecoveredRun['leases'];
   readonly attempts: RecoveredRun['attempts'];
   readonly repairAttempts: readonly import('@ai-native-software-delivery-orchestrator/domain').PersistedTaskRepairAttempt[];
+  readonly repairWorkItems: readonly import('@ai-native-software-delivery-orchestrator/domain').TaskRepairWorkItem[];
 }
 
 export class OrchestrationRuntimeInputError extends Error {
@@ -98,6 +104,17 @@ export class OrchestrationRuntime {
   readonly #verifier: TaskVerifier;
   readonly #impactReconciler: TaskImpactReconciler | undefined;
   readonly #repairAttempts: TaskRepairAttemptStore | undefined;
+  readonly #repairWorkItems: TaskRepairWorkItemStore | undefined;
+  readonly #outputReview:
+    | {
+        readonly admission: TaskOutputAdmissionCoordinator;
+        readonly repairs: TaskRepairCoordinator;
+        readonly repairExecution: RepairExecutionCoordinator;
+        readonly repository: Parameters<
+          TaskOutputAdmissionCoordinator['reviewBuilder']
+        >[0]['repository'];
+      }
+    | undefined;
   readonly #now: () => Date;
   readonly #createAttemptId: () => string;
   #nextAttemptNumber = 1;
@@ -111,6 +128,15 @@ export class OrchestrationRuntime {
     readonly verifier: TaskVerifier;
     readonly impactReconciler?: TaskImpactReconciler;
     readonly repairAttempts?: TaskRepairAttemptStore;
+    readonly repairWorkItems?: TaskRepairWorkItemStore;
+    readonly outputReview?: {
+      readonly admission: TaskOutputAdmissionCoordinator;
+      readonly repairs: TaskRepairCoordinator;
+      readonly repairExecution: RepairExecutionCoordinator;
+      readonly repository: Parameters<
+        TaskOutputAdmissionCoordinator['reviewBuilder']
+      >[0]['repository'];
+    };
     readonly now?: () => Date;
     readonly createAttemptId?: () => string;
   }) {
@@ -122,6 +148,8 @@ export class OrchestrationRuntime {
     this.#verifier = options.verifier;
     this.#impactReconciler = options.impactReconciler;
     this.#repairAttempts = options.repairAttempts;
+    this.#repairWorkItems = options.repairWorkItems;
+    this.#outputReview = options.outputReview;
     this.#now = options.now ?? (() => new Date());
     this.#createAttemptId =
       options.createAttemptId ?? (() => `attempt-${this.#nextAttemptNumber++}`);
@@ -144,6 +172,7 @@ export class OrchestrationRuntime {
       riskConflicts: [...request.riskConflicts],
       attemptsByTask: new Map<string, AgentExecutionAttempt>(),
       repairAttemptsByTask: new Map(),
+      repairWorkItemsByAttempt: new Map(),
       snapshot: {
         taskStates: request.tasks.map((task) => ({ taskId: task.id, state: 'PENDING' as const })),
         runtimeBlocks: []
@@ -203,7 +232,8 @@ export class OrchestrationRuntime {
         workspaces: recovered.workspaces,
         leases: recovered.leases,
         attempts: recovered.attempts,
-        repairAttempts: await this.#recoverRepairAttempts(runId)
+        repairAttempts: await this.#recoverRepairAttempts(runId),
+        repairWorkItems: await this.#recoverRepairWorkItems(runId)
       };
     }
     const decision = recovered.decisions.at(-1)!;
@@ -272,7 +302,8 @@ export class OrchestrationRuntime {
       workspaces: current.workspaces,
       leases: current.leases,
       attempts: current.attempts,
-      repairAttempts: await this.#recoverRepairAttempts(runId)
+      repairAttempts: await this.#recoverRepairAttempts(runId),
+      repairWorkItems: await this.#recoverRepairWorkItems(runId)
     };
   }
 
@@ -320,6 +351,12 @@ export class OrchestrationRuntime {
         (await this.#recoverRepairAttempts(request.run.id)).map(({ attempt }) => [
           attempt.taskId,
           attempt
+        ])
+      ),
+      repairWorkItemsByAttempt: new Map(
+        (await this.#recoverRepairWorkItems(request.run.id)).map((item) => [
+          item.repairAttemptId,
+          item
         ])
       ),
       snapshot: recovered.snapshot,
@@ -487,6 +524,9 @@ export class OrchestrationRuntime {
       return attempt;
     });
     let executionEstablished = false;
+    let effectiveImpact: TaskImpact = binding.impact ?? {
+      predicted: this.#emptyPredictedImpact(taskId)
+    };
     let agentResult: Awaited<ReturnType<AgentRunner['run']>>;
     try {
       agentResult = await this.#agentRunner.run({
@@ -570,6 +610,7 @@ export class OrchestrationRuntime {
           taskId,
           impact: { ...impact, ...reconciliation }
         });
+        effectiveImpact = { ...impact, ...reconciliation };
         if (reconciliation.reconciliation.status === 'unleased-change') {
           await this.#persistAttempt(state, taskId, {
             state: 'FAILED',
@@ -666,6 +707,25 @@ export class OrchestrationRuntime {
         await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
         return;
       }
+      const reviewSubject = await this.#reviewAndRepair({
+        state,
+        taskId,
+        task,
+        binding,
+        workspace,
+        impact: effectiveImpact
+      });
+      if (this.#outputReview !== undefined) {
+        if (reviewSubject === undefined) {
+          throw new OrchestrationRuntimeInputError(`Review subject is missing: ${taskId}`);
+        }
+        await this.#outputReview.admission.assertCurrentIntegrationAdmission({
+          runId: state.request.run.id,
+          taskId,
+          workspace,
+          subject: reviewSubject
+        });
+      }
       await this.#workspaceManager.commit({
         workspace,
         message: `forge: ${task.id}\n\nForge-Run-Id: ${state.request.run.id}\nForge-Task-Id: ${task.id}`
@@ -687,6 +747,119 @@ export class OrchestrationRuntime {
       this.#setState(state, taskId, 'COMPLETED');
       await this.#recordEvent(state, { type: 'workspace-integrated', taskId, state: 'COMPLETED' });
     });
+  }
+
+  async #reviewAndRepair(request: {
+    readonly state: RuntimeState;
+    readonly taskId: string;
+    readonly task: TaskContract;
+    readonly binding: RuntimeTaskBinding;
+    readonly workspace: Awaited<ReturnType<WorkspaceManager['create']>>;
+    readonly impact: TaskImpact;
+  }): Promise<TaskCodeReviewSubject | undefined> {
+    if (this.#outputReview === undefined) {
+      return undefined;
+    }
+    const builderAttempt = request.state.attemptsByTask.get(request.taskId);
+    if (builderAttempt === undefined || builderAttempt.state !== 'COMPLETED') {
+      throw new OrchestrationRuntimeInputError(
+        `Completed builder attempt is missing: ${request.taskId}`
+      );
+    }
+    let output = await this.#outputReview.admission.reviewBuilder({
+      runId: request.state.request.run.id,
+      task: request.task,
+      builderAttempt,
+      workspace: request.workspace,
+      impact: request.impact,
+      verificationPolicyFingerprint:
+        request.state.request.run.authority.verificationPolicyFingerprint,
+      repository: this.#outputReview.repository
+    });
+    let parentIteration = 1;
+    while (output.review.recommendation === 'repair') {
+      const repair = await this.#outputReview.repairs.prepare({
+        runId: request.state.request.run.id,
+        taskId: request.taskId,
+        agentId: request.binding.agentId,
+        workspaceId: request.workspace.id,
+        reviewIteration: parentIteration,
+        review: output.review,
+        subject: output.subject,
+        createWorkItem: (attempt) => ({
+          runId: attempt.runId,
+          taskId: attempt.taskId,
+          repairAttemptId: attempt.id,
+          builderAttemptId: builderAttempt.id,
+          workspaceId: attempt.workspaceId,
+          leasePlanFingerprint: taskLeasePlanFingerprint(request.binding.leasePlan),
+          impactFingerprint: output.subject.impactFingerprint,
+          parentReviewIteration: attempt.parentReviewIteration,
+          reviewIteration: parentIteration + 1,
+          verificationPolicyFingerprint:
+            request.state.request.run.authority.verificationPolicyFingerprint,
+          codeReviewPolicyFingerprint:
+            request.state.request.run.authority.codeReviewPolicyFingerprint
+        })
+      });
+      request.state.repairAttemptsByTask.set(request.taskId, repair);
+      const workItem = (await this.#recoverRepairWorkItems(request.state.request.run.id)).find(
+        (item) => item.repairAttemptId === repair.id
+      );
+      if (workItem === undefined) {
+        throw new OrchestrationRuntimeInputError(
+          `Admitted repair work item is missing: ${repair.id}`
+        );
+      }
+      request.state.repairWorkItemsByAttempt.set(repair.id, workItem);
+      const result = await this.#outputReview.repairExecution.execute({
+        repair,
+        builderAttempt,
+        task: request.task,
+        workspace: request.workspace,
+        impact: request.impact,
+        leases: [],
+        verificationPolicyFingerprint: workItem.verificationPolicyFingerprint,
+        repository: this.#outputReview.repository,
+        reviewIteration: workItem.reviewIteration,
+        feedback: {
+          leaseBlocked: async () => {
+            const current = (await this.#recoverRepairAttempts(request.state.request.run.id)).find(
+              ({ attempt }) => attempt.id === repair.id
+            )?.attempt;
+            if (current !== undefined) {
+              request.state.repairAttemptsByTask.set(request.taskId, current);
+            }
+          },
+          scopeExpanded: async ({ expandedResources }) => {
+            const conflicts = this.#runtimeScopeConflicts(
+              request.state,
+              request.taskId,
+              expandedResources
+            );
+            request.state.hardConflicts.push(...conflicts);
+            await this.#recordEvent(
+              request.state,
+              { type: 'runtime-reconciliation-recovered' },
+              conflicts
+            );
+          }
+        }
+      });
+      request.state.repairAttemptsByTask.set(request.taskId, result.attempt);
+      output = {
+        subject: result.reviewSubject,
+        review: result.review,
+        verification: result.verification
+      };
+      parentIteration = workItem.reviewIteration;
+    }
+    await this.#outputReview.admission.assertIntegrationAdmission({
+      runId: request.state.request.run.id,
+      taskId: request.taskId,
+      subject: output.subject
+    });
+    return output.subject;
   }
 
   async #recordEvent(
@@ -777,7 +950,8 @@ export class OrchestrationRuntime {
       workspaces: recovered.workspaces,
       leases: recovered.leases,
       attempts: recovered.attempts,
-      repairAttempts: await this.#recoverRepairAttempts(runId)
+      repairAttempts: await this.#recoverRepairAttempts(runId),
+      repairWorkItems: await this.#recoverRepairWorkItems(runId)
     };
   }
 
@@ -787,6 +961,14 @@ export class OrchestrationRuntime {
     readonly import('@ai-native-software-delivery-orchestrator/domain').PersistedTaskRepairAttempt[]
   > {
     return this.#repairAttempts?.recoverRepairAttempts(runId) ?? [];
+  }
+
+  async #recoverRepairWorkItems(
+    runId: string
+  ): Promise<
+    readonly import('@ai-native-software-delivery-orchestrator/domain').TaskRepairWorkItem[]
+  > {
+    return this.#repairWorkItems?.recoverRepairWorkItems(runId) ?? [];
   }
 
   async #persistAttempt(
@@ -1161,6 +1343,10 @@ interface RuntimeState {
   readonly repairAttemptsByTask: Map<
     string,
     import('@ai-native-software-delivery-orchestrator/domain').TaskRepairAttempt
+  >;
+  readonly repairWorkItemsByAttempt: Map<
+    string,
+    import('@ai-native-software-delivery-orchestrator/domain').TaskRepairWorkItem
   >;
   snapshot: SchedulerSnapshot;
   nextSequence: number;

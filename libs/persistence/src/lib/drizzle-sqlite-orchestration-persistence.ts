@@ -9,6 +9,7 @@ import type {
   TaskRepairAttemptStore,
   TaskRepairAdmissionStore,
   TaskRepairResumeStore,
+  TaskRepairWorkItemStore,
   TaskVerificationEvidenceStore,
   OrchestrationRunState,
   PersistedReevaluation,
@@ -28,6 +29,7 @@ import type {
   Scheduler,
   TaskState,
   TaskConflict,
+  TaskRepairWorkItem,
   TaskVerificationEvidence
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
@@ -40,6 +42,7 @@ import {
   taskCodeReviewSchema,
   taskCodeReviewSubjectSchema,
   taskRepairAttemptSchema,
+  taskRepairWorkItemSchema,
   taskVerificationEvidenceSchema,
   assertTaskVerificationEvidenceIntegrity,
   taskDecisionsWithTransitions,
@@ -105,6 +108,12 @@ const taskRepairAttempts = sqliteTable('task_repair_attempts', {
   runId: text('run_id').notNull(),
   attemptId: text('attempt_id').notNull(),
   attemptJson: text('attempt_json').notNull()
+});
+
+const taskRepairWorkItems = sqliteTable('task_repair_work_items', {
+  runId: text('run_id').notNull(),
+  repairAttemptId: text('repair_attempt_id').notNull(),
+  itemJson: text('item_json').notNull()
 });
 
 const taskVerificationEvidence = sqliteTable('task_verification_evidence', {
@@ -217,6 +226,9 @@ const isTaskCodeReviewSubject = (value: unknown): value is PersistedTaskCodeRevi
 const isTaskRepairAttempt = (value: unknown): value is PersistedTaskRepairAttempt['attempt'] =>
   taskRepairAttemptSchema.safeParse(value).success;
 
+const isTaskRepairWorkItem = (value: unknown): value is TaskRepairWorkItem =>
+  taskRepairWorkItemSchema.safeParse(value).success;
+
 const isTaskVerificationEvidence = (value: unknown): value is TaskVerificationEvidence =>
   taskVerificationEvidenceSchema.safeParse(value).success;
 
@@ -321,6 +333,7 @@ export class DrizzleSqliteOrchestrationPersistence
     TaskRepairAttemptStore,
     TaskRepairAdmissionStore,
     TaskRepairResumeStore,
+    TaskRepairWorkItemStore,
     TaskVerificationEvidenceStore
 {
   readonly #sqlite: Database.Database;
@@ -384,6 +397,12 @@ export class DrizzleSqliteOrchestrationPersistence
         attempt_id TEXT NOT NULL,
         attempt_json TEXT NOT NULL,
         PRIMARY KEY (run_id, attempt_id)
+      );
+      CREATE TABLE IF NOT EXISTS task_repair_work_items (
+        run_id TEXT NOT NULL,
+        repair_attempt_id TEXT NOT NULL,
+        item_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, repair_attempt_id)
       );
       CREATE TABLE IF NOT EXISTS task_verification_evidence (
         run_id TEXT NOT NULL,
@@ -1050,6 +1069,39 @@ export class DrizzleSqliteOrchestrationPersistence
     if (!Number.isInteger(request.maxRepairs) || request.maxRepairs < 1) {
       throw new PersistenceInputError('Repair budget must be a positive integer');
     }
+    return this.#admitRepairAttempt(request);
+  }
+
+  async admitRepairAttemptWithWorkItem(request: {
+    readonly attempt: PersistedTaskRepairAttempt['attempt'];
+    readonly maxRepairs: number;
+    readonly createWorkItem: (attempt: PersistedTaskRepairAttempt['attempt']) => TaskRepairWorkItem;
+  }): Promise<PersistedTaskRepairAttempt['attempt']> {
+    return this.#admitRepairAttempt(request, (attempt) => {
+      const item = request.createWorkItem(attempt);
+      taskRepairWorkItemSchema.parse(item);
+      if (
+        item.runId !== attempt.runId ||
+        item.taskId !== attempt.taskId ||
+        item.repairAttemptId !== attempt.id
+      ) {
+        throw new PersistenceInputError('Repair work item must match its admitted repair attempt');
+      }
+      this.#persistRepairWorkItemInTransaction(item);
+    });
+  }
+
+  async #admitRepairAttempt(
+    request: {
+      readonly attempt: PersistedTaskRepairAttempt['attempt'];
+      readonly maxRepairs: number;
+    },
+    afterAdmission?: (attempt: PersistedTaskRepairAttempt['attempt']) => void
+  ): Promise<PersistedTaskRepairAttempt['attempt']> {
+    taskRepairAttemptSchema.parse(request.attempt);
+    if (!Number.isInteger(request.maxRepairs) || request.maxRepairs < 1) {
+      throw new PersistenceInputError('Repair budget must be a positive integer');
+    }
     return this.#exclusiveReevaluation(() =>
       this.#sqlite.transaction(() => {
         this.#assertRunExists(request.attempt.runId);
@@ -1060,22 +1112,19 @@ export class DrizzleSqliteOrchestrationPersistence
           .all()
           .map((record) => decode(record.attemptJson, isTaskRepairAttempt, 'task repair attempt'))
           .filter((attempt) => attempt.taskId === request.attempt.taskId);
-        const existing = taskAttempts.find((attempt) =>
-          this.#sameRepairAdmission(attempt, request.attempt)
-        );
-        if (existing !== undefined) {
-          return existing;
-        }
-        if (taskAttempts.length >= request.maxRepairs) {
-          throw new PersistenceInputError(
-            `Repair budget exhausted for task: ${request.attempt.taskId}`
-          );
-        }
-        const admitted = {
-          ...request.attempt,
-          repairIteration: taskAttempts.length + 1
-        };
-        this.#persistRepairAttemptInTransaction({ runId: admitted.runId, attempt: admitted });
+        const admitted =
+          taskAttempts.find((attempt) => this.#sameRepairAdmission(attempt, request.attempt)) ??
+          (() => {
+            if (taskAttempts.length >= request.maxRepairs) {
+              throw new PersistenceInputError(
+                `Repair budget exhausted for task: ${request.attempt.taskId}`
+              );
+            }
+            const next = { ...request.attempt, repairIteration: taskAttempts.length + 1 };
+            this.#persistRepairAttemptInTransaction({ runId: next.runId, attempt: next });
+            return next;
+          })();
+        afterAdmission?.(admitted);
         return admitted;
       })()
     );
@@ -1217,6 +1266,56 @@ export class DrizzleSqliteOrchestrationPersistence
         return { status: 'resumed' as const, attempt: resumed };
       })()
     );
+  }
+
+  async persistRepairWorkItem(item: TaskRepairWorkItem): Promise<void> {
+    taskRepairWorkItemSchema.parse(item);
+    this.#sqlite.transaction(() => {
+      this.#assertRunExists(item.runId);
+      this.#persistRepairWorkItemInTransaction(item);
+    })();
+  }
+
+  #persistRepairWorkItemInTransaction(item: TaskRepairWorkItem): void {
+    this.#assertRunExists(item.runId);
+    const existing = this.#db
+      .select()
+      .from(taskRepairWorkItems)
+      .where(
+        and(
+          eq(taskRepairWorkItems.runId, item.runId),
+          eq(taskRepairWorkItems.repairAttemptId, item.repairAttemptId)
+        )
+      )
+      .get();
+    if (existing !== undefined) {
+      const stored = decode(existing.itemJson, isTaskRepairWorkItem, 'task repair work item');
+      if (canonicalPlainStringify(stored) !== canonicalPlainStringify(item)) {
+        throw new PersistenceInputError(
+          'Repair work item already recorded with different evidence'
+        );
+      }
+      return;
+    }
+    this.#db
+      .insert(taskRepairWorkItems)
+      .values({
+        runId: item.runId,
+        repairAttemptId: item.repairAttemptId,
+        itemJson: stringify(item)
+      })
+      .run();
+  }
+
+  async recoverRepairWorkItems(runId: string): Promise<readonly TaskRepairWorkItem[]> {
+    this.#assertRunId(runId);
+    return this.#db
+      .select()
+      .from(taskRepairWorkItems)
+      .where(eq(taskRepairWorkItems.runId, runId))
+      .orderBy(asc(taskRepairWorkItems.repairAttemptId))
+      .all()
+      .map((record) => decode(record.itemJson, isTaskRepairWorkItem, 'task repair work item'));
   }
 
   async persistVerificationEvidence(evidence: TaskVerificationEvidence): Promise<void> {

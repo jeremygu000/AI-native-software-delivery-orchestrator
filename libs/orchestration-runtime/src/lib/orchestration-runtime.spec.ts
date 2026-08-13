@@ -11,6 +11,7 @@ import type {
   PersistedWriteLease,
   RecoveredRun,
   TaskRepairAttemptStore,
+  TaskRepairWorkItemStore,
   TaskContract,
   TaskVerifier,
   TaskWorkspace,
@@ -424,6 +425,44 @@ describe('OrchestrationRuntime', () => {
     await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
       snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] },
       repairAttempts: [{ attempt: { state: 'UNKNOWN', revision: 3 } }]
+    });
+  });
+
+  it('recovers durable repair work items alongside their parallel repair lineage', async () => {
+    const persistence = new MemoryPersistence();
+    const initialRuntime = createRuntime(persistence);
+    await initialRuntime.startRun(request([task('A')]));
+    const workItems = [
+      {
+        runId: 'run-1',
+        taskId: 'A',
+        repairAttemptId: 'repair-1',
+        builderAttemptId: 'attempt-1',
+        workspaceId: 'workspace-A',
+        leasePlanFingerprint: `sha256:${'1'.repeat(64)}`,
+        impactFingerprint: `sha256:${'2'.repeat(64)}`,
+        parentReviewIteration: 1,
+        reviewIteration: 2,
+        verificationPolicyFingerprint: `sha256:${'3'.repeat(64)}`,
+        codeReviewPolicyFingerprint: `sha256:${'4'.repeat(64)}`
+      }
+    ];
+    const repairWorkItems: TaskRepairWorkItemStore = {
+      persistRepairWorkItem: async () => undefined,
+      recoverRepairWorkItems: async () => workItems
+    };
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard: new MemoryWriteGuard(),
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      repairWorkItems
+    });
+
+    await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
+      repairWorkItems: workItems
     });
   });
 

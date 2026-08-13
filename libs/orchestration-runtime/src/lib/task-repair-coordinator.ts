@@ -1,10 +1,14 @@
 import type {
   TaskCodeReview,
+  TaskCodeReviewStore,
   TaskCodeReviewSubject,
   TaskRepairAttempt,
   TaskRepairAdmissionStore,
-  TaskRepairResumeStore
+  TaskRepairResumeStore,
+  TaskRepairWorkItem,
+  TaskRepairWorkItemAdmissionStore
 } from '@ai-native-software-delivery-orchestrator/domain';
+import { assertTaskReviewRepairAdmission } from './task-review-integration-admission.js';
 
 export class TaskRepairBudgetError extends Error {
   constructor(message: string) {
@@ -21,13 +25,19 @@ export class TaskRepairAdmissionError extends Error {
 }
 
 export class TaskRepairCoordinator {
-  readonly #store: TaskRepairAdmissionStore & TaskRepairResumeStore;
+  readonly #store: TaskRepairAdmissionStore &
+    TaskRepairResumeStore &
+    Partial<TaskRepairWorkItemAdmissionStore>;
+  readonly #reviews: TaskCodeReviewStore;
   readonly #maxRepairs: number;
   readonly #now: () => Date;
   readonly #createId: () => string;
 
   constructor(options: {
-    readonly store: TaskRepairAdmissionStore & TaskRepairResumeStore;
+    readonly store: TaskRepairAdmissionStore &
+      TaskRepairResumeStore &
+      Partial<TaskRepairWorkItemAdmissionStore>;
+    readonly reviews: TaskCodeReviewStore;
     readonly maxRepairs: number;
     readonly now?: () => Date;
     readonly createId: () => string;
@@ -36,6 +46,7 @@ export class TaskRepairCoordinator {
       throw new TaskRepairBudgetError('Repair budget must be a positive integer');
     }
     this.#store = options.store;
+    this.#reviews = options.reviews;
     this.#maxRepairs = options.maxRepairs;
     this.#now = options.now ?? (() => new Date());
     this.#createId = options.createId;
@@ -49,12 +60,19 @@ export class TaskRepairCoordinator {
     readonly reviewIteration: number;
     readonly review: TaskCodeReview;
     readonly subject: TaskCodeReviewSubject;
+    readonly createWorkItem?: (attempt: TaskRepairAttempt) => TaskRepairWorkItem;
   }): Promise<TaskRepairAttempt> {
     if (request.review.recommendation !== 'repair') {
       throw new TaskRepairAdmissionError(
         'Only a repair recommendation may create a repair attempt'
       );
     }
+    assertTaskReviewRepairAdmission({
+      taskId: request.taskId,
+      iteration: request.reviewIteration,
+      subject: request.subject,
+      reviews: await this.#reviews.recoverReviews(request.runId)
+    });
     const attempt: TaskRepairAttempt = {
       id: this.#createId(),
       runId: request.runId,
@@ -68,7 +86,17 @@ export class TaskRepairCoordinator {
       revision: 1
     };
     try {
-      return await this.#store.admitRepairAttempt({ attempt, maxRepairs: this.#maxRepairs });
+      if (request.createWorkItem === undefined) {
+        return await this.#store.admitRepairAttempt({ attempt, maxRepairs: this.#maxRepairs });
+      }
+      if (this.#store.admitRepairAttemptWithWorkItem === undefined) {
+        throw new TaskRepairAdmissionError('Repair work item admission store is unavailable');
+      }
+      return await this.#store.admitRepairAttemptWithWorkItem({
+        attempt,
+        maxRepairs: this.#maxRepairs,
+        createWorkItem: request.createWorkItem
+      });
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Repair budget exhausted')) {
         throw new TaskRepairBudgetError(error.message);

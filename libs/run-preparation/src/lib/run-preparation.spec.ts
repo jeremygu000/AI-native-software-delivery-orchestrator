@@ -327,7 +327,8 @@ const recovered = (request: StartRuntimeRunRequest): RecoveredRuntimeRun => ({
   workspaces: [],
   leases: [],
   attempts: [],
-  repairAttempts: []
+  repairAttempts: [],
+  repairWorkItems: []
 });
 
 const setup = (authority = intent()) => {
