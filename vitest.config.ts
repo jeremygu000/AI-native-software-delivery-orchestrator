@@ -1,6 +1,14 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  resolve: {
+    conditions: ['@ai-native-software-delivery-orchestrator/source']
+  },
+  ssr: {
+    resolve: {
+      conditions: ['@ai-native-software-delivery-orchestrator/source']
+    }
+  },
   test: {
     projects: [
       '**/vite.config.{mjs,js,ts,mts}',
