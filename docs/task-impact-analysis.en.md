@@ -667,7 +667,9 @@ agent-execution, and verification layers.
 - Bidirectional repository read/write overlap remains an undirected scored risk because the facts do
   not prove a safe producer direction; the Scheduler rejects an ordering cycle when directional
   constraints and functional dependencies together form one.
-- Observed impact collection and predicted-versus-observed reconciliation are not implemented.
+- Observed Git file impact collection and first-stage predicted-versus-observed reconciliation are
+  implemented by the runtime. Leased scope expansion can add sequenced durable scheduling conflicts;
+  symbol, dependency, manifest, and generated-effect observation remain future work.
 - No incremental impact cache is exposed.
 - Configuration defines policy locally; a user-facing configuration format and CLI integration are
   future work.

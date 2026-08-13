@@ -86,6 +86,8 @@ export interface PersistedTaskConflict {
   readonly taskA: string;
   readonly taskB: string;
   readonly conflict: TaskConflict;
+  /** The first scheduler sequence that may use this runtime-discovered conflict. */
+  readonly effectiveFromSequence?: number;
 }
 
 export interface PersistedWriteLease {
@@ -107,6 +109,8 @@ export interface PersistedReevaluation {
   readonly event: PersistedSchedulerEvent;
   readonly transitions: readonly PersistedTaskTransition[];
   readonly decision: PersistedSchedulerDecision;
+  /** Runtime conflict knowledge mutations atomically committed with this reevaluation. */
+  readonly runtimeConflicts?: readonly PersistedTaskConflict[];
 }
 
 export interface PersistedDispatch {

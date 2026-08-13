@@ -82,7 +82,10 @@ export class RepositoryImpactReconciler implements TaskImpactReconciler {
         status,
         expandedFileIds: stableSet(expandedFileIds),
         unleasedFileIds: stableSet(unleasedFileIds)
-      }
+      },
+      expandedResources: expandedFileIds
+        .map((fileId) => resources.get(fileId))
+        .filter((resource): resource is WritableResource => resource !== undefined)
     };
   }
 }

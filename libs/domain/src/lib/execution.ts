@@ -10,6 +10,7 @@ import type { AgentExecutionAttempt, AgentSessionRef } from './agent-execution.j
 import type { AgentCommandPolicy } from './command-policy.js';
 import type { AgentCommandSandboxProfile } from './command-sandbox.js';
 import type { WriteLease } from './write-lease.js';
+import type { WritableResource } from './write-lease.js';
 import type { TaskContract } from './task-contract.js';
 import { taskStateSchema } from './task-state.js';
 import type { TaskWorkspace } from './workspace.js';
@@ -264,6 +265,7 @@ export interface TaskImpactReconciliationRequest {
 export type TaskImpactReconciliationResult = {
   readonly observed: ObservedTaskImpact;
   readonly reconciliation: import('./conflict.js').TaskImpactReconciliation;
+  readonly expandedResources?: readonly WritableResource[];
 };
 
 export interface TaskImpactReconciler {

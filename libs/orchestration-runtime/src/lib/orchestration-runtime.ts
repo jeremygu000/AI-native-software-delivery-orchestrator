@@ -3,6 +3,7 @@ import {
   agentCommandPolicyFingerprint,
   defaultAgentCommandTrustedPath,
   canonicalTaskLeaseResources,
+  areWritableResourcesConflicting,
   taskDecisionsWithTransitions,
   taskLeasePlanFingerprint,
   taskLeasePlanSchema
@@ -23,6 +24,7 @@ import type {
   TaskImpactReconciler,
   TaskVerifier,
   TaskLeasePlan,
+  WritableResource,
   WriteLease,
   WorkspaceManager,
   WriteGuard
@@ -542,11 +544,13 @@ export class OrchestrationRuntime {
           this.#setState(state, taskId, 'FAILED');
           await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
         } else if (reconciliation.reconciliation.status === 'runtime-scope-expanded') {
-          await this.#persistRuntimeScopeConflicts(
+          const conflicts = this.#runtimeScopeConflicts(
             state,
             taskId,
-            reconciliation.reconciliation.expandedFileIds
+            reconciliation.expandedResources ?? []
           );
+          state.hardConflicts.push(...conflicts);
+          await this.#recordEvent(state, { type: 'runtime-reconciliation-recovered' }, conflicts);
         }
         if (this.#stateFor(state.snapshot, taskId) !== 'FAILED') {
           this.#setState(state, taskId, 'VERIFYING');
@@ -647,7 +651,11 @@ export class OrchestrationRuntime {
     });
   }
 
-  async #recordEvent(state: RuntimeState, event: SchedulerEvent): Promise<void> {
+  async #recordEvent(
+    state: RuntimeState,
+    event: SchedulerEvent,
+    runtimeConflicts: readonly import('@ai-native-software-delivery-orchestrator/domain').HardTaskConflict[] = []
+  ): Promise<void> {
     const inputSnapshot = state.snapshot;
     const decision = this.#scheduler.reevaluate(
       event,
@@ -672,7 +680,18 @@ export class OrchestrationRuntime {
         fromState: taskDecision.fromState,
         toState: taskDecision.toState
       })),
-      decision: { runId: state.request.run.id, sequence, inputSnapshot, decision }
+      decision: { runId: state.request.run.id, sequence, inputSnapshot, decision },
+      ...(runtimeConflicts.length === 0
+        ? {}
+        : {
+            runtimeConflicts: runtimeConflicts.map((conflict) => ({
+              runId: state.request.run.id,
+              taskA: conflict.taskA,
+              taskB: conflict.taskB,
+              conflict,
+              effectiveFromSequence: sequence
+            }))
+          })
     };
     const attempts = decision.taskDecisions
       .filter((taskDecision) => taskDecision.action === 'start')
@@ -992,52 +1011,48 @@ export class OrchestrationRuntime {
     return this.#impactReconciler.reconcile(request);
   }
 
-  async #persistRuntimeScopeConflicts(
+  #runtimeScopeConflicts(
     state: RuntimeState,
     taskId: string,
-    fileIds: ReadonlySet<string>
-  ): Promise<void> {
+    expandedResources: readonly WritableResource[]
+  ): readonly import('@ai-native-software-delivery-orchestrator/domain').HardTaskConflict[] {
+    const conflicts: import('@ai-native-software-delivery-orchestrator/domain').HardTaskConflict[] =
+      [];
     for (const otherTaskId of [...state.tasksById.keys()]
       .filter((id) => id !== taskId)
       .toSorted(compareIds)) {
-      const otherImpact = state.bindings.get(otherTaskId)?.impact?.predicted;
-      if (otherImpact === undefined) {
+      const otherResources = state.bindings.get(otherTaskId)?.leasePlan.predictedResources;
+      if (otherResources === undefined) {
         continue;
       }
-      const overlappingFileIds = [...fileIds].filter((fileId) =>
-        otherImpact.filesWritten.has(fileId)
+      const conflictingResources = expandedResources.filter((resource) =>
+        otherResources.some((otherResource) =>
+          areWritableResourcesConflicting(resource, otherResource)
+        )
       );
-      if (overlappingFileIds.length === 0) {
+      if (conflictingResources.length === 0) {
         continue;
       }
-      await this.#persistence.persistConflict({
-        runId: state.request.run.id,
-        taskA: taskId < otherTaskId ? taskId : otherTaskId,
-        taskB: taskId < otherTaskId ? otherTaskId : taskId,
-        conflict: {
-          taskA: taskId < otherTaskId ? taskId : otherTaskId,
-          taskB: taskId < otherTaskId ? otherTaskId : taskId,
-          score: 100,
-          severity: 'hard',
-          reasons: [
-            {
-              type: 'same-file',
-              score: 100,
-              detail: 'Observed runtime scope overlaps another task predicted write scope.',
-              resourceIds: overlappingFileIds.toSorted(compareIds)
-            }
-          ],
-          constraints: [
-            {
-              type: 'runtime-scope-expansion',
-              detail: 'Observed runtime scope expansion must be reconciled before future dispatch.',
-              resourceIds: overlappingFileIds.toSorted(compareIds)
-            }
-          ],
-          recommendedAction: 'serialize'
-        }
-      });
-      state.hardConflicts.push({
+      const resourceIds = conflictingResources
+        .map((resource) =>
+          resource.type === 'shared-resource'
+            ? resource.resourceId
+            : resource.type === 'project'
+              ? resource.projectId
+              : resource.fileId
+        )
+        .toSorted(compareIds);
+      if (
+        state.hardConflicts.some(
+          (conflict) =>
+            conflict.taskA === (taskId < otherTaskId ? taskId : otherTaskId) &&
+            conflict.taskB === (taskId < otherTaskId ? otherTaskId : taskId) &&
+            conflict.constraints.some((constraint) => constraint.type === 'runtime-scope-expansion')
+        )
+      ) {
+        continue;
+      }
+      conflicts.push({
         taskA: taskId < otherTaskId ? taskId : otherTaskId,
         taskB: taskId < otherTaskId ? otherTaskId : taskId,
         score: 100,
@@ -1046,20 +1061,21 @@ export class OrchestrationRuntime {
           {
             type: 'same-file',
             score: 100,
-            detail: 'Observed runtime scope overlaps another task predicted write scope.',
-            resourceIds: overlappingFileIds.toSorted(compareIds)
+            detail: 'Observed runtime scope conflicts with another task lease-plan resource.',
+            resourceIds
           }
         ],
         constraints: [
           {
             type: 'runtime-scope-expansion',
             detail: 'Observed runtime scope expansion must be reconciled before future dispatch.',
-            resourceIds: overlappingFileIds.toSorted(compareIds)
+            resourceIds
           }
         ],
         recommendedAction: 'serialize'
       });
     }
+    return conflicts;
   }
 
   async #withLifecycle<T>(state: RuntimeState, operation: () => Promise<T>): Promise<T> {

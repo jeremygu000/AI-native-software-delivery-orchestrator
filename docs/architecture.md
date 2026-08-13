@@ -360,9 +360,12 @@ Git evidence and never converts completed execution work into ordinary `READY` w
 adapter rebases the task branch onto the integration ref, then integrates through a fast-forward-only
 merge. Dirty integration repositories, rebase conflicts, and fast-forward failures remain explicit
 blocks that an outer runtime may resume or abort. Controlled `forge_write` and `forge_edit` writes are
-captured and persisted. Complete observed-impact collection, command-effect diffing,
-predicted-versus-observed reconciliation, and dynamic conflict recomputation are not yet implemented.
-The
+captured and persisted. Before verification, the local runtime reconciles the actual Git worktree file
+diff against predicted impact and ACTIVE lease authority. Unleased changes fail closed; leased scope
+expansion becomes sequenced runtime conflict knowledge that changes later scheduling and participates in
+deterministic decision replay. The first implementation is file-observation based and uses the canonical
+lease-resource hierarchy for overlap; symbol/dependency/manifest/generated-effect inference remains
+future work. The
 workspace record carries a positive revision. Persistence accepts only a strictly newer revision, or
 an exactly matching retry at the same revision; an older workspace record cannot overwrite newer Git
 integration evidence. Git processes run asynchronously and use NUL-delimited path output, so a long

@@ -2120,3 +2120,11 @@ own lease and the verifier cannot write.
 Focused verification passes: TypeScript project-reference build, Oxlint, scheduler and runtime tests, the
 real local worktree/SQLite runtime test, and new reconciliation tests covering actual-diff precedence,
 leased scope expansion, and unleased-change rejection.
+
+### Stage 21 closure: sequenced runtime knowledge
+
+Runtime scope conflicts are now committed as mutations in the same durable scheduler sequence that first
+uses them. Replay applies each mutation only from its `effectiveFromSequence`, so it reproduces historical
+decisions without incorrectly leaking a later conflict into earlier scheduling. Expansion matching now
+compares actual `WritableResource` values against other tasks' canonical lease plans, preserving project,
+file, and symbol hierarchy instead of relying on a file-ID-only comparison.

@@ -644,7 +644,9 @@ execution 和 verification 层。
 - `coordinate` 有意采用保守语义,不表示 producer direction;
 - 双向 Repository read/write overlap 仍是无方向 scored risk，因为这些事实不能证明安全的 producer
   direction；当 direction constraint 与 functional dependency 合起来形成 cycle 时，Scheduler 会拒绝它；
-- Observed impact collection 和 predicted-versus-observed reconciliation 尚未实现;
+- Runtime 已实现 Observed Git file impact collection 和第一阶段 predicted-versus-observed
+  reconciliation。带 lease 的 scope expansion 可以加入带 sequence 的 durable scheduling conflict；
+  symbol、dependency、manifest 和 generated-effect observation 仍是未来工作；
 - 还没有 incremental impact cache;
 - Policy configuration 当前由本地代码提供;面向用户的配置格式和 CLI integration 是未来工作。
 

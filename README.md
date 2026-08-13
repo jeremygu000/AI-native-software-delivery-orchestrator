@@ -7,7 +7,7 @@ parallelism.
 
 ## Current milestone
 
-Milestones 1–19 establish the deterministic analysis, planning, approval, dispatch, write-safety, recovery,
+Milestones 1–21 establish the deterministic analysis, planning, approval, dispatch, write-safety, recovery,
 and local Git workspace core:
 
 - TypeScript 7 native CLI checks and ESM in a pnpm workspace;
@@ -62,9 +62,12 @@ and local Git workspace core:
   orchestrator-owned integration checkout at the approved commit, derives isolated task worktrees,
   persists complete run authority, dispatches controlled Pi agents, verifies package scripts only in
   a pinned no-network/read-only Docker profile, and serially integrates successful work;
+- Git-diff observed-impact reconciliation before verification: unleased actual changes fail closed,
+  leased scope expansion produces sequenced durable runtime conflicts, and replay applies that changing
+  conflict knowledge at the historical scheduler sequence;
 - Vitest coverage thresholds, type-aware Oxlint, Oxfmt, and GitHub CI quality gates.
 
-Milestones 12–20 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
+Milestones 12–21 add a Pi coding adapter, policy-controlled `forge_command`, execution profiles,
 concurrent local agent execution, and an autonomous Pi-backed planning and review path. Planning and execution
 remain separate: `forge plan`, `forge approve`, and `forge bind` do not create worktrees, acquire leases,
 dispatch coding agents, run verification, or integrate Git work. `forge run` is the explicit side-effect

@@ -1834,3 +1834,10 @@ authorization bypass：后续写入仍需要自己的 lease，且 verifier 不�
 已通过 focused verification：TypeScript project-reference build、Oxlint、scheduler/runtime tests、真实
 local worktree/SQLite runtime test，以及新增 reconciliation tests，覆盖 actual-diff precedence、leased scope
 expansion 和 unleased-change rejection。
+
+### Stage 21 closure：sequenced runtime knowledge
+
+runtime scope conflict 现在会作为 mutation，在首次使用它的同一个 durable scheduler sequence 中提交。replay
+只从其 `effectiveFromSequence` 起应用 mutation，因此能重现历史 decision，而不会把后来的 conflict 错误带入
+更早的 scheduling。expansion matching 现在将实际 `WritableResource` 与其他 task 的 canonical lease plan
+比较，保留 project、file 和 symbol hierarchy，而不再只比较 file ID。

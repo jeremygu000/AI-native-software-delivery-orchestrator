@@ -84,6 +84,7 @@ const taskConflicts = sqliteTable('task_conflicts', {
   runId: text('run_id').notNull(),
   taskA: text('task_a').notNull(),
   taskB: text('task_b').notNull(),
+  effectiveFromSequence: integer('effective_from_sequence'),
   conflictJson: text('conflict_json').notNull()
 });
 
@@ -309,6 +310,7 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
         run_id TEXT NOT NULL,
         task_a TEXT NOT NULL,
         task_b TEXT NOT NULL,
+        effective_from_sequence INTEGER,
         conflict_json TEXT NOT NULL,
         PRIMARY KEY (run_id, task_a, task_b)
       );
@@ -342,6 +344,18 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
       )
     ) {
       this.#sqlite.exec('ALTER TABLE orchestration_runs ADD COLUMN authority_json TEXT');
+    }
+    const conflictColumns = this.#sqlite.prepare('PRAGMA table_info(task_conflicts)').all();
+    if (
+      !conflictColumns.some(
+        (column) =>
+          typeof column === 'object' &&
+          column !== null &&
+          'name' in column &&
+          column.name === 'effective_from_sequence'
+      )
+    ) {
+      this.#sqlite.exec('ALTER TABLE task_conflicts ADD COLUMN effective_from_sequence INTEGER');
     }
   }
 
@@ -435,6 +449,17 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
     ) {
       throw new PersistenceInputError('Reevaluation records must share a run ID and sequence');
     }
+    for (const conflict of reevaluation.runtimeConflicts ?? []) {
+      this.#assertConflict(conflict);
+      if (
+        conflict.runId !== reevaluation.event.runId ||
+        conflict.effectiveFromSequence !== reevaluation.event.sequence
+      ) {
+        throw new PersistenceInputError(
+          'Runtime conflict mutations must become effective at their reevaluation sequence'
+        );
+      }
+    }
   }
 
   #persistReevaluationInTransaction(reevaluation: PersistedReevaluation): void {
@@ -463,6 +488,9 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
         eventJson: stringify(reevaluation.event.event)
       })
       .run();
+    for (const conflict of reevaluation.runtimeConflicts ?? []) {
+      this.#persistConflictInTransaction(conflict);
+    }
     for (const [ordinal, transition] of reevaluation.transitions.entries()) {
       this.#db
         .insert(taskTransitions)
@@ -514,27 +542,64 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
   }
 
   async persistConflict(record: PersistedTaskConflict): Promise<void> {
+    this.#assertConflict(record);
+    this.#sqlite.transaction(() => {
+      this.#persistConflictInTransaction(record);
+    })();
+  }
+
+  #assertConflict(record: PersistedTaskConflict): void {
     this.#assertRunId(record.runId);
     if (record.taskA !== record.conflict.taskA || record.taskB !== record.conflict.taskB) {
       throw new PersistenceInputError('Task conflict keys must match payload task IDs');
     }
+    if (
+      record.effectiveFromSequence !== undefined &&
+      (!Number.isInteger(record.effectiveFromSequence) || record.effectiveFromSequence < 1)
+    ) {
+      throw new PersistenceInputError('Runtime conflict effective sequence must be positive');
+    }
     taskConflictSchema.parse(record.conflict);
-    this.#sqlite.transaction(() => {
-      this.#assertRunExists(record.runId);
-      this.#db
-        .insert(taskConflicts)
-        .values({
-          runId: record.runId,
-          taskA: record.taskA,
-          taskB: record.taskB,
+  }
+
+  #persistConflictInTransaction(record: PersistedTaskConflict): void {
+    this.#assertRunExists(record.runId);
+    const existing = this.#db
+      .select()
+      .from(taskConflicts)
+      .where(
+        and(
+          eq(taskConflicts.runId, record.runId),
+          eq(taskConflicts.taskA, record.taskA),
+          eq(taskConflicts.taskB, record.taskB)
+        )
+      )
+      .get();
+    // Runtime conflicts are monotonic knowledge: retain their first effective sequence for replay.
+    if (
+      record.effectiveFromSequence !== undefined &&
+      existing !== undefined &&
+      existing.effectiveFromSequence !== null
+    ) {
+      return;
+    }
+    this.#db
+      .insert(taskConflicts)
+      .values({
+        runId: record.runId,
+        taskA: record.taskA,
+        taskB: record.taskB,
+        effectiveFromSequence: record.effectiveFromSequence ?? null,
+        conflictJson: stringify(record.conflict)
+      })
+      .onConflictDoUpdate({
+        target: [taskConflicts.runId, taskConflicts.taskA, taskConflicts.taskB],
+        set: {
+          effectiveFromSequence: record.effectiveFromSequence ?? null,
           conflictJson: stringify(record.conflict)
-        })
-        .onConflictDoUpdate({
-          target: [taskConflicts.runId, taskConflicts.taskA, taskConflicts.taskB],
-          set: { conflictJson: stringify(record.conflict) }
-        })
-        .run();
-    })();
+        }
+      })
+      .run();
   }
 
   async persistLease(record: PersistedWriteLease): Promise<void> {
@@ -685,7 +750,11 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
       .select()
       .from(taskConflicts)
       .where(eq(taskConflicts.runId, runId))
-      .orderBy(asc(taskConflicts.taskA), asc(taskConflicts.taskB))
+      .orderBy(
+        asc(taskConflicts.effectiveFromSequence),
+        asc(taskConflicts.taskA),
+        asc(taskConflicts.taskB)
+      )
       .all();
     const leases = this.#db
       .select()
@@ -759,6 +828,9 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
         runId: conflict.runId,
         taskA: conflict.taskA,
         taskB: conflict.taskB,
+        ...(conflict.effectiveFromSequence === null
+          ? {}
+          : { effectiveFromSequence: conflict.effectiveFromSequence }),
         conflict: decode(
           conflict.conflictJson,
           (value): value is TaskConflict => taskConflictSchema.safeParse(value).success,
@@ -799,8 +871,26 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
         event.event,
         persistedDecision.inputSnapshot,
         recovered.tasks,
-        recovered.hardConflicts,
-        recovered.riskConflicts,
+        [
+          ...recovered.hardConflicts,
+          ...recovered.conflicts.flatMap((record) =>
+            record.effectiveFromSequence !== undefined &&
+            record.effectiveFromSequence <= event.sequence &&
+            record.conflict.severity === 'hard'
+              ? [record.conflict]
+              : []
+          )
+        ],
+        [
+          ...recovered.riskConflicts,
+          ...recovered.conflicts.flatMap((record) =>
+            record.effectiveFromSequence !== undefined &&
+            record.effectiveFromSequence <= event.sequence &&
+            record.conflict.severity !== 'hard'
+              ? [record.conflict]
+              : []
+          )
+        ],
         recovered.scheduleOptions
       );
       if (

@@ -101,6 +101,9 @@ class MemoryPersistence implements OrchestrationPersistence {
 
   async persistReevaluation(reevaluation: PersistedReevaluation): Promise<void> {
     this.reevaluations.push(reevaluation);
+    for (const conflict of reevaluation.runtimeConflicts ?? []) {
+      await this.persistConflict(conflict);
+    }
   }
 
   async persistDispatch(dispatch: PersistedDispatch): Promise<void> {
@@ -437,7 +440,10 @@ describe('OrchestrationRuntime', () => {
             status: 'runtime-scope-expanded',
             expandedFileIds: new Set(['project-B:overlap.txt']),
             unleasedFileIds: new Set()
-          }
+          },
+          expandedResources: [
+            { type: 'file', projectId: 'project-B', fileId: 'project-B:overlap.txt' }
+          ]
         })
       }
     });
@@ -478,6 +484,67 @@ describe('OrchestrationRuntime', () => {
         taskA: 'A',
         taskB: 'B',
         conflict: { severity: 'hard', constraints: [{ type: 'runtime-scope-expansion' }] }
+      }
+    ]);
+  });
+
+  it('detects expansion against another task project-wide lease plan', async () => {
+    const persistence = new MemoryPersistence();
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard: new MemoryWriteGuard(),
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      impactReconciler: {
+        reconcile: async ({ taskId }) => ({
+          observed: {
+            taskId,
+            filesRead: new Set(),
+            filesCreated: new Set(['project-B:new.txt']),
+            filesWritten: new Set(['project-B:new.txt']),
+            filesDeleted: new Set(),
+            symbolsWritten: new Set(),
+            dependencyRequests: new Set(),
+            manifestFilesChanged: new Set(),
+            generatedFilesChanged: new Set()
+          },
+          reconciliation: {
+            status: 'runtime-scope-expanded',
+            expandedFileIds: new Set(['project-B:new.txt']),
+            unleasedFileIds: new Set()
+          },
+          expandedResources: [{ type: 'file', projectId: 'project-B', fileId: 'project-B:new.txt' }]
+        })
+      }
+    });
+    const baseRun = request([task('A'), task('B')]);
+    const run: StartRuntimeRunRequest = {
+      ...baseRun,
+      taskBindings: baseRun.taskBindings.map((binding) =>
+        binding.taskId === 'B'
+          ? {
+              ...binding,
+              leasePlan: {
+                taskId: 'B',
+                source: 'manual',
+                predictedResources: [{ type: 'project', projectId: 'project-B' }]
+              }
+            }
+          : binding
+      )
+    };
+
+    await runtime.startRun(run);
+
+    expect(persistence.conflicts).toMatchObject([
+      {
+        taskA: 'A',
+        taskB: 'B',
+        conflict: {
+          constraints: [{ type: 'runtime-scope-expansion', resourceIds: ['project-B:new.txt'] }]
+        }
       }
     ]);
   });
@@ -1809,6 +1876,76 @@ describe('OrchestrationRuntime', () => {
     await expect(
       persistence.replayRun('run-1', new DeterministicScheduler())
     ).resolves.toHaveLength(5);
+    persistence.close();
+  });
+
+  it('replays a dynamically sequenced runtime scope conflict through SQLite', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const baseRun = request([task('A'), task('B')]);
+    const run: StartRuntimeRunRequest = {
+      ...baseRun,
+      taskBindings: baseRun.taskBindings.map((binding) =>
+        binding.taskId === 'B'
+          ? {
+              ...binding,
+              leasePlan: {
+                taskId: 'B',
+                source: 'manual',
+                predictedResources: [{ type: 'project', projectId: 'project-B' }]
+              }
+            }
+          : binding
+      ),
+      scheduleOptions: { maxConcurrency: 1 }
+    };
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager: new MemoryWorkspaceManager(),
+      writeGuard: new InMemoryWriteGuard({ now: () => new Date('2026-08-12T00:00:00.000Z') }),
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      impactReconciler: {
+        reconcile: async ({ taskId }) => ({
+          observed: {
+            taskId,
+            filesRead: new Set(),
+            filesCreated: new Set(['project-B:new.txt']),
+            filesWritten: new Set(['project-B:new.txt']),
+            filesDeleted: new Set(),
+            symbolsWritten: new Set(),
+            dependencyRequests: new Set(),
+            manifestFilesChanged: new Set(),
+            generatedFilesChanged: new Set()
+          },
+          reconciliation: {
+            status: 'runtime-scope-expanded',
+            expandedFileIds: new Set(['project-B:new.txt']),
+            unleasedFileIds: new Set()
+          },
+          expandedResources: [{ type: 'file', projectId: 'project-B', fileId: 'project-B:new.txt' }]
+        })
+      },
+      now: () => new Date('2026-08-12T00:00:00.000Z')
+    });
+
+    await runtime.startRun(run);
+
+    const recovered = await persistence.recoverRun('run-1');
+    expect(recovered?.events.map((event) => event.event.type)).toContain(
+      'runtime-reconciliation-recovered'
+    );
+    expect(recovered).toMatchObject({
+      conflicts: [
+        {
+          effectiveFromSequence: expect.any(Number),
+          conflict: { constraints: [{ type: 'runtime-scope-expansion' }] }
+        }
+      ]
+    });
+    await expect(
+      persistence.replayRun('run-1', new DeterministicScheduler())
+    ).resolves.toHaveLength(11);
     persistence.close();
   });
 
