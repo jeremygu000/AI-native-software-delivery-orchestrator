@@ -267,6 +267,44 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     persistence.close();
   });
 
+  it('persists task code review evidence idempotently by task iteration', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const review = {
+      recommendation: 'accept' as const,
+      summary: 'Implementation matches the task contract.',
+      findings: []
+    };
+    await persistence.createRun(createRunRequest());
+    await persistence.persistReview({ runId: 'run-1', taskId: 'A', iteration: 1, review });
+    await expect(
+      persistence.persistReview({ runId: 'run-1', taskId: 'A', iteration: 1, review })
+    ).resolves.toBeUndefined();
+    await expect(
+      persistence.persistReview({
+        runId: 'run-1',
+        taskId: 'A',
+        iteration: 1,
+        review: {
+          recommendation: 'repair',
+          summary: 'Changed evidence.',
+          findings: [
+            {
+              id: 'finding-1',
+              severity: 'high',
+              fileIds: ['core:file'],
+              symbolIds: [],
+              description: 'Repair required.'
+            }
+          ]
+        }
+      })
+    ).rejects.toThrow(PersistenceInputError);
+    await expect(persistence.recoverReviews('run-1')).resolves.toMatchObject([
+      { taskId: 'A', iteration: 1, review }
+    ]);
+    persistence.close();
+  });
+
   it('rejects corrupted durable run authority evidence', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'orchestration-persistence-'));
     const filename = join(directory, 'corrupt-authority.sqlite');

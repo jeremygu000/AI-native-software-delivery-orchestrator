@@ -2134,3 +2134,21 @@ scheduler sequence succeeds only when its event, snapshot, transitions, decision
 runtime conflicts are exact evidence matches; a changed mutation set fails closed. This preserves the
 run's uncertain-commit idempotency rule while leaving later observations for an already serialized task
 pair as diagnostic follow-up rather than rewriting its initial conflict evidence.
+
+## Stage 22: Build Review And Repair Loop
+
+Stage 22 begins with a deliberately narrow review-evidence boundary. After a task workspace has been
+verified, an independent reviewer can inspect it through only read, list, and find tools. It returns a
+strict JSON review: `accept` with no findings, or `repair` with uniquely identified findings, severity,
+affected file IDs, description, and optional requirement reference. The runtime collector parses this
+untrusted response and persists it idempotently by run, task, and review iteration.
+
+The reviewer session defines and activates only these three read-only tools rather than defining a broader
+tool set and relying on an active-tool filter. A real Pi SDK regression test verifies that no built-in
+shell or Forge edit, write, or command tool is active.
+
+The reviewer cannot write files, run commands, approve integration, or dispatch repair. Repair is not yet
+implemented: the existing runtime has one durable builder-attempt lineage per task, while a safe repair
+loop requires separately modeled repair attempts, a bounded budget, repeat verification and review,
+recovery semantics, and an integration-admission rule. ADR-025 records this boundary so the next Stage 22
+increment can add repair without weakening attempt provenance.

@@ -5,10 +5,12 @@ import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import type {
   CreatePersistedRunRequest,
   OrchestrationPersistence,
+  TaskCodeReviewStore,
   OrchestrationRunState,
   PersistedReevaluation,
   PersistedTaskConflict,
   PersistedTaskImpact,
+  PersistedTaskCodeReview,
   PersistedWriteLease,
   PersistedTaskWorkspace,
   PersistedAgentExecutionAttempt,
@@ -29,6 +31,7 @@ import {
   schedulerTaskDecisionSchema,
   taskConflictSchema,
   taskImpactSchema,
+  taskCodeReviewSchema,
   taskDecisionsWithTransitions,
   taskSpecificationSchema,
   taskContractSchema,
@@ -78,6 +81,13 @@ const taskImpacts = sqliteTable('task_impacts', {
   runId: text('run_id').notNull(),
   taskId: text('task_id').notNull(),
   impactJson: text('impact_json').notNull()
+});
+
+const taskCodeReviews = sqliteTable('task_code_reviews', {
+  runId: text('run_id').notNull(),
+  taskId: text('task_id').notNull(),
+  iteration: integer('iteration').notNull(),
+  reviewJson: text('review_json').notNull()
 });
 
 const taskConflicts = sqliteTable('task_conflicts', {
@@ -174,6 +184,9 @@ const isSchedulerDecision = (value: unknown): value is SchedulerDecision =>
 const isTaskImpact = (value: unknown): value is PersistedTaskImpact['impact'] =>
   taskImpactSchema.safeParse(value).success;
 
+const isTaskCodeReview = (value: unknown): value is PersistedTaskCodeReview['review'] =>
+  taskCodeReviewSchema.safeParse(value).success;
+
 const isWriteLease = (value: unknown): value is PersistedWriteLease['lease'] =>
   writeLeaseSchema.safeParse(value).success;
 
@@ -268,7 +281,9 @@ export class PersistenceReplayError extends Error {
   }
 }
 
-export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersistence {
+export class DrizzleSqliteOrchestrationPersistence
+  implements OrchestrationPersistence, TaskCodeReviewStore
+{
   readonly #sqlite: Database.Database;
   readonly #db;
   #reevaluationTail: Promise<void> = Promise.resolve();
@@ -316,6 +331,13 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
         task_id TEXT NOT NULL,
         impact_json TEXT NOT NULL,
         PRIMARY KEY (run_id, task_id)
+      );
+      CREATE TABLE IF NOT EXISTS task_code_reviews (
+        run_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        iteration INTEGER NOT NULL,
+        review_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, task_id, iteration)
       );
       CREATE TABLE IF NOT EXISTS task_conflicts (
         run_id TEXT NOT NULL,
@@ -548,6 +570,52 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
           target: [taskImpacts.runId, taskImpacts.taskId],
           set: { impactJson: stringify(record.impact) }
         })
+        .run();
+    })();
+  }
+
+  async persistReview(record: PersistedTaskCodeReview): Promise<void> {
+    this.#assertRunId(record.runId);
+    if (
+      record.taskId.trim().length === 0 ||
+      !Number.isInteger(record.iteration) ||
+      record.iteration < 1
+    ) {
+      throw new PersistenceInputError('Task code review requires a task ID and positive iteration');
+    }
+    taskCodeReviewSchema.parse(record.review);
+    this.#sqlite.transaction(() => {
+      this.#assertRunExists(record.runId);
+      const existing = this.#db
+        .select()
+        .from(taskCodeReviews)
+        .where(
+          and(
+            eq(taskCodeReviews.runId, record.runId),
+            eq(taskCodeReviews.taskId, record.taskId),
+            eq(taskCodeReviews.iteration, record.iteration)
+          )
+        )
+        .get();
+      if (
+        existing !== undefined &&
+        canonicalPlainStringify(
+          decode(existing.reviewJson, isTaskCodeReview, 'task code review')
+        ) !== canonicalPlainStringify(record.review)
+      ) {
+        throw new PersistenceInputError(
+          'Task code review iteration already recorded with different evidence'
+        );
+      }
+      this.#db
+        .insert(taskCodeReviews)
+        .values({
+          runId: record.runId,
+          taskId: record.taskId,
+          iteration: record.iteration,
+          reviewJson: stringify(record.review)
+        })
+        .onConflictDoNothing()
         .run();
     })();
   }
@@ -861,6 +929,22 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
         attempt: decode(attempt.attemptJson, isAgentExecutionAttempt, 'agent execution attempt')
       }))
     };
+  }
+
+  async recoverReviews(runId: string): Promise<readonly PersistedTaskCodeReview[]> {
+    this.#assertRunId(runId);
+    return this.#db
+      .select()
+      .from(taskCodeReviews)
+      .where(eq(taskCodeReviews.runId, runId))
+      .orderBy(asc(taskCodeReviews.taskId), asc(taskCodeReviews.iteration))
+      .all()
+      .map((review) => ({
+        runId: review.runId,
+        taskId: review.taskId,
+        iteration: review.iteration,
+        review: decode(review.reviewJson, isTaskCodeReview, 'task code review')
+      }));
   }
 
   async replayRun(

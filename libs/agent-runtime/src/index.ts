@@ -9,7 +9,7 @@ export type {
   PiToolCall,
   PiToolResult
 } from './lib/pi-gateway.js';
-export { PiCodingAgentGateway } from './lib/pi-gateway.js';
+export { PiCodingAgentGateway, createReadOnlyPiTools } from './lib/pi-gateway.js';
 export {
   createPlanningFactTools,
   PiPlanningAgent,
@@ -22,3 +22,9 @@ export type {
   PiPlanningToolResult
 } from './lib/pi-planning-agent.js';
 export { PiSemanticPlanReviewer } from './lib/pi-semantic-plan-reviewer.js';
+export { PiTaskCodeReviewer, PiTaskCodeReviewGatewayAdapter } from './lib/pi-task-code-reviewer.js';
+export type {
+  PiTaskCodeReviewGateway,
+  PiTaskCodeReviewSessionFactory,
+  TaskCodeReviewTools
+} from './lib/pi-task-code-reviewer.js';

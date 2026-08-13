@@ -1846,3 +1846,18 @@ durable retry boundary 也包含 runtime conflict mutation。已经提交的 sch
 snapshot、transition、decision 和同 sequence runtime conflict 都是 exact evidence match 时才允许 retry；
 mutation set 变化会 fail closed。这保留了 run uncertain-commit idempotency rule；对于已经 serialize 的
 task pair，后续 observation 仍属于 diagnostic follow-up，而不会重写最初 conflict evidence。
+
+## Stage 22：Build Review And Repair Loop
+
+Stage 22 先建立一个刻意收窄的 review-evidence boundary。task workspace 完成 verification 后，独立
+reviewer 只能使用 read、list 和 find tool 检查它。它必须返回严格 JSON review：没有 finding 的 `accept`，
+或者带唯一 ID、severity、affected file ID、description 与可选 requirement reference 的 `repair`。runtime
+collector 会解析这份不可信 response，并按 run、task 和 review iteration 做 idempotent persistence。
+
+reviewer session 只定义并激活这三个只读 tool，而不是先定义更宽的 tool set 后依赖 active-tool filter。
+真实 Pi SDK regression test 会验证没有 built-in shell，也没有 Forge edit、write 或 command tool 处于 active 状态。
+
+reviewer 不能写文件、运行 command、批准 integration 或 dispatch repair。repair 目前尚未实现：现有 runtime
+对每个 task 只有一条 durable builder-attempt lineage，而安全 repair loop 需要独立建模 repair attempt、bounded
+budget、再次 verification 与 review、recovery semantic 及 integration-admission rule。ADR-025 记录了此
+boundary，以便下一次 Stage 22 increment 在不削弱 attempt provenance 的前提下实现 repair。

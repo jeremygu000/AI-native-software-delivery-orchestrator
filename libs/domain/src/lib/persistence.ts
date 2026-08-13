@@ -12,6 +12,7 @@ import type { TaskContract } from './task-contract.js';
 import type { TaskState } from './task-state.js';
 import type { WriteLease } from './write-lease.js';
 import type { TaskWorkspace } from './workspace.js';
+import type { TaskCodeReview } from './task-code-review.js';
 import { z } from 'zod';
 
 export type OrchestrationRunState = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
@@ -81,6 +82,13 @@ export interface PersistedTaskImpact {
   readonly impact: TaskImpact;
 }
 
+export interface PersistedTaskCodeReview {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly iteration: number;
+  readonly review: TaskCodeReview;
+}
+
 export interface PersistedTaskConflict {
   readonly runId: string;
   readonly taskA: string;
@@ -146,6 +154,12 @@ export interface OrchestrationPersistence {
   updateRunState(runId: string, state: OrchestrationRunState): Promise<void>;
   recoverRun(runId: string): Promise<RecoveredRun | undefined>;
   replayRun(runId: string, scheduler: Scheduler): Promise<readonly PersistedSchedulerDecision[]>;
+}
+
+/** Durable evidence storage for read-only code review iterations. */
+export interface TaskCodeReviewStore {
+  persistReview(review: PersistedTaskCodeReview): Promise<void>;
+  recoverReviews(runId: string): Promise<readonly PersistedTaskCodeReview[]>;
 }
 
 export const taskDecisionsWithTransitions = (
