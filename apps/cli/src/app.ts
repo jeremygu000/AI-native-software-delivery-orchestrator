@@ -64,6 +64,8 @@ export interface ForgeProgramDependencies {
     readonly maxConcurrency: number;
     readonly planDirectory?: string;
     readonly semanticReviewAuthorized: true;
+    readonly reviewProvider: string;
+    readonly reviewModel: string;
   }) => Promise<PlanArtifact>;
   readonly approvePlan?: (request: {
     readonly artifactId: string;
@@ -81,6 +83,8 @@ export interface ForgeProgramDependencies {
     readonly repositoryPath: string;
     readonly sharedResourcesPath?: string;
     readonly planDirectory?: string;
+    readonly reviewProvider: string;
+    readonly reviewModel: string;
   }) => Promise<PlanExecutionIntent>;
   readonly runPlan?: (request: {
     readonly artifactId: string;
@@ -91,6 +95,8 @@ export interface ForgeProgramDependencies {
     readonly sharedResourcesPath?: string;
     readonly planDirectory?: string;
     readonly runDirectory?: string;
+    readonly reviewProvider: string;
+    readonly reviewModel: string;
   }) => Promise<unknown>;
   readonly writeOutput?: (output: string) => void;
 }
@@ -151,17 +157,18 @@ const verificationPolicy = {
   }
 } as const;
 
-const codeReviewPolicy = {
-  version: 1,
-  reviewer: {
-    implementation: 'pi-task-code-reviewer',
-    agentBackend: 'pi',
-    model: { provider: 'configured-provider', id: 'configured-review-model' },
-    toolProfile: 'workspace-read-only-v1',
-    outputSchemaVersion: 1,
-    promptVersion: 'v1'
-  }
-} as const;
+const codeReviewPolicy = (provider: string, model: string) =>
+  ({
+    version: 1,
+    reviewer: {
+      implementation: 'pi-task-code-reviewer',
+      agentBackend: 'pi',
+      model: { provider, id: model },
+      toolProfile: 'workspace-read-only-v1',
+      outputSchemaVersion: 1,
+      promptVersion: 'v1'
+    }
+  }) as const;
 
 const createRepositoryPlan = async (request: {
   readonly specificationPath: string;
@@ -171,6 +178,8 @@ const createRepositoryPlan = async (request: {
   readonly maxConcurrency: number;
   readonly planDirectory?: string;
   readonly semanticReviewAuthorized: true;
+  readonly reviewProvider: string;
+  readonly reviewModel: string;
 }): Promise<PlanArtifact> => {
   const snapshotProvider = new GitRepositorySnapshotProvider();
   const [content, registry, snapshotBeforeAnalysis] = await Promise.all([
@@ -212,7 +221,7 @@ const createRepositoryPlan = async (request: {
     repositorySnapshot,
     sharedResourcePolicy: registry.list(),
     verificationPolicy,
-    codeReviewPolicy,
+    codeReviewPolicy: codeReviewPolicy(request.reviewProvider, request.reviewModel),
     preparedPlan
   });
   const artifactDirectory = await resolvePlanArtifactDirectory(
@@ -284,6 +293,8 @@ const bindRepositoryPlan = async (request: {
   readonly repositoryPath: string;
   readonly sharedResourcesPath?: string;
   readonly planDirectory?: string;
+  readonly reviewProvider: string;
+  readonly reviewModel: string;
 }): Promise<PlanExecutionIntent> => {
   const [stores, registry] = await Promise.all([
     planStores(request),
@@ -304,7 +315,7 @@ const bindRepositoryPlan = async (request: {
     repository: { repositoryPath: request.repositoryPath },
     sharedResourcePolicy: registry.list(),
     verificationPolicy,
-    codeReviewPolicy
+    codeReviewPolicy: codeReviewPolicy(request.reviewProvider, request.reviewModel)
   });
 };
 
@@ -317,6 +328,8 @@ const runRepositoryPlan = async (request: {
   readonly sharedResourcesPath?: string;
   readonly planDirectory?: string;
   readonly runDirectory?: string;
+  readonly reviewProvider: string;
+  readonly reviewModel: string;
 }): Promise<unknown> => {
   const [stores, registry] = await Promise.all([
     planStores(request),
@@ -343,7 +356,7 @@ const runRepositoryPlan = async (request: {
       repository: { repositoryPath: request.repositoryPath },
       sharedResourcePolicy: registry.list(),
       verificationPolicy,
-      codeReviewPolicy
+      codeReviewPolicy: codeReviewPolicy(request.reviewProvider, request.reviewModel)
     });
   const intent = await bind();
   const runDirectory = resolve(
@@ -363,7 +376,7 @@ const runRepositoryPlan = async (request: {
           graph: currentGraph,
           databasePath: join(runDirectory, request.runId, 'run.sqlite'),
           verificationPolicy,
-          codeReviewPolicy
+          codeReviewPolicy: codeReviewPolicy(request.reviewProvider, request.reviewModel)
         });
         try {
           return await runtime.startOrResumeRun(runtimeRequest);
@@ -469,6 +482,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
       '--semantic-review',
       'authorize an independent Pi review using the specification and read-only repository facts'
     )
+    .requiredOption('--review-provider <provider>', 'approved provider for independent code review')
+    .requiredOption('--review-model <model>', 'approved model ID for independent code review')
     .action(
       async (
         specification: string,
@@ -479,6 +494,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           maxConcurrency: number;
           planDirectory?: string;
           semanticReview: true;
+          reviewProvider: string;
+          reviewModel: string;
         }
       ) => {
         try {
@@ -494,7 +511,9 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
             ...(options.planDirectory === undefined
               ? {}
               : { planDirectory: resolve(cwd, options.planDirectory) }),
-            semanticReviewAuthorized: options.semanticReview
+            semanticReviewAuthorized: options.semanticReview,
+            reviewProvider: options.reviewProvider,
+            reviewModel: options.reviewModel
           });
           writeOutput(`${JSON.stringify(result, null, 2)}\n`);
         } catch (error) {
@@ -560,6 +579,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
       'current JSON shared-resource policy to revalidate against the artifact'
     )
     .option('--plan-directory <path>', 'directory containing plan and approval records')
+    .requiredOption('--review-provider <provider>', 'approved provider for independent code review')
+    .requiredOption('--review-model <model>', 'approved model ID for independent code review')
     .action(
       async (
         artifactId: string,
@@ -570,6 +591,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           repository: string;
           sharedResources?: string;
           planDirectory?: string;
+          reviewProvider: string;
+          reviewModel: string;
         }
       ) => {
         try {
@@ -584,7 +607,9 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
               : { sharedResourcesPath: resolve(cwd, options.sharedResources) }),
             ...(options.planDirectory === undefined
               ? {}
-              : { planDirectory: resolve(cwd, options.planDirectory) })
+              : { planDirectory: resolve(cwd, options.planDirectory) }),
+            reviewProvider: options.reviewProvider,
+            reviewModel: options.reviewModel
           });
           writeOutput(`${JSON.stringify(intent, null, 2)}\n`);
         } catch (error) {
@@ -608,6 +633,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .option('-r, --repository <path>', 'repository to revalidate and execute', cwd)
     .option('--shared-resources <path>', 'current JSON shared-resource policy')
     .option('--plan-directory <path>', 'directory containing plan and approval records')
+    .requiredOption('--review-provider <provider>', 'approved provider for independent code review')
+    .requiredOption('--review-model <model>', 'approved model ID for independent code review')
     .option(
       '--run-directory <path>',
       'directory for integration checkout, task worktrees, and run DB'
@@ -623,6 +650,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           sharedResources?: string;
           planDirectory?: string;
           runDirectory?: string;
+          reviewProvider: string;
+          reviewModel: string;
         }
       ) => {
         try {
@@ -640,7 +669,9 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
               : { planDirectory: resolve(cwd, options.planDirectory) }),
             ...(options.runDirectory === undefined
               ? {}
-              : { runDirectory: resolve(cwd, options.runDirectory) })
+              : { runDirectory: resolve(cwd, options.runDirectory) }),
+            reviewProvider: options.reviewProvider,
+            reviewModel: options.reviewModel
           });
           writeOutput(`${JSON.stringify(result, null, 2)}\n`);
         } catch (error) {

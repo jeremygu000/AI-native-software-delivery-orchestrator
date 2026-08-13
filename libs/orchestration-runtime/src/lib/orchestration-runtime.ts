@@ -22,6 +22,7 @@ import type {
   TaskContract,
   TaskImpact,
   TaskImpactReconciler,
+  TaskRepairAttemptStore,
   TaskVerifier,
   TaskLeasePlan,
   WritableResource,
@@ -78,6 +79,7 @@ export interface RecoveredRuntimeRun {
   readonly workspaces: RecoveredRun['workspaces'];
   readonly leases: RecoveredRun['leases'];
   readonly attempts: RecoveredRun['attempts'];
+  readonly repairAttempts: readonly import('@ai-native-software-delivery-orchestrator/domain').PersistedTaskRepairAttempt[];
 }
 
 export class OrchestrationRuntimeInputError extends Error {
@@ -95,6 +97,7 @@ export class OrchestrationRuntime {
   readonly #agentRunner: AgentRunner;
   readonly #verifier: TaskVerifier;
   readonly #impactReconciler: TaskImpactReconciler | undefined;
+  readonly #repairAttempts: TaskRepairAttemptStore | undefined;
   readonly #now: () => Date;
   readonly #createAttemptId: () => string;
   #nextAttemptNumber = 1;
@@ -107,6 +110,7 @@ export class OrchestrationRuntime {
     readonly agentRunner: AgentRunner;
     readonly verifier: TaskVerifier;
     readonly impactReconciler?: TaskImpactReconciler;
+    readonly repairAttempts?: TaskRepairAttemptStore;
     readonly now?: () => Date;
     readonly createAttemptId?: () => string;
   }) {
@@ -117,6 +121,7 @@ export class OrchestrationRuntime {
     this.#agentRunner = options.agentRunner;
     this.#verifier = options.verifier;
     this.#impactReconciler = options.impactReconciler;
+    this.#repairAttempts = options.repairAttempts;
     this.#now = options.now ?? (() => new Date());
     this.#createAttemptId =
       options.createAttemptId ?? (() => `attempt-${this.#nextAttemptNumber++}`);
@@ -138,6 +143,7 @@ export class OrchestrationRuntime {
       hardConflicts: [...request.hardConflicts],
       riskConflicts: [...request.riskConflicts],
       attemptsByTask: new Map<string, AgentExecutionAttempt>(),
+      repairAttemptsByTask: new Map(),
       snapshot: {
         taskStates: request.tasks.map((task) => ({ taskId: task.id, state: 'PENDING' as const })),
         runtimeBlocks: []
@@ -196,7 +202,8 @@ export class OrchestrationRuntime {
         },
         workspaces: recovered.workspaces,
         leases: recovered.leases,
-        attempts: recovered.attempts
+        attempts: recovered.attempts,
+        repairAttempts: await this.#recoverRepairAttempts(runId)
       };
     }
     const decision = recovered.decisions.at(-1)!;
@@ -230,8 +237,32 @@ export class OrchestrationRuntime {
         }
       });
     }
+    const repairAttempts = await this.#recoverRepairAttempts(runId);
+    for (const { attempt } of repairAttempts) {
+      if (attempt.state !== 'STARTING' && attempt.state !== 'RUNNING') {
+        continue;
+      }
+      await this.#repairAttempts?.persistRepairAttempt({
+        runId,
+        attempt: {
+          ...attempt,
+          state: 'UNKNOWN',
+          revision: attempt.revision + 1,
+          completedAt: this.#now(),
+          failure: {
+            type: 'unknown-outcome',
+            detail: 'Process restarted during external repair execution.'
+          }
+        }
+      });
+    }
     const current =
-      unresolvedAttempts.length === 0 ? recovered : await this.#persistence.recoverRun(runId);
+      unresolvedAttempts.length === 0 &&
+      repairAttempts.every(
+        ({ attempt }) => attempt.state !== 'STARTING' && attempt.state !== 'RUNNING'
+      )
+        ? recovered
+        : await this.#persistence.recoverRun(runId);
     if (current === undefined) {
       throw new OrchestrationRuntimeInputError(`Run disappeared during recovery: ${runId}`);
     }
@@ -240,7 +271,8 @@ export class OrchestrationRuntime {
       snapshot,
       workspaces: current.workspaces,
       leases: current.leases,
-      attempts: current.attempts
+      attempts: current.attempts,
+      repairAttempts: await this.#recoverRepairAttempts(runId)
     };
   }
 
@@ -284,6 +316,12 @@ export class OrchestrationRuntime {
         )
       ],
       attemptsByTask: new Map(recovered.attempts.map(({ attempt }) => [attempt.taskId, attempt])),
+      repairAttemptsByTask: new Map(
+        (await this.#recoverRepairAttempts(request.run.id)).map(({ attempt }) => [
+          attempt.taskId,
+          attempt
+        ])
+      ),
       snapshot: recovered.snapshot,
       nextSequence: evidence.events.length + 1,
       pendingTaskIds: recovered.attempts
@@ -738,8 +776,17 @@ export class OrchestrationRuntime {
       snapshot,
       workspaces: recovered.workspaces,
       leases: recovered.leases,
-      attempts: recovered.attempts
+      attempts: recovered.attempts,
+      repairAttempts: await this.#recoverRepairAttempts(runId)
     };
+  }
+
+  async #recoverRepairAttempts(
+    runId: string
+  ): Promise<
+    readonly import('@ai-native-software-delivery-orchestrator/domain').PersistedTaskRepairAttempt[]
+  > {
+    return this.#repairAttempts?.recoverRepairAttempts(runId) ?? [];
   }
 
   async #persistAttempt(
@@ -1111,6 +1158,10 @@ interface RuntimeState {
   readonly hardConflicts: import('@ai-native-software-delivery-orchestrator/domain').HardTaskConflict[];
   readonly riskConflicts: import('@ai-native-software-delivery-orchestrator/domain').RiskTaskConflict[];
   readonly attemptsByTask: Map<string, AgentExecutionAttempt>;
+  readonly repairAttemptsByTask: Map<
+    string,
+    import('@ai-native-software-delivery-orchestrator/domain').TaskRepairAttempt
+  >;
   snapshot: SchedulerSnapshot;
   nextSequence: number;
   readonly pendingTaskIds: string[];

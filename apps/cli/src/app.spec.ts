@@ -285,7 +285,11 @@ describe('forge analyze', () => {
       '4',
       '--plan-directory',
       'artifacts',
-      '--semantic-review'
+      '--semantic-review',
+      '--review-provider',
+      'test',
+      '--review-model',
+      'test'
     ]);
 
     expect(planRepository).toHaveBeenCalledWith({
@@ -295,7 +299,9 @@ describe('forge analyze', () => {
       maxAttempts: 5,
       maxConcurrency: 4,
       planDirectory: '/workspace/artifacts',
-      semanticReviewAuthorized: true
+      semanticReviewAuthorized: true,
+      reviewProvider: 'test',
+      reviewModel: 'test'
     });
     expect(JSON.parse(output)).toMatchObject({
       artifactId: 'plan-1',
@@ -325,7 +331,17 @@ describe('forge analyze', () => {
     });
 
     await expect(
-      program.parseAsync(['node', 'forge', 'plan', 'request.md', '--semantic-review'])
+      program.parseAsync([
+        'node',
+        'forge',
+        'plan',
+        'request.md',
+        '--semantic-review',
+        '--review-provider',
+        'test',
+        '--review-model',
+        'test'
+      ])
     ).rejects.toMatchObject({
       code: 'commander.error'
     });
@@ -355,7 +371,17 @@ describe('forge analyze', () => {
     });
 
     await expect(
-      program.parseAsync(['node', 'forge', 'plan', 'request.md', '--semantic-review'])
+      program.parseAsync([
+        'node',
+        'forge',
+        'plan',
+        'request.md',
+        '--semantic-review',
+        '--review-provider',
+        'test',
+        '--review-model',
+        'test'
+      ])
     ).rejects.toMatchObject({ code: 'commander.error' });
     expect(errorOutput).toContain('No shared-resource policy was configured');
     expect(errorOutput).toContain('--shared-resources <path>');
@@ -403,7 +429,17 @@ describe('forge analyze', () => {
     });
 
     await expect(
-      program.parseAsync(['node', 'forge', 'plan', 'request.md', '--semantic-review'])
+      program.parseAsync([
+        'node',
+        'forge',
+        'plan',
+        'request.md',
+        '--semantic-review',
+        '--review-provider',
+        'test',
+        '--review-model',
+        'test'
+      ])
     ).rejects.toBe(failure);
   });
 
@@ -432,7 +468,11 @@ describe('forge analyze', () => {
         'request.md',
         '--max-attempts',
         '0',
-        '--semantic-review'
+        '--semantic-review',
+        '--review-provider',
+        'test',
+        '--review-model',
+        'test'
       ])
     ).rejects.toThrow('Expected a positive integer, received 0');
     expect(planRepository).not.toHaveBeenCalled();
@@ -490,7 +530,6 @@ describe('forge analyze', () => {
   it('binds an approved plan without assembling runtime task bindings in the CLI', async () => {
     let output = '';
     // This test isolates CLI routing; schema integrity is covered by PlanExecutionBinder tests.
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
     const intent = {
       schemaVersion: 1,
       runId: 'run-1',
@@ -499,8 +538,10 @@ describe('forge analyze', () => {
       approval: { approvalId: 'approval-1' },
       approvalClaim: { approvalId: 'approval-1', runId: 'run-1' },
       executionFingerprint: `sha256:${'3'.repeat(64)}`
-    } as unknown as PlanExecutionIntent;
-    const bindPlan = vi.fn(async () => intent);
+    };
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+    const routedIntent = intent as unknown as PlanExecutionIntent;
+    const bindPlan = vi.fn(async () => routedIntent);
     const program = createForgeProgram({
       cwd: '/workspace',
       bindPlan,
@@ -525,7 +566,11 @@ describe('forge analyze', () => {
       '--shared-resources',
       'shared-resources.json',
       '--plan-directory',
-      'artifacts'
+      'artifacts',
+      '--review-provider',
+      'test',
+      '--review-model',
+      'test'
     ]);
 
     expect(bindPlan).toHaveBeenCalledWith({
@@ -535,9 +580,11 @@ describe('forge analyze', () => {
       runId: 'run-1',
       repositoryPath: '/workspace/repo',
       sharedResourcesPath: '/workspace/shared-resources.json',
-      planDirectory: '/workspace/artifacts'
+      planDirectory: '/workspace/artifacts',
+      reviewProvider: 'test',
+      reviewModel: 'test'
     });
-    expect(JSON.parse(output)).toEqual(intent);
+    expect(JSON.parse(output)).toEqual(routedIntent);
   });
 
   it('routes forge run through the plan-to-runtime composition boundary', async () => {
@@ -570,7 +617,11 @@ describe('forge analyze', () => {
       '--plan-directory',
       'artifacts',
       '--run-directory',
-      'runs'
+      'runs',
+      '--review-provider',
+      'test',
+      '--review-model',
+      'test'
     ]);
 
     expect(runPlan).toHaveBeenCalledWith({
@@ -581,7 +632,9 @@ describe('forge analyze', () => {
       repositoryPath: '/workspace/repo',
       sharedResourcesPath: '/workspace/shared-resources.json',
       planDirectory: '/workspace/artifacts',
-      runDirectory: '/workspace/runs'
+      runDirectory: '/workspace/runs',
+      reviewProvider: 'test',
+      reviewModel: 'test'
     });
     expect(JSON.parse(output)).toEqual(result);
   });
@@ -640,7 +693,11 @@ describe('forge analyze', () => {
         '--approval',
         'approval-1',
         '--run-id',
-        'run-1'
+        'run-1',
+        '--review-provider',
+        'test',
+        '--review-model',
+        'test'
       ])
     ).rejects.toMatchObject({ code: 'commander.error' });
     expect(errorOutput).toContain('BINDING_REJECTED: Repository changed');
