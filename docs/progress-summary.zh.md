@@ -1884,3 +1884,8 @@ repair lineage identity。实际 repair dispatch、post-repair reconciliation、
 verified-at time 与 self fingerprint。factory 使用真实 Git snapshot，而不是派生 placeholder。repair dispatch
 仍保持锁定，直到 runtime composition 在每次 verification 后持久化该 evidence，并把它的 fingerprint 写入新的
 review subject。
+
+verification evidence 现在会在写入与恢复时校验自身 fingerprint；格式正确但与内容不匹配的 digest 会 fail
+closed。其 factory 会拒绝非 completed attempt，以及任何 attempt/workspace 或 snapshot/workspace identity
+不匹配。因此 repair loop 拥有 exact content 与 verification authority prerequisite，而不是 opaque 的 caller
+提供 digest。

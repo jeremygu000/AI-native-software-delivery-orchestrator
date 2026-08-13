@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 const nonEmptyStringSchema = z.string().trim().min(1);
@@ -18,3 +19,26 @@ export const taskVerificationEvidenceSchema = z.object({
 });
 
 export type TaskVerificationEvidence = z.infer<typeof taskVerificationEvidenceSchema>;
+
+export const taskVerificationEvidenceFingerprint = (
+  evidence: Omit<TaskVerificationEvidence, 'fingerprint'>
+): string => `sha256:${createHash('sha256').update(JSON.stringify(evidence)).digest('hex')}`;
+
+export class TaskVerificationEvidenceIntegrityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TaskVerificationEvidenceIntegrityError';
+  }
+}
+
+export const assertTaskVerificationEvidenceIntegrity = (
+  evidence: TaskVerificationEvidence
+): void => {
+  taskVerificationEvidenceSchema.parse(evidence);
+  const { fingerprint, ...payload } = evidence;
+  if (fingerprint !== taskVerificationEvidenceFingerprint(payload)) {
+    throw new TaskVerificationEvidenceIntegrityError(
+      'Verification evidence fingerprint does not match its content'
+    );
+  }
+};

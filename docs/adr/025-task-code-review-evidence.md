@@ -55,6 +55,11 @@ accepts an actual `RepositorySnapshot` rather than inventing content identity. R
 locked until the runtime persists this evidence after verification and supplies its fingerprint when it
 constructs a new review subject.
 
+The verification fingerprint is an integrity field, not caller-supplied opaque text. Domain helpers
+recompute it from the complete payload at both persistence write and recovery boundaries; a schema-shaped
+but forged fingerprint fails closed. The factory also requires a completed attempt whose run, task, and
+workspace identities match the workspace, and requires the snapshot root to be that workspace path.
+
 ## Consequences
 
 - Code review becomes durable, structured, provider-neutral evidence.

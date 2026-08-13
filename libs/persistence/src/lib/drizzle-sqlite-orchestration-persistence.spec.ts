@@ -19,6 +19,7 @@ import {
   PersistenceInputError,
   PersistenceReplayError
 } from './drizzle-sqlite-orchestration-persistence.js';
+import { taskVerificationEvidenceFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
 
 const task = (id: string, dependencies: readonly string[] = []): TaskContract => ({
   id,
@@ -388,7 +389,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
 
   it('persists exact-idempotent verification evidence by execution attempt', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
-    const evidence = {
+    const verificationPayload = {
       id: 'verification-1',
       runId: 'run-1',
       taskId: 'A',
@@ -398,8 +399,11 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
       workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
       verificationPolicyFingerprint: `sha256:${'b'.repeat(64)}`,
       status: 'passed' as const,
-      verifiedAt: '2026-08-13T00:02:00.000Z',
-      fingerprint: `sha256:${'c'.repeat(64)}`
+      verifiedAt: '2026-08-13T00:02:00.000Z'
+    };
+    const evidence = {
+      ...verificationPayload,
+      fingerprint: taskVerificationEvidenceFingerprint(verificationPayload)
     };
     await persistence.createRun(createRunRequest());
     await persistence.persistVerificationEvidence(evidence);
@@ -407,11 +411,76 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     await expect(
       persistence.persistVerificationEvidence({
         ...evidence,
-        workspaceChangeFingerprint: `sha256:${'d'.repeat(64)}`
+        workspaceChangeFingerprint: `sha256:${'d'.repeat(64)}`,
+        fingerprint: taskVerificationEvidenceFingerprint({
+          ...verificationPayload,
+          workspaceChangeFingerprint: `sha256:${'d'.repeat(64)}`
+        })
       })
     ).rejects.toThrow(PersistenceInputError);
+    await expect(
+      persistence.persistVerificationEvidence({
+        ...evidence,
+        fingerprint: `sha256:${'f'.repeat(64)}`
+      })
+    ).rejects.toThrow('Verification evidence fingerprint does not match its content');
     await expect(persistence.recoverVerificationEvidence('run-1')).resolves.toEqual([evidence]);
     persistence.close();
+  });
+
+  it('rejects schema-shaped verification evidence whose self fingerprint was corrupted', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'orchestration-persistence-'));
+    const filename = join(directory, 'corrupt-verification.sqlite');
+    try {
+      const writer = new DrizzleSqliteOrchestrationPersistence(filename);
+      const payload = {
+        id: 'verification-1',
+        runId: 'run-1',
+        taskId: 'A',
+        attemptId: 'attempt-A',
+        workspaceId: 'workspace-A',
+        workspaceRevision: 1,
+        workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
+        verificationPolicyFingerprint: `sha256:${'b'.repeat(64)}`,
+        status: 'passed' as const,
+        verifiedAt: '2026-08-13T00:02:00.000Z'
+      };
+      await writer.createRun(createRunRequest());
+      await writer.persistVerificationEvidence({
+        ...payload,
+        fingerprint: taskVerificationEvidenceFingerprint(payload)
+      });
+      writer.close();
+      const sqlite = new Database(filename);
+      const stored = sqlite
+        .prepare("SELECT evidence_json FROM task_verification_evidence WHERE run_id = 'run-1'")
+        .get();
+      if (
+        typeof stored !== 'object' ||
+        stored === null ||
+        !('evidence_json' in stored) ||
+        typeof stored.evidence_json !== 'string'
+      ) {
+        throw new Error('Expected stored verification evidence');
+      }
+      const parsed: unknown = JSON.parse(stored.evidence_json);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('Expected verification evidence JSON object');
+      }
+      const corrupted = { ...parsed, fingerprint: `sha256:${'f'.repeat(64)}` };
+      sqlite
+        .prepare("UPDATE task_verification_evidence SET evidence_json = ? WHERE run_id = 'run-1'")
+        .run(JSON.stringify(corrupted));
+      sqlite.close();
+
+      const reader = new DrizzleSqliteOrchestrationPersistence(filename);
+      await expect(reader.recoverVerificationEvidence('run-1')).rejects.toThrow(
+        'Verification evidence fingerprint does not match its content'
+      );
+      reader.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('admits exactly one repair attempt for an idempotent parent review retry', async () => {

@@ -40,6 +40,7 @@ import {
   taskCodeReviewSubjectSchema,
   taskRepairAttemptSchema,
   taskVerificationEvidenceSchema,
+  assertTaskVerificationEvidenceIntegrity,
   taskDecisionsWithTransitions,
   taskSpecificationSchema,
   taskContractSchema,
@@ -1169,7 +1170,7 @@ export class DrizzleSqliteOrchestrationPersistence
   }
 
   async persistVerificationEvidence(evidence: TaskVerificationEvidence): Promise<void> {
-    taskVerificationEvidenceSchema.parse(evidence);
+    assertTaskVerificationEvidenceIntegrity(evidence);
     this.#sqlite.transaction(() => {
       this.#assertRunExists(evidence.runId);
       const existing = this.#db
@@ -1215,9 +1216,13 @@ export class DrizzleSqliteOrchestrationPersistence
       .where(eq(taskVerificationEvidence.runId, runId))
       .orderBy(asc(taskVerificationEvidence.attemptId))
       .all()
-      .map((record) =>
-        decode(record.evidenceJson, isTaskVerificationEvidence, 'task verification evidence')
-      );
+      .map((record) => this.#decodeVerificationEvidence(record.evidenceJson));
+  }
+
+  #decodeVerificationEvidence(value: string): TaskVerificationEvidence {
+    const evidence = decode(value, isTaskVerificationEvidence, 'task verification evidence');
+    assertTaskVerificationEvidenceIntegrity(evidence);
+    return evidence;
   }
 
   async replayRun(

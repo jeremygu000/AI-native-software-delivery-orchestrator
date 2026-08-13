@@ -1,14 +1,17 @@
-import { createHash } from 'node:crypto';
-
 import type {
   AgentExecutionAttempt,
   RepositorySnapshot,
   TaskVerificationEvidence,
   TaskWorkspace
 } from '@ai-native-software-delivery-orchestrator/domain';
+import { taskVerificationEvidenceFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
 
-const digest = (value: unknown): string =>
-  `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+export class TaskVerificationEvidenceFactoryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TaskVerificationEvidenceFactoryError';
+  }
+}
 
 export class TaskVerificationEvidenceFactory {
   create(request: {
@@ -19,6 +22,25 @@ export class TaskVerificationEvidenceFactory {
     readonly verificationPolicyFingerprint: string;
     readonly verifiedAt: Date;
   }): TaskVerificationEvidence {
+    if (request.attempt.state !== 'COMPLETED') {
+      throw new TaskVerificationEvidenceFactoryError(
+        'Verification evidence requires a completed attempt'
+      );
+    }
+    if (
+      request.attempt.runId !== request.workspace.runId ||
+      request.attempt.taskId !== request.workspace.taskId ||
+      request.attempt.workspaceId !== request.workspace.id
+    ) {
+      throw new TaskVerificationEvidenceFactoryError(
+        'Verification evidence attempt does not match task workspace identity'
+      );
+    }
+    if (request.snapshot.repositoryRoot !== request.workspace.workspacePath) {
+      throw new TaskVerificationEvidenceFactoryError(
+        'Verification evidence snapshot must be captured from the task workspace path'
+      );
+    }
     const payload = {
       id: request.id,
       runId: request.attempt.runId,
@@ -31,6 +53,6 @@ export class TaskVerificationEvidenceFactory {
       status: 'passed' as const,
       verifiedAt: request.verifiedAt.toISOString()
     };
-    return { ...payload, fingerprint: digest(payload) };
+    return { ...payload, fingerprint: taskVerificationEvidenceFingerprint(payload) };
   }
 }

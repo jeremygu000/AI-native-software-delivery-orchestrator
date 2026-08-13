@@ -2178,3 +2178,8 @@ evidence. Its identity includes run/task/attempt, workspace revision, actual wor
 verification-policy fingerprint, verified-at time, and self fingerprint. The factory consumes a real Git
 snapshot instead of deriving a placeholder. Repair dispatch is still locked until runtime composition
 persists this evidence after each verification and uses its fingerprint in the new review subject.
+
+Verification evidence now verifies its own fingerprint whenever it is written or recovered; a
+valid-looking but mismatched digest fails closed. Its factory rejects non-completed attempts and any
+attempt/workspace or snapshot/workspace identity mismatch. The repair loop therefore has an exact content
+and verification authority prerequisite, not an opaque caller-provided digest.

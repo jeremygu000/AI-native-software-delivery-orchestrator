@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { TaskVerificationEvidenceFactory } from './task-verification-evidence-factory.js';
+import {
+  TaskVerificationEvidenceFactory,
+  TaskVerificationEvidenceFactoryError
+} from './task-verification-evidence-factory.js';
 
 const request = (workspaceFingerprint: string, policyFingerprint: string) => ({
   id: 'verification-1',
@@ -50,5 +53,22 @@ describe('TaskVerificationEvidenceFactory', () => {
     expect(first.fingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(changed.fingerprint).not.toBe(first.fingerprint);
     expect(first.status).toBe('passed');
+  });
+
+  it('fails closed when attempt and workspace or snapshot identities do not agree', () => {
+    const factory = new TaskVerificationEvidenceFactory();
+    const base = request(`sha256:${'1'.repeat(64)}`, `sha256:${'2'.repeat(64)}`);
+    expect(() =>
+      factory.create({ ...base, attempt: { ...base.attempt, workspaceId: 'other-workspace' } })
+    ).toThrow(TaskVerificationEvidenceFactoryError);
+    expect(() =>
+      factory.create({
+        ...base,
+        snapshot: { ...base.snapshot, repositoryRoot: '/other-workspace' }
+      })
+    ).toThrow(TaskVerificationEvidenceFactoryError);
+    expect(() =>
+      factory.create({ ...base, attempt: { ...base.attempt, state: 'RUNNING' } })
+    ).toThrow(TaskVerificationEvidenceFactoryError);
   });
 });
