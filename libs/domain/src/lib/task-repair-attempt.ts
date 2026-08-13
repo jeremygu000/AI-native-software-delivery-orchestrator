@@ -82,3 +82,10 @@ export const taskRepairAttemptSchema = z
   });
 
 export type TaskRepairAttempt = z.infer<typeof taskRepairAttemptSchema>;
+
+export interface TaskRepairExecutionResult {
+  readonly attempt: TaskRepairAttempt;
+  readonly reviewSubject: import('./task-code-review.js').TaskCodeReviewSubject;
+  readonly review: import('./task-code-review.js').TaskCodeReview;
+  readonly verification: import('./task-verification-evidence.js').TaskVerificationEvidence;
+}

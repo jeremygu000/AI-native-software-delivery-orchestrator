@@ -15,6 +15,7 @@ const request = (workspaceChangeFingerprint: string, verificationFingerprint: st
     startedAt: new Date('2026-08-13T00:00:00.000Z'),
     completedAt: new Date('2026-08-13T00:01:00.000Z')
   },
+  outputAttemptId: 'attempt-1',
   workspace: {
     id: 'workspace-1',
     runId: 'run-1',

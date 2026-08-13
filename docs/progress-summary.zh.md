@@ -1889,3 +1889,9 @@ verification evidence 现在会在写入与恢复时校验自身 fingerprint；�
 closed。其 factory 会拒绝非 completed attempt，以及任何 attempt/workspace 或 snapshot/workspace identity
 不匹配。因此 repair loop 拥有 exact content 与 verification authority prerequisite，而不是 opaque 的 caller
 提供 digest。
+
+repair execution composition 现在作为独立 coordinator 可用。它会持久化 repair `STARTING`，在 controlled-agent
+`onStarted` 后才进入 `RUNNING`；如果 post-start failure 使 workspace mutation 变得不确定，则记录 `UNKNOWN`
+并保留 active lease。正常完成时，workspace 依次经过 Stage 21 reconciliation、sandbox verification、exact
+verification evidence、repair-output review subject 和新的只读 review。它尚不会自动 integrate task output：
+integration 仍由 exact accepted review gate 控制，并刻意留给下一个 composition boundary。

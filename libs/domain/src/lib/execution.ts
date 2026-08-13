@@ -285,3 +285,7 @@ export type TaskVerificationResult =
 export interface TaskVerifier {
   verify(request: TaskVerificationRequest): Promise<TaskVerificationResult>;
 }
+
+export interface TaskRepairRunner {
+  run(request: AgentRunRequest): Promise<AgentRunResult>;
+}

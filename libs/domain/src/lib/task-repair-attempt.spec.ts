@@ -4,6 +4,7 @@ import { taskRepairAttemptSchema } from './task-repair-attempt.js';
 
 const subject = {
   builderAttemptId: 'builder-1',
+  outputAttemptId: 'builder-1',
   workspaceId: 'workspace-1',
   workspaceRevision: 1,
   workspaceChangeFingerprint: `sha256:${'1'.repeat(64)}`,

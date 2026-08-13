@@ -2183,3 +2183,10 @@ Verification evidence now verifies its own fingerprint whenever it is written or
 valid-looking but mismatched digest fails closed. Its factory rejects non-completed attempts and any
 attempt/workspace or snapshot/workspace identity mismatch. The repair loop therefore has an exact content
 and verification authority prerequisite, not an opaque caller-provided digest.
+
+Repair execution composition is now available as a separate coordinator. It persists repair `STARTING`,
+waits for controlled-agent `onStarted` before `RUNNING`, records post-start failures as `UNKNOWN` while
+retaining active leases, and otherwise sends the resulting workspace through Stage 21 reconciliation,
+sandbox verification, exact verification evidence, a repair-output review subject, and a new read-only
+review. It does not automatically integrate task output yet: integration remains gated by an exact accepted
+review and is intentionally left to the next composition boundary.

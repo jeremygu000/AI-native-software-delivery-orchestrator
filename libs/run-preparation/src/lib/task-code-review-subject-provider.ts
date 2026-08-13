@@ -33,6 +33,7 @@ const fingerprint = (value: unknown): string =>
 export class SnapshotTaskCodeReviewSubjectProvider implements TaskCodeReviewSubjectProvider {
   createSubject(request: {
     readonly builderAttempt: AgentExecutionAttempt;
+    readonly outputAttemptId: string;
     readonly workspace: TaskWorkspace;
     readonly impact: TaskImpact;
     readonly workspaceSnapshot: RepositorySnapshot;
@@ -40,6 +41,7 @@ export class SnapshotTaskCodeReviewSubjectProvider implements TaskCodeReviewSubj
   }) {
     return {
       builderAttemptId: request.builderAttempt.id,
+      outputAttemptId: request.outputAttemptId,
       workspaceId: request.workspace.id,
       workspaceRevision: request.workspace.revision,
       workspaceChangeFingerprint: request.workspaceSnapshot.workingTreeFingerprint,

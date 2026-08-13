@@ -12,6 +12,7 @@ const fingerprintSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 
 export const taskCodeReviewSubjectSchema = z.object({
   builderAttemptId: nonEmptyStringSchema,
+  outputAttemptId: nonEmptyStringSchema,
   workspaceId: nonEmptyStringSchema,
   workspaceRevision: z.int().positive(),
   workspaceChangeFingerprint: fingerprintSchema,
@@ -24,6 +25,7 @@ export type TaskCodeReviewSubject = z.infer<typeof taskCodeReviewSubjectSchema>;
 export interface TaskCodeReviewSubjectProvider {
   createSubject(request: {
     readonly builderAttempt: AgentExecutionAttempt;
+    readonly outputAttemptId: string;
     readonly workspace: TaskWorkspace;
     readonly impact: TaskImpact;
     readonly workspaceSnapshot: RepositorySnapshot;

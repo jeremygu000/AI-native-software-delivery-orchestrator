@@ -60,6 +60,14 @@ recompute it from the complete payload at both persistence write and recovery bo
 but forged fingerprint fails closed. The factory also requires a completed attempt whose run, task, and
 workspace identities match the workspace, and requires the snapshot root to be that workspace path.
 
+`RepairExecutionCoordinator` composes the repair attempt with the existing controlled `AgentRunner`,
+Stage 21 impact reconciler, verifier, snapshot provider, verification evidence store, and read-only review
+collector. It persists `STARTING` before external dispatch, moves to `RUNNING` only after `onStarted`, and
+records `UNKNOWN` without releasing leases if a post-start runner failure leaves workspace mutation
+uncertain. A completed repair must reconcile, pass verification, persist new exact verification evidence,
+construct a subject whose output attempt is the repair attempt, and collect a new review. This coordinator
+does not yet automatically integrate output; a composition root must still invoke exact review admission.
+
 ## Consequences
 
 - Code review becomes durable, structured, provider-neutral evidence.

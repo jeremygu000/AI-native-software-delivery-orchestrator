@@ -277,6 +277,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     };
     const subject = {
       builderAttemptId: 'attempt-A',
+      outputAttemptId: 'attempt-A',
       workspaceId: 'workspace-A',
       workspaceRevision: 1,
       workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
@@ -331,6 +332,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     const subject = {
       builderAttemptId: 'attempt-A',
+      outputAttemptId: 'attempt-A',
       workspaceId: 'workspace-A',
       workspaceRevision: 1,
       workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
@@ -487,6 +489,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     const subject = {
       builderAttemptId: 'attempt-A',
+      outputAttemptId: 'attempt-A',
       workspaceId: 'workspace-A',
       workspaceRevision: 1,
       workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,

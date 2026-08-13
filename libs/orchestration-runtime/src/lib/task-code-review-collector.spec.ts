@@ -63,6 +63,7 @@ const request: TaskCodeReviewRequest = {
   },
   subject: {
     builderAttemptId: 'attempt-1',
+    outputAttemptId: 'attempt-1',
     workspaceId: 'workspace-1',
     workspaceRevision: 1,
     workspaceChangeFingerprint: `sha256:${'1'.repeat(64)}`,
@@ -103,7 +104,7 @@ describe('TaskCodeReviewCollector', () => {
         runId: 'run-1',
         taskId: 'task-1',
         iteration: 1,
-        subject: { builderAttemptId: 'attempt-1' },
+        subject: { builderAttemptId: 'attempt-1', outputAttemptId: 'attempt-1' },
         review: { recommendation: 'accept' }
       }
     ]);

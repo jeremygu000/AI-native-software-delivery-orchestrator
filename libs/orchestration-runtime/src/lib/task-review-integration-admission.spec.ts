@@ -7,6 +7,7 @@ import {
 
 const subject = {
   builderAttemptId: 'attempt-1',
+  outputAttemptId: 'attempt-1',
   workspaceId: 'workspace-1',
   workspaceRevision: 1,
   workspaceChangeFingerprint: `sha256:${'1'.repeat(64)}`,

@@ -76,16 +76,38 @@ export class TaskRepairCoordinator {
     }
   }
 
+  async markStarting(attempt: TaskRepairAttempt) {
+    const starting: TaskRepairAttempt = {
+      ...attempt,
+      state: 'STARTING',
+      revision: attempt.revision + 1,
+      startedAt: this.#now()
+    };
+    await this.#store.persistRepairAttempt({ runId: starting.runId, attempt: starting });
+    return starting;
+  }
+
   async markStarted(attempt: TaskRepairAttempt, sessionRef?: TaskRepairAttempt['sessionRef']) {
     const started: TaskRepairAttempt = {
       ...attempt,
       state: 'RUNNING',
       revision: attempt.revision + 1,
-      startedAt: this.#now(),
       ...(sessionRef === undefined ? {} : { sessionRef })
     };
     await this.#store.persistRepairAttempt({ runId: started.runId, attempt: started });
     return started;
+  }
+
+  async markUnknown(attempt: TaskRepairAttempt, detail: string) {
+    const unknown: TaskRepairAttempt = {
+      ...attempt,
+      state: 'UNKNOWN',
+      revision: attempt.revision + 1,
+      completedAt: this.#now(),
+      failure: { type: 'unknown-outcome', detail }
+    };
+    await this.#store.persistRepairAttempt({ runId: unknown.runId, attempt: unknown });
+    return unknown;
   }
 
   async complete(attempt: TaskRepairAttempt) {

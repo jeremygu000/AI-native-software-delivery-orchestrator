@@ -9,3 +9,7 @@ export {
   assertTaskReviewIntegrationAdmission,
   TaskReviewIntegrationAdmissionError
 } from './lib/task-review-integration-admission.js';
+export {
+  RepairExecutionCoordinator,
+  RepairExecutionError
+} from './lib/repair-execution-coordinator.js';
