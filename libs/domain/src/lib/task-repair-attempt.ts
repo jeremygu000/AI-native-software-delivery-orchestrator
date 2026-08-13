@@ -9,10 +9,16 @@ export const taskRepairAttemptStateSchema = z.enum([
   'PREPARING',
   'STARTING',
   'RUNNING',
+  'BLOCKED',
   'COMPLETED',
   'FAILED',
   'UNKNOWN'
 ]);
+
+export const taskRepairBlockerSchema = z.object({
+  type: z.literal('lease'),
+  leaseId: nonEmptyStringSchema
+});
 
 export const taskRepairAttemptSchema = z
   .object({
@@ -25,6 +31,7 @@ export const taskRepairAttemptSchema = z
     parentReviewSubject: taskCodeReviewSubjectSchema,
     repairIteration: z.int().positive(),
     state: taskRepairAttemptStateSchema,
+    blocker: taskRepairBlockerSchema.optional(),
     revision: z.int().positive(),
     sessionRef: agentSessionRefSchema.optional(),
     startedAt: z.date().optional(),
@@ -33,7 +40,10 @@ export const taskRepairAttemptSchema = z
   })
   .superRefine((attempt, context) => {
     const requiresStartedAt =
-      attempt.state === 'STARTING' || attempt.state === 'RUNNING' || attempt.state === 'COMPLETED';
+      attempt.state === 'STARTING' ||
+      attempt.state === 'RUNNING' ||
+      attempt.state === 'BLOCKED' ||
+      attempt.state === 'COMPLETED';
     if (requiresStartedAt && attempt.startedAt === undefined) {
       context.addIssue({
         code: 'custom',
@@ -44,13 +54,28 @@ export const taskRepairAttemptSchema = z
     if (
       (attempt.state === 'PREPARING' ||
         attempt.state === 'STARTING' ||
-        attempt.state === 'RUNNING') &&
+        attempt.state === 'RUNNING' ||
+        attempt.state === 'BLOCKED') &&
       attempt.completedAt !== undefined
     ) {
       context.addIssue({
         code: 'custom',
         path: ['completedAt'],
         message: `${attempt.state} repair attempt cannot have completedAt`
+      });
+    }
+    if (attempt.state === 'BLOCKED' && attempt.blocker === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['blocker'],
+        message: 'BLOCKED repair attempt requires blocker evidence'
+      });
+    }
+    if (attempt.state !== 'BLOCKED' && attempt.blocker !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['blocker'],
+        message: 'Only a BLOCKED repair attempt may have blocker evidence'
       });
     }
     if (attempt.state === 'COMPLETED') {

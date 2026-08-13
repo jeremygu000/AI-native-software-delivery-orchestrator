@@ -2,6 +2,7 @@ import type {
   AgentExecutionAttempt,
   TaskCodeReviewStore,
   TaskRepairAdmissionStore,
+  TaskRepairResumeStore,
   TaskVerificationEvidenceStore,
   WriteGuard
 } from '@ai-native-software-delivery-orchestrator/domain';
@@ -97,7 +98,7 @@ const repairReview = {
 
 const store = () => {
   const attempts: any[] = [];
-  const repairStore: TaskRepairAdmissionStore = {
+  const repairStore: TaskRepairAdmissionStore & TaskRepairResumeStore = {
     persistRepairAttempt: async (record) => {
       const index = attempts.findIndex(({ attempt }) => attempt.id === record.attempt.id);
       if (index >= 0) {
@@ -118,6 +119,26 @@ const store = () => {
       }
       attempts.push({ runId: attempt.runId, attempt });
       return attempt;
+    },
+    resumeRepairAttempt: async ({ attemptId, expectedRevision }) => {
+      const record = attempts.find(({ attempt }) => attempt.id === attemptId);
+      if (record === undefined) {
+        return { status: 'not-found' as const };
+      }
+      if (record.attempt.revision !== expectedRevision) {
+        return { status: 'version-conflict' as const, actualRevision: record.attempt.revision };
+      }
+      if (record.attempt.state !== 'BLOCKED') {
+        return { status: 'not-blocked' as const, state: record.attempt.state };
+      }
+      const attempt = {
+        ...record.attempt,
+        state: 'PREPARING' as const,
+        revision: record.attempt.revision + 1,
+        blocker: undefined
+      };
+      attempts[attempts.indexOf(record)] = { ...record, attempt };
+      return { status: 'resumed' as const, attempt };
     }
   };
   return { attempts, repairStore };
@@ -174,6 +195,7 @@ const setup = () => {
   };
   const persistedImpacts: any[] = [];
   const persistedLeases: any[] = [];
+  const feedback: any[] = [];
   return {
     attempts,
     repairs,
@@ -181,6 +203,7 @@ const setup = () => {
     evidence,
     persistedImpacts,
     persistedLeases,
+    feedback,
     verificationEvidence,
     persistence: {
       persistImpact: async (record: any) => {
@@ -188,6 +211,14 @@ const setup = () => {
       },
       persistLease: async (record: any) => {
         persistedLeases.push(record);
+      }
+    },
+    feedbackPort: {
+      leaseBlocked: async (record: any) => {
+        feedback.push({ type: 'lease', ...record });
+      },
+      scopeExpanded: async (record: any) => {
+        feedback.push({ type: 'scope', ...record });
       }
     }
   };
@@ -269,6 +300,7 @@ describe('RepairExecutionCoordinator', () => {
       verificationEvidence: setupResult.verificationEvidence,
       writeGuard: writeGuard(),
       persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
       createEvidenceId: () => 'verification-repair-1',
       createVerificationEvidence: (request) => ({
         id: request.id,
@@ -347,6 +379,7 @@ describe('RepairExecutionCoordinator', () => {
       verificationEvidence: setupResult.verificationEvidence,
       writeGuard: writeGuard(),
       persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
       createEvidenceId: () => 'unused',
       createVerificationEvidence: () => {
         throw new Error('not reached');
@@ -427,6 +460,73 @@ describe('RepairExecutionCoordinator', () => {
       verificationEvidence: setupResult.verificationEvidence,
       writeGuard: writeGuard(),
       persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
+      createEvidenceId: () => 'unused',
+      createVerificationEvidence: () => {
+        throw new Error('not reached');
+      }
+    });
+    const alreadyReleased = {
+      ...lease,
+      id: 'released-lease',
+      state: 'RELEASED' as const,
+      version: 2,
+      releasedAt: new Date()
+    };
+    await expect(
+      coordinator.execute({
+        repair,
+        builderAttempt,
+        task,
+        workspace,
+        impact,
+        leases: [lease, alreadyReleased],
+        verificationPolicyFingerprint: `sha256:${'6'.repeat(64)}`,
+        repository: { files: new Map(), symbols: new Map() },
+        reviewIteration: 2
+      })
+    ).rejects.toThrow('failed before start');
+    expect(setupResult.attempts[0]?.attempt).toMatchObject({ state: 'FAILED' });
+    expect(setupResult.feedback).toEqual([]);
+    expect(setupResult.persistedLeases).toHaveLength(1);
+  });
+
+  it('records a runner-reported repair failure after session establishment', async () => {
+    const setupResult = setup();
+    const repair = await setupResult.repairs.prepare({
+      runId: 'run-1',
+      taskId: 'task-1',
+      agentId: 'repair',
+      workspaceId: 'workspace-1',
+      reviewIteration: 1,
+      review: repairReview,
+      subject
+    });
+    const coordinator = new RepairExecutionCoordinator({
+      repairs: setupResult.repairs,
+      runner: {
+        run: async (request) => {
+          await request.onStarted({});
+          return { status: 'failed', detail: 'Repair reported failure.' };
+        }
+      },
+      reconciler: {
+        reconcile: async () => {
+          throw new Error('not reached');
+        }
+      },
+      verifier: { verify: async () => ({ status: 'passed' }) },
+      snapshots: {
+        capture: async () => {
+          throw new Error('not reached');
+        }
+      },
+      subjects: { createSubject: () => subject },
+      reviews: setupResult.reviews,
+      verificationEvidence: setupResult.verificationEvidence,
+      writeGuard: writeGuard(),
+      persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
       createEvidenceId: () => 'unused',
       createVerificationEvidence: () => {
         throw new Error('not reached');
@@ -439,14 +539,16 @@ describe('RepairExecutionCoordinator', () => {
         task,
         workspace,
         impact,
-        leases: [lease],
+        leases: [],
         verificationPolicyFingerprint: `sha256:${'6'.repeat(64)}`,
         repository: { files: new Map(), symbols: new Map() },
         reviewIteration: 2
       })
-    ).rejects.toThrow('failed before start');
-    expect(setupResult.attempts[0]?.attempt).toMatchObject({ state: 'FAILED' });
-    expect(setupResult.persistedLeases).toHaveLength(1);
+    ).rejects.toThrow('did not complete');
+    expect(setupResult.attempts[0]?.attempt).toMatchObject({
+      state: 'FAILED',
+      failure: { detail: 'Repair reported failure.' }
+    });
   });
 
   it('fails closed and releases leases when repair reconciliation finds an unleased change', async () => {
@@ -511,6 +613,7 @@ describe('RepairExecutionCoordinator', () => {
       verificationEvidence: setupResult.verificationEvidence,
       writeGuard: writeGuard(),
       persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
       createEvidenceId: () => 'unused',
       createVerificationEvidence: () => {
         throw new Error('not reached');
@@ -586,6 +689,7 @@ describe('RepairExecutionCoordinator', () => {
       verificationEvidence: setupResult.verificationEvidence,
       writeGuard: writeGuard(),
       persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
       createEvidenceId: () => 'unused',
       createVerificationEvidence: () => {
         throw new Error('not reached');
@@ -609,7 +713,19 @@ describe('RepairExecutionCoordinator', () => {
         .map(({ lease }) => lease.id)
         .toSorted((left, right) => (left < right ? -1 : left > right ? 1 : 0))
     ).toEqual(['lease-1', 'lease-2']);
-    expect(setupResult.attempts[0]?.attempt).toMatchObject({ state: 'FAILED' });
+    expect(setupResult.attempts[0]?.attempt).toMatchObject({
+      state: 'BLOCKED',
+      blocker: { type: 'lease', leaseId: 'owner-lease' }
+    });
+    expect(setupResult.feedback).toEqual([
+      {
+        type: 'lease',
+        runId: 'run-1',
+        taskId: 'task-1',
+        repairAttemptId: 'repair-1',
+        leaseId: 'owner-lease'
+      }
+    ]);
   });
 
   it('does not create review or verification evidence when repair verification fails', async () => {
@@ -662,6 +778,7 @@ describe('RepairExecutionCoordinator', () => {
       verificationEvidence: setupResult.verificationEvidence,
       writeGuard: writeGuard(),
       persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
       createEvidenceId: () => 'unused',
       createVerificationEvidence: () => {
         throw new Error('not reached');
@@ -681,6 +798,115 @@ describe('RepairExecutionCoordinator', () => {
       })
     ).rejects.toThrow('verification failed');
     expect(setupResult.evidence).toEqual([]);
+  });
+
+  it('reports repaired scope expansion to runtime scheduling feedback', async () => {
+    const setupResult = setup();
+    const repair = await setupResult.repairs.prepare({
+      runId: 'run-1',
+      taskId: 'task-1',
+      agentId: 'repair',
+      workspaceId: 'workspace-1',
+      reviewIteration: 1,
+      review: repairReview,
+      subject
+    });
+    const coordinator = new RepairExecutionCoordinator({
+      repairs: setupResult.repairs,
+      runner: {
+        run: async (request) => {
+          await request.onStarted({});
+          return { status: 'completed' };
+        }
+      },
+      reconciler: {
+        reconcile: async () => ({
+          observed: {
+            taskId: 'task-1',
+            filesRead: new Set(),
+            filesCreated: new Set(['payment:new.txt']),
+            filesWritten: new Set(['payment:new.txt']),
+            filesDeleted: new Set(),
+            symbolsWritten: new Set(),
+            dependencyRequests: new Set(),
+            manifestFilesChanged: new Set(),
+            generatedFilesChanged: new Set()
+          },
+          reconciliation: {
+            status: 'runtime-scope-expanded',
+            expandedFileIds: new Set(['payment:new.txt']),
+            unleasedFileIds: new Set()
+          },
+          expandedResources: [
+            { type: 'file' as const, projectId: 'payment', fileId: 'payment:new.txt' }
+          ]
+        })
+      },
+      verifier: { verify: async () => ({ status: 'passed' }) },
+      snapshots: {
+        capture: async () => ({
+          repositoryId: `sha256:${'a'.repeat(64)}`,
+          repositoryRoot: '/workspace',
+          baseCommit: 'b'.repeat(40),
+          workingTreeFingerprint: `sha256:${'4'.repeat(64)}`,
+          dirty: true
+        })
+      },
+      subjects: {
+        createSubject: (request) => ({
+          ...subject,
+          outputAttemptId: request.outputAttemptId,
+          workspaceChangeFingerprint: request.workspaceSnapshot.workingTreeFingerprint,
+          verificationFingerprint: request.verificationFingerprint
+        })
+      },
+      reviews: setupResult.reviews,
+      verificationEvidence: setupResult.verificationEvidence,
+      writeGuard: writeGuard(),
+      persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
+      createEvidenceId: () => 'verification-1',
+      createVerificationEvidence: (request) => ({
+        id: request.id,
+        runId: request.attempt.runId,
+        taskId: request.attempt.taskId,
+        attemptId: request.attempt.id,
+        workspaceId: request.workspace.id,
+        workspaceRevision: request.workspace.revision,
+        workspaceChangeFingerprint: request.snapshot.workingTreeFingerprint,
+        verificationPolicyFingerprint: request.verificationPolicyFingerprint,
+        status: 'passed',
+        verifiedAt: request.verifiedAt.toISOString(),
+        fingerprint: `sha256:${'5'.repeat(64)}`
+      })
+    });
+    await coordinator.execute({
+      repair,
+      builderAttempt,
+      task,
+      workspace,
+      impact,
+      leases: [],
+      verificationPolicyFingerprint: `sha256:${'6'.repeat(64)}`,
+      repository: {
+        files: new Map([
+          [
+            'payment:new.txt',
+            { id: 'payment:new.txt', projectId: 'payment', path: 'new.txt', isGenerated: false }
+          ]
+        ]),
+        symbols: new Map()
+      },
+      reviewIteration: 2
+    });
+    expect(setupResult.feedback).toEqual([
+      {
+        type: 'scope',
+        runId: 'run-1',
+        taskId: 'task-1',
+        expandedResources: [{ type: 'file', projectId: 'payment', fileId: 'payment:new.txt' }]
+      }
+    ]);
   });
 
   it('fails a completed result that never establishes the external repair session', async () => {
@@ -713,6 +939,7 @@ describe('RepairExecutionCoordinator', () => {
       verificationEvidence: setupResult.verificationEvidence,
       writeGuard: writeGuard(),
       persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
       createEvidenceId: () => 'unused',
       createVerificationEvidence: () => {
         throw new Error('not reached');
@@ -770,6 +997,7 @@ describe('RepairExecutionCoordinator', () => {
       verificationEvidence: setupResult.verificationEvidence,
       writeGuard: writeGuard(),
       persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
       createEvidenceId: () => 'unused',
       createVerificationEvidence: () => {
         throw new Error('not reached');
@@ -859,6 +1087,7 @@ describe('RepairExecutionCoordinator', () => {
       verificationEvidence: setupResult.verificationEvidence,
       writeGuard: brokenGuard,
       persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
       createEvidenceId: () => 'unused',
       createVerificationEvidence: () => {
         throw new Error('not reached');

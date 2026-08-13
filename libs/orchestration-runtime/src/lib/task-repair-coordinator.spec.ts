@@ -1,4 +1,7 @@
-import type { TaskRepairAdmissionStore } from '@ai-native-software-delivery-orchestrator/domain';
+import type {
+  TaskRepairAdmissionStore,
+  TaskRepairResumeStore
+} from '@ai-native-software-delivery-orchestrator/domain';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -31,7 +34,8 @@ const repairReview = {
   ]
 };
 
-const store = (): TaskRepairAdmissionStore & { readonly records: any[] } => {
+const store = (): TaskRepairAdmissionStore &
+  TaskRepairResumeStore & { readonly records: any[] } => {
   const records: any[] = [];
   return {
     records,
@@ -62,6 +66,26 @@ const store = (): TaskRepairAdmissionStore & { readonly records: any[] } => {
       const admitted = { ...attempt, repairIteration: taskAttempts.length + 1 };
       records.push({ runId: attempt.runId, attempt: admitted });
       return admitted;
+    },
+    resumeRepairAttempt: async ({ attemptId, expectedRevision }) => {
+      const record = records.find(({ attempt }) => attempt.id === attemptId);
+      if (record === undefined) {
+        return { status: 'not-found' as const };
+      }
+      if (record.attempt.revision !== expectedRevision) {
+        return { status: 'version-conflict' as const, actualRevision: record.attempt.revision };
+      }
+      if (record.attempt.state !== 'BLOCKED') {
+        return { status: 'not-blocked' as const, state: record.attempt.state };
+      }
+      const attempt = {
+        ...record.attempt,
+        state: 'PREPARING' as const,
+        revision: record.attempt.revision + 1,
+        blocker: undefined
+      };
+      records[records.indexOf(record)] = { ...record, attempt };
+      return { status: 'resumed' as const, attempt };
     }
   };
 };
@@ -163,5 +187,33 @@ describe('TaskRepairCoordinator', () => {
       state: 'FAILED',
       failure: { type: 'execution-failed' }
     });
+  });
+
+  it('persists repair BLOCKED evidence and resumes the same attempt with compare-and-swap', async () => {
+    const evidence = store();
+    const coordinator = new TaskRepairCoordinator({
+      store: evidence,
+      maxRepairs: 1,
+      createId: () => 'repair-1',
+      now: () => new Date('2026-08-13T00:00:00.000Z')
+    });
+    const prepared = await coordinator.prepare({
+      runId: 'run-1',
+      taskId: 'task-1',
+      agentId: 'repair-agent',
+      workspaceId: 'workspace-1',
+      reviewIteration: 1,
+      review: repairReview,
+      subject
+    });
+    const starting = await coordinator.markStarting(prepared);
+    const running = await coordinator.markStarted(starting);
+    const blocked = await coordinator.markBlocked(running, 'owner-lease');
+    await expect(coordinator.resume(blocked)).resolves.toMatchObject({
+      id: 'repair-1',
+      state: 'PREPARING',
+      revision: blocked.revision + 1
+    });
+    await expect(coordinator.resume(blocked)).rejects.toThrow(TaskRepairAdmissionError);
   });
 });

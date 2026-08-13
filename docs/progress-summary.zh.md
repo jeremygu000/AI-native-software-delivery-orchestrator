@@ -1895,3 +1895,13 @@ repair execution composition 现在作为独立 coordinator 可用。它会持�
 并保留 active lease。正常完成时，workspace 依次经过 Stage 21 reconciliation、sandbox verification、exact
 verification evidence、repair-output review subject 和新的只读 review。它尚不会自动 integrate task output：
 integration 仍由 exact accepted review gate 控制，并刻意留给下一个 composition boundary。
+
+repair contention 现在是 durable state，而不再伪装成 failure。动态 lease block 会使 repair attempt 进入带
+lease evidence 的 `BLOCKED`，释放该 repair 当前持有的 lease，并发送 explicit feedback 供后续 scheduling
+integration 使用。compare-and-swap resume 会将同一 repair lineage 返回 `PREPARING`；stale resume 不能覆盖
+新的 lifecycle evidence。repair scope expansion 同样通过该 feedback boundary 报告。main runtime 仍需要
+scheduler-visible repair phase，`forge run` 才能自动消费这些 feedback event 并恢复 repair。
+
+在最终 repair-scheduler composition 建立两侧共同的 evidence contract 前，builder 与 repair path 的 lease
+release 仍刻意保持独立。最终 Stage 22 increment 必须增加并行且可恢复的 repair view：当 blocker lease
+释放时用 CAS 恢复 BLOCKED repair；不得把 repair state 塞进原始 builder task-state snapshot。

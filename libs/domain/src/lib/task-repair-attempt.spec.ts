@@ -33,6 +33,32 @@ describe('TaskRepairAttempt', () => {
     });
   });
 
+  it('requires lease blocker evidence only while blocked', () => {
+    expect(
+      taskRepairAttemptSchema.parse({
+        ...attempt,
+        state: 'BLOCKED',
+        revision: 2,
+        startedAt: new Date(),
+        blocker: { type: 'lease', leaseId: 'owner-lease' }
+      })
+    ).toMatchObject({ state: 'BLOCKED' });
+    expect(() =>
+      taskRepairAttemptSchema.parse({
+        ...attempt,
+        state: 'BLOCKED',
+        revision: 2,
+        startedAt: new Date()
+      })
+    ).toThrow();
+    expect(() =>
+      taskRepairAttemptSchema.parse({
+        ...attempt,
+        blocker: { type: 'lease', leaseId: 'owner-lease' }
+      })
+    ).toThrow();
+  });
+
   it.each([
     {
       label: 'running without started evidence',

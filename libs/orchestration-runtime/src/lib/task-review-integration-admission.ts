@@ -5,6 +5,7 @@ import type {
 
 const sameSubject = (left: TaskCodeReviewSubject, right: TaskCodeReviewSubject): boolean =>
   left.builderAttemptId === right.builderAttemptId &&
+  left.outputAttemptId === right.outputAttemptId &&
   left.workspaceId === right.workspaceId &&
   left.workspaceRevision === right.workspaceRevision &&
   left.workspaceChangeFingerprint === right.workspaceChangeFingerprint &&

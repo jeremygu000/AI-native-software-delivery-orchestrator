@@ -8,6 +8,7 @@ import type {
   TaskCodeReviewStore,
   TaskRepairAttemptStore,
   TaskRepairAdmissionStore,
+  TaskRepairResumeStore,
   TaskVerificationEvidenceStore,
   OrchestrationRunState,
   PersistedReevaluation,
@@ -319,6 +320,7 @@ export class DrizzleSqliteOrchestrationPersistence
     TaskCodeReviewStore,
     TaskRepairAttemptStore,
     TaskRepairAdmissionStore,
+    TaskRepairResumeStore,
     TaskVerificationEvidenceStore
 {
   readonly #sqlite: Database.Database;
@@ -1167,6 +1169,54 @@ export class DrizzleSqliteOrchestrationPersistence
         runId: record.runId,
         attempt: decode(record.attemptJson, isTaskRepairAttempt, 'task repair attempt')
       }));
+  }
+
+  async resumeRepairAttempt(request: {
+    readonly runId: string;
+    readonly attemptId: string;
+    readonly expectedRevision: number;
+  }): Promise<
+    | { readonly status: 'resumed'; readonly attempt: PersistedTaskRepairAttempt['attempt'] }
+    | { readonly status: 'not-found' }
+    | {
+        readonly status: 'not-blocked';
+        readonly state: PersistedTaskRepairAttempt['attempt']['state'];
+      }
+    | { readonly status: 'version-conflict'; readonly actualRevision: number }
+  > {
+    this.#assertRunId(request.runId);
+    return this.#exclusiveReevaluation(() =>
+      this.#sqlite.transaction(() => {
+        const existing = this.#db
+          .select()
+          .from(taskRepairAttempts)
+          .where(
+            and(
+              eq(taskRepairAttempts.runId, request.runId),
+              eq(taskRepairAttempts.attemptId, request.attemptId)
+            )
+          )
+          .get();
+        if (existing === undefined) {
+          return { status: 'not-found' as const };
+        }
+        const attempt = decode(existing.attemptJson, isTaskRepairAttempt, 'task repair attempt');
+        if (attempt.revision !== request.expectedRevision) {
+          return { status: 'version-conflict' as const, actualRevision: attempt.revision };
+        }
+        if (attempt.state !== 'BLOCKED') {
+          return { status: 'not-blocked' as const, state: attempt.state };
+        }
+        const resumed = {
+          ...attempt,
+          state: 'PREPARING' as const,
+          revision: attempt.revision + 1,
+          blocker: undefined
+        };
+        this.#persistRepairAttemptInTransaction({ runId: request.runId, attempt: resumed });
+        return { status: 'resumed' as const, attempt: resumed };
+      })()
+    );
   }
 
   async persistVerificationEvidence(evidence: TaskVerificationEvidence): Promise<void> {

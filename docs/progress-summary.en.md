@@ -2190,3 +2190,15 @@ retaining active leases, and otherwise sends the resulting workspace through Sta
 sandbox verification, exact verification evidence, a repair-output review subject, and a new read-only
 review. It does not automatically integrate task output yet: integration remains gated by an exact accepted
 review and is intentionally left to the next composition boundary.
+
+Repair contention is now durable rather than disguised as failure. A dynamic lease block moves the repair
+attempt to `BLOCKED` with lease evidence, releases leases currently held by that repair, and sends explicit
+feedback for later scheduling integration. Compare-and-swap resume returns the same repair lineage to
+`PREPARING`; a stale resume cannot overwrite newer lifecycle evidence. Repair scope expansion is likewise
+reported through the same feedback boundary. The main runtime still needs a scheduler-visible repair phase
+before `forge run` can automatically consume these feedback events and resume repairs.
+
+Lease release remains deliberately separate between builder and repair paths until final repair-scheduler
+composition establishes their shared evidence contract. The final Stage 22 increment must add a parallel,
+recoverable repair view that resumes blocked repairs by CAS when their blocker lease is released; it must
+not insert repair states into the original builder task-state snapshot.

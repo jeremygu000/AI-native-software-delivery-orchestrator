@@ -68,6 +68,24 @@ uncertain. A completed repair must reconcile, pass verification, persist new exa
 construct a subject whose output attempt is the repair attempt, and collect a new review. This coordinator
 does not yet automatically integrate output; a composition root must still invoke exact review admission.
 
+Repair lease contention has its own durable semantics. A started repair that reports a dynamic lease block
+persists `BLOCKED` with the conflicting lease ID, releases its currently held leases, and emits a
+`RepairRuntimeFeedback` event instead of consuming repair budget as a failure. A compare-and-swap resume
+operation returns the same repair attempt to `PREPARING` only when its expected revision still matches.
+Repair feedback can be connected to the scheduler conflict/blocker loop by a composition root, but repair
+is not yet a scheduler-visible task phase in the main runtime snapshot.
+
+The builder runtime and repair coordinator currently retain separate lease-release implementations. This is
+intentional temporary duplication: their evidence and scheduler contracts differ today (builder release
+can emit task scheduler events while repair release reports through repair feedback). The next composition
+increment must evaluate a shared release primitive only after it establishes the repair-visible scheduler
+view and durable resume path; extracting one earlier could erase meaningful contract differences.
+
+The final composition must keep repair attempts out of the original task-state snapshot. It should maintain
+a parallel repair view, resume `BLOCKED` repair attempts with compare-and-swap when their blocker lease is
+released, and reconstruct that view during recovery. It must not represent repair as a synthetic builder
+task transition.
+
 ## Consequences
 
 - Code review becomes durable, structured, provider-neutral evidence.

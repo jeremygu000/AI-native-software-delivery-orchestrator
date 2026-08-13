@@ -389,6 +389,70 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     persistence.close();
   });
 
+  it('resumes only an exact current blocked repair attempt', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    const subject = {
+      builderAttemptId: 'attempt-A',
+      outputAttemptId: 'attempt-A',
+      workspaceId: 'workspace-A',
+      workspaceRevision: 1,
+      workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
+      impactFingerprint: `sha256:${'b'.repeat(64)}`,
+      verificationFingerprint: `sha256:${'c'.repeat(64)}`
+    };
+    const blocked = {
+      id: 'repair-1',
+      runId: 'run-1',
+      taskId: 'A',
+      agentId: 'repair-agent',
+      workspaceId: 'workspace-A',
+      parentReviewIteration: 1,
+      parentReviewSubject: subject,
+      repairIteration: 1,
+      state: 'BLOCKED' as const,
+      revision: 2,
+      startedAt: new Date('2026-08-13T00:00:00.000Z'),
+      blocker: { type: 'lease' as const, leaseId: 'owner-lease' }
+    };
+    await persistence.createRun(createRunRequest());
+    await expect(
+      persistence.resumeRepairAttempt({ runId: 'run-1', attemptId: 'missing', expectedRevision: 1 })
+    ).resolves.toEqual({ status: 'not-found' });
+    await persistence.persistRepairAttempt({
+      runId: 'run-1',
+      attempt: {
+        ...blocked,
+        state: 'PREPARING',
+        revision: 1,
+        startedAt: undefined,
+        blocker: undefined
+      }
+    });
+    await expect(
+      persistence.resumeRepairAttempt({
+        runId: 'run-1',
+        attemptId: 'repair-1',
+        expectedRevision: 1
+      })
+    ).resolves.toEqual({ status: 'not-blocked', state: 'PREPARING' });
+    await persistence.persistRepairAttempt({ runId: 'run-1', attempt: blocked });
+    await expect(
+      persistence.resumeRepairAttempt({
+        runId: 'run-1',
+        attemptId: 'repair-1',
+        expectedRevision: 1
+      })
+    ).resolves.toEqual({ status: 'version-conflict', actualRevision: 2 });
+    await expect(
+      persistence.resumeRepairAttempt({
+        runId: 'run-1',
+        attemptId: 'repair-1',
+        expectedRevision: 2
+      })
+    ).resolves.toMatchObject({ status: 'resumed', attempt: { state: 'PREPARING', revision: 3 } });
+    persistence.close();
+  });
+
   it('persists exact-idempotent verification evidence by execution attempt', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     const verificationPayload = {

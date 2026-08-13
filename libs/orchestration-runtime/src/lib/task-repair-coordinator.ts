@@ -2,7 +2,8 @@ import type {
   TaskCodeReview,
   TaskCodeReviewSubject,
   TaskRepairAttempt,
-  TaskRepairAdmissionStore
+  TaskRepairAdmissionStore,
+  TaskRepairResumeStore
 } from '@ai-native-software-delivery-orchestrator/domain';
 
 export class TaskRepairBudgetError extends Error {
@@ -20,13 +21,13 @@ export class TaskRepairAdmissionError extends Error {
 }
 
 export class TaskRepairCoordinator {
-  readonly #store: TaskRepairAdmissionStore;
+  readonly #store: TaskRepairAdmissionStore & TaskRepairResumeStore;
   readonly #maxRepairs: number;
   readonly #now: () => Date;
   readonly #createId: () => string;
 
   constructor(options: {
-    readonly store: TaskRepairAdmissionStore;
+    readonly store: TaskRepairAdmissionStore & TaskRepairResumeStore;
     readonly maxRepairs: number;
     readonly now?: () => Date;
     readonly createId: () => string;
@@ -108,6 +109,29 @@ export class TaskRepairCoordinator {
     };
     await this.#store.persistRepairAttempt({ runId: unknown.runId, attempt: unknown });
     return unknown;
+  }
+
+  async markBlocked(attempt: TaskRepairAttempt, leaseId: string) {
+    const blocked: TaskRepairAttempt = {
+      ...attempt,
+      state: 'BLOCKED',
+      revision: attempt.revision + 1,
+      blocker: { type: 'lease', leaseId }
+    };
+    await this.#store.persistRepairAttempt({ runId: blocked.runId, attempt: blocked });
+    return blocked;
+  }
+
+  async resume(attempt: TaskRepairAttempt) {
+    const result = await this.#store.resumeRepairAttempt({
+      runId: attempt.runId,
+      attemptId: attempt.id,
+      expectedRevision: attempt.revision
+    });
+    if (result.status === 'resumed') {
+      return result.attempt;
+    }
+    throw new TaskRepairAdmissionError(`Repair attempt cannot resume: ${result.status}`);
   }
 
   async complete(attempt: TaskRepairAttempt) {

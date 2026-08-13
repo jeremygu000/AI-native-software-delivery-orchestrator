@@ -10,6 +10,7 @@ import type {
   TaskRepairAttempt,
   TaskRepairExecutionResult,
   TaskRepairRunner,
+  RepairRuntimeFeedback,
   TaskVerificationEvidenceStore,
   TaskVerificationEvidence,
   TaskVerifier,
@@ -47,6 +48,7 @@ export class RepairExecutionCoordinator {
   readonly #verificationEvidence: TaskVerificationEvidenceStore;
   readonly #writeGuard: WriteGuard;
   readonly #persistence: Pick<OrchestrationPersistence, 'persistImpact' | 'persistLease'>;
+  readonly #feedback: RepairRuntimeFeedback;
   readonly #now: () => Date;
   readonly #createEvidenceId: () => string;
   readonly #createVerificationEvidence: CreateVerificationEvidence;
@@ -62,6 +64,7 @@ export class RepairExecutionCoordinator {
     readonly verificationEvidence: TaskVerificationEvidenceStore;
     readonly writeGuard: WriteGuard;
     readonly persistence: Pick<OrchestrationPersistence, 'persistImpact' | 'persistLease'>;
+    readonly feedback: RepairRuntimeFeedback;
     readonly now?: () => Date;
     readonly createEvidenceId: () => string;
     readonly createVerificationEvidence: CreateVerificationEvidence;
@@ -76,6 +79,7 @@ export class RepairExecutionCoordinator {
     this.#verificationEvidence = options.verificationEvidence;
     this.#writeGuard = options.writeGuard;
     this.#persistence = options.persistence;
+    this.#feedback = options.feedback;
     this.#now = options.now ?? (() => new Date());
     this.#createEvidenceId = options.createEvidenceId;
     this.#createVerificationEvidence = options.createVerificationEvidence;
@@ -126,19 +130,23 @@ export class RepairExecutionCoordinator {
       throw new RepairExecutionError(`Repair execution failed before start: ${detail}`);
     }
     if (result.status !== 'completed' || !established) {
+      if (result.status === 'blocked') {
+        await this.#repairs.markBlocked(running, result.leaseId);
+        await this.#feedback.leaseBlocked({
+          runId: request.repair.runId,
+          taskId: request.task.id,
+          repairAttemptId: request.repair.id,
+          leaseId: result.leaseId
+        });
+        await this.#release([...request.leases, ...(result.additionalLeases ?? [])]);
+        throw new RepairExecutionError(`Repair blocked by lease: ${result.leaseId}`);
+      }
       await this.#repairs.fail(
         running,
         result.status === 'failed' ? result.detail : 'Repair did not establish'
       );
-      await this.#release([
-        ...request.leases,
-        ...(result.status === 'blocked' ? (result.additionalLeases ?? []) : [])
-      ]);
-      throw new RepairExecutionError(
-        result.status === 'blocked'
-          ? `Repair blocked by lease: ${result.leaseId}`
-          : 'Repair did not complete'
-      );
+      await this.#release(request.leases);
+      throw new RepairExecutionError('Repair did not complete');
     }
     const allLeases = [...request.leases, ...(result.additionalLeases ?? [])];
     const reconciliation = await this.#reconciler.reconcile({
@@ -163,6 +171,13 @@ export class RepairExecutionCoordinator {
         reconciliation: reconciliation.reconciliation
       }
     });
+    if (reconciliation.reconciliation.status === 'runtime-scope-expanded') {
+      await this.#feedback.scopeExpanded({
+        runId: request.repair.runId,
+        taskId: request.task.id,
+        expandedResources: reconciliation.expandedResources ?? []
+      });
+    }
     const completed = await this.#repairs.complete(running);
     await this.#release(allLeases);
     const verification = await this.#verifier.verify({

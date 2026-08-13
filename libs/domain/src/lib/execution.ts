@@ -289,3 +289,17 @@ export interface TaskVerifier {
 export interface TaskRepairRunner {
   run(request: AgentRunRequest): Promise<AgentRunResult>;
 }
+
+export interface RepairRuntimeFeedback {
+  leaseBlocked(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly repairAttemptId: string;
+    readonly leaseId: string;
+  }): Promise<void>;
+  scopeExpanded(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly expandedResources: readonly WritableResource[];
+  }): Promise<void>;
+}

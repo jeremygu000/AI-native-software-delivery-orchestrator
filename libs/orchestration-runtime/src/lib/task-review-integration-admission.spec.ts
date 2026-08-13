@@ -47,6 +47,17 @@ describe('TaskReviewIntegrationAdmission', () => {
         runId: 'run-1',
         taskId: 'task-1',
         iteration: 1,
+        subject: { ...subject, outputAttemptId: 'repair-2' },
+        review: {
+          recommendation: 'accept' as const,
+          summary: 'Wrong output attempt.',
+          findings: []
+        }
+      },
+      {
+        runId: 'run-1',
+        taskId: 'task-1',
+        iteration: 1,
         subject,
         review: {
           recommendation: 'repair' as const,

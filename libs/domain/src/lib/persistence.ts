@@ -184,6 +184,19 @@ export interface TaskRepairAdmissionStore extends TaskRepairAttemptStore {
   }): Promise<TaskRepairAttempt>;
 }
 
+export interface TaskRepairResumeStore extends TaskRepairAttemptStore {
+  resumeRepairAttempt(request: {
+    readonly runId: string;
+    readonly attemptId: string;
+    readonly expectedRevision: number;
+  }): Promise<
+    | { readonly status: 'resumed'; readonly attempt: TaskRepairAttempt }
+    | { readonly status: 'not-found' }
+    | { readonly status: 'not-blocked'; readonly state: TaskRepairAttempt['state'] }
+    | { readonly status: 'version-conflict'; readonly actualRevision: number }
+  >;
+}
+
 export interface TaskVerificationEvidenceStore {
   persistVerificationEvidence(evidence: TaskVerificationEvidence): Promise<void>;
   recoverVerificationEvidence(runId: string): Promise<readonly TaskVerificationEvidence[]>;
