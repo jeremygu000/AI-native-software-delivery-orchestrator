@@ -72,6 +72,29 @@ const outcome = (): DurableExecutionSpikeOutcome => ({
       review: { recommendation: 'accept', summary: 'Accepted.', findings: [] }
     }
   ],
+  leases: [
+    {
+      id: 'lease-1',
+      runId: 'run-1',
+      agentId: 'owner',
+      taskId: 'owner-task',
+      resource: { type: 'project', projectId: 'core' },
+      mode: 'exclusive',
+      version: 2,
+      state: 'RELEASED',
+      acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-12T00:01:00.000Z'),
+      releasedAt: new Date('2026-08-12T00:02:00.000Z')
+    }
+  ],
+  runtimeConflicts: [],
+  blockedResume: {
+    blockerLeaseId: 'lease-1',
+    blockedRevision: 2,
+    resumedRevision: 3,
+    repairAttemptId: 'repair-1',
+    releaseState: 'RELEASED'
+  },
   integration: { status: 'integrated' },
   dispatchCount: 1
 });
@@ -83,7 +106,7 @@ describe('durable execution spike authority harness', () => {
     ).not.toThrow();
   });
 
-  it('rejects missing exact outcome evidence and duplicate resume dispatch', () => {
+  it('rejects missing exact outcome evidence, duplicate dispatch, and stale output authority', () => {
     expect(() =>
       assertDurableExecutionSpikeOutcome({
         outcome: { ...outcome(), reviews: [], dispatchCount: 2 },
@@ -96,5 +119,19 @@ describe('durable execution spike authority harness', () => {
         expectBlockedResume: false
       })
     ).toThrow('must integrate');
+    expect(() =>
+      assertDurableExecutionSpikeOutcome({
+        outcome: {
+          ...outcome(),
+          reviews: [
+            {
+              ...outcome().reviews[0],
+              subject: { ...outcome().reviews[0].subject, outputAttemptId: 'builder-1' }
+            }
+          ]
+        },
+        expectBlockedResume: true
+      })
+    ).toThrow('must bind the resumed repair output');
   });
 });

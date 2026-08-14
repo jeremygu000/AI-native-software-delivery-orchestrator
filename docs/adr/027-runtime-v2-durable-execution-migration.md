@@ -100,7 +100,10 @@ identifiers or fingerprints.
 ### Migration, read model, UI, and memory
 
 Legacy/durable-runtime selection is allowed only in the migration branch and isolated differential parity
-harness. It must be removed at cutover. Differential tests use isolated fixtures, workspaces, and authority
+harness. It must be removed at cutover. Differential tests use isolated fixtures, workspaces, authority
+databases, and run identities. They must never execute both runtimes against the same live run, repository
+mutation target, authority database, or workspace. They compare Forge authority outcomes, not
+execution-substrate internal history.
 
 Runtime V2 produces a durable-execution-neutral Forge read model before product UI implementation. It uses
 Forge concepts such as `RunStatus`, `TaskStatus`, `BlockingReason`, `EvidenceRef`, and timeline entries.
