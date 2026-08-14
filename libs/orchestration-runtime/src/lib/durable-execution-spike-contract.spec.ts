@@ -87,7 +87,6 @@ const outcome = (): DurableExecutionSpikeOutcome => ({
       releasedAt: new Date('2026-08-12T00:02:00.000Z')
     }
   ],
-  runtimeConflicts: [],
   blockedResume: {
     blockerLeaseId: 'lease-1',
     blockedRevision: 2,
@@ -102,7 +101,10 @@ const outcome = (): DurableExecutionSpikeOutcome => ({
 describe('durable execution spike authority harness', () => {
   it('accepts an integrated repair-resume authority outcome', () => {
     expect(() =>
-      assertDurableExecutionSpikeOutcome({ outcome: outcome(), expectBlockedResume: true })
+      assertDurableExecutionSpikeOutcome({
+        outcome: outcome(),
+        scenario: 'blocked-repair-restart-resume'
+      })
     ).not.toThrow();
   });
 
@@ -110,13 +112,13 @@ describe('durable execution spike authority harness', () => {
     expect(() =>
       assertDurableExecutionSpikeOutcome({
         outcome: { ...outcome(), reviews: [], dispatchCount: 2 },
-        expectBlockedResume: true
+        scenario: 'blocked-repair-restart-resume'
       })
     ).toThrow(DurableExecutionSpikeAuthorityError);
     expect(() =>
       assertDurableExecutionSpikeOutcome({
         outcome: { ...outcome(), integration: { status: 'blocked' } },
-        expectBlockedResume: false
+        scenario: 'build-review-repair-integrate'
       })
     ).toThrow('must integrate');
     expect(() =>
@@ -130,8 +132,14 @@ describe('durable execution spike authority harness', () => {
             }
           ]
         },
-        expectBlockedResume: true
+        scenario: 'blocked-repair-restart-resume'
       })
-    ).toThrow('must bind the resumed repair output');
+    ).toThrow('must bind the final repair output');
+    expect(() =>
+      assertDurableExecutionSpikeOutcome({
+        outcome: { ...outcome(), repairs: [] },
+        scenario: 'build-review-repair-integrate'
+      })
+    ).toThrow('must complete at least one repair attempt');
   });
 });
