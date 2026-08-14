@@ -297,6 +297,8 @@ export interface RepairRuntimeFeedback {
     readonly repairAttemptId: string;
     readonly leaseId: string;
   }): Promise<void>;
+  /** Emitted only after the released lease is durably persisted. */
+  leaseReleased?(request: { readonly runId: string; readonly lease: WriteLease }): Promise<void>;
   scopeExpanded(request: {
     readonly runId: string;
     readonly taskId: string;

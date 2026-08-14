@@ -45,6 +45,10 @@ import {
   type RuntimeTaskBinding,
   type StartRuntimeRunRequest
 } from './orchestration-runtime.js';
+import { RepairExecutionCoordinator } from './repair-execution-coordinator.js';
+import { TaskCodeReviewCollector } from './task-code-review-collector.js';
+import { TaskOutputAdmissionCoordinator } from './task-output-admission-coordinator.js';
+import { TaskRepairCoordinator } from './task-repair-coordinator.js';
 
 const task = (id: string, dependencies: readonly string[] = []): TaskContract => ({
   id,
@@ -463,6 +467,709 @@ describe('OrchestrationRuntime', () => {
 
     await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
       repairWorkItems: workItems
+    });
+  });
+
+  it('resumes one released blocked repair through re-review and integration on recovery', async () => {
+    const persistence = new MemoryPersistence();
+    const workspaceManager = new MemoryWorkspaceManager();
+    const run = request([task('A')]);
+    await createRuntime(persistence, workspaceManager).startRun(run);
+    persistence.state = 'ACTIVE';
+    const subject = {
+      builderAttemptId: 'attempt-1',
+      outputAttemptId: 'attempt-1',
+      workspaceId: 'workspace-A',
+      workspaceRevision: 1,
+      workspaceChangeFingerprint: `sha256:${'1'.repeat(64)}`,
+      impactFingerprint: `sha256:${'2'.repeat(64)}`,
+      verificationFingerprint: `sha256:${'3'.repeat(64)}`
+    };
+    const repairRecords: any[] = [
+      {
+        runId: 'run-1',
+        attempt: {
+          id: 'repair-1',
+          runId: 'run-1',
+          taskId: 'A',
+          agentId: 'agent-A',
+          workspaceId: 'workspace-A',
+          parentReviewIteration: 1,
+          parentReviewSubject: subject,
+          repairIteration: 1,
+          state: 'BLOCKED' as const,
+          revision: 3,
+          startedAt: new Date('2026-08-12T00:00:00.000Z'),
+          blocker: { type: 'lease' as const, leaseId: 'owner-lease' }
+        }
+      }
+    ];
+    let resumeCalls = 0;
+    let loseResume = false;
+    const workItems: any[] = [];
+    let nextRepairId = 2;
+    const repairStore: any = {
+      persistRepairAttempt: async (record: any) => {
+        const index = repairRecords.findIndex(({ attempt }) => attempt.id === record.attempt.id);
+        if (index < 0) {
+          repairRecords.push(record);
+        } else {
+          repairRecords[index] = record;
+        }
+      },
+      recoverRepairAttempts: async () => repairRecords,
+      admitRepairAttempt: async ({ attempt }: any) => {
+        const admitted = { ...attempt, repairIteration: repairRecords.length + 1 };
+        repairRecords.push({ runId: 'run-1', attempt: admitted });
+        return admitted;
+      },
+      admitRepairAttemptWithWorkItem: async ({ attempt, createWorkItem }: any) => {
+        const admitted = {
+          ...attempt,
+          id: `repair-${nextRepairId++}`,
+          repairIteration: repairRecords.length + 1
+        };
+        repairRecords.push({ runId: 'run-1', attempt: admitted });
+        workItems.push(createWorkItem(admitted));
+        return admitted;
+      },
+      resumeRepairAttempt: async ({ expectedRevision }: any) => {
+        resumeCalls += 1;
+        const current = repairRecords[0].attempt;
+        if (loseResume) {
+          return { status: 'version-conflict' as const, actualRevision: current.revision + 1 };
+        }
+        if (current.revision !== expectedRevision || current.state !== 'BLOCKED') {
+          return { status: 'version-conflict' as const, actualRevision: current.revision };
+        }
+        const attempt = {
+          ...current,
+          state: 'PREPARING' as const,
+          revision: current.revision + 1,
+          blocker: undefined
+        };
+        repairRecords[0] = { runId: 'run-1', attempt };
+        return { status: 'resumed' as const, attempt };
+      }
+    };
+    const reviews: any[] = [
+      {
+        runId: 'run-1',
+        taskId: 'A',
+        iteration: 1,
+        subject,
+        review: {
+          recommendation: 'repair',
+          summary: 'Repair.',
+          findings: [
+            {
+              id: 'finding',
+              severity: 'high',
+              fileIds: ['project-A:value.txt'],
+              symbolIds: [],
+              description: 'Fix.'
+            }
+          ]
+        }
+      }
+    ];
+    const reviewStore = {
+      persistReview: async (record: any) => {
+        reviews.push(record);
+      },
+      recoverReviews: async () => reviews
+    };
+    const coordinator = new TaskRepairCoordinator({
+      store: repairStore,
+      reviews: reviewStore,
+      maxRepairs: 2,
+      createId: () => 'unused'
+    });
+    const snapshots = {
+      capture: async ({ repositoryPath }: any) => ({
+        repositoryId: 'repository-1',
+        repositoryRoot: repositoryPath,
+        baseCommit: 'a'.repeat(40),
+        workingTreeFingerprint: `sha256:${'4'.repeat(64)}`,
+        dirty: true
+      })
+    };
+    const subjects = {
+      createSubject: ({
+        builderAttempt,
+        outputAttemptId,
+        workspace,
+        verificationFingerprint
+      }: any) => ({
+        builderAttemptId: builderAttempt.id,
+        outputAttemptId,
+        workspaceId: workspace.id,
+        workspaceRevision: workspace.revision,
+        workspaceChangeFingerprint: `sha256:${'4'.repeat(64)}`,
+        impactFingerprint: `sha256:${'2'.repeat(64)}`,
+        verificationFingerprint
+      })
+    };
+    let repairReviews = 0;
+    const collector = new TaskCodeReviewCollector({
+      reviewer: {
+        review: async () => {
+          repairReviews += 1;
+          return repairReviews === 1
+            ? {
+                recommendation: 'repair',
+                summary: 'One more repair.',
+                findings: [
+                  {
+                    id: 'finding-2',
+                    severity: 'high',
+                    fileIds: ['project-A:value.txt'],
+                    symbolIds: [],
+                    description: 'Repair again.'
+                  }
+                ]
+              }
+            : { recommendation: 'accept', summary: 'Fixed.', findings: [] };
+        }
+      },
+      store: reviewStore
+    });
+    const admission = new TaskOutputAdmissionCoordinator({
+      snapshots,
+      subjects,
+      reviews: collector,
+      reviewStore,
+      verificationEvidence: {
+        persistVerificationEvidence: async () => undefined,
+        recoverVerificationEvidence: async () => []
+      },
+      createEvidenceId: () => 'verification-repair',
+      createVerificationEvidence: ({ attempt, workspace, verificationPolicyFingerprint }: any) => ({
+        id: 'verification-repair',
+        runId: attempt.runId,
+        taskId: attempt.taskId,
+        attemptId: attempt.id,
+        workspaceId: workspace.id,
+        workspaceRevision: workspace.revision,
+        workspaceChangeFingerprint: `sha256:${'4'.repeat(64)}`,
+        verificationPolicyFingerprint,
+        status: 'passed' as const,
+        verifiedAt: '2026-08-12T00:01:00.000Z',
+        fingerprint: `sha256:${'5'.repeat(64)}`
+      })
+    });
+    let repairRuns = 0;
+    let blockNextRepair = false;
+    const repairExecution = new RepairExecutionCoordinator({
+      repairs: coordinator,
+      runner: {
+        run: async (agentRequest) => {
+          repairRuns += 1;
+          await agentRequest.onStarted({
+            sessionRef: { backend: 'fake', value: 'repair-session' }
+          });
+          if (blockNextRepair) {
+            return {
+              status: 'blocked' as const,
+              leaseId: 'next-owner-lease',
+              detail: 'Blocked again.'
+            };
+          }
+          return { status: 'completed' as const };
+        }
+      },
+      reconciler: {
+        reconcile: async ({ taskId }) => ({
+          observed: {
+            taskId,
+            filesRead: new Set(),
+            filesCreated: new Set(),
+            filesWritten: new Set(),
+            filesDeleted: new Set(),
+            symbolsWritten: new Set(),
+            dependencyRequests: new Set(),
+            manifestFilesChanged: new Set(),
+            generatedFilesChanged: new Set()
+          },
+          reconciliation: {
+            status: 'within-predicted-scope' as const,
+            expandedFileIds: new Set(),
+            unleasedFileIds: new Set()
+          }
+        })
+      },
+      verifier: { verify: async () => ({ status: 'passed' as const }) },
+      snapshots,
+      subjects,
+      reviews: collector,
+      verificationEvidence: {
+        persistVerificationEvidence: async () => undefined,
+        recoverVerificationEvidence: async () => []
+      },
+      writeGuard: new MemoryWriteGuard(),
+      persistence,
+      feedback: { leaseBlocked: async () => undefined, scopeExpanded: async () => undefined },
+      createEvidenceId: () => 'verification-repair',
+      createVerificationEvidence: ({ attempt, workspace, verificationPolicyFingerprint }: any) => ({
+        id: 'verification-repair',
+        runId: attempt.runId,
+        taskId: attempt.taskId,
+        attemptId: attempt.id,
+        workspaceId: workspace.id,
+        workspaceRevision: workspace.revision,
+        workspaceChangeFingerprint: `sha256:${'4'.repeat(64)}`,
+        verificationPolicyFingerprint,
+        status: 'passed' as const,
+        verifiedAt: '2026-08-12T00:01:00.000Z',
+        fingerprint: `sha256:${'5'.repeat(64)}`
+      })
+    });
+    persistence.leases.push({
+      runId: 'run-1',
+      lease: {
+        id: 'owner-lease',
+        runId: 'run-1',
+        agentId: 'owner',
+        taskId: 'owner',
+        resource: { type: 'project', projectId: 'project-A' },
+        mode: 'exclusive',
+        version: 2,
+        state: 'RELEASED',
+        acquiredAt: new Date(),
+        lastHeartbeatAt: new Date(),
+        releasedAt: new Date()
+      }
+    });
+    workItems.push({
+      runId: 'run-1',
+      taskId: 'A',
+      repairAttemptId: 'repair-1',
+      builderAttemptId: 'attempt-1',
+      workspaceId: 'workspace-A',
+      leasePlanFingerprint: JSON.stringify({
+        taskId: 'A',
+        source: 'manual',
+        resources: [{ type: 'project', projectId: 'project-A' }]
+      }),
+      impactFingerprint: subject.impactFingerprint,
+      parentReviewIteration: 1,
+      reviewIteration: 2,
+      verificationPolicyFingerprint: run.run.authority.verificationPolicyFingerprint,
+      codeReviewPolicyFingerprint: run.run.authority.codeReviewPolicyFingerprint
+    });
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager,
+      writeGuard: new MemoryWriteGuard(),
+      agentRunner: new FakeAgentRunner(),
+      verifier: new FakeTaskVerifier(),
+      repairAttempts: repairStore,
+      repairWorkItems: {
+        persistRepairWorkItem: async () => undefined,
+        recoverRepairWorkItems: async () => workItems
+      },
+      outputReview: {
+        admission,
+        repairs: coordinator,
+        repairExecution,
+        repository: {
+          files: new Map([
+            [
+              'project-A:value.txt',
+              {
+                id: 'project-A:value.txt',
+                projectId: 'project-A',
+                path: 'value.txt',
+                isGenerated: false
+              }
+            ]
+          ]),
+          symbols: new Map()
+        }
+      }
+    });
+    await expect(runtime.startOrResumeRun(run)).resolves.toMatchObject({
+      snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] }
+    });
+    expect(resumeCalls).toBe(1);
+    expect(repairRuns).toBe(2);
+    expect(repairRecords).toMatchObject([
+      { attempt: { id: 'repair-1', state: 'COMPLETED', repairIteration: 1 } },
+      { attempt: { id: 'repair-2', state: 'COMPLETED', repairIteration: 2 } }
+    ]);
+    expect(reviews).toMatchObject([
+      { iteration: 1, review: { recommendation: 'repair' } },
+      { iteration: 2, review: { recommendation: 'repair' } },
+      { iteration: 3, review: { recommendation: 'accept' } }
+    ]);
+
+    repairRecords[0] = {
+      runId: 'run-1',
+      attempt: {
+        ...repairRecords[0].attempt,
+        state: 'BLOCKED' as const,
+        revision: 10,
+        startedAt: new Date('2026-08-12T00:02:00.000Z'),
+        completedAt: undefined,
+        blocker: { type: 'lease' as const, leaseId: 'owner-lease' }
+      }
+    };
+    const ownerLease = persistence.leases.find(({ lease }) => lease.id === 'owner-lease')!;
+    persistence.leases[persistence.leases.indexOf(ownerLease)] = {
+      ...ownerLease,
+      lease: { ...ownerLease.lease, state: 'ACTIVE', version: 3, releasedAt: undefined }
+    };
+    persistence.state = 'ACTIVE';
+    await runtime.startOrResumeRun(run);
+    expect(resumeCalls).toBe(1);
+    expect(repairRuns).toBe(2);
+
+    const activeOwnerLease = persistence.leases.find(({ lease }) => lease.id === 'owner-lease')!;
+    persistence.leases[persistence.leases.indexOf(activeOwnerLease)] = {
+      ...activeOwnerLease,
+      lease: { ...activeOwnerLease.lease, state: 'RELEASED', version: 4, releasedAt: new Date() }
+    };
+    persistence.state = 'ACTIVE';
+    await runtime.startOrResumeRun(run);
+    expect(resumeCalls).toBe(2);
+    expect(repairRuns).toBe(3);
+
+    repairRecords[0] = {
+      runId: 'run-1',
+      attempt: {
+        ...repairRecords[0].attempt,
+        state: 'BLOCKED' as const,
+        revision: 20,
+        startedAt: new Date('2026-08-12T00:03:00.000Z'),
+        completedAt: undefined,
+        blocker: { type: 'lease' as const, leaseId: 'owner-lease' }
+      }
+    };
+    const releasedOwnerLease = persistence.leases.find(({ lease }) => lease.id === 'owner-lease')!;
+    persistence.leases[persistence.leases.indexOf(releasedOwnerLease)] = {
+      ...releasedOwnerLease,
+      lease: {
+        ...releasedOwnerLease.lease,
+        state: 'STALE',
+        version: 5,
+        staleDetectedAt: new Date(),
+        staleEvidence: 'expired'
+      }
+    };
+    loseResume = true;
+    persistence.state = 'ACTIVE';
+    await runtime.startOrResumeRun(run);
+    expect(resumeCalls).toBe(3);
+    expect(repairRuns).toBe(3);
+    expect(repairRecords[0].attempt.state).toBe('BLOCKED');
+
+    loseResume = false;
+    repairRecords[0] = {
+      runId: 'run-1',
+      attempt: {
+        ...repairRecords[0].attempt,
+        state: 'PREPARING' as const,
+        revision: 30,
+        blocker: undefined,
+        completedAt: undefined
+      }
+    };
+    persistence.state = 'ACTIVE';
+    await runtime.startOrResumeRun(run);
+    expect(resumeCalls).toBe(3);
+    expect(repairRuns).toBe(4);
+    expect(repairRecords[0].attempt).toMatchObject({
+      id: 'repair-1',
+      state: 'COMPLETED',
+      repairIteration: 1
+    });
+
+    repairRecords[0] = {
+      runId: 'run-1',
+      attempt: {
+        ...repairRecords[0].attempt,
+        state: 'UNKNOWN' as const,
+        revision: 40,
+        completedAt: new Date('2026-08-12T00:04:00.000Z'),
+        failure: { type: 'unknown-outcome' as const, detail: 'Restarted after onStarted.' }
+      }
+    };
+    persistence.state = 'ACTIVE';
+    await runtime.startOrResumeRun(run);
+    expect(resumeCalls).toBe(3);
+    expect(repairRuns).toBe(4);
+    expect(repairRecords[0].attempt.state).toBe('UNKNOWN');
+
+    blockNextRepair = true;
+    repairRecords[0] = {
+      runId: 'run-1',
+      attempt: {
+        ...repairRecords[0].attempt,
+        state: 'PREPARING' as const,
+        revision: 50,
+        completedAt: undefined,
+        failure: undefined,
+        blocker: undefined
+      }
+    };
+    persistence.state = 'ACTIVE';
+    await runtime.startOrResumeRun(run);
+    expect(repairRuns).toBe(5);
+    expect(repairRecords[0].attempt).toMatchObject({ state: 'BLOCKED', repairIteration: 1 });
+  });
+
+  it('resumes only the live repair blocked by the released builder lease', async () => {
+    const persistence = new MemoryPersistence();
+    const workspaceManager = new MemoryWorkspaceManager();
+    const writeGuard = new MemoryWriteGuard();
+    const run = {
+      ...request([task('A'), task('B')]),
+      scheduleOptions: { maxConcurrency: 2 },
+      taskBindings: bindings(['A', 'B'])
+    };
+    let releaseA!: () => void;
+    const aMayFinish = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    const repairRecords: any[] = [];
+    let resumeCalls = 0;
+    const repairStore: any = {
+      persistRepairAttempt: async (record: any) => {
+        const index = repairRecords.findIndex(({ attempt }) => attempt.id === record.attempt.id);
+        if (index < 0) {
+          repairRecords.push(record);
+        } else {
+          repairRecords[index] = record;
+        }
+      },
+      recoverRepairAttempts: async () => repairRecords,
+      admitRepairAttempt: async ({ attempt }: any) => {
+        const admitted = { ...attempt, repairIteration: repairRecords.length + 1 };
+        repairRecords.push({ runId: attempt.runId, attempt: admitted });
+        return admitted;
+      },
+      admitRepairAttemptWithWorkItem: async ({ attempt, createWorkItem }: any) => {
+        const admitted = { ...attempt, id: 'repair-B', repairIteration: repairRecords.length + 1 };
+        repairRecords.push({ runId: attempt.runId, attempt: admitted });
+        workItems.push(createWorkItem(admitted));
+        return admitted;
+      },
+      resumeRepairAttempt: async ({ expectedRevision }: any) => {
+        resumeCalls += 1;
+        const record = repairRecords[0];
+        if (record.attempt.revision !== expectedRevision || record.attempt.state !== 'BLOCKED') {
+          return { status: 'version-conflict' as const, actualRevision: record.attempt.revision };
+        }
+        const attempt = {
+          ...record.attempt,
+          state: 'PREPARING' as const,
+          revision: record.attempt.revision + 1,
+          blocker: undefined
+        };
+        repairRecords[0] = { runId: record.runId, attempt };
+        return { status: 'resumed' as const, attempt };
+      }
+    };
+    const reviews: any[] = [];
+    const reviewStore = {
+      persistReview: async (record: any) => {
+        reviews.push(record);
+      },
+      recoverReviews: async () => reviews
+    };
+    const repairCoordinator = new TaskRepairCoordinator({
+      store: repairStore,
+      reviews: reviewStore,
+      maxRepairs: 1,
+      createId: () => 'repair-B'
+    });
+    const snapshots = {
+      capture: async ({ repositoryPath }: any) => ({
+        repositoryId: 'repository-1',
+        repositoryRoot: repositoryPath,
+        baseCommit: 'a'.repeat(40),
+        workingTreeFingerprint: `sha256:${'4'.repeat(64)}`,
+        dirty: true
+      })
+    };
+    const subjects = {
+      createSubject: ({
+        builderAttempt,
+        outputAttemptId,
+        workspace,
+        verificationFingerprint
+      }: any) => ({
+        builderAttemptId: builderAttempt.id,
+        outputAttemptId,
+        workspaceId: workspace.id,
+        workspaceRevision: workspace.revision,
+        workspaceChangeFingerprint: `sha256:${'4'.repeat(64)}`,
+        impactFingerprint: `sha256:${'2'.repeat(64)}`,
+        verificationFingerprint
+      })
+    };
+    const collector = new TaskCodeReviewCollector({
+      reviewer: {
+        review: async (reviewRequest) =>
+          reviewRequest.task.id === 'B' && reviewRequest.iteration === 1
+            ? {
+                recommendation: 'repair',
+                summary: 'Repair B.',
+                findings: [
+                  {
+                    id: 'finding-B',
+                    severity: 'high',
+                    fileIds: ['project-B:value.txt'],
+                    symbolIds: [],
+                    description: 'Fix B.'
+                  }
+                ]
+              }
+            : { recommendation: 'accept', summary: 'Accepted.', findings: [] }
+      },
+      store: reviewStore
+    });
+    const evidence = {
+      persistVerificationEvidence: async () => undefined,
+      recoverVerificationEvidence: async () => []
+    };
+    const admission = new TaskOutputAdmissionCoordinator({
+      snapshots,
+      subjects,
+      reviews: collector,
+      reviewStore,
+      verificationEvidence: evidence,
+      createEvidenceId: () => 'verification',
+      createVerificationEvidence: ({ attempt, workspace, verificationPolicyFingerprint }: any) => ({
+        id: `verification-${attempt.id}`,
+        runId: attempt.runId,
+        taskId: attempt.taskId,
+        attemptId: attempt.id,
+        workspaceId: workspace.id,
+        workspaceRevision: workspace.revision,
+        workspaceChangeFingerprint: `sha256:${'4'.repeat(64)}`,
+        verificationPolicyFingerprint,
+        status: 'passed' as const,
+        verifiedAt: '2026-08-12T00:01:00.000Z',
+        fingerprint: `sha256:${'5'.repeat(64)}`
+      })
+    });
+    let repairRuns = 0;
+    const repairExecution = new RepairExecutionCoordinator({
+      repairs: repairCoordinator,
+      runner: {
+        run: async (agentRequest) => {
+          repairRuns += 1;
+          await agentRequest.onStarted({
+            sessionRef: { backend: 'fake', value: `repair-${repairRuns}` }
+          });
+          if (repairRuns === 1) {
+            releaseA();
+            return {
+              status: 'blocked' as const,
+              leaseId: 'lease-A',
+              detail: 'A owns the conflicting lease.'
+            };
+          }
+          return { status: 'completed' as const };
+        }
+      },
+      reconciler: {
+        reconcile: async ({ taskId }) => ({
+          observed: {
+            taskId,
+            filesRead: new Set(),
+            filesCreated: new Set(),
+            filesWritten: new Set(),
+            filesDeleted: new Set(),
+            symbolsWritten: new Set(),
+            dependencyRequests: new Set(),
+            manifestFilesChanged: new Set(),
+            generatedFilesChanged: new Set()
+          },
+          reconciliation: {
+            status: 'within-predicted-scope' as const,
+            expandedFileIds: new Set(),
+            unleasedFileIds: new Set()
+          }
+        })
+      },
+      verifier: { verify: async () => ({ status: 'passed' as const }) },
+      snapshots,
+      subjects,
+      reviews: collector,
+      verificationEvidence: evidence,
+      writeGuard,
+      persistence,
+      feedback: { leaseBlocked: async () => undefined, scopeExpanded: async () => undefined },
+      createEvidenceId: () => 'verification',
+      createVerificationEvidence: ({ attempt, workspace, verificationPolicyFingerprint }: any) => ({
+        id: `verification-${attempt.id}`,
+        runId: attempt.runId,
+        taskId: attempt.taskId,
+        attemptId: attempt.id,
+        workspaceId: workspace.id,
+        workspaceRevision: workspace.revision,
+        workspaceChangeFingerprint: `sha256:${'4'.repeat(64)}`,
+        verificationPolicyFingerprint,
+        status: 'passed' as const,
+        verifiedAt: '2026-08-12T00:01:00.000Z',
+        fingerprint: `sha256:${'5'.repeat(64)}`
+      })
+    });
+    const workItems: any[] = [];
+    const runtime = new OrchestrationRuntime({
+      scheduler: new DeterministicScheduler(),
+      persistence,
+      workspaceManager,
+      writeGuard,
+      agentRunner: {
+        run: async (agentRequest) => {
+          await agentRequest.onStarted({
+            sessionRef: { backend: 'fake', value: `builder-${agentRequest.taskId}` }
+          });
+          if (agentRequest.taskId === 'A') {
+            await aMayFinish;
+          }
+          return { status: 'completed' as const };
+        }
+      },
+      verifier: new FakeTaskVerifier(),
+      repairAttempts: repairStore,
+      repairWorkItems: {
+        persistRepairWorkItem: async () => undefined,
+        recoverRepairWorkItems: async () => workItems
+      },
+      outputReview: {
+        admission,
+        repairs: repairCoordinator,
+        repairExecution,
+        repository: {
+          files: new Map([
+            [
+              'project-B:value.txt',
+              {
+                id: 'project-B:value.txt',
+                projectId: 'project-B',
+                path: 'value.txt',
+                isGenerated: false
+              }
+            ]
+          ]),
+          symbols: new Map()
+        }
+      }
+    });
+    await expect(runtime.startRun(run)).resolves.toMatchObject({
+      snapshot: { taskStates: expect.arrayContaining([{ taskId: 'B', state: 'COMPLETED' }]) }
+    });
+    expect(repairRuns).toBe(2);
+    expect(resumeCalls).toBe(1);
+    expect(repairRecords[0].attempt).toMatchObject({
+      id: 'repair-B',
+      state: 'COMPLETED',
+      repairIteration: 1
     });
   });
 

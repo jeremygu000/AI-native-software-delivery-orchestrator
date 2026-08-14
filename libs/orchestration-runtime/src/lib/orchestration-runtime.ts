@@ -173,6 +173,7 @@ export class OrchestrationRuntime {
       attemptsByTask: new Map<string, AgentExecutionAttempt>(),
       repairAttemptsByTask: new Map(),
       repairWorkItemsByAttempt: new Map(),
+      pendingRepairAttemptIds: new Set<string>(),
       snapshot: {
         taskStates: request.tasks.map((task) => ({ taskId: task.id, state: 'PENDING' as const })),
         runtimeBlocks: []
@@ -359,6 +360,11 @@ export class OrchestrationRuntime {
           item
         ])
       ),
+      pendingRepairAttemptIds: new Set(
+        (await this.#recoverRepairAttempts(request.run.id))
+          .filter(({ attempt }) => attempt.state === 'PREPARING')
+          .map(({ attempt }) => attempt.id)
+      ),
       snapshot: recovered.snapshot,
       nextSequence: evidence.events.length + 1,
       pendingTaskIds: recovered.attempts
@@ -372,6 +378,10 @@ export class OrchestrationRuntime {
       lifecycle: Promise.resolve()
     };
     await this.#recordEvent(state, { type: 'runtime-reconciliation-recovered' });
+    await this.#enqueueEligibleBlockedRepairs(
+      state,
+      evidence.leases.map(({ lease }) => lease)
+    );
     await this.#drain(state);
     return this.#recoveredState(state.snapshot, request.run.id);
   }
@@ -430,7 +440,26 @@ export class OrchestrationRuntime {
     const executing = new Set<Promise<{ readonly error?: unknown }>>();
     let fatalError: Error | undefined;
     let stopDispatch = false;
-    while (state.pendingTaskIds.length > 0 || executing.size > 0) {
+    while (
+      state.pendingTaskIds.length > 0 ||
+      state.pendingRepairAttemptIds.size > 0 ||
+      executing.size > 0
+    ) {
+      while (
+        state.pendingRepairAttemptIds.size > 0 &&
+        executing.size < state.request.scheduleOptions.maxConcurrency
+      ) {
+        const repairAttemptId = state.pendingRepairAttemptIds.values().next().value;
+        if (repairAttemptId === undefined) {
+          break;
+        }
+        state.pendingRepairAttemptIds.delete(repairAttemptId);
+        const execution = this.#driveRepairCycle(state, repairAttemptId)
+          .then(() => ({}))
+          .catch((error: unknown) => ({ error }))
+          .finally(() => executing.delete(execution));
+        executing.add(execution);
+      }
       while (
         state.pendingTaskIds.length > 0 &&
         executing.size < state.request.scheduleOptions.maxConcurrency
@@ -654,6 +683,7 @@ export class OrchestrationRuntime {
       for (const lease of released.leases) {
         await this.#persistence.persistLease({ runId: state.request.run.id, lease });
         await this.#recordEvent(state, { type: 'lease-released', taskId, leaseId: lease.id });
+        await this.#enqueueEligibleBlockedRepairs(state, [lease]);
       }
       if (agentResult.status === 'failed') {
         return;
@@ -715,6 +745,9 @@ export class OrchestrationRuntime {
         workspace,
         impact: effectiveImpact
       });
+      if (this.#outputReview !== undefined && reviewSubject === undefined) {
+        return;
+      }
       if (this.#outputReview !== undefined) {
         if (reviewSubject === undefined) {
           throw new OrchestrationRuntimeInputError(`Review subject is missing: ${taskId}`);
@@ -766,7 +799,7 @@ export class OrchestrationRuntime {
         `Completed builder attempt is missing: ${request.taskId}`
       );
     }
-    let output = await this.#outputReview.admission.reviewBuilder({
+    const output = await this.#outputReview.admission.reviewBuilder({
       runId: request.state.request.run.id,
       task: request.task,
       builderAttempt,
@@ -776,83 +809,18 @@ export class OrchestrationRuntime {
         request.state.request.run.authority.verificationPolicyFingerprint,
       repository: this.#outputReview.repository
     });
-    let parentIteration = 1;
-    while (output.review.recommendation === 'repair') {
-      const repair = await this.#outputReview.repairs.prepare({
-        runId: request.state.request.run.id,
-        taskId: request.taskId,
-        agentId: request.binding.agentId,
-        workspaceId: request.workspace.id,
-        reviewIteration: parentIteration,
-        review: output.review,
-        subject: output.subject,
-        createWorkItem: (attempt) => ({
-          runId: attempt.runId,
-          taskId: attempt.taskId,
-          repairAttemptId: attempt.id,
-          builderAttemptId: builderAttempt.id,
-          workspaceId: attempt.workspaceId,
-          leasePlanFingerprint: taskLeasePlanFingerprint(request.binding.leasePlan),
-          impactFingerprint: output.subject.impactFingerprint,
-          parentReviewIteration: attempt.parentReviewIteration,
-          reviewIteration: parentIteration + 1,
-          verificationPolicyFingerprint:
-            request.state.request.run.authority.verificationPolicyFingerprint,
-          codeReviewPolicyFingerprint:
-            request.state.request.run.authority.codeReviewPolicyFingerprint
-        })
-      });
-      request.state.repairAttemptsByTask.set(request.taskId, repair);
-      const workItem = (await this.#recoverRepairWorkItems(request.state.request.run.id)).find(
-        (item) => item.repairAttemptId === repair.id
-      );
-      if (workItem === undefined) {
-        throw new OrchestrationRuntimeInputError(
-          `Admitted repair work item is missing: ${repair.id}`
-        );
-      }
-      request.state.repairWorkItemsByAttempt.set(repair.id, workItem);
-      const result = await this.#outputReview.repairExecution.execute({
-        repair,
+    if (output.review.recommendation === 'repair') {
+      await this.#admitRepairWork(
+        request.state,
+        request.task,
+        request.binding,
+        request.workspace,
         builderAttempt,
-        task: request.task,
-        workspace: request.workspace,
-        impact: request.impact,
-        leases: [],
-        verificationPolicyFingerprint: workItem.verificationPolicyFingerprint,
-        repository: this.#outputReview.repository,
-        reviewIteration: workItem.reviewIteration,
-        feedback: {
-          leaseBlocked: async () => {
-            const current = (await this.#recoverRepairAttempts(request.state.request.run.id)).find(
-              ({ attempt }) => attempt.id === repair.id
-            )?.attempt;
-            if (current !== undefined) {
-              request.state.repairAttemptsByTask.set(request.taskId, current);
-            }
-          },
-          scopeExpanded: async ({ expandedResources }) => {
-            const conflicts = this.#runtimeScopeConflicts(
-              request.state,
-              request.taskId,
-              expandedResources
-            );
-            request.state.hardConflicts.push(...conflicts);
-            await this.#recordEvent(
-              request.state,
-              { type: 'runtime-reconciliation-recovered' },
-              conflicts
-            );
-          }
-        }
-      });
-      request.state.repairAttemptsByTask.set(request.taskId, result.attempt);
-      output = {
-        subject: result.reviewSubject,
-        review: result.review,
-        verification: result.verification
-      };
-      parentIteration = workItem.reviewIteration;
+        1,
+        output.review,
+        output.subject
+      );
+      return undefined;
     }
     await this.#outputReview.admission.assertIntegrationAdmission({
       runId: request.state.request.run.id,
@@ -860,6 +828,209 @@ export class OrchestrationRuntime {
       subject: output.subject
     });
     return output.subject;
+  }
+
+  async #admitRepairWork(
+    state: RuntimeState,
+    task: TaskContract,
+    binding: RuntimeTaskBinding,
+    workspace: Awaited<ReturnType<WorkspaceManager['create']>>,
+    builderAttempt: AgentExecutionAttempt,
+    reviewIteration: number,
+    review: import('@ai-native-software-delivery-orchestrator/domain').TaskCodeReview,
+    subject: TaskCodeReviewSubject
+  ): Promise<void> {
+    const repair = await this.#outputReview!.repairs.prepare({
+      runId: state.request.run.id,
+      taskId: task.id,
+      agentId: binding.agentId,
+      workspaceId: workspace.id,
+      reviewIteration,
+      review,
+      subject,
+      createWorkItem: (attempt) => ({
+        runId: attempt.runId,
+        taskId: attempt.taskId,
+        repairAttemptId: attempt.id,
+        builderAttemptId: builderAttempt.id,
+        workspaceId: attempt.workspaceId,
+        leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
+        impactFingerprint: subject.impactFingerprint,
+        parentReviewIteration: attempt.parentReviewIteration,
+        reviewIteration: reviewIteration + 1,
+        verificationPolicyFingerprint: state.request.run.authority.verificationPolicyFingerprint,
+        codeReviewPolicyFingerprint: state.request.run.authority.codeReviewPolicyFingerprint
+      })
+    });
+    state.repairAttemptsByTask.set(task.id, repair);
+    const workItem = (await this.#recoverRepairWorkItems(state.request.run.id)).find(
+      (item) => item.repairAttemptId === repair.id
+    );
+    if (workItem === undefined) {
+      throw new OrchestrationRuntimeInputError(
+        `Admitted repair work item is missing: ${repair.id}`
+      );
+    }
+    state.repairWorkItemsByAttempt.set(repair.id, workItem);
+    state.pendingRepairAttemptIds.add(repair.id);
+  }
+
+  async #enqueueEligibleBlockedRepairs(
+    state: RuntimeState,
+    leases: readonly WriteLease[]
+  ): Promise<void> {
+    if (this.#outputReview === undefined) {
+      return;
+    }
+    const releasedLeaseIds = new Set(
+      leases
+        .filter((lease) => lease.state === 'RELEASED' || lease.state === 'STALE')
+        .map((lease) => lease.id)
+    );
+    if (releasedLeaseIds.size === 0) {
+      return;
+    }
+    for (const { attempt } of await this.#recoverRepairAttempts(state.request.run.id)) {
+      if (
+        attempt.state !== 'BLOCKED' ||
+        attempt.blocker?.type !== 'lease' ||
+        !releasedLeaseIds.has(attempt.blocker.leaseId)
+      ) {
+        continue;
+      }
+      const workItem = state.repairWorkItemsByAttempt.get(attempt.id);
+      const binding = state.bindings.get(attempt.taskId);
+      const builderAttempt = state.attemptsByTask.get(attempt.taskId);
+      if (
+        workItem === undefined ||
+        binding === undefined ||
+        builderAttempt === undefined ||
+        builderAttempt.id !== workItem.builderAttemptId ||
+        binding.workspace.id !== workItem.workspaceId ||
+        taskLeasePlanFingerprint(binding.leasePlan) !== workItem.leasePlanFingerprint ||
+        workItem.verificationPolicyFingerprint !==
+          state.request.run.authority.verificationPolicyFingerprint ||
+        workItem.codeReviewPolicyFingerprint !==
+          state.request.run.authority.codeReviewPolicyFingerprint ||
+        attempt.parentReviewIteration !== workItem.parentReviewIteration ||
+        attempt.parentReviewSubject.impactFingerprint !== workItem.impactFingerprint
+      ) {
+        throw new OrchestrationRuntimeInputError(
+          `Blocked repair continuation evidence mismatch: ${attempt.id}`
+        );
+      }
+      const resumed = await this.#outputReview.repairs.tryResume(attempt);
+      if (resumed !== undefined) {
+        state.repairAttemptsByTask.set(resumed.taskId, resumed);
+        state.pendingRepairAttemptIds.add(resumed.id);
+      }
+    }
+  }
+
+  async #driveRepairCycle(state: RuntimeState, repairAttemptId: string): Promise<void> {
+    const repair = (await this.#recoverRepairAttempts(state.request.run.id)).find(
+      ({ attempt }) => attempt.id === repairAttemptId
+    )?.attempt;
+    const workItem = state.repairWorkItemsByAttempt.get(repairAttemptId);
+    if (repair === undefined || workItem === undefined || repair.state !== 'PREPARING') {
+      return;
+    }
+    const task = state.tasksById.get(repair.taskId);
+    const binding = state.bindings.get(repair.taskId);
+    const builderAttempt = state.attemptsByTask.get(repair.taskId);
+    if (task === undefined || binding === undefined || builderAttempt === undefined) {
+      throw new OrchestrationRuntimeInputError(
+        `Repair continuation binding is missing: ${repair.id}`
+      );
+    }
+    const workspace = await this.#workspaceManager.create(binding.workspace);
+    let result: Awaited<ReturnType<RepairExecutionCoordinator['execute']>>;
+    try {
+      result = await this.#outputReview!.repairExecution.execute({
+        repair,
+        builderAttempt,
+        task,
+        workspace,
+        impact: binding.impact ?? { predicted: this.#emptyPredictedImpact(task.id) },
+        leases: [],
+        verificationPolicyFingerprint: workItem.verificationPolicyFingerprint,
+        repository: this.#outputReview!.repository,
+        reviewIteration: workItem.reviewIteration,
+        feedback: {
+          leaseBlocked: async () => {
+            const current = (await this.#recoverRepairAttempts(state.request.run.id)).find(
+              ({ attempt }) => attempt.id === repair.id
+            )?.attempt;
+            if (current !== undefined) {
+              state.repairAttemptsByTask.set(task.id, current);
+            }
+          },
+          leaseReleased: async ({ lease }) => this.#enqueueEligibleBlockedRepairs(state, [lease]),
+          scopeExpanded: async ({ expandedResources }) => {
+            const conflicts = this.#runtimeScopeConflicts(state, task.id, expandedResources);
+            state.hardConflicts.push(...conflicts);
+            await this.#recordEvent(state, { type: 'runtime-reconciliation-recovered' }, conflicts);
+          }
+        }
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Repair blocked by lease:')) {
+        return;
+      }
+      throw error;
+    }
+    state.repairAttemptsByTask.set(task.id, result.attempt);
+    if (result.review.recommendation === 'repair') {
+      await this.#admitRepairWork(
+        state,
+        task,
+        binding,
+        workspace,
+        builderAttempt,
+        workItem.reviewIteration,
+        result.review,
+        result.reviewSubject
+      );
+      return;
+    }
+    await this.#integrateRepairOutput(state, task, workspace, result.reviewSubject);
+  }
+
+  async #integrateRepairOutput(
+    state: RuntimeState,
+    task: TaskContract,
+    workspace: Awaited<ReturnType<WorkspaceManager['create']>>,
+    subject: TaskCodeReviewSubject
+  ): Promise<void> {
+    await this.#outputReview!.admission.assertCurrentIntegrationAdmission({
+      runId: state.request.run.id,
+      taskId: task.id,
+      workspace,
+      subject
+    });
+    await this.#workspaceManager.commit({
+      workspace,
+      message: `forge: ${task.id}\n\nForge-Run-Id: ${state.request.run.id}\nForge-Task-Id: ${task.id}`
+    });
+    this.#setState(state, task.id, 'INTEGRATING');
+    await this.#recordEvent(state, {
+      type: 'verification-completed',
+      taskId: task.id,
+      state: 'INTEGRATING'
+    });
+    const integration = await this.#workspaceManager.integrate(workspace);
+    await this.#persistence.persistWorkspace({
+      runId: state.request.run.id,
+      workspace: integration.workspace
+    });
+    if (integration.status === 'integrated') {
+      this.#setState(state, task.id, 'COMPLETED');
+      await this.#recordEvent(state, {
+        type: 'workspace-integrated',
+        taskId: task.id,
+        state: 'COMPLETED'
+      });
+    }
   }
 
   async #recordEvent(
@@ -1351,6 +1522,7 @@ interface RuntimeState {
   snapshot: SchedulerSnapshot;
   nextSequence: number;
   readonly pendingTaskIds: string[];
+  readonly pendingRepairAttemptIds: Set<string>;
   lifecycle: Promise<void>;
 }
 

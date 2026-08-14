@@ -100,6 +100,9 @@ of a recovered `BLOCKED` repair is still deliberately unavailable: it requires r
 repair dispatch context, including controlled agent/session authority and lease acquisition, rather than
 silently re-running an uncertain external agent. `UNKNOWN` repair attempts remain fail-closed.
 
+ADR-026 defines and implements the Stage 22R continuation closure. It provides one derived,
+evidence-validated continuation path for both live release and restart recovery.
+
 Repair admission also owns its durable review-authority check rather than trusting its caller: the
 coordinator reads the persisted review iteration and requires an exact repair subject before it can create
 any repair lineage. Immediately before commit and integration, composition captures the workspace again and

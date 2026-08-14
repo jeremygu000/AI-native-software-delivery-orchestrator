@@ -127,7 +127,7 @@ export class RepairExecutionCoordinator {
         throw new RepairExecutionError(`Repair outcome is unknown: ${detail}`);
       }
       await this.#repairs.fail(request.repair, detail);
-      await this.#release(request.leases);
+      await this.#release(request.leases, request.feedback);
       throw new RepairExecutionError(`Repair execution failed before start: ${detail}`);
     }
     if (result.status !== 'completed' || !established) {
@@ -139,14 +139,17 @@ export class RepairExecutionCoordinator {
           repairAttemptId: request.repair.id,
           leaseId: result.leaseId
         });
-        await this.#release([...request.leases, ...(result.additionalLeases ?? [])]);
+        await this.#release(
+          [...request.leases, ...(result.additionalLeases ?? [])],
+          request.feedback
+        );
         throw new RepairExecutionError(`Repair blocked by lease: ${result.leaseId}`);
       }
       await this.#repairs.fail(
         running,
         result.status === 'failed' ? result.detail : 'Repair did not establish'
       );
-      await this.#release(request.leases);
+      await this.#release(request.leases, request.feedback);
       throw new RepairExecutionError('Repair did not complete');
     }
     const allLeases = [...request.leases, ...(result.additionalLeases ?? [])];
@@ -160,7 +163,7 @@ export class RepairExecutionCoordinator {
     });
     if (reconciliation.reconciliation.status === 'unleased-change') {
       await this.#repairs.fail(running, 'Repair changed a file without an active write lease');
-      await this.#release(allLeases);
+      await this.#release(allLeases, request.feedback);
       throw new RepairExecutionError('Repair changed a file without an active write lease');
     }
     await this.#persistence.persistImpact({
@@ -180,7 +183,7 @@ export class RepairExecutionCoordinator {
       });
     }
     const completed = await this.#repairs.complete(running);
-    await this.#release(allLeases);
+    await this.#release(allLeases, request.feedback);
     const verification = await this.#verifier.verify({
       runId: request.repair.runId,
       task: request.task,
@@ -256,7 +259,10 @@ export class RepairExecutionCoordinator {
     return `Repair task findings from review iteration ${attempt.parentReviewIteration}. Preserve approved task scope and use controlled tools only.`;
   }
 
-  async #release(leases: readonly WriteLease[]): Promise<void> {
+  async #release(
+    leases: readonly WriteLease[],
+    feedback: RepairRuntimeFeedback | undefined
+  ): Promise<void> {
     for (const lease of [...leases].toReversed()) {
       if (lease.state !== 'ACTIVE') {
         continue;
@@ -269,6 +275,10 @@ export class RepairExecutionCoordinator {
         throw new RepairExecutionError(`Repair lease release failed: ${lease.id}`);
       }
       await this.#persistence.persistLease({ runId: lease.runId, lease: result.lease });
+      await (feedback ?? this.#feedback).leaseReleased?.({
+        runId: lease.runId,
+        lease: result.lease
+      });
     }
   }
 }

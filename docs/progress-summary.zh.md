@@ -1941,3 +1941,19 @@ review-to-integration drift guard 现在也有 production-style regression test�
 worktree 和 controlled Pi builder edit，再让已接受的 reviewer 修改同一个真实 worktree。runtime 会在
 integration 前拒绝，integration checkout 保持不变。这补齐了独立审查指出的最后一个 Stage 22 测试深度缺口。
 完整 suite 现已通过 `pnpm check` 验证（568 passed、1 skipped、90.01% branch coverage）以及 `pnpm build`。
+
+### Stage 22R：Repair Continuation 设计
+
+Stage 22R 现已完成 blocked-repair continuation。runtime 维护一个按 repair attempt ID 去重的并行队列。新的
+repair recommendation 会持久化 admission 和 work-item evidence，然后 enqueue work，而不是在 builder review call
+内递归执行。durable `RELEASED` 或 `STALE` blocker 会选择精确的 `BLOCKED` repair，依据当前 authority 校验其
+evidence，通过 CAS 恢复，并且只 enqueue winner。restart 后 `PREPARING` repair 也会进入队列；
+`STARTING`/`RUNNING` repair 仍会变成 `UNKNOWN`，绝不 auto-resume。
+
+每个 queued repair 推进一个 durable cycle：controlled execution、reconciliation、verification evidence、fresh
+review，然后执行 exact integration 或 admission/enqueue 下一次有界 repair attempt。因此重复的 `repair`
+recommendation 会重新进入同一个 non-recursive driver，不引入 continuation phase，也不把 repair state 写入
+builder snapshot。recovery coverage 已证明 released、stale、active、CAS-loser、`PREPARING`、`UNKNOWN`、repeat-review
+和 re-blocked outcome。live multi-task regression 还证明 unrelated release 不会动作，而 matching builder lease
+release 只会产生一次 resumed repair dispatch。`pnpm check` 通过：570 passed、1 skipped、90.12% branch coverage；
+`pnpm build` 也通过。Stage 22 已关闭。

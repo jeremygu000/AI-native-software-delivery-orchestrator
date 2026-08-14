@@ -2243,3 +2243,21 @@ worktree and controlled Pi builder edit, then has an accepted reviewer mutate th
 rejects before integration, and the integration checkout remains unchanged. This closes the remaining Stage
 22 test-depth gap identified during independent review. The full suite now verifies `pnpm check` with 568
 passed, 1 skipped, and 90.01% branch coverage, plus `pnpm build`.
+
+### Stage 22R: Repair Continuation Design
+
+Stage 22R now closes blocked-repair continuation. The runtime maintains an idempotent parallel queue of repair
+attempt IDs. A fresh repair recommendation persists admission and work-item evidence, then enqueues work rather
+than recursing under the builder review call. A durable released or stale blocker selects an exact `BLOCKED`
+repair, validates its evidence against current authority, performs compare-and-swap resume, and enqueues only
+the winner. `PREPARING` repairs are also queued after restart; `STARTING`/`RUNNING` repairs remain `UNKNOWN`
+and never auto-resume.
+
+Each queued repair advances one durable cycle: controlled execution, reconciliation, verification evidence,
+fresh review, then either exact integration or admission/enqueue of the next bounded repair attempt. A repeated
+`repair` recommendation therefore re-enters the same non-recursive driver without introducing a continuation
+phase or repair states into the builder snapshot. Recovery coverage proves released, stale, active, CAS-loser,
+`PREPARING`, `UNKNOWN`, repeat-review, and re-blocked outcomes. A live multi-task regression proves an
+unrelated release does nothing, while the matching builder lease release causes exactly one resumed repair
+dispatch. `pnpm check` passes with 570 tests passed, 1 skipped, and 90.12% branch coverage; `pnpm build` also
+passes. Stage 22 is closed.
