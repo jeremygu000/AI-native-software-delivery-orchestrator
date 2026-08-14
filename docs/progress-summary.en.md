@@ -2248,13 +2248,12 @@ passed, 1 skipped, and 90.01% branch coverage, plus `pnpm build`.
 
 The verified Stage 22R legacy runtime is archived as `stage22r-legacy-runtime-2486fe0` and
 `archive/stage22r-legacy-runtime`. Runtime V2 starts on a separate migration branch. ADR-027 preserves
-Forge's deterministic authority while replacing commodity execution infrastructure in stages: PostgreSQL
-evidence parity, Temporal workflows and Activities, OpenTelemetry correlation, agent backend validation,
-scheduler integration, review/repair parity, exact integration, and legacy removal.
+Forge's deterministic authority while selecting a durable execution substrate through narrow Temporal and
+Restate spikes before full migration. PostgreSQL evidence storage remains a scaling candidate, not a Runtime
+V2 prerequisite.
 
-Temporal remembers where execution is, PostgreSQL remembers what Forge has authorized, and a future
-repository memory service remembers what was learned. None replaces Forge's deterministic decision authority.
-Product UI waits for a Temporal-neutral Forge read model and inspect/status/cancel API; early UI work may
+The selected durable runtime remembers where execution is, SQLite currently remembers what Forge has
+inspect/status/cancel API; early UI work may
 define information architecture, evidence-drawer contracts, status vocabulary, and visual language without
 binding to the legacy runtime.
 
