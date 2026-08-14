@@ -7,7 +7,7 @@ import {
 } from './postgres-evidence-store.js';
 
 describe('PostgreSQL evidence-store configuration', () => {
-  it('accepts an isolated Forge authority schema and role', () => {
+  it('accepts valid Forge authority schema and role metadata', () => {
     expect(() =>
       assertPostgresEvidenceStoreConfiguration({
         connectionString: 'postgresql://forge:secret@localhost:5432/forge_authority',
@@ -41,7 +41,7 @@ describe('PostgreSQL evidence-store configuration', () => {
     ).toThrow('database role is required');
   });
 
-  it('creates a Forge authority connection with a bounded close operation', async () => {
+  it('creates a candidate Forge authority connection with a bounded close operation', async () => {
     const connection = connectPostgresEvidenceStore({
       connectionString: 'postgresql://forge:secret@localhost:5432/forge_authority',
       schema: 'forge_authority',

@@ -8,10 +8,10 @@ import type {
 import postgres from 'postgres';
 
 /**
- * Runtime V2 configuration boundary for Forge authority persistence.
+ * Candidate configuration metadata for a future Forge authority persistence adapter.
  *
- * A concrete driver is deliberately deferred until the PostgreSQL deployment and driver selection are
- * validated. This prevents Temporal persistence settings from becoming Forge evidence configuration.
+ * Schema and role are validation metadata only at this milestone. A future adapter must configure and test
+ * search_path and role isolation with a real PostgreSQL deployment.
  */
 export interface PostgresEvidenceStoreConfiguration {
   readonly connectionString: string;
@@ -58,7 +58,7 @@ export const assertPostgresEvidenceStoreConfiguration = (
   }
 };
 
-/** Opens a Forge authority connection without sharing Temporal persistence configuration. */
+/** Opens a candidate Forge authority connection; it does not yet enforce schema or role isolation. */
 export const connectPostgresEvidenceStore = (
   configuration: PostgresEvidenceStoreConfiguration
 ): PostgresEvidenceStoreConnection => {
