@@ -128,8 +128,9 @@ Repair BLOCKED -> restart -> matching lease release -> CAS resume -> re-review -
 
 The spike contract triggers each scenario. A common authority harness verifies complete Forge outcomes: builder
 and repair attempt identity/state, lease and blocker evidence, verification evidence, exact review subject and
-review evidence, runtime conflicts, repair budget, and integration result. Candidate framework history is not
-part of parity acceptance.
+review evidence, repair budget, and integration result. Runtime-conflict parity remains part of the later full
+Stage 22/22R differential suite because neither narrow spike scenario must create a conflict. Candidate
+framework history is not part of parity acceptance.
 
 ## Migration sequence
 

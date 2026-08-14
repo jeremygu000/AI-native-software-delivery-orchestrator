@@ -1,6 +1,5 @@
 import type {
   AgentExecutionAttempt,
-  PersistedTaskConflict,
   TaskCodeReview,
   TaskCodeReviewSubject,
   TaskRepairAttempt,
@@ -26,7 +25,6 @@ export interface DurableExecutionSpikeOutcome {
     readonly subject: TaskCodeReviewSubject;
   }[];
   readonly leases: readonly WriteLease[];
-  readonly runtimeConflicts: readonly PersistedTaskConflict[];
   readonly blockedResume?: {
     readonly blockerLeaseId: string;
     readonly blockedRevision: number;
@@ -47,7 +45,7 @@ export class DurableExecutionSpikeAuthorityError extends Error {
 
 export const assertDurableExecutionSpikeOutcome = (request: {
   readonly outcome: DurableExecutionSpikeOutcome;
-  readonly expectBlockedResume: boolean;
+  readonly scenario: 'build-review-repair-integrate' | 'blocked-repair-restart-resume';
 }): void => {
   if (request.outcome.builderAttempt.state !== 'COMPLETED') {
     throw new DurableExecutionSpikeAuthorityError('Builder attempt must complete');
@@ -66,11 +64,24 @@ export const assertDurableExecutionSpikeOutcome = (request: {
   if (finalReview.review.recommendation !== 'accept') {
     throw new DurableExecutionSpikeAuthorityError('Final review must accept the integrated output');
   }
-  if (request.expectBlockedResume) {
-    const repair = request.outcome.repairs.at(-1);
+  const repair = request.outcome.repairs.at(-1);
+  if (repair === undefined || repair.state !== 'COMPLETED') {
+    throw new DurableExecutionSpikeAuthorityError(
+      'Spike must complete at least one repair attempt'
+    );
+  }
+  const finalVerification = request.outcome.verifications.at(-1)!;
+  if (
+    finalVerification.attemptId !== repair.id ||
+    finalReview.subject.outputAttemptId !== repair.id
+  ) {
+    throw new DurableExecutionSpikeAuthorityError(
+      'Final verification and review must bind the final repair output'
+    );
+  }
+  if (request.scenario === 'blocked-repair-restart-resume') {
     const resume = request.outcome.blockedResume;
     if (
-      repair === undefined ||
       repair.repairIteration !== 1 ||
       request.outcome.dispatchCount !== 1 ||
       resume === undefined ||
@@ -82,15 +93,6 @@ export const assertDurableExecutionSpikeOutcome = (request: {
     ) {
       throw new DurableExecutionSpikeAuthorityError(
         'Blocked resume must retain durable blocker evidence, preserve repair iteration, and dispatch exactly once'
-      );
-    }
-    const finalVerification = request.outcome.verifications.at(-1)!;
-    if (
-      finalVerification.attemptId !== repair.id ||
-      finalReview.subject.outputAttemptId !== repair.id
-    ) {
-      throw new DurableExecutionSpikeAuthorityError(
-        'Final verification and review must bind the resumed repair output'
       );
     }
   }
