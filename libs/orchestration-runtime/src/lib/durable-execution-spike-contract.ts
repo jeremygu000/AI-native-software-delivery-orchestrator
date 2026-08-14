@@ -1,9 +1,11 @@
 import type {
   AgentExecutionAttempt,
+  PersistedTaskConflict,
   TaskCodeReview,
   TaskCodeReviewSubject,
   TaskRepairAttempt,
-  TaskVerificationEvidence
+  TaskVerificationEvidence,
+  WriteLease
 } from '@ai-native-software-delivery-orchestrator/domain';
 
 /**
@@ -23,6 +25,15 @@ export interface DurableExecutionSpikeOutcome {
     readonly review: TaskCodeReview;
     readonly subject: TaskCodeReviewSubject;
   }[];
+  readonly leases: readonly WriteLease[];
+  readonly runtimeConflicts: readonly PersistedTaskConflict[];
+  readonly blockedResume?: {
+    readonly blockerLeaseId: string;
+    readonly blockedRevision: number;
+    readonly resumedRevision: number;
+    readonly repairAttemptId: string;
+    readonly releaseState: 'RELEASED' | 'STALE';
+  };
   readonly integration: { readonly status: 'integrated' | 'blocked' };
   readonly dispatchCount: number;
 }
@@ -57,13 +68,29 @@ export const assertDurableExecutionSpikeOutcome = (request: {
   }
   if (request.expectBlockedResume) {
     const repair = request.outcome.repairs.at(-1);
+    const resume = request.outcome.blockedResume;
     if (
       repair === undefined ||
       repair.repairIteration !== 1 ||
-      request.outcome.dispatchCount !== 1
+      request.outcome.dispatchCount !== 1 ||
+      resume === undefined ||
+      resume.repairAttemptId !== repair.id ||
+      resume.resumedRevision !== resume.blockedRevision + 1 ||
+      !request.outcome.leases.some(
+        (lease) => lease.id === resume.blockerLeaseId && lease.state === resume.releaseState
+      )
     ) {
       throw new DurableExecutionSpikeAuthorityError(
-        'Blocked resume must preserve repair iteration and dispatch exactly once'
+        'Blocked resume must retain durable blocker evidence, preserve repair iteration, and dispatch exactly once'
+      );
+    }
+    const finalVerification = request.outcome.verifications.at(-1)!;
+    if (
+      finalVerification.attemptId !== repair.id ||
+      finalReview.subject.outputAttemptId !== repair.id
+    ) {
+      throw new DurableExecutionSpikeAuthorityError(
+        'Final verification and review must bind the resumed repair output'
       );
     }
   }
