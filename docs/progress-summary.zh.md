@@ -1942,6 +1942,19 @@ worktree 和 controlled Pi builder edit，再让已接受的 reviewer 修改同�
 integration 前拒绝，integration checkout 保持不变。这补齐了独立审查指出的最后一个 Stage 22 测试深度缺口。
 完整 suite 现已通过 `pnpm check` 验证（568 passed、1 skipped、90.01% branch coverage）以及 `pnpm build`。
 
+### Runtime V2 Migration
+
+已验证的 Stage 22R legacy runtime 已归档为 `stage22r-legacy-runtime-2486fe0` 和
+`archive/stage22r-legacy-runtime`。Runtime V2 在独立 migration branch 上开始。ADR-027 保留 Forge 的
+deterministic authority，同时分阶段替换 commodity execution infrastructure：PostgreSQL evidence parity、
+Temporal workflow/activity、OpenTelemetry correlation、agent backend validation、scheduler integration、
+review/repair parity、exact integration 和 legacy removal。
+
+Temporal 负责记住 execution 在哪里，PostgreSQL 负责记住 Forge 已授权什么，未来的 repository memory service
+负责记住学到了什么；三者都不能替代 Forge 的 deterministic decision authority。正式产品 UI 等待
+Temporal-neutral Forge read model 以及 inspect/status/cancel API。Runtime V2 期间可先定义 information
+architecture、evidence drawer contract、status vocabulary 和 visual language，但不绑定 legacy runtime。
+
 ### Stage 22R：Repair Continuation 设计
 
 Stage 22R 现已完成 blocked-repair continuation。runtime 维护一个按 repair attempt ID 去重的并行队列。新的
