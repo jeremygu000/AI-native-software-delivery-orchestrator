@@ -19,4 +19,9 @@ export {
   TaskOutputAdmissionCoordinator,
   TaskOutputAdmissionError
 } from './lib/task-output-admission-coordinator.js';
-export type { DurableExecutionSpikeContract } from './lib/durable-execution-spike-contract.js';
+export {
+  assertDurableExecutionSpikeOutcome,
+  DurableExecutionSpikeAuthorityError,
+  type DurableExecutionSpikeDriver,
+  type DurableExecutionSpikeOutcome
+} from './lib/durable-execution-spike-contract.js';
