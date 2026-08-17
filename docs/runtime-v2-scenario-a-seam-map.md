@@ -124,3 +124,12 @@ no durable-execution type in Forge domain contracts
 no full authority payload in execution history
 no change to existing Stage 22/22R authority rules
 ```
+
+## Extraction Status
+
+The four Scenario A application seams are implemented in `ForgeScenarioAServices` without durable-runtime
+types. Its direct authority regression proves builder attempt lifecycle, repair admission/execution, exact
+accepted integration, and compact result identities before either candidate durable runtime invokes it.
+
+The legacy runtime delegation and Temporal Scenario A composition remain separate follow-up increments. This
+keeps seam extraction independently reviewable against existing Stage 22/22R semantics.
