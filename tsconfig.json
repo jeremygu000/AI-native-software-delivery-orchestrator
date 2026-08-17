@@ -34,6 +34,9 @@
       "path": "./libs/postgres-persistence"
     },
     {
+      "path": "./libs/temporal-spike"
+    },
+    {
       "path": "./libs/workspace-git"
     },
     {
