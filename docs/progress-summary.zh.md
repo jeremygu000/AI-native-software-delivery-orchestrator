@@ -1954,6 +1954,11 @@ memory service 负责记住学到了什么；三者都不能替代 Forge 的 det
 durable-runtime-neutral Forge read model 以及 inspect/status/cancel API。Runtime V2 期间可先定义 information
 architecture、evidence drawer contract、status vocabulary 和 visual language，但不绑定 legacy runtime。
 
+Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activity skeleton，并用 Temporal test environment
+验证。Workflow history 只包含 run ID 与 scenario discriminator。第一个 Scenario A Activity 只返回 evidence ID；
+verification、review、lease 和 repository payload 保留在 Forge authority store。下一增量会把 Scenario A 委托给
+现有 Forge service，再在 Temporal 外部加载 SQLite authority evidence，使用 shared harness 验证。
+
 ### Stage 22R：Repair Continuation 设计
 
 Stage 22R 现已完成 blocked-repair continuation。runtime 维护一个按 repair attempt ID 去重的并行队列。新的

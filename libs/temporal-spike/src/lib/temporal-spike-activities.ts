@@ -4,8 +4,30 @@ export interface TemporalSpikeActivity {
     readonly runId: string;
     readonly scenario: 'build-review-repair-integrate' | 'blocked-repair-restart-resume';
   }): Promise<void>;
+  runBuildReviewRepairIntegrate(request: { readonly runId: string }): Promise<{
+    readonly builderAttemptId: string;
+    readonly finalRepairAttemptId: string;
+    readonly verificationEvidenceId: string;
+    readonly reviewEvidenceId: string;
+  }>;
 }
 
-export const createTemporalSpikeActivities = (): TemporalSpikeActivity => ({
-  recordExecutionBoundary: async () => undefined
+export interface TemporalSpikeScenarioService {
+  runBuildReviewRepairIntegrate(request: { readonly runId: string }): Promise<{
+    readonly builderAttemptId: string;
+    readonly finalRepairAttemptId: string;
+    readonly verificationEvidenceId: string;
+    readonly reviewEvidenceId: string;
+  }>;
+}
+
+export const createTemporalSpikeActivities = (
+  service: TemporalSpikeScenarioService = {
+    runBuildReviewRepairIntegrate: async () => {
+      throw new Error('Temporal spike scenario service is not configured');
+    }
+  }
+): TemporalSpikeActivity => ({
+  recordExecutionBoundary: async () => undefined,
+  runBuildReviewRepairIntegrate: service.runBuildReviewRepairIntegrate
 });
