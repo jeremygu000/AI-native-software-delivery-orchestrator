@@ -139,6 +139,14 @@ activity completes. This is Activity groundwork only: the next increment must co
 services for builder execution, evaluation, repair execution, evaluation, and exact integration. It must not
 invoke the legacy `OrchestrationRuntime` as one opaque Activity.
 
+An extracted Forge application boundary is justified only when it represents a durable continuation point,
+can reconnect using compact IDs or fingerprints, and can be tested independently against existing Stage 22/22R
+authority semantics. Individual database calls and coordinator methods do not become side-effect boundaries
+merely because a durable runtime supports small activities.
+
+The reviewed Scenario A boundary map is maintained in `docs/runtime-v2-scenario-a-seam-map.md`. It is the
+extraction gate for the Temporal and Restate spike implementations.
+
 ## Migration sequence
 
 1. Archive and tag the verified Stage 22R legacy checkpoint.
