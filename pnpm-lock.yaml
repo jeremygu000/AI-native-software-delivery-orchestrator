@@ -289,9 +289,6 @@ importers:
 
   libs/temporal-spike:
     dependencies:
-      '@ai-native-software-delivery-orchestrator/domain':
-        specifier: workspace:*
-        version: link:../domain
       '@temporalio/client':
         specifier: ^1.22.0
         version: 1.22.0

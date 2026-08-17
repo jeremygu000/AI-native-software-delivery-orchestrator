@@ -15,5 +15,8 @@ export const runTemporalSpikeWorkflow = async (request: {
   readonly scenario: 'build-review-repair-integrate' | 'blocked-repair-restart-resume';
 }): Promise<{ readonly runId: string; readonly scenario: string }> => {
   await activities.recordExecutionBoundary(request);
+  if (request.scenario === 'build-review-repair-integrate') {
+    await activities.runBuildReviewRepairIntegrate({ runId: request.runId });
+  }
   return request;
 };

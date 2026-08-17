@@ -28,7 +28,14 @@ describe('Temporal spike workflow', () => {
       connection: environment.nativeConnection,
       taskQueue: 'temporal-spike-test',
       workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url)),
-      activities: createTemporalSpikeActivities()
+      activities: createTemporalSpikeActivities({
+        runBuildReviewRepairIntegrate: async () => ({
+          builderAttemptId: 'builder-1',
+          finalRepairAttemptId: 'repair-1',
+          verificationEvidenceId: 'verification-1',
+          reviewEvidenceId: 'review-1'
+        })
+      })
     });
     environments.push({ environment, worker });
     const client = new Client({ connection: environment.client.connection });

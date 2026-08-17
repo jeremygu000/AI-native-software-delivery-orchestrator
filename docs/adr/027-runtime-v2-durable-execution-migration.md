@@ -132,6 +132,11 @@ review evidence, repair budget, and integration result. Runtime-conflict parity 
 Stage 22/22R differential suite because neither narrow spike scenario must create a conflict. Candidate
 framework history is not part of parity acceptance.
 
+The Temporal candidate skeleton proves real worker, workflow, and Activity execution through Temporal's test
+environment. Its Scenario A Activity returns only compact evidence identifiers to workflow history. Full Forge
+authority objects remain in the authority store and will be loaded by the host-side shared harness after the
+activity completes.
+
 ## Migration sequence
 
 1. Archive and tag the verified Stage 22R legacy checkpoint.
