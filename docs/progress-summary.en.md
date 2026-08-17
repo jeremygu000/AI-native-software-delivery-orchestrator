@@ -2253,15 +2253,14 @@ Restate spikes before full migration. PostgreSQL evidence storage remains a scal
 V2 prerequisite.
 
 The selected durable runtime remembers where execution is, SQLite currently remembers what Forge has
-inspect/status/cancel API; early UI work may
-define information architecture, evidence-drawer contracts, status vocabulary, and visual language without
-binding to the legacy runtime.
+inspect/status/cancel API; early UI work may define information architecture, evidence-drawer contracts,
+status vocabulary, and visual language without binding to the legacy runtime.
 
 The Temporal candidate now has an isolated real worker, workflow, and Activity skeleton validated with
 Temporal's test environment. Workflow history contains only the run ID and scenario discriminator. The first
 Scenario A Activity returns only evidence IDs; verification, review, lease, and repository payloads remain in
-Forge's authority store. The next increment delegates Scenario A to existing Forge services and loads SQLite
-authority evidence outside Temporal for shared-harness validation.
+Forge's authority store. This is Activity groundwork, not Scenario A completion: the next increment delegates
+opaque Activity.
 
 ### Stage 22R: Repair Continuation Design
 
