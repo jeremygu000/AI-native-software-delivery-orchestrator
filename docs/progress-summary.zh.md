@@ -1956,8 +1956,10 @@ architecture、evidence drawer contract、status vocabulary 和 visual language�
 
 Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activity skeleton，并用 Temporal test environment
 验证。Workflow history 只包含 run ID 与 scenario discriminator。第一个 Scenario A Activity 只返回 evidence ID；
-verification、review、lease 和 repository payload 保留在 Forge authority store。下一增量会把 Scenario A 委托给
-现有 Forge service，再在 Temporal 外部加载 SQLite authority evidence，使用 shared harness 验证。
+verification、review、lease 和 repository payload 保留在 Forge authority store。这只是 Activity groundwork，不是
+Scenario A 已完成：下一增量会把 builder、evaluation、repair 和 exact integration boundary 委托给现有 Forge
+service，再在 Temporal 外部加载 SQLite authority evidence，使用 shared harness 验证。不得把 legacy runtime 包装成
+一个 opaque Activity。
 
 ### Stage 22R：Repair Continuation 设计
 

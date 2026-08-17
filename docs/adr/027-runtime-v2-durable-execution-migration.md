@@ -135,7 +135,9 @@ framework history is not part of parity acceptance.
 The Temporal candidate skeleton proves real worker, workflow, and Activity execution through Temporal's test
 environment. Its Scenario A Activity returns only compact evidence identifiers to workflow history. Full Forge
 authority objects remain in the authority store and will be loaded by the host-side shared harness after the
-activity completes.
+activity completes. This is Activity groundwork only: the next increment must compose existing narrow Forge
+services for builder execution, evaluation, repair execution, evaluation, and exact integration. It must not
+invoke the legacy `OrchestrationRuntime` as one opaque Activity.
 
 ## Migration sequence
 
