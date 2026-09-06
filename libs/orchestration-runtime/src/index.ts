@@ -20,6 +20,10 @@ export {
   TaskOutputAdmissionError
 } from './lib/task-output-admission-coordinator.js';
 export {
+  ForgeBuilderExecutionError,
+  ForgeBuilderExecutionService
+} from './lib/forge-builder-execution-service.js';
+export {
   assertDurableExecutionSpikeOutcome,
   DurableExecutionSpikeAuthorityError,
   type DurableExecutionSpikeDriver,
