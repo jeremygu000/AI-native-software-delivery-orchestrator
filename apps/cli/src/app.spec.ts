@@ -705,3 +705,95 @@ describe('forge analyze', () => {
     expect(errorOutput).toContain('verification-policy');
   });
 });
+
+describe('forge status', () => {
+  it('outputs run status as JSON', async () => {
+    let output = '';
+    const mockStatus = {
+      runId: 'run-1',
+      state: 'ACTIVE',
+      createdAt: '2026-08-13T00:00:00.000Z',
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Test task',
+          state: 'RUNNING',
+          attempts: [
+            {
+              id: 'attempt-1',
+              state: 'RUNNING',
+              startedAt: '2026-08-13T00:01:00.000Z'
+            }
+          ]
+        }
+      ],
+      leases: [
+        {
+          id: 'lease-1',
+          resource: { type: 'project', projectId: 'core' },
+          state: 'ACTIVE',
+          agentId: 'agent-1',
+          taskId: 'task-1'
+        }
+      ],
+      events: [
+        {
+          sequence: 1,
+          occurredAt: '2026-08-13T00:00:00.000Z',
+          type: 'run-started'
+        },
+        {
+          sequence: 2,
+          occurredAt: '2026-08-13T00:01:00.000Z',
+          type: 'agent-completed',
+          taskId: 'task-1',
+          detail: undefined
+        }
+      ]
+    };
+    const program = createForgeProgram({
+      statusRun: async () => mockStatus,
+      writeOutput: (value) => {
+        output += value;
+      }
+    });
+
+    await program.parseAsync(['node', 'forge', 'status', '--run-id', 'run-1']);
+
+    const result: unknown = JSON.parse(output);
+    expect(result).toEqual(mockStatus);
+  });
+
+  it('accepts custom run-directory', async () => {
+    let capturedRequest: { runId: string; runDirectory: string } | undefined;
+    const program = createForgeProgram({
+      statusRun: async (request) => {
+        capturedRequest = request;
+        return {
+          runId: request.runId,
+          state: 'COMPLETED',
+          createdAt: '2026-08-13T00:00:00.000Z',
+          tasks: [],
+          leases: [],
+          events: []
+        };
+      },
+      writeOutput: () => {}
+    });
+
+    await program.parseAsync([
+      'node',
+      'forge',
+      'status',
+      '--run-id',
+      'run-1',
+      '--run-directory',
+      '/custom/path'
+    ]);
+
+    expect(capturedRequest).toEqual({
+      runId: 'run-1',
+      runDirectory: '/custom/path'
+    });
+  });
+});

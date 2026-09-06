@@ -27,6 +27,7 @@ import {
   type PlanArtifact
 } from '@ai-native-software-delivery-orchestrator/planning';
 import {
+  DrizzleSqliteOrchestrationPersistence,
   JsonFilePlanApprovalStore,
   JsonFilePlanArtifactStore,
   resolvePlanArtifactDirectory
@@ -98,6 +99,10 @@ export interface ForgeProgramDependencies {
     readonly reviewProvider: string;
     readonly reviewModel: string;
   }) => Promise<unknown>;
+  readonly statusRun?: (request: {
+    readonly runId: string;
+    readonly runDirectory: string;
+  }) => Promise<RunStatusResult>;
   readonly writeOutput?: (output: string) => void;
 }
 
@@ -243,6 +248,99 @@ export const loadSharedResourceRegistry = async (
   const source = await readFile(configurationPath, 'utf8');
   const configuration: unknown = JSON.parse(source);
   return new SharedResourceRegistry(sharedResourceRegistryConfigSchema.parse(configuration));
+};
+
+export interface RunStatusResult {
+  readonly runId: string;
+  readonly state: string;
+  readonly createdAt: string;
+  readonly tasks: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly state: string;
+    readonly attempts: readonly {
+      readonly id: string;
+      readonly state: string;
+      readonly startedAt?: string;
+      readonly completedAt?: string;
+      readonly failure?: { readonly type: string; readonly detail?: string };
+    }[];
+  }[];
+  readonly leases: readonly {
+    readonly id: string;
+    readonly resource: {
+      readonly type: string;
+      readonly projectId?: string;
+      readonly fileId?: string;
+    };
+    readonly state: string;
+    readonly agentId: string;
+    readonly taskId: string;
+  }[];
+  readonly events: readonly {
+    readonly sequence: number;
+    readonly occurredAt: string;
+    readonly type: string;
+    readonly taskId?: string;
+    readonly detail?: string;
+  }[];
+}
+
+const statusRun = async (request: {
+  readonly runId: string;
+  readonly runDirectory: string;
+}): Promise<RunStatusResult> => {
+  const databasePath = join(request.runDirectory, request.runId, 'run.sqlite');
+  const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
+  const recovered = await persistence.recoverRun(request.runId);
+  if (recovered === undefined) {
+    throw new Error(`Run not found: ${request.runId}`);
+  }
+  const tasks = recovered.tasks.map((task) => {
+    const taskAttempts = recovered.attempts.filter((a) => a.attempt.taskId === task.id);
+    const taskTransitions = recovered.transitions.filter((t) => t.taskId === task.id);
+    const lastTransition = taskTransitions.toSorted((a, b) => b.sequence - a.sequence)[0];
+    return {
+      id: task.id,
+      title: task.title,
+      state: lastTransition?.toState ?? 'PENDING',
+      attempts: taskAttempts.map((a) => ({
+        id: a.attempt.id,
+        state: a.attempt.state,
+        startedAt: a.attempt.startedAt?.toISOString(),
+        completedAt: a.attempt.completedAt?.toISOString(),
+        failure: a.attempt.failure
+      }))
+    };
+  });
+  const leases = recovered.leases.map((l) => ({
+    id: l.lease.id,
+    resource: l.lease.resource,
+    state: l.lease.state,
+    agentId: l.lease.agentId,
+    taskId: l.lease.taskId
+  }));
+  const events = recovered.events.map((e) => {
+    const evt = e.event as Record<string, unknown>;
+    const taskId = 'taskId' in evt ? String(evt.taskId) : undefined;
+    const detail = 'detail' in evt ? String(evt.detail) : undefined;
+    const leaseId = 'leaseId' in evt ? String(evt.leaseId) : undefined;
+    return {
+      sequence: e.sequence,
+      occurredAt: e.occurredAt,
+      type: e.event.type,
+      taskId,
+      detail: detail ?? (leaseId !== undefined ? `leaseId=${leaseId}` : undefined)
+    };
+  });
+  return {
+    runId: recovered.run.id,
+    state: recovered.run.state,
+    createdAt: recovered.run.createdAt,
+    tasks,
+    leases,
+    events
+  };
 };
 
 const planStores = async (request: {
@@ -436,6 +534,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
   const approvePlan = dependencies.approvePlan ?? approveRepositoryPlan;
   const bindPlan = dependencies.bindPlan ?? bindRepositoryPlan;
   const runPlan = dependencies.runPlan ?? runRepositoryPlan;
+  const statusRunFn = dependencies.statusRun ?? statusRun;
   const writeOutput =
     dependencies.writeOutput ?? ((output: string) => process.stdout.write(output));
 
@@ -684,6 +783,31 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
         }
       }
     );
+
+  program
+    .command('status')
+    .description('Show the current state of a run, including tasks, leases, and recent events')
+    .requiredOption('--run-id <id>', 'run identity to query')
+    .option(
+      '--run-directory <path>',
+      'directory containing the run database (default: ~/.forge/runs/<repository-id>/<run-id>)'
+    )
+    .action(async (options: { runId: string; runDirectory?: string }) => {
+      try {
+        const runDirectory =
+          options.runDirectory ?? join(homedir(), '.forge', 'runs', options.runId);
+        const result = await statusRunFn({
+          runId: options.runId,
+          runDirectory
+        });
+        writeOutput(`${JSON.stringify(result, null, 2)}\n`);
+      } catch (error) {
+        if (error instanceof Error) {
+          program.error(error.message);
+        }
+        throw error;
+      }
+    });
 
   return program;
 };
