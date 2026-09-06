@@ -660,6 +660,14 @@ export class OrchestrationRuntime {
           state.hardConflicts.push(...conflicts);
           await this.#recordEvent(state, { type: 'runtime-reconciliation-recovered' }, conflicts);
         }
+        const unauthorizedReadIds = reconciliation.reconciliation.unauthorizedReadIds;
+        if (unauthorizedReadIds && unauthorizedReadIds.size > 0) {
+          await this.#recordEvent(state, {
+            type: 'unauthorized-read',
+            taskId,
+            fileIds: [...unauthorizedReadIds]
+          });
+        }
         if (this.#stateFor(state.snapshot, taskId) !== 'FAILED') {
           this.#setState(state, taskId, 'VERIFYING');
           await this.#recordEvent(state, { type: 'agent-completed', taskId, state: 'VERIFYING' });

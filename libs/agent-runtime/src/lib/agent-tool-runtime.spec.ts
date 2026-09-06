@@ -88,9 +88,19 @@ describe('AgentToolRuntime', () => {
     expect(persistence.leases).toMatchObject([
       { lease: { state: 'ACTIVE', resource: { type: 'file' } } }
     ]);
-    expect(tools.observedImpact()).toMatchObject({ filesWritten: new Set(['core:value.txt']) });
+    expect(tools.observedImpact()).toMatchObject({
+      filesRead: new Set(['core:', 'core:value.txt']),
+      filesWritten: new Set(['core:value.txt'])
+    });
     expect(persistence.impacts).toMatchObject([
-      { impact: { observed: { filesWritten: new Set(['core:value.txt']) } } }
+      {
+        impact: {
+          observed: {
+            filesRead: new Set(['core:', 'core:value.txt']),
+            filesWritten: new Set(['core:value.txt'])
+          }
+        }
+      }
     ]);
   });
 

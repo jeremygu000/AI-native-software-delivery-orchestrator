@@ -1957,3 +1957,15 @@ builder snapshot。recovery coverage 已证明 released、stale、active、CAS-l
 和 re-blocked outcome。live multi-task regression 还证明 unrelated release 不会动作，而 matching builder lease
 release 只会产生一次 resumed repair dispatch。`pnpm check` 通过：570 passed、1 skipped、90.12% branch coverage；
 `pnpm build` 也通过。Stage 22 已关闭。
+
+### Stage 23: Observed Impact Reconciliation（观察性影响对账）
+
+Stage 23 关闭了观察性影响对账缺口。运行时现在跟踪代理在实际执行过程中读取了哪些文件，并验证这些读取是否在预测的影响范围内。
+
+`AgentToolRuntime` 现在在其 `observedImpact()` 中跟踪文件读取。当代理调用 `read()`、`list()` 或 `find()` 时，访问的文件 ID 会记录在 `#readFileIds` 集合中。这些信息通过 `PiAgentRunner` 流向 `OrchestrationRuntime`，在那里 `RepositoryImpactReconciler` 将观察到的读取与预测读取进行比较。
+
+`RepositoryImpactReconciler.reconcile()` 现在计算 `unauthorizedReadIds`：代理读取了但不在预测 `filesRead` 集中的文件。这作为调度器事件日志中的新的 `unauthorized-read` 事件呈现，而不是直接使任务失败——读取是范围违规，但不是安全边界违规（与无租约写入不同）。
+
+对账结果类型 `TaskImpactReconciliation` 增加了一个可选的 `unauthorizedReadIds` 字段。`RepairRuntimeFeedback` 接口增加了一个可选的 `unauthorizedRead()` 方法用于修复时回调。
+
+`pnpm check` 通过：572 passed、1 skipped、90.04% branch coverage；`pnpm build` 也通过。Stage 23 已关闭。

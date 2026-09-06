@@ -56,7 +56,11 @@ export const schedulerEventSchema = z.discriminatedUnion('type', [
     type: z.literal('runtime-conflict-discovered'),
     conflictId: taskIdSchema
   }),
-  taskEventSchema.extend({ type: z.literal('runtime-conflict-resolved'), conflictId: taskIdSchema })
+  taskEventSchema.extend({
+    type: z.literal('runtime-conflict-resolved'),
+    conflictId: taskIdSchema
+  }),
+  taskEventSchema.extend({ type: z.literal('unauthorized-read'), fileIds: z.array(z.string()) })
 ]);
 
 export type SchedulerEvent = z.infer<typeof schedulerEventSchema>;
@@ -303,5 +307,10 @@ export interface RepairRuntimeFeedback {
     readonly runId: string;
     readonly taskId: string;
     readonly expandedResources: readonly WritableResource[];
+  }): Promise<void>;
+  unauthorizedRead?(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly fileIds: readonly string[];
   }): Promise<void>;
 }

@@ -2261,3 +2261,15 @@ phase or repair states into the builder snapshot. Recovery coverage proves relea
 unrelated release does nothing, while the matching builder lease release causes exactly one resumed repair
 dispatch. `pnpm check` passes with 570 tests passed, 1 skipped, and 90.12% branch coverage; `pnpm build` also
 passes. Stage 22 is closed.
+
+### Stage 23: Observed Impact Reconciliation
+
+Stage 23 closes the observed impact reconciliation gap. The runtime now tracks which files the agent actually reads during execution and validates those reads against the predicted impact scope.
+
+The `AgentToolRuntime` now tracks file reads in its `observedImpact()`. When the agent calls `read()`, `list()`, or `find()`, the accessed file IDs are recorded in a `#readFileIds` set. This information flows through `PiAgentRunner` to `OrchestrationRuntime`, where `RepositoryImpactReconciler` compares observed reads against predicted reads.
+
+`RepositoryImpactReconciler.reconcile()` now computes `unauthorizedReadIds`: files the agent read that were not in the predicted `filesRead` set. This is surfaced as a new `unauthorized-read` event in the scheduler event log rather than failing the task outright—reads are scope violations but not security boundary violations (unlike unleased writes).
+
+The reconciliation result type `TaskImpactReconciliation` gains an optional `unauthorizedReadIds` field. The `RepairRuntimeFeedback` interface gains an optional `unauthorizedRead()` method for repair-time callbacks.
+
+`pnpm check` passes with 572 tests passed, 1 skipped, and 90.04% branch coverage; `pnpm build` also passes. Stage 23 is closed.

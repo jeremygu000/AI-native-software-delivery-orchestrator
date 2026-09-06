@@ -154,4 +154,30 @@ describe('RepositoryImpactReconciler', () => {
       reconciliation: { status: 'unleased-change', unleasedFileIds: new Set(['core:extra.txt']) }
     });
   });
+
+  it('records unauthorized reads when agent reads files outside predicted scope', async () => {
+    const result = await reconciler([]).reconcile({
+      ...request(),
+      impact: {
+        ...request().impact,
+        predicted: {
+          ...request().impact.predicted,
+          filesRead: new Set(['core:approved.txt'])
+        }
+      },
+      reportedImpact: {
+        taskId: 'task-1',
+        filesRead: new Set(['core:approved.txt', 'core:extra.txt']),
+        filesCreated: new Set(),
+        filesWritten: new Set(),
+        filesDeleted: new Set(),
+        symbolsWritten: new Set(),
+        dependencyRequests: new Set(),
+        manifestFilesChanged: new Set(),
+        generatedFilesChanged: new Set()
+      }
+    });
+
+    expect(result.reconciliation.unauthorizedReadIds).toEqual(new Set(['core:extra.txt']));
+  });
 });

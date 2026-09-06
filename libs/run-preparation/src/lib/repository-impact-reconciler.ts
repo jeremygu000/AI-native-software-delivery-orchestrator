@@ -76,12 +76,18 @@ export class RepositoryImpactReconciler implements TaskImpactReconciler {
       manifestFilesChanged: reported?.manifestFilesChanged ?? new Set(),
       generatedFilesChanged: reported?.generatedFilesChanged ?? new Set()
     };
+    const predictedReads = request.impact.predicted.filesRead;
+    const unauthorizedReadIds =
+      predictedReads.size > 0 || (reported?.filesRead?.size ?? 0) > 0
+        ? [...(observed.filesRead ?? new Set())].filter((fileId) => !predictedReads.has(fileId))
+        : [];
     return {
       observed,
       reconciliation: {
         status,
         expandedFileIds: stableSet(expandedFileIds),
-        unleasedFileIds: stableSet(unleasedFileIds)
+        unleasedFileIds: stableSet(unleasedFileIds),
+        unauthorizedReadIds: stableSet(unauthorizedReadIds)
       },
       expandedResources: expandedFileIds
         .map((fileId) => resources.get(fileId))

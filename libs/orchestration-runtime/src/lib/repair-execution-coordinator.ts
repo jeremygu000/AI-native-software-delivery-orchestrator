@@ -182,6 +182,14 @@ export class RepairExecutionCoordinator {
         expandedResources: reconciliation.expandedResources ?? []
       });
     }
+    const unauthorizedReadIds = reconciliation.reconciliation.unauthorizedReadIds;
+    if (unauthorizedReadIds && unauthorizedReadIds.size > 0) {
+      await (request.feedback ?? this.#feedback).unauthorizedRead!({
+        runId: request.repair.runId,
+        taskId: request.task.id,
+        fileIds: [...unauthorizedReadIds]
+      });
+    }
     const completed = await this.#repairs.complete(running);
     await this.#release(allLeases, request.feedback);
     const verification = await this.#verifier.verify({

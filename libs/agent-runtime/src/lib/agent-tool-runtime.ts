@@ -40,6 +40,7 @@ export class AgentToolRuntime {
   readonly #context: AgentToolRuntimeContext;
   readonly #leasesByResource = new Map<string, WriteLease>();
   readonly #writtenFileIds = new Set<string>();
+  readonly #readFileIds = new Set<string>();
   #impact: TaskImpact | undefined;
   #initialLeases: readonly WriteLease[] | undefined;
 
@@ -58,11 +59,16 @@ export class AgentToolRuntime {
   }
 
   async read(path: string): Promise<string> {
-    return readFile(await this.#resolve(path), 'utf8');
+    const absolutePath = await this.#resolve(path);
+    const workspaceRelativePath = this.#relative(absolutePath);
+    this.#readFileIds.add(this.#context.resolveFileId(workspaceRelativePath));
+    return readFile(absolutePath, 'utf8');
   }
 
   async list(path = '.'): Promise<readonly string[]> {
     const directory = await this.#resolve(path, true);
+    const workspaceRelativePath = this.#relative(directory, true);
+    this.#readFileIds.add(this.#context.resolveFileId(workspaceRelativePath));
     return (await readdir(directory, { withFileTypes: true }))
       .map((entry) => entry.name)
       .toSorted(compareText);
@@ -109,9 +115,10 @@ export class AgentToolRuntime {
 
   observedImpact(): TaskImpact['observed'] {
     const filesWritten = new Set([...this.#writtenFileIds].toSorted(compareText));
+    const filesRead = new Set([...this.#readFileIds].toSorted(compareText));
     return {
       taskId: this.#context.taskId,
-      filesRead: new Set(),
+      filesRead,
       filesCreated: new Set(),
       filesWritten,
       filesDeleted: new Set(),

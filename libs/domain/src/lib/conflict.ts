@@ -117,6 +117,7 @@ export interface TaskImpactReconciliation {
   readonly status: 'within-predicted-scope' | 'runtime-scope-expanded' | 'unleased-change';
   readonly expandedFileIds: ReadonlySet<FileId>;
   readonly unleasedFileIds: ReadonlySet<FileId>;
+  readonly unauthorizedReadIds?: ReadonlySet<FileId>;
 }
 
 export interface TaskImpact {
