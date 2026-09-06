@@ -704,6 +704,32 @@ describe('forge analyze', () => {
     expect(errorOutput).toContain('working-tree');
     expect(errorOutput).toContain('verification-policy');
   });
+
+  it('rethrows non-binding errors from runPlan', async () => {
+    const runPlan = vi.fn(async () => {
+      throw new Error('Something went wrong');
+    });
+    const program = createForgeProgram({ runPlan });
+    try {
+      await program.parseAsync([
+        'node',
+        'forge',
+        'run',
+        'plan-1',
+        '--approval',
+        'approval-1',
+        '--run-id',
+        'run-1',
+        '--review-provider',
+        'test',
+        '--review-model',
+        'test'
+      ]);
+      expect.fail('Should have thrown');
+    } catch (error) {
+      expect(String(error)).toContain('Something went wrong');
+    }
+  });
 });
 
 describe('forge status', () => {
@@ -795,5 +821,26 @@ describe('forge status', () => {
       runId: 'run-1',
       runDirectory: '/custom/path'
     });
+  });
+
+  it('prints error message when statusRun throws', async () => {
+    let errorOutput = '';
+    const program = createForgeProgram({
+      statusRun: async () => {
+        throw new Error('Run not found');
+      },
+      writeOutput: () => {}
+    });
+    program.exitOverride();
+    program.configureOutput({
+      writeErr: (value) => {
+        errorOutput += value;
+      }
+    });
+
+    await expect(
+      program.parseAsync(['node', 'forge', 'status', '--run-id', 'nonexistent'])
+    ).rejects.toMatchObject({ code: 'commander.error' });
+    expect(errorOutput).toContain('Run not found');
   });
 });

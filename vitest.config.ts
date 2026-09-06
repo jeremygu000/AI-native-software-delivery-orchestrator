@@ -23,6 +23,7 @@ export default defineConfig({
         '**/*.spec.ts',
         '**/src/index.ts',
         'apps/cli/src/main.ts',
+        'apps/cli/src/app.ts',
         'libs/agent-runtime/src/lib/macos-command-sandbox.ts',
         'libs/domain/src/lib/repository-graph.ts'
       ],
