@@ -483,6 +483,58 @@ describe('DeterministicConflictEngine', () => {
     ]);
     expect(conflict.score).toBe(100);
   });
+
+  it('creates conflict from public-api-touch risk signal when downstream projects are in scope', () => {
+    const engine = new DeterministicConflictEngine(registry);
+    const conflict = engine.compare(
+      impact('core-change', {
+        projectsWritten: new Set(['core']),
+        downstreamProjects: new Set(['consumer']),
+        riskSignals: [{ type: 'public-api-touch', detail: 'exported symbol touched' }]
+      }),
+      impact('consumer-change', {
+        projectsWritten: new Set(['consumer'])
+      }),
+      graph
+    );
+
+    expect(conflict.score).toBeGreaterThan(0);
+    expect(conflict.reasons.some((r) => r.type === 'public-api-touch')).toBe(true);
+  });
+
+  it('creates conflict from high-fan-out risk signal when downstream projects are in scope', () => {
+    const engine = new DeterministicConflictEngine(registry);
+    const conflict = engine.compare(
+      impact('core-change', {
+        projectsWritten: new Set(['core']),
+        downstreamProjects: new Set(['consumer']),
+        riskSignals: [{ type: 'high-fan-out', detail: 'many consumers' }]
+      }),
+      impact('consumer-change', {
+        projectsWritten: new Set(['consumer'])
+      }),
+      graph
+    );
+
+    expect(conflict.score).toBeGreaterThan(0);
+    expect(conflict.reasons.some((r) => r.type === 'high-fan-out')).toBe(true);
+  });
+
+  it('does not create public-api-touch conflict when downstream projects are not in scope', () => {
+    const engine = new DeterministicConflictEngine(registry);
+    const conflict = engine.compare(
+      impact('other-change', {
+        projectsWritten: new Set(['other']),
+        riskSignals: [{ type: 'public-api-touch', detail: 'exported symbol touched' }]
+      }),
+      impact('another-change', {
+        projectsWritten: new Set(['other'])
+      }),
+      graph
+    );
+
+    expect(conflict.reasons.some((r) => r.type === 'public-api-touch')).toBe(false);
+  });
 });
 
 describe('conflictEngineConfigSchema', () => {
