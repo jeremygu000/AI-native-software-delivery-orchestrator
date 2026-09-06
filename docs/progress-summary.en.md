@@ -2273,3 +2273,15 @@ The `AgentToolRuntime` now tracks file reads in its `observedImpact()`. When the
 The reconciliation result type `TaskImpactReconciliation` gains an optional `unauthorizedReadIds` field. The `RepairRuntimeFeedback` interface gains an optional `unauthorizedRead()` method for repair-time callbacks.
 
 `pnpm check` passes with 572 tests passed, 1 skipped, and 90.04% branch coverage; `pnpm build` also passes. Stage 23 is closed.
+
+### Stage 24: Run Operations and Recovery Control
+
+Stage 24 adds run operations and recovery control commands to the CLI.
+
+The `forge status` command queries the SQLite run database and returns the current run state including tasks, leases, and scheduler events as JSON. It uses `DrizzleSqliteOrchestrationPersistence.recoverRun()` to reconstruct run state and formats task states from transition history.
+
+The `forge cancel` command cancels an active run by calling `DrizzleSqliteOrchestrationPersistence.updateRunState()` with `CANCELLED` state. It validates that the run exists and is in a cancellable state (ACTIVE), rejecting already-cancelled or completed/failed runs.
+
+Both commands support `--run-directory` to specify custom database locations, defaulting to `~/.forge/runs/<run-id>`.
+
+`pnpm check` passes with 578 tests passed, 1 skipped, and 90.31% branch coverage; `pnpm build` also passes. Stage 24 is closed.

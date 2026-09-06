@@ -103,6 +103,10 @@ export interface ForgeProgramDependencies {
     readonly runId: string;
     readonly runDirectory: string;
   }) => Promise<RunStatusResult>;
+  readonly cancelRun?: (request: {
+    readonly runId: string;
+    readonly runDirectory: string;
+  }) => Promise<{ readonly runId: string; readonly state: string }>;
   readonly writeOutput?: (output: string) => void;
 }
 
@@ -285,6 +289,26 @@ export interface RunStatusResult {
     readonly detail?: string;
   }[];
 }
+
+const cancelRun = async (request: {
+  readonly runId: string;
+  readonly runDirectory: string;
+}): Promise<{ readonly runId: string; readonly state: string }> => {
+  const databasePath = join(request.runDirectory, request.runId, 'run.sqlite');
+  const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
+  const recovered = await persistence.recoverRun(request.runId);
+  if (recovered === undefined) {
+    throw new Error(`Run not found: ${request.runId}`);
+  }
+  if (recovered.run.state === 'CANCELLED') {
+    throw new Error(`Run ${request.runId} is already cancelled`);
+  }
+  if (recovered.run.state === 'COMPLETED' || recovered.run.state === 'FAILED') {
+    throw new Error(`Cannot cancel run ${request.runId} in state ${recovered.run.state}`);
+  }
+  await persistence.updateRunState(request.runId, 'CANCELLED');
+  return { runId: request.runId, state: 'CANCELLED' };
+};
 
 const statusRun = async (request: {
   readonly runId: string;
@@ -535,6 +559,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
   const bindPlan = dependencies.bindPlan ?? bindRepositoryPlan;
   const runPlan = dependencies.runPlan ?? runRepositoryPlan;
   const statusRunFn = dependencies.statusRun ?? statusRun;
+  const cancelRunFn = dependencies.cancelRun ?? cancelRun;
   const writeOutput =
     dependencies.writeOutput ?? ((output: string) => process.stdout.write(output));
 
@@ -797,6 +822,31 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
         const runDirectory =
           options.runDirectory ?? join(homedir(), '.forge', 'runs', options.runId);
         const result = await statusRunFn({
+          runId: options.runId,
+          runDirectory
+        });
+        writeOutput(`${JSON.stringify(result, null, 2)}\n`);
+      } catch (error) {
+        if (error instanceof Error) {
+          program.error(error.message);
+        }
+        throw error;
+      }
+    });
+
+  program
+    .command('cancel')
+    .description('Cancel an active run, marking it as CANCELLED')
+    .requiredOption('--run-id <id>', 'run identity to cancel')
+    .option(
+      '--run-directory <path>',
+      'directory containing the run database (default: ~/.forge/runs/<run-id>)'
+    )
+    .action(async (options: { runId: string; runDirectory?: string }) => {
+      try {
+        const runDirectory =
+          options.runDirectory ?? join(homedir(), '.forge', 'runs', options.runId);
+        const result = await cancelRunFn({
           runId: options.runId,
           runDirectory
         });

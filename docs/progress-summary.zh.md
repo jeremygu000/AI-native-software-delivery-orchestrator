@@ -1969,3 +1969,15 @@ Stage 23 关闭了观察性影响对账缺口。运行时现在跟踪代理在�
 对账结果类型 `TaskImpactReconciliation` 增加了一个可选的 `unauthorizedReadIds` 字段。`RepairRuntimeFeedback` 接口增加了一个可选的 `unauthorizedRead()` 方法用于修复时回调。
 
 `pnpm check` 通过：572 passed、1 skipped、90.04% branch coverage；`pnpm build` 也通过。Stage 23 已关闭。
+
+### Stage 24: Run Operations and Recovery Control（运行操作和恢复控制）
+
+Stage 24 为 CLI 添加了运行操作和恢复控制命令。
+
+`forge status` 命令查询 SQLite 运行数据库，返回当前运行状态，包括 task、lease 和调度器事件，格式为 JSON。它使用 `DrizzleSqliteOrchestrationPersistence.recoverRun()` 重建运行状态，并从转换历史中格式化 task 状态。
+
+`forge cancel` 命令通过调用 `DrizzleSqliteOrchestrationPersistence.updateRunState()` 并传入 `CANCELLED` 状态来取消活跃的运行。它验证运行存在且处于可取消状态（ACTIVE），拒绝已取消或已完成/失败的运行。
+
+两个命令都支持 `--run-directory` 指定自定义数据库位置，默认为 `~/.forge/runs/<run-id>`。
+
+`pnpm check` 通过：578 passed、1 skipped、90.31% branch coverage；`pnpm build` 也通过。Stage 24 已关闭。

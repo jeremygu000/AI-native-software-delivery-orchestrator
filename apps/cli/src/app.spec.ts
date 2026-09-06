@@ -844,3 +844,67 @@ describe('forge status', () => {
     expect(errorOutput).toContain('Run not found');
   });
 });
+
+describe('forge cancel', () => {
+  it('cancels an active run and returns CANCELLED state', async () => {
+    let output = '';
+    const program = createForgeProgram({
+      cancelRun: async () => ({ runId: 'run-1', state: 'CANCELLED' }),
+      writeOutput: (value) => {
+        output += value;
+      }
+    });
+
+    await program.parseAsync(['node', 'forge', 'cancel', '--run-id', 'run-1']);
+
+    const result: unknown = JSON.parse(output);
+    expect(result).toEqual({ runId: 'run-1', state: 'CANCELLED' });
+  });
+
+  it('accepts custom run-directory', async () => {
+    let capturedRequest: { runId: string; runDirectory: string } | undefined;
+    const program = createForgeProgram({
+      cancelRun: async (request) => {
+        capturedRequest = request;
+        return { runId: request.runId, state: 'CANCELLED' };
+      },
+      writeOutput: () => {}
+    });
+
+    await program.parseAsync([
+      'node',
+      'forge',
+      'cancel',
+      '--run-id',
+      'run-1',
+      '--run-directory',
+      '/custom/path'
+    ]);
+
+    expect(capturedRequest).toEqual({
+      runId: 'run-1',
+      runDirectory: '/custom/path'
+    });
+  });
+
+  it('prints error when run not found', async () => {
+    let errorOutput = '';
+    const program = createForgeProgram({
+      cancelRun: async () => {
+        throw new Error('Run not found');
+      },
+      writeOutput: () => {}
+    });
+    program.exitOverride();
+    program.configureOutput({
+      writeErr: (value) => {
+        errorOutput += value;
+      }
+    });
+
+    await expect(
+      program.parseAsync(['node', 'forge', 'cancel', '--run-id', 'nonexistent'])
+    ).rejects.toMatchObject({ code: 'commander.error' });
+    expect(errorOutput).toContain('Run not found');
+  });
+});
