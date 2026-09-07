@@ -1,13 +1,11 @@
 import type {
-  AgentExecutionAttempt,
   PersistedAgentExecutionAttempt,
   PersistedTaskCodeReview,
   PersistedTaskRepairAttempt,
   PersistedWriteLease,
   RecoveredRun,
   TaskCodeReview,
-  TaskCodeReviewSubject,
-  TaskRepairAttempt
+  TaskCodeReviewSubject
 } from '@ai-native-software-delivery-orchestrator/domain';
 import type {
   DurableExecutionSpikeOutcome
@@ -37,6 +35,7 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
   const reviews = await persistence.recoverReviews(runId);
   const verifications = await persistence.recoverVerificationEvidence(runId);
   const repairAttempts = await persistence.recoverRepairAttempts(runId);
+  const dispatches = await persistence.recoverDispatches(runId);
 
   const builderAttempt = findBuilderAttempt(recovered);
   const repairs = repairAttempts.map((r: PersistedTaskRepairAttempt) => r.attempt);
@@ -44,7 +43,7 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
   const integration = { status: 'integrated' as const };
 
   let blockedResume: DurableExecutionSpikeOutcome['blockedResume'] | undefined;
-  const blockedRepair = repairs.find((r: TaskRepairAttempt) => r.state === 'BLOCKED');
+  const blockedRepair = repairs.find((r) => r.state === 'BLOCKED');
   if (blockedRepair && blockedRepair.blocker?.type === 'lease') {
     const blockerLease = recovered.leases.find(
       (p: PersistedWriteLease) => p.lease.id === blockedRepair.blocker!.leaseId
@@ -60,7 +59,7 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
     }
   }
 
-  const dispatchCount = calculateDispatchCount(builderAttempt, repairs);
+  const dispatchCount = dispatches.length;
 
   return {
     builderAttempt: builderAttempt as DurableExecutionSpikeOutcome['builderAttempt'],
@@ -74,7 +73,7 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
   };
 };
 
-function findBuilderAttempt(recovered: RecoveredRun): AgentExecutionAttempt {
+function findBuilderAttempt(recovered: RecoveredRun) {
   const builderAttempt = recovered.attempts.find(
     (a: PersistedAgentExecutionAttempt) => a.attempt.state === 'COMPLETED'
   );
@@ -91,19 +90,4 @@ function normalizeReviews(
     review: r.review as TaskCodeReview,
     subject: r.subject as TaskCodeReviewSubject
   }));
-}
-
-function calculateDispatchCount(
-  builderAttempt: AgentExecutionAttempt,
-  repairs: TaskRepairAttempt[]
-): number {
-  let count = 0;
-
-  if (builderAttempt.state === 'COMPLETED') {
-    count++;
-  }
-
-  count += repairs.filter((r: TaskRepairAttempt) => r.state === 'COMPLETED').length;
-
-  return count;
 }

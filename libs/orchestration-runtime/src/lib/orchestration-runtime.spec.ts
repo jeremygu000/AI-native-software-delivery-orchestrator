@@ -119,6 +119,21 @@ class MemoryPersistence implements OrchestrationPersistence {
     }
   }
 
+  async recoverDispatches(runId: string): Promise<readonly PersistedDispatch[]> {
+    return this.reevaluations
+      .filter((reeval) =>
+        reeval.decision.taskDecisions.some((td) => td.action === 'start')
+      )
+      .map((reeval) => ({
+        reevaluation: reeval,
+        attempts: this.attempts.filter((a) =>
+          reeval.decision.taskDecisions
+            .filter((td) => td.action === 'start')
+            .some((td) => td.taskId === a.attempt.taskId)
+        )
+      }));
+  }
+
   async persistImpact(record: PersistedTaskImpact): Promise<void> {
     this.impacts.push(record);
   }

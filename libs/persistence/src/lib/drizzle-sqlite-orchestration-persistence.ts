@@ -1024,6 +1024,95 @@ export class DrizzleSqliteOrchestrationPersistence
     };
   }
 
+  async recoverDispatches(runId: string): Promise<readonly PersistedDispatch[]> {
+    this.#assertRunId(runId);
+    const events = this.#db
+      .select()
+      .from(schedulerEvents)
+      .where(eq(schedulerEvents.runId, runId))
+      .orderBy(asc(schedulerEvents.sequence))
+      .all();
+    const decisions = this.#db
+      .select()
+      .from(schedulerDecisions)
+      .where(eq(schedulerDecisions.runId, runId))
+      .orderBy(asc(schedulerDecisions.sequence))
+      .all();
+    const attempts = this.#db
+      .select()
+      .from(agentExecutionAttempts)
+      .where(eq(agentExecutionAttempts.runId, runId))
+      .orderBy(asc(agentExecutionAttempts.attemptId))
+      .all();
+
+    const dispatches: PersistedDispatch[] = [];
+
+    for (const decision of decisions) {
+      const decisionObj = decode(
+        decision.decisionJson,
+        (value): value is SchedulerDecision => schedulerTaskDecisionSchema.safeParse(value).success,
+        'scheduler decision'
+      );
+
+      const startTaskIds = decisionObj.taskDecisions
+        .filter((td) => td.action === 'start')
+        .map((td) => td.taskId)
+        .toSorted();
+
+      if (startTaskIds.length === 0) {
+        continue;
+      }
+
+      const event = events.find((e) => e.sequence === decision.sequence);
+      if (!event) {
+        continue;
+      }
+
+      const eventObj = decode(
+        event.eventJson,
+        (value): value is SchedulerEvent => schedulerEventSchema.safeParse(value).success,
+        'scheduler event'
+      );
+
+      const dispatchAttempts: PersistedAgentExecutionAttempt[] = [];
+      for (const taskId of startTaskIds) {
+        const attemptRecord = attempts.find((a) => {
+          const attempt = decode(a.attemptJson, isAgentExecutionAttempt, 'agent execution attempt');
+          return attempt.taskId === taskId && attempt.state === 'PREPARING' && attempt.revision === 1;
+        });
+        if (attemptRecord) {
+          dispatchAttempts.push({
+            runId: attemptRecord.runId,
+            attempt: decode(attemptRecord.attemptJson, isAgentExecutionAttempt, 'agent execution attempt')
+          });
+        }
+      }
+
+      if (dispatchAttempts.length === startTaskIds.length) {
+        dispatches.push({
+          reevaluation: {
+            event: {
+              runId: event.runId,
+              sequence: event.sequence,
+              occurredAt: event.occurredAt,
+              event: eventObj
+            },
+            transitions: [],
+            decision: {
+              runId: decision.runId,
+              sequence: decision.sequence,
+              inputSnapshot: decode(decision.snapshotJson, isSchedulerSnapshot, 'scheduler snapshot'),
+              decision: decisionObj
+            }
+          },
+          attempts: dispatchAttempts
+        });
+      }
+    }
+
+    return dispatches;
+  }
+
   async recoverReviews(runId: string): Promise<readonly PersistedTaskCodeReview[]> {
     this.#assertRunId(runId);
     return this.#db
