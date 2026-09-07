@@ -2281,6 +2281,7 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - `createTemporalSpikeScenarioService` adapter: accepts optional `ForgeScenarioAServices` for real delegation, falls back to stubs when not provided
 
 **M2.3A - Authority adapter hardening (CLOSED):**
+
 - Fixed reject→accept corruption in temporal-spike-scenario-service.ts
 - Removed `ALWAYS_EMPTY_FINGERPRINT` constant and fake fingerprints
 - Removed fake review fabrication ('Repair via temporal')
@@ -2288,6 +2289,7 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - Commit: `531445e`
 
 **M2.3B - Repair seam authority shape (CLOSED):**
+
 - Fixed P1-4 crash bug: `ForgeRepairExecutionService` blocked case accessed `result!.verification` when result was undefined
 - Created `RepairExecutionOutcome` union type with `completed`, `blocked`, and `unknown` states
 - Updated `ForgeRepairExecutionService.execute()` to return `RepairExecutionOutcome`

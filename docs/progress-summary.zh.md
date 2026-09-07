@@ -1979,6 +1979,7 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - `createTemporalSpikeScenarioService` adapter：接受可选的 `ForgeScenarioAServices` 用于真实委托，未提供时回退到 stubs
 
 **M2.3A - Authority adapter hardening（CLOSED）：**
+
 - 修复了 `temporal-spike-scenario-service.ts` 中的 reject→accept 腐败问题
 - 移除了 `ALWAYS_EMPTY_FINGERPRINT` 常量和假 fingerprint
 - 移除了假 review 伪造（'Repair via temporal'）
@@ -1986,6 +1987,7 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - Commit: `531445e`
 
 **M2.3B - Repair seam authority shape（CLOSED）：**
+
 - 修复了 P1-4 崩溃 bug：`ForgeRepairExecutionService` blocked case 在 result 为 undefined 时访问了 `result!.verification`
 - 创建了 `RepairExecutionOutcome` 联合类型，包含 `completed`、`blocked` 和 `unknown` 状态
 - 更新了 `ForgeRepairExecutionService.execute()` 返回 `RepairExecutionOutcome`
