@@ -2017,9 +2017,9 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 
 正确路线是：
 
-- 完成 Temporal spike 概念验证
-- 停止 TEMPORAL
-- 用相同 harness 评估 Restate candidate
+- 完成 Temporal spike 概念验证 ✅ 已完成
+- 停止 TEMPORAL ✅ 已完成
+- 用相同 harness 评估 Restate candidate（进行中）
 - ADR-028 决策
 - Winner only：集成 Bootstrap / RuntimeStarter / CLI 切换
 
@@ -2036,12 +2036,15 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - Durable wait 测试证明 `condition + setHandler` 工作正常
 - STALE leaseState 也能正确触发 resume
 - `TemporalSpikeDriver` 已实现 `DurableExecutionSpikeDriver` 接口
+- 创建了 `restate-spike` 包，包含 SDK 结构
+- `RestateSpikeDriver` 已实现 `DurableExecutionSpikeDriver` 接口
+- Restate Activities 和 Workflow 已使用 `@restatedev/restate-sdk` 定义
 
 **下一步：**
 
-1. **停止 TEMPORAL**：开始用相同 harness 评估 Restate candidate
-2. **为 Restate 实现 `DurableExecutionSpikeDriver`**：相同接口，不同 substrate
-3. **ADR-028**：Temporal、Restate 和 Keep Legacy 之间的正式决策
+1. **ADR-028**：Temporal、Restate 和 Keep Legacy 之间的正式决策
+2. **运行 Restate spike scenarios**：通过 shared harness 运行 Scenario A 和 B
+3. **集成 Bootstrap**：仅在 candidate winner 选定后进行
 
 ### Stage 22R：Repair Continuation 设计
 

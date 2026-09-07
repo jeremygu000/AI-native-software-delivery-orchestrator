@@ -27,6 +27,7 @@ export default defineConfig({
         'libs/agent-runtime/src/lib/macos-command-sandbox.ts',
         'libs/domain/src/lib/repository-graph.ts',
         'libs/temporal-spike/src/**/*.ts',
+        'libs/restate-spike/src/**/*.ts',
         'libs/orchestration-runtime/src/lib/*spike*.ts',
         'libs/orchestration-runtime/src/lib/forge-builder-execution-service.ts',
         'libs/orchestration-runtime/src/lib/forge-builder-output-evaluation-service.ts',

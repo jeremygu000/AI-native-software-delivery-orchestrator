@@ -242,6 +242,12 @@ importers:
         specifier: 2.8.1
         version: 2.8.1
 
+  libs/restate-spike:
+    dependencies:
+      '@restatedev/restate-sdk':
+        specifier: ^1.17.0
+        version: 1.17.0
+
   libs/run-preparation:
     dependencies:
       '@ai-native-software-delivery-orchestrator/agent-runtime':
@@ -1616,6 +1622,12 @@ packages:
 
   '@protobufjs/utf8@1.1.2':
     resolution: {integrity: sha512-b1UQwcEZ4yCnMCD8DAL1VlbvBJE9/IX4FTIp7BG1xYpf29SLazLSrqUkj4w7Y5y7cCVP6E5tcqqcI0xemPkHug==}
+
+  '@restatedev/restate-sdk-core@1.17.0':
+    resolution: {integrity: sha512-439ONo+YDoG4YBZnQ0wXaWkJDdOqDJ0AjqOwUAYZolxoC5JoaHqWzEFWkeRXiSNpsOc1+ODRUUGupDQ7qxcvJg==}
+
+  '@restatedev/restate-sdk@1.17.0':
+    resolution: {integrity: sha512-4b3OrB2M8K0MsG4JA4YBYQgSZpUUdle4gxUrrH7Qs3deOwuAtrdabkKJpRWtR45zvQDdi09gzxwUGee0aCqKmA==}
 
   '@rolldown/binding-android-arm64@1.2.3':
     resolution: {integrity: sha512-zrJtHDcaZJ1Fp7xf4hNl+7seH9Cn/N5TwLYkhgXREtBwAd/jaqW3uqeHxpDugJLVICWg4eW44kOQEGJ1r6jCGw==}
@@ -4377,6 +4389,12 @@ snapshots:
   '@protobufjs/pool@1.1.0': {}
 
   '@protobufjs/utf8@1.1.2': {}
+
+  '@restatedev/restate-sdk-core@1.17.0': {}
+
+  '@restatedev/restate-sdk@1.17.0':
+    dependencies:
+      '@restatedev/restate-sdk-core': 1.17.0
 
   '@rolldown/binding-android-arm64@1.2.3':
     optional: true

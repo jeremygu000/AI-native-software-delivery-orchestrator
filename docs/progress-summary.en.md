@@ -2319,9 +2319,9 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 
 The correct路线 is:
 
-- Complete Temporal spike proof-of-concept
-- STOP TEMPORAL
-- Evaluate Restate candidate with same harness
+- Complete Temporal spike proof-of-concept ✅ DONE
+- STOP TEMPORAL ✅ DONE
+- Evaluate Restate candidate with same harness (IN PROGRESS)
 - ADR-028 decision
 - Winner only: Integration Bootstrap / RuntimeStarter / CLI cutover
 
@@ -2338,12 +2338,15 @@ NOT doing Integration Bootstrap until candidate winner is selected.
 - Durable wait tests prove `condition + setHandler` works
 - STALE leaseState also triggers resume correctly
 - `TemporalSpikeDriver` implements `DurableExecutionSpikeDriver` interface
+- Created `restate-spike` package with SDK structure
+- `RestateSpikeDriver` implements `DurableExecutionSpikeDriver` interface
+- Restate Activities and Workflow defined using `@restatedev/restate-sdk`
 
 **Next steps:**
 
-1. **STOP TEMPORAL**: Begin Restate candidate evaluation with same harness
-2. **Implement `DurableExecutionSpikeDriver` for Restate**: Same interface, different substrate
-3. **ADR-028**: Formal decision between Temporal, Restate, and Keep Legacy
+1. **ADR-028**: Formal decision between Temporal, Restate, and Keep Legacy
+2. **Run Restate spike scenarios**: Scenario A and B through shared harness
+3. **Integration Bootstrap**: Only after candidate winner selected
 
 ### Stage 22R: Repair Continuation Design
 
