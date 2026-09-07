@@ -106,13 +106,16 @@ export interface TemporalSpikeActivity {
 
   /**
    * Executes Scenario B: Resume a previously blocked repair attempt.
+   * Temporal is wake-only; Forge CAS authority is exercised inside this activity.
    */
   executeBlockedRepairResume(request: {
     readonly runId: string;
     readonly repairAttemptId: string;
+    readonly leaseState: 'RELEASED' | 'STALE';
   }): Promise<{
     readonly repairAttemptId: string;
     readonly verificationEvidenceId: string;
+    readonly state: 'completed' | 'blocked' | 'unknown';
   }>;
 }
 
@@ -202,9 +205,11 @@ export interface TemporalSpikeScenarioService {
   executeBlockedRepairResume(request: {
     readonly runId: string;
     readonly repairAttemptId: string;
+    readonly leaseState: 'RELEASED' | 'STALE';
   }): Promise<{
     readonly repairAttemptId: string;
     readonly verificationEvidenceId: string;
+    readonly state: 'completed' | 'blocked' | 'unknown';
   }>;
 }
 

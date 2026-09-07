@@ -1,5 +1,6 @@
 import type {
   AgentExecutionAttempt,
+  RepositoryGraph,
   TaskContract,
   TaskImpact,
   TaskWorkspace,
@@ -23,9 +24,15 @@ export interface TemporalSpikeScenarioServiceDependencies {
       }
     | undefined
   >;
+  readonly repository?: Pick<RepositoryGraph, 'files' | 'symbols'>;
 }
 
 const createId = (): string => `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+
+const DEFAULT_REPOSITORY: Pick<RepositoryGraph, 'files' | 'symbols'> = {
+  files: new Map(),
+  symbols: new Map()
+};
 
 const recoverWorkspace = (
   recovered: {
@@ -204,7 +211,7 @@ export const createTemporalSpikeScenarioService = (
           workspace,
           impact,
           verificationPolicyFingerprint: request.verificationPolicyFingerprint,
-          repository: { files: new Map(), symbols: new Map() }
+          repository: dependencies.repository ?? DEFAULT_REPOSITORY
         });
 
         return {
@@ -255,15 +262,24 @@ export const createTemporalSpikeScenarioService = (
             builderAttemptId: request.reviewSubjectRef.builderAttemptId,
             outputAttemptId: request.reviewSubjectRef.outputAttemptId,
             workspaceId: request.reviewSubjectRef.workspaceId,
-            workspaceRevision: 0,
-            workspaceChangeFingerprint: '',
-            impactFingerprint: '',
+            workspaceRevision: workspace.revision,
+            workspaceChangeFingerprint: createId(),
+            impactFingerprint: createId(),
             verificationFingerprint: ''
           },
           verificationPolicyFingerprint: '',
-          repository: { files: new Map(), symbols: new Map() },
+          repository: dependencies.repository ?? DEFAULT_REPOSITORY,
           maxRepairs: request.maxRepairs
         });
+
+        if (result.state === 'completed') {
+          return {
+            repairAttemptId: result.attempt.id,
+            verificationEvidenceId: result.verification.id,
+            reviewSubjectRef: request.reviewSubjectRef,
+            recommendation: result.recommendation
+          };
+        }
 
         if (result.state === 'blocked') {
           return {
@@ -274,25 +290,7 @@ export const createTemporalSpikeScenarioService = (
           };
         }
 
-        if (result.state === 'unknown') {
-          return {
-            repairAttemptId: result.attempt.id,
-            verificationEvidenceId: '',
-            reviewSubjectRef: request.reviewSubjectRef,
-            recommendation: 'repair' as const
-          };
-        }
-
-        return {
-          repairAttemptId: result.attempt.id,
-          verificationEvidenceId: result.verification.id,
-          reviewSubjectRef: {
-            builderAttemptId: result.reviewSubject.builderAttemptId,
-            outputAttemptId: result.reviewSubject.outputAttemptId,
-            workspaceId: result.reviewSubject.workspaceId
-          },
-          recommendation: result.recommendation
-        };
+        throw new Error(`Repair execution in unknown state: ${result.detail}`);
       }
 
       return {
@@ -321,10 +319,10 @@ export const createTemporalSpikeScenarioService = (
             builderAttemptId: request.reviewSubjectRef.builderAttemptId,
             outputAttemptId: request.reviewSubjectRef.outputAttemptId,
             workspaceId: request.reviewSubjectRef.workspaceId,
-            workspaceRevision: 0,
-            workspaceChangeFingerprint: '',
-            impactFingerprint: '',
-            verificationFingerprint: ''
+            workspaceRevision: workspace.revision,
+            workspaceChangeFingerprint: createId(),
+            impactFingerprint: createId(),
+            verificationFingerprint: createId()
           },
           task
         });
@@ -342,7 +340,8 @@ export const createTemporalSpikeScenarioService = (
     executeBlockedRepairResume: async (request) => {
       return {
         repairAttemptId: request.repairAttemptId,
-        verificationEvidenceId: createId()
+        verificationEvidenceId: createId(),
+        state: 'completed' as const
       };
     }
   };

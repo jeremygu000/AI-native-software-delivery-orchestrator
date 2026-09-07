@@ -7,12 +7,12 @@ const activities = proxyActivities<TemporalSpikeActivity>({
   retry: { maximumAttempts: 1 }
 });
 
-export interface RepairAuthorizedSignal {
+export interface RepairWakeSignal {
   readonly repairAttemptId: string;
-  readonly authorizedAt: number;
+  readonly leaseState: 'RELEASED' | 'STALE';
 }
 
-export const repairAuthorizedSignal = defineSignal<[RepairAuthorizedSignal]>('repairAuthorized');
+export const repairWakeSignal = defineSignal<[RepairWakeSignal]>('repairWake');
 
 export interface ScenarioABuildReviewRepairIntegrateRequest {
   readonly runId: string;
@@ -34,6 +34,8 @@ export type TemporalSpikeWorkflowRequest =
 /**
  * M2 control flow only. Forge authority evidence remains in the authority store, never workflow history.
  *
+ * Temporal is wake-only. Forge CAS authority is exercised inside executeBlockedRepairResume Activity.
+ *
  * Scenario A (build-review-repair-integrate) using four narrow activities:
  *   -> ExecuteBuilder Activity (Seam 1)
  *   -> EvaluateBuilderOutput Activity (Seam 2)
@@ -44,8 +46,8 @@ export type TemporalSpikeWorkflowRequest =
  * only runId and scenario discriminator in history.
  *
  * Scenario B (blocked-repair-restart-resume):
- *   -> durable wait for 'repairAuthorized' signal
- *   -> ExecuteBlockedRepairResume Activity with authorized repair
+ *   -> durable wait for 'repairWake' signal (wake-only, not authorization)
+ *   -> ExecuteBlockedRepairResume Activity (Forge CAS authority inside)
  */
 export const runTemporalSpikeWorkflow = async (request: {
   readonly runId: string;
@@ -83,9 +85,12 @@ export const runTemporalSpikeWorkflow = async (request: {
     });
 
     if (evaluationResult.recommendation === 'repair') {
+      if (evaluationResult.repairAttemptId === undefined) {
+        throw new Error('Forge must provide repairAttemptId for repair recommendation');
+      }
       const repairResult = await activities.executeRepair({
         runId: request.runId,
-        repairAttemptId: evaluationResult.repairAttemptId ?? `repair-${Date.now()}`,
+        repairAttemptId: evaluationResult.repairAttemptId,
         builderAttemptId: builderResult.builderAttemptId,
         workspaceId: builderResult.workspaceId,
         reviewSubjectRef: evaluationResult.reviewSubjectRef,
@@ -131,27 +136,23 @@ export const runTemporalSpikeWorkflow = async (request: {
       );
     }
 
-    let authorizedRepair: RepairAuthorizedSignal | undefined;
+    let wakeSignal: RepairWakeSignal | undefined;
 
-    setHandler(repairAuthorizedSignal, (signal: RepairAuthorizedSignal) => {
-      if (authorizedRepair === undefined) {
-        authorizedRepair = signal;
-      }
+    setHandler(repairWakeSignal, (signal: RepairWakeSignal) => {
+      wakeSignal = signal;
     });
 
-    await condition(() => authorizedRepair !== undefined, '30 days');
-
-    const signalData = authorizedRepair!;
-
-    if (signalData.repairAttemptId !== request.blockedRepairAttemptId) {
-      throw new Error(
-        `Signal repairAttemptId mismatch: expected ${request.blockedRepairAttemptId}, got ${signalData.repairAttemptId}`
-      );
-    }
+    await condition(
+      () =>
+        wakeSignal !== undefined &&
+        wakeSignal.repairAttemptId === request.blockedRepairAttemptId &&
+        (wakeSignal.leaseState === 'RELEASED' || wakeSignal.leaseState === 'STALE')
+    );
 
     const result = await activities.executeBlockedRepairResume({
       runId: request.runId,
-      repairAttemptId: signalData.repairAttemptId
+      repairAttemptId: request.blockedRepairAttemptId,
+      leaseState: wakeSignal!.leaseState
     });
     return {
       runId: request.runId,

@@ -40,6 +40,7 @@ export const createStubTemporalSpikeScenarioService = (): TemporalSpikeScenarioS
   }),
   executeBlockedRepairResume: async (request) => ({
     repairAttemptId: request.repairAttemptId,
-    verificationEvidenceId: 'stub-resume-verification-id'
+    verificationEvidenceId: 'stub-resume-verification-id',
+    state: 'completed' as const
   })
 });

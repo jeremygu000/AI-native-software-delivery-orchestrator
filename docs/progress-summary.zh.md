@@ -1962,10 +1962,10 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - M1 spike contract：CLOSED
 - M2.1 Temporal skeleton：CLOSED
 - M2.2 Activity infrastructure：CLOSED
-- M2.3A Authority adapter hardening：CLOSED
+- M2.3A Authority adapter hardening：REOPENED（见下方）
 - M2.3B Repair seam authority shape：CLOSED
 
-**Scenario A（已完成）：**
+**Scenario A - 控制流形状（CLOSED）：**
 
 - `ForgeBuilderExecutionService`：已实现（Seam 1: ExecuteBuilder）
 - `ForgeBuilderOutputEvaluationService`：已实现（Seam 2: EvaluateBuilderOutput）
@@ -1978,13 +1978,13 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - Durable continuation 现已启用：每个 activity 调用创建独立的 continuation boundary
 - `createTemporalSpikeScenarioService` adapter：接受可选的 `ForgeScenarioAServices` 用于真实委托，未提供时回退到 stubs
 
-**M2.3A - Authority adapter hardening（CLOSED）：**
+**M2.3A - Authority adapter hardening（REOPENED）：**
 
-- 修复了 `temporal-spike-scenario-service.ts` 中的 reject→accept 腐败问题
-- 移除了 `ALWAYS_EMPTY_FINGERPRINT` 常量和假 fingerprint
-- 移除了假 review 伪造（'Repair via temporal'）
-- 更新了 `taskCodeReviewSchema` 以支持 'reject' recommendation
-- Commit: `531445e`
+- 原始 commits 尝试移除假数据但部分仍存在
+- Spike adapter 仍传递空的 `files`/`symbols` maps 作为 repository（stub，非真实）
+- `verificationPolicyFingerprint` 使用空字符串而非真实 policy fingerprint
+- Workflow 移除了 `repair-${Date.now()}` fallback - Forge 必须提供真实的 repairAttemptId
+- Commit: `531445e`（部分修复），仍需额外工作
 
 **M2.3B - Repair seam authority shape（CLOSED）：**
 
@@ -1992,45 +1992,29 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - 创建了 `RepairExecutionOutcome` 联合类型，包含 `completed`、`blocked` 和 `unknown` 状态
 - 更新了 `ForgeRepairExecutionService.execute()` 返回 `RepairExecutionOutcome`
 - 更新了 `forge-scenario-a-service-runner.ts` 以在访问属性前检查状态
-- 更新了 `temporal-spike-scenario-service.ts` 以处理 blocked/unknown 状态
-- 将 repair admission 移入 `evaluateBuilderOutput`：Forge 现在通过 `TaskRepairCoordinator.prepare()` 拥有 repair identity
-- Workflow 使用 Forge 返回的 `repairAttemptId` 而不是 `Date.now()`
+- `UNKNOWN` 状态现在 fail closed（抛出错误）而非变成 'repair' recommendation
 - Commit: `7812ac5`、`23b819f`
 
-**Scenario B - Durable wait/signal（CLOSED）：**
+**Scenario B - Durable wait/signal 基础（GROUNDWORK）：**
 
-- 使用 Temporal 的 `defineSignal` API 添加了 `repairAuthorizedSignal`
-- Workflow 在调用 `executeBlockedRepairResume` 前使用 `condition()` 等待 signal
-- Signal handler 通过 `setHandler` 捕获授权数据
-- 验证确保 signal 的 `repairAttemptId` 与预期的 blocked repair 匹配
+- 将 signal 从 `repairAuthorizedSignal` 重命名为 `repairWakeSignal` - Temporal 仅负责 wake，不负责 authorization
+- `repairWakeSignal` 携带 `leaseState: 'RELEASED' | 'STALE'` 用于 Forge CAS authority（在 activity 内部处理）
+- Workflow 使用 `condition()` 等待有效 signal，然后才调用 `executeBlockedRepairResume`
+- 不相关的 signal 被忽略（workflow 继续等待）
+- 移除了任意的 30 天 condition timeout
+- Forge CAS authority 仍需在 `executeBlockedRepairResume` activity 内部实现
 - Commit: `temporal-spike-workflow.ts` 已更新
 
-**集成 bootstrap（需要架构决策）：**
+**剩余 P1 项目：**
 
-M2 spike 已验证 Temporal 可作为 durable execution substrate。但将 spike 接入生产 CLI 需要解决以下架构问题：
+1. **Forge CAS blocked resume 未实现**：`executeBlockedRepairResume` 仍是返回成功的 stub
+   - 必须：加载 repair，验证 BLOCKED@N，加载 blocker lease，验证 RELEASED/STALE，CAS BLOCKED@N → PREPARING@N+1
 
-1. **返回类型不匹配**：`RuntimeStarter.startOrResumeRun` 返回 `RecoveredRuntimeRun`（包含 tasks、leases、events 的丰富类型），但 spike workflow 返回 `{runId, scenario, builderAttemptId, repairAttemptId}`。`TemporalRuntimeStarter` 需要：
-   - 将 spike 结果映射到 `RecoveredRuntimeRun` 结构
-   - 或重构 `RunPreparation` 以处理多态 runtime 响应
+2. **Restart persistence 未证明**：当前测试使用同一 worker 生命周期
+   - 必须测试：worker A 关闭 → workflow durable → worker B 恢复 → 同一 workflow 继续
 
-2. **包结构**：目前 `temporal-spike` 是独立 package。选项：
-   - 添加为 CLI package 的依赖（已完成）
-   - 创建独立的 `forge-temporal` 二进制文件
-   - 保持为实验性 spike，不接入生产
-
-3. **服务 wiring**：Spike 使用窄 activity 接口（`ForgeScenarioAServices`），但 `LocalRuntimeStarter` 创建完整的 `OrchestrationRuntime`。需决定 Temporal 是运行完整 orchestration 还是仅运行 build-review-repair-integrate flow。
-
-4. **Worker 生命周期**：`LocalRuntimeStarter` 创建 runtime、运行、关闭。Temporal 需要 worker 生命周期管理（启动 worker、提交 workflow、等待完成、关闭）。
-
-**已完成：**
-
-- 已将 `temporal-spike` 作为 workspace 依赖添加到 CLI package.json
-
-**下一步：**
-
-1. **需要决策**：选择集成方式（直接 CLI 替换 vs. 独立二进制 vs. 保持为 spike）
-2. **实现**：若直接 CLI 替换，实现具有正确 `RecoveredRuntimeRun` 映射的 `TemporalRuntimeStarter`
-3. **测试**：使用真实 Temporal cluster 进行端到端测试
+3. **Shared SQLite authority harness 未证明**：无端到端测试通过 Forge seams 到 SQLite
+   - 必须：Temporal → Forge seams → SQLite → reload → assertDurableExecutionSpikeOutcome(...)
 
 ### Stage 22R：Repair Continuation 设计
 

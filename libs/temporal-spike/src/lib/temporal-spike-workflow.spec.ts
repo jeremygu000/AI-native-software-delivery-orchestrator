@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 
 import { createTemporalSpikeActivities } from './temporal-spike-activities.js';
-import { runTemporalSpikeWorkflow, repairAuthorizedSignal } from './temporal-spike-workflow.js';
+import { runTemporalSpikeWorkflow, repairWakeSignal } from './temporal-spike-workflow.js';
 
 const environments: { readonly environment: TestWorkflowEnvironment; readonly worker: Worker }[] =
   [];
@@ -66,7 +66,8 @@ describe('Temporal spike workflow', () => {
         }),
         executeBlockedRepairResume: async () => ({
           repairAttemptId: 'repair-1',
-          verificationEvidenceId: 'verification-1'
+          verificationEvidenceId: 'verification-1',
+          state: 'completed' as const
         })
       })
     });
@@ -92,7 +93,7 @@ describe('Temporal spike workflow', () => {
     expect(result.builderAttemptId).toBe('builder-1');
   }, 15_000);
 
-  it('waits for repairAuthorized signal before calling executeBlockedRepairResume', async () => {
+  it('waits for repairWake signal (wake-only) before calling executeBlockedRepairResume', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     let resumeActivityCalled = false;
     const worker = await Worker.create({
@@ -139,7 +140,8 @@ describe('Temporal spike workflow', () => {
           resumeActivityCalled = true;
           return {
             repairAttemptId: request.repairAttemptId,
-            verificationEvidenceId: 'resume-verification-1'
+            verificationEvidenceId: 'resume-verification-1',
+            state: 'completed' as const
           };
         }
       })
@@ -163,9 +165,9 @@ describe('Temporal spike workflow', () => {
 
     expect(resumeActivityCalled).toBe(false);
 
-    await handle.signal(repairAuthorizedSignal, {
+    await handle.signal(repairWakeSignal, {
       repairAttemptId: 'blocked-repair-1',
-      authorizedAt: Date.now()
+      leaseState: 'RELEASED'
     });
 
     const result = await worker.runUntil(handle.result());
@@ -173,6 +175,95 @@ describe('Temporal spike workflow', () => {
     expect(result.runId).toBe('run-blocked');
     expect(result.scenario).toBe('blocked-repair-restart-resume');
     expect(result.repairAttemptId).toBe('blocked-repair-1');
+    expect(resumeActivityCalled).toBe(true);
+  }, 15_000);
+
+  it('ignores unrelated wake signals and continues waiting', async () => {
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    let resumeActivityCalled = false;
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-spike-test-unrelated',
+      workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url)),
+      activities: createTemporalSpikeActivities({
+        executeBuilder: async () => ({
+          builderAttemptId: 'builder-1',
+          workspaceId: 'workspace-1',
+          impactPrediction: []
+        }),
+        evaluateBuilderOutput: async () => ({
+          verificationEvidenceId: 'verification-1',
+          reviewSubjectRef: {
+            builderAttemptId: 'builder-1',
+            outputAttemptId: 'output-1',
+            workspaceId: 'workspace-1'
+          },
+          recommendation: 'accept' as const
+        }),
+        executeRepair: async () => ({
+          repairAttemptId: 'repair-1',
+          verificationEvidenceId: 'repair-verification-1',
+          reviewSubjectRef: {
+            builderAttemptId: 'builder-1',
+            outputAttemptId: 'output-1',
+            workspaceId: 'workspace-1'
+          },
+          recommendation: 'accept' as const
+        }),
+        integrateAcceptedOutput: async () => ({ integrationStatus: 'integrated' as const }),
+        runBuildReviewRepairIntegrate: async () => ({
+          builderAttemptId: 'builder-1',
+          finalRepairAttemptId: 'repair-1',
+          verificationEvidenceId: 'verification-1',
+          reviewSubjectRef: {
+            builderAttemptId: 'builder-1',
+            outputAttemptId: 'output-1',
+            workspaceId: 'workspace-1'
+          }
+        }),
+        executeBlockedRepairResume: async (request) => {
+          resumeActivityCalled = true;
+          return {
+            repairAttemptId: request.repairAttemptId,
+            verificationEvidenceId: 'resume-verification-1',
+            state: 'completed' as const
+          };
+        }
+      })
+    });
+    environments.push({ environment, worker });
+    const client = new Client({ connection: environment.client.connection });
+
+    const handle = await client.workflow.start(runTemporalSpikeWorkflow, {
+      taskQueue: 'temporal-spike-test-unrelated',
+      workflowId: 'forge-run:run-unrelated',
+      args: [
+        {
+          runId: 'run-unrelated',
+          scenario: 'blocked-repair-restart-resume',
+          blockedRepairAttemptId: 'blocked-repair-1'
+        }
+      ]
+    });
+
+    await environment.sleep(100);
+
+    await handle.signal(repairWakeSignal, {
+      repairAttemptId: 'other-repair-id',
+      leaseState: 'RELEASED'
+    });
+
+    await environment.sleep(100);
+
+    expect(resumeActivityCalled).toBe(false);
+
+    await handle.signal(repairWakeSignal, {
+      repairAttemptId: 'blocked-repair-1',
+      leaseState: 'RELEASED'
+    });
+
+    await worker.runUntil(handle.result());
+
     expect(resumeActivityCalled).toBe(true);
   }, 15_000);
 });

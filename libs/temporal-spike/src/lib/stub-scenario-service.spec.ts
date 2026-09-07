@@ -29,19 +29,23 @@ describe('TemporalSpikeScenarioService', () => {
       const service = createStubTemporalSpikeScenarioService();
       const result = await service.executeBlockedRepairResume({
         runId: 'run-1',
-        repairAttemptId: 'blocked-repair-1'
+        repairAttemptId: 'blocked-repair-1',
+        leaseState: 'RELEASED'
       });
       expect(result.repairAttemptId).toBe('blocked-repair-1');
       expect(result.verificationEvidenceId).toBe('stub-resume-verification-id');
+      expect(result.state).toBe('completed');
     });
 
     it('executeBlockedRepairResume passes through the repairAttemptId parameter', async () => {
       const service = createStubTemporalSpikeScenarioService();
       const result = await service.executeBlockedRepairResume({
         runId: 'run-1',
-        repairAttemptId: 'my-repair-id'
+        repairAttemptId: 'my-repair-id',
+        leaseState: 'STALE'
       });
       expect(result.repairAttemptId).toBe('my-repair-id');
+      expect(result.state).toBe('completed');
     });
 
     it('executeBuilder returns stubbed builder execution result', async () => {

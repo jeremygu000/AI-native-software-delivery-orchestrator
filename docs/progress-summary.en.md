@@ -2264,10 +2264,10 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - M1 spike contract: CLOSED
 - M2.1 Temporal skeleton: CLOSED
 - M2.2 Activity infrastructure: CLOSED
-- M2.3A Authority adapter hardening: CLOSED
+- M2.3A Authority adapter hardening: REOPENED (see below)
 - M2.3B Repair seam authority shape: CLOSED
 
-**Scenario A (complete):**
+**Scenario A - control flow shape (CLOSED):**
 
 - `ForgeBuilderExecutionService`: implemented (Seam 1: ExecuteBuilder)
 - `ForgeBuilderOutputEvaluationService`: implemented (Seam 2: EvaluateBuilderOutput)
@@ -2280,13 +2280,13 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - Durable continuation now enabled: each activity call creates separate continuation boundary
 - `createTemporalSpikeScenarioService` adapter: accepts optional `ForgeScenarioAServices` for real delegation, falls back to stubs when not provided
 
-**M2.3A - Authority adapter hardening (CLOSED):**
+**M2.3A - Authority adapter hardening (REOPENED):**
 
-- Fixed reject→accept corruption in temporal-spike-scenario-service.ts
-- Removed `ALWAYS_EMPTY_FINGERPRINT` constant and fake fingerprints
-- Removed fake review fabrication ('Repair via temporal')
-- Updated `taskCodeReviewSchema` to support 'reject' recommendation
-- Commit: `531445e`
+- Original commits attempted to remove fake data but some remained
+- Spike adapter still passes empty `files`/`symbols` maps for repository (stub, not real)
+- `verificationPolicyFingerprint` uses empty string instead of real policy fingerprint
+- Workflow removed `repair-${Date.now()}` fallback - Forge must provide real repairAttemptId
+- Commit: `531445e` (partial fix), additional work needed
 
 **M2.3B - Repair seam authority shape (CLOSED):**
 
@@ -2294,35 +2294,35 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - Created `RepairExecutionOutcome` union type with `completed`, `blocked`, and `unknown` states
 - Updated `ForgeRepairExecutionService.execute()` to return `RepairExecutionOutcome`
 - Updated `forge-scenario-a-service-runner.ts` to check state before accessing properties
-- Updated `temporal-spike-scenario-service.ts` to handle blocked/unknown states
-- Moved repair admission into `evaluateBuilderOutput`: Forge now owns repair identity via `TaskRepairCoordinator.prepare()`
-- Workflow uses Forge-returned `repairAttemptId` instead of `Date.now()`
+- `UNKNOWN` state now fails closed (throws error) instead of becoming 'repair' recommendation
 - Commit: `7812ac5`, `23b819f`
 
-**Scenario B - Durable wait/signal (CLOSED):**
+**Scenario B - Durable wait/signal primitive (GROUNDWORK):**
 
-- Added `repairAuthorizedSignal` using Temporal's `defineSignal` API
-- Workflow waits for signal using `condition()` before calling `executeBlockedRepairResume`
-- Signal handler captures authorization data via `setHandler`
-- Validation ensures signal's `repairAttemptId` matches expected blocked repair
+- Renamed signal from `repairAuthorizedSignal` to `repairWakeSignal` - Temporal is wake-only, not authorization
+- `repairWakeSignal` carries `leaseState: 'RELEASED' | 'STALE'` for Forge CAS authority inside activity
+- Workflow waits for valid signal using `condition()` before calling `executeBlockedRepairResume`
+- Unrelated signals are ignored (workflow continues waiting)
+- Removed arbitrary 30-day condition timeout
+- Forge CAS authority still needs to be implemented inside `executeBlockedRepairResume` activity
 - Commit: `temporal-spike-workflow.ts` updated
 
-**Integration bootstrap (ARCHITECTURAL DECISION REQUIRED):**
+**Remaining P1 items:**
 
-The M2 spike has validated that Temporal can serve as a durable execution substrate. However, integrating the spike into the production CLI requires resolving several architectural questions:
+1. **Forge CAS blocked resume not implemented**: `executeBlockedRepairResume` is still a stub returning success
+   - Must: load repair, verify BLOCKED@N, load blocker lease, verify RELEASED/STALE, CAS BLOCKED@N → PREPARING@N+1
 
-1. **Return type mismatch**: `RuntimeStarter.startOrResumeRun` returns `RecoveredRuntimeRun` (rich type with tasks, leases, events), but the spike workflow returns `{runId, scenario, builderAttemptId, repairAttemptId}`. A `TemporalRuntimeStarter` would need to either:
-   - Map spike results to `RecoveredRuntimeRun` structure
-   - Refactor `RunPreparation` to handle polymorphic runtime responses
+2. **Restart persistence not proven**: Current test uses same worker lifecycle
+   - Must test: worker A shutdown → workflow durable → worker B resumes → same workflow continues
 
-2. **Package structure**: Currently `temporal-spike` is a separate package. Options:
-   - Add as dependency to CLI package (done)
+3. **Shared SQLite authority harness not proven**: No end-to-end test through Forge seams to SQLite
+   - Must: Temporal → Forge seams → SQLite → reload → assertDurableExecutionSpikeOutcome(...)
    - Create separate `forge-temporal` binary
    - Keep as experimental spike, not production integrated
 
-3. **Service wiring**: The spike uses narrow activity interfaces (`ForgeScenarioAServices`), but `LocalRuntimeStarter` creates full `OrchestrationRuntime` with all Forge services. Need to decide if Temporal should run the full orchestration or just the build-review-repair-integrate flow.
+4. **Service wiring**: The spike uses narrow activity interfaces (`ForgeScenarioAServices`), but `LocalRuntimeStarter` creates full `OrchestrationRuntime` with all Forge services. Need to decide if Temporal should run the full orchestration or just the build-review-repair-integrate flow.
 
-4. **Worker lifecycle**: `LocalRuntimeStarter` creates runtime, runs, closes. Temporal requires worker lifecycle management (start worker, submit workflow, wait for completion, shutdown).
+5. **Worker lifecycle**: `LocalRuntimeStarter` creates runtime, runs, closes. Temporal requires worker lifecycle management (start worker, submit workflow, wait for completion, shutdown).
 
 **Completed:**
 
