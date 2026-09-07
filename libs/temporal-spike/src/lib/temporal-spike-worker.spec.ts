@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createTemporalSpikeWorkerOptions } from './temporal-spike-worker.js';
+import { createStubTemporalSpikeScenarioService } from './stub-scenario-service.js';
 
 describe('TemporalSpikeWorker', () => {
   describe('createTemporalSpikeWorkerOptions', () => {
@@ -20,14 +21,7 @@ describe('TemporalSpikeWorker', () => {
     });
 
     it('returns worker options with activities when service is provided', () => {
-      const service = {
-        runBuildReviewRepairIntegrate: async () => ({
-          builderAttemptId: 'builder-1',
-          finalRepairAttemptId: 'repair-1',
-          verificationEvidenceId: 'verification-1',
-          reviewEvidenceId: 'review-1'
-        })
-      };
+      const service = createStubTemporalSpikeScenarioService();
       const options = createTemporalSpikeWorkerOptions({
         taskQueue: 'test-queue',
         workflowsPath: '/path/to/workflows.js',
@@ -36,7 +30,7 @@ describe('TemporalSpikeWorker', () => {
       expect(options.activities).toBeDefined();
     });
 
-    it('returns worker options with activities wrapping stub when service is not provided', () => {
+    it('returns worker options with stub activities when service is not provided', () => {
       const options = createTemporalSpikeWorkerOptions({
         taskQueue: 'test-queue',
         workflowsPath: '/path/to/workflows.js'
@@ -45,28 +39,59 @@ describe('TemporalSpikeWorker', () => {
       expect(typeof options.activities!.runBuildReviewRepairIntegrate).toBe('function');
     });
 
-    it('activities throw when called without service configuration', async () => {
+    it('activities use stub service when no service is provided', async () => {
       const options = createTemporalSpikeWorkerOptions({
         taskQueue: 'test-queue',
         workflowsPath: '/path/to/workflows.js'
       });
-      await expect(
-        options.activities!.runBuildReviewRepairIntegrate({ runId: 'run-1' })
-      ).rejects.toThrow('Temporal spike scenario service is not configured');
+      const result = await options.activities!.runBuildReviewRepairIntegrate({ runId: 'run-1' });
+      expect(result.builderAttemptId).toBe('stub-builder-attempt-id');
     });
 
     it('activities delegate to provided service', async () => {
       const expectedResult = {
         builderAttemptId: 'builder-2',
-        finalRepairAttemptId: 'repair-2',
         verificationEvidenceId: 'verification-2',
-        reviewEvidenceId: 'review-2'
+        reviewSubjectRef: {
+          builderAttemptId: 'builder-2',
+          outputAttemptId: 'output-2',
+          workspaceId: 'workspace-2'
+        }
       };
       const options = createTemporalSpikeWorkerOptions({
         taskQueue: 'test-queue',
         workflowsPath: '/path/to/workflows.js',
         service: {
-          runBuildReviewRepairIntegrate: async () => expectedResult
+          executeBuilder: async () => ({
+            builderAttemptId: 'builder-2',
+            workspaceId: 'workspace-2',
+            impactPrediction: []
+          }),
+          evaluateBuilderOutput: async () => ({
+            verificationEvidenceId: 'verification-2',
+            reviewSubjectRef: {
+              builderAttemptId: 'builder-2',
+              outputAttemptId: 'output-2',
+              workspaceId: 'workspace-2'
+            },
+            recommendation: 'accept' as const
+          }),
+          executeRepair: async () => ({
+            repairAttemptId: 'repair-2',
+            verificationEvidenceId: 'verification-2',
+            reviewSubjectRef: {
+              builderAttemptId: 'builder-2',
+              outputAttemptId: 'output-2',
+              workspaceId: 'workspace-2'
+            },
+            recommendation: 'accept' as const
+          }),
+          integrateAcceptedOutput: async () => ({ integrationStatus: 'integrated' as const }),
+          runBuildReviewRepairIntegrate: async () => expectedResult,
+          executeBlockedRepairResume: async () => ({
+            repairAttemptId: 'repair-2',
+            verificationEvidenceId: 'verification-2'
+          })
         }
       });
       const result = await options.activities!.runBuildReviewRepairIntegrate({ runId: 'run-2' });

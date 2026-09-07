@@ -5,6 +5,7 @@ import {
   createTemporalSpikeActivities,
   type TemporalSpikeScenarioService
 } from './temporal-spike-activities.js';
+import { createStubTemporalSpikeScenarioService } from './stub-scenario-service.js';
 import type { TemporalSpikeConfiguration } from './temporal-spike-driver.js';
 
 /** Creates, but does not run, an isolated M2 Temporal worker. */
@@ -18,7 +19,7 @@ export const createTemporalSpikeWorker = async (
     namespace: configuration.namespace,
     taskQueue: configuration.taskQueue,
     workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.js', import.meta.url)),
-    activities: createTemporalSpikeActivities(service)
+    activities: createTemporalSpikeActivities(service ?? createStubTemporalSpikeScenarioService())
   });
 };
 
@@ -29,5 +30,7 @@ export const createTemporalSpikeWorkerOptions = (request: {
 }): WorkerOptions => ({
   taskQueue: request.taskQueue,
   workflowsPath: request.workflowsPath,
-  activities: createTemporalSpikeActivities(request.service)
+  activities: createTemporalSpikeActivities(
+    request.service ?? createStubTemporalSpikeScenarioService()
+  )
 });

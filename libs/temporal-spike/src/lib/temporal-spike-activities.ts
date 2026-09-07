@@ -14,28 +14,97 @@
  */
 export interface TemporalSpikeActivity {
   /**
+   * Executes one authorized builder attempt (Seam 1).
+   */
+  executeBuilder(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly attemptId: string;
+    readonly agentId: string;
+  }): Promise<{
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly impactPrediction: readonly string[];
+  }>;
+
+  /**
+   * Evaluates builder output - verifies and reviews (Seam 2).
+   */
+  evaluateBuilderOutput(request: {
+    readonly runId: string;
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly verificationPolicyFingerprint: string;
+  }): Promise<{
+    readonly verificationEvidenceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly recommendation: 'accept' | 'repair';
+  }>;
+
+  /**
+   * Executes one repair attempt (Seam 3), only called if evaluation recommends 'repair'.
+   */
+  executeRepair(request: {
+    readonly runId: string;
+    readonly repairAttemptId: string;
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly maxRepairs: number;
+  }): Promise<{
+    readonly repairAttemptId: string;
+    readonly verificationEvidenceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly recommendation: 'accept' | 'repair';
+  }>;
+
+  /**
+   * Integrates accepted output into the repository (Seam 4).
+   */
+  integrateAcceptedOutput(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+  }): Promise<{
+    readonly integrationStatus: 'integrated' | 'blocked';
+  }>;
+
+  /**
    * Executes Scenario A: Build -> Verify -> Review repair -> Repair -> Verify -> Review accept -> Integrate
    *
-   * This activity runs one complete build-review-repair-integrate cycle through
-   * the four Scenario A seams:
-   * 1. ExecuteBuilder - runs one authorized builder attempt
-   * 2. EvaluateBuilderOutput - verifies and reviews builder output
-   * 3. ExecuteRepair - admits and executes one repair attempt (if recommended)
-   * 4. IntegrateAcceptedOutput - commits and integrates accepted output
+   * @deprecated Use the four narrow activities (executeBuilder, evaluateBuilderOutput,
+   *            executeRepair, integrateAcceptedOutput) for proper durable continuation.
    */
   runBuildReviewRepairIntegrate(request: { readonly runId: string }): Promise<{
     readonly builderAttemptId: string;
-    readonly finalRepairAttemptId: string;
+    readonly finalRepairAttemptId?: string;
     readonly verificationEvidenceId: string;
-    readonly reviewEvidenceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
   }>;
 
   /**
    * Executes Scenario B: Resume a previously blocked repair attempt.
-   *
-   * This activity resumes a repair that was previously blocked due to a conflicting lease.
-   * The repair attempt ID is preserved from the original blocked repair, allowing the
-   * durable execution substrate to signal when the blocking lease is released.
    */
   executeBlockedRepairResume(request: {
     readonly runId: string;
@@ -43,7 +112,6 @@ export interface TemporalSpikeActivity {
   }): Promise<{
     readonly repairAttemptId: string;
     readonly verificationEvidenceId: string;
-    readonly reviewEvidenceId: string;
   }>;
 }
 
@@ -57,32 +125,94 @@ export interface TemporalSpikeActivity {
  * @see TemporalSpikeActivity for the Temporal activity adapter
  */
 export interface TemporalSpikeScenarioService {
+  executeBuilder(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly attemptId: string;
+    readonly agentId: string;
+  }): Promise<{
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly impactPrediction: readonly string[];
+  }>;
+
+  evaluateBuilderOutput(request: {
+    readonly runId: string;
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly verificationPolicyFingerprint: string;
+  }): Promise<{
+    readonly verificationEvidenceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly recommendation: 'accept' | 'repair';
+  }>;
+
+  executeRepair(request: {
+    readonly runId: string;
+    readonly repairAttemptId: string;
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly maxRepairs: number;
+  }): Promise<{
+    readonly repairAttemptId: string;
+    readonly verificationEvidenceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly recommendation: 'accept' | 'repair';
+  }>;
+
+  integrateAcceptedOutput(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+  }): Promise<{
+    readonly integrationStatus: 'integrated' | 'blocked';
+  }>;
+
   runBuildReviewRepairIntegrate(request: { readonly runId: string }): Promise<{
     readonly builderAttemptId: string;
-    readonly finalRepairAttemptId: string;
+    readonly finalRepairAttemptId?: string;
     readonly verificationEvidenceId: string;
-    readonly reviewEvidenceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
   }>;
+
   executeBlockedRepairResume(request: {
     readonly runId: string;
     readonly repairAttemptId: string;
   }): Promise<{
     readonly repairAttemptId: string;
     readonly verificationEvidenceId: string;
-    readonly reviewEvidenceId: string;
   }>;
 }
 
 export const createTemporalSpikeActivities = (
-  service: TemporalSpikeScenarioService = {
-    runBuildReviewRepairIntegrate: async () => {
-      throw new Error('Temporal spike scenario service is not configured');
-    },
-    executeBlockedRepairResume: async () => {
-      throw new Error('Temporal spike scenario service is not configured');
-    }
-  }
+  service: TemporalSpikeScenarioService
 ): TemporalSpikeActivity => ({
+  executeBuilder: (request) => service.executeBuilder(request),
+  evaluateBuilderOutput: (request) => service.evaluateBuilderOutput(request),
+  executeRepair: (request) => service.executeRepair(request),
+  integrateAcceptedOutput: (request) => service.integrateAcceptedOutput(request),
   runBuildReviewRepairIntegrate: (request) => service.runBuildReviewRepairIntegrate(request),
   executeBlockedRepairResume: (request) => service.executeBlockedRepairResume(request)
 });
