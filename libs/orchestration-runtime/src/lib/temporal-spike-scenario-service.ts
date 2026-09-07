@@ -9,7 +9,10 @@ import type {
 } from '@ai-native-software-delivery-orchestrator/domain';
 import type { TemporalSpikeScenarioService } from '@ai-native-software-delivery-orchestrator/temporal-spike';
 
+import type { ForgeScenarioAServices } from './forge-scenario-a-service-runner.js';
+
 export interface TemporalSpikeScenarioServiceDependencies {
+  readonly services?: ForgeScenarioAServices;
   readonly recoverRun: (runId: string) => Promise<
     | {
         readonly tasks: readonly TaskContract[];
