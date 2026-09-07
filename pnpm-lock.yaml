@@ -306,6 +306,12 @@ importers:
         specifier: workspace:*
         version: link:../temporal-spike
     devDependencies:
+      '@restatedev/restate-sdk-clients':
+        specifier: ^1.17.0
+        version: 1.17.0
+      '@restatedev/restate-sdk-testcontainers':
+        specifier: ^1.16.9
+        version: 1.17.0
       '@temporalio/client':
         specifier: ^1.22.0
         version: 1.22.0

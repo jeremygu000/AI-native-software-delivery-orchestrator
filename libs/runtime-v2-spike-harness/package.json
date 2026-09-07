@@ -22,6 +22,8 @@
     "@ai-native-software-delivery-orchestrator/restate-spike": "workspace:*"
   },
   "devDependencies": {
+    "@restatedev/restate-sdk-clients": "^1.17.0",
+    "@restatedev/restate-sdk-testcontainers": "^1.16.9",
     "@temporalio/client": "^1.22.0",
     "@temporalio/testing": "^1.22.0",
     "@temporalio/worker": "^1.22.0"
