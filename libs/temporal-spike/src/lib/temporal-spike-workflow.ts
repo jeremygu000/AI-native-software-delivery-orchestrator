@@ -10,11 +10,14 @@ const activities = proxyActivities<TemporalSpikeActivity>({
 /**
  * M2 control flow only. Forge authority evidence remains in the authority store, never workflow history.
  *
- * Scenario A (build-review-repair-integrate):
- *   -> ExecuteBuilder Activity
- *   -> EvaluateBuilderOutput Activity
- *   -> if recommendation == repair -> ExecuteRepair Activity
- *   -> if final recommendation == accept -> IntegrateAcceptedOutput Activity
+ * Scenario A (build-review-repair-integrate) using four narrow activities:
+ *   -> ExecuteBuilder Activity (Seam 1)
+ *   -> EvaluateBuilderOutput Activity (Seam 2)
+ *   -> if recommendation == repair -> ExecuteRepair Activity (Seam 3)
+ *   -> if final recommendation == accept -> IntegrateAcceptedOutput Activity (Seam 4)
+ *
+ * Each activity call is a durable continuation boundary. Workflow state is minimal:
+ * only runId and scenario discriminator in history.
  *
  * Scenario B (blocked-repair-restart-resume):
  *   -> durable wait/signal
@@ -24,19 +27,95 @@ export const runTemporalSpikeWorkflow = async (request: {
   readonly runId: string;
   readonly scenario: 'build-review-repair-integrate' | 'blocked-repair-restart-resume';
   readonly blockedRepairAttemptId?: string;
-}): Promise<{ readonly runId: string; readonly scenario: string }> => {
+  readonly taskId?: string;
+  readonly attemptId?: string;
+  readonly agentId?: string;
+  readonly verificationPolicyFingerprint?: string;
+}): Promise<{
+  readonly runId: string;
+  readonly scenario: string;
+  readonly builderAttemptId?: string;
+  readonly repairAttemptId?: string;
+}> => {
   if (request.scenario === 'build-review-repair-integrate') {
-    await activities.runBuildReviewRepairIntegrate({ runId: request.runId });
-  } else if (request.scenario === 'blocked-repair-restart-resume') {
+    if (!request.taskId || !request.attemptId || !request.agentId) {
+      throw new Error(
+        'taskId, attemptId, and agentId are required for build-review-repair-integrate scenario'
+      );
+    }
+
+    const builderResult = await activities.executeBuilder({
+      runId: request.runId,
+      taskId: request.taskId,
+      attemptId: request.attemptId,
+      agentId: request.agentId
+    });
+
+    const evaluationResult = await activities.evaluateBuilderOutput({
+      runId: request.runId,
+      builderAttemptId: builderResult.builderAttemptId,
+      workspaceId: builderResult.workspaceId,
+      verificationPolicyFingerprint: request.verificationPolicyFingerprint ?? 'default'
+    });
+
+    if (evaluationResult.recommendation === 'repair') {
+      const repairResult = await activities.executeRepair({
+        runId: request.runId,
+        repairAttemptId: `repair-${Date.now()}`,
+        builderAttemptId: builderResult.builderAttemptId,
+        workspaceId: builderResult.workspaceId,
+        reviewSubjectRef: evaluationResult.reviewSubjectRef,
+        maxRepairs: 3
+      });
+
+      if (repairResult.recommendation === 'accept') {
+        await activities.integrateAcceptedOutput({
+          runId: request.runId,
+          taskId: request.taskId,
+          workspaceId: builderResult.workspaceId,
+          reviewSubjectRef: repairResult.reviewSubjectRef
+        });
+        return {
+          runId: request.runId,
+          scenario: request.scenario,
+          builderAttemptId: builderResult.builderAttemptId,
+          repairAttemptId: repairResult.repairAttemptId
+        };
+      }
+
+      throw new Error('Multi-repair not yet supported');
+    }
+
+    await activities.integrateAcceptedOutput({
+      runId: request.runId,
+      taskId: request.taskId,
+      workspaceId: builderResult.workspaceId,
+      reviewSubjectRef: evaluationResult.reviewSubjectRef
+    });
+
+    return {
+      runId: request.runId,
+      scenario: request.scenario,
+      builderAttemptId: builderResult.builderAttemptId
+    };
+  }
+
+  if (request.scenario === 'blocked-repair-restart-resume') {
     if (request.blockedRepairAttemptId === undefined) {
       throw new Error(
         'blockedRepairAttemptId is required for blocked-repair-restart-resume scenario'
       );
     }
-    await activities.executeBlockedRepairResume({
+    const result = await activities.executeBlockedRepairResume({
       runId: request.runId,
       repairAttemptId: request.blockedRepairAttemptId
     });
+    return {
+      runId: request.runId,
+      scenario: request.scenario,
+      repairAttemptId: result.repairAttemptId
+    };
   }
-  return request;
+
+  throw new Error(`Unknown scenario: ${String(request.scenario)}`);
 };
