@@ -49,21 +49,28 @@ describe('Temporal spike workflow', () => {
     expect(result).toEqual({ runId: 'run-1', scenario: 'build-review-repair-integrate' });
   }, 15_000);
 
-  it('returns immediately for blocked-repair-restart-resume scenario without calling activities', async () => {
+  it('calls executeBlockedRepairResume for blocked-repair-restart-resume scenario', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
-    let activityCalled = false;
+    let resumeActivityCalled = false;
     const worker = await Worker.create({
       connection: environment.nativeConnection,
       taskQueue: 'temporal-spike-test-blocked',
       workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url)),
       activities: createTemporalSpikeActivities({
         runBuildReviewRepairIntegrate: async () => {
-          activityCalled = true;
           return {
             builderAttemptId: 'builder-1',
             finalRepairAttemptId: 'repair-1',
             verificationEvidenceId: 'verification-1',
             reviewEvidenceId: 'review-1'
+          };
+        },
+        executeBlockedRepairResume: async (request) => {
+          resumeActivityCalled = true;
+          return {
+            repairAttemptId: request.repairAttemptId,
+            verificationEvidenceId: 'resume-verification-1',
+            reviewEvidenceId: 'resume-review-1'
           };
         }
       })
@@ -74,10 +81,17 @@ describe('Temporal spike workflow', () => {
       client.workflow.execute(runTemporalSpikeWorkflow, {
         taskQueue: 'temporal-spike-test-blocked',
         workflowId: 'forge-run:run-blocked',
-        args: [{ runId: 'run-blocked', scenario: 'blocked-repair-restart-resume' }]
+        args: [
+          {
+            runId: 'run-blocked',
+            scenario: 'blocked-repair-restart-resume',
+            blockedRepairAttemptId: 'blocked-repair-1'
+          }
+        ]
       })
     );
-    expect(result).toEqual({ runId: 'run-blocked', scenario: 'blocked-repair-restart-resume' });
-    expect(activityCalled).toBe(false);
+    expect(result.runId).toBe('run-blocked');
+    expect(result.scenario).toBe('blocked-repair-restart-resume');
+    expect(resumeActivityCalled).toBe(true);
   }, 15_000);
 });
