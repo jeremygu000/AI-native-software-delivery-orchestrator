@@ -2265,10 +2265,13 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - M2.1 Temporal skeleton: CLOSED
 - M2.2 Activity infrastructure: CLOSED
 
-**Scenario A (NOT complete):**
+**Scenario A (partially complete):**
 
-- `ForgeBuilderExecutionService`: implemented (ExecuteBuilder seam)
-- Remaining three seams NOT committed: EvaluateBuilderOutput, ExecuteRepair, IntegrateAcceptedOutput
+- `ForgeBuilderExecutionService`: implemented (Seam 1: ExecuteBuilder)
+- `ForgeBuilderOutputEvaluationService`: implemented (Seam 2: EvaluateBuilderOutput)
+- `ForgeRepairExecutionService`: implemented (Seam 3: ExecuteRepair)
+- `ForgeAcceptedOutputIntegrationService`: implemented (Seam 4: IntegrateAcceptedOutput)
+- Services NOT yet wired into runtime or Temporal Activities
 - Scenario A still uses one opaque `runBuildReviewRepairIntegrate` Activity
 - Temporal durable continuation NOT proven (Workflow does not own continuation)
 
@@ -2282,8 +2285,8 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 
 **Next steps:**
 
-1. Complete the four Temporal-free Forge application seams
-2. Replace opaque `runBuildReviewRepairIntegrate` with narrow Activities so Temporal Workflow owns continuation
+1. Wire four Forge services into legacy runtime OR create ForgeScenarioAServices composition layer
+2. Replace opaque `runBuildReviewRepairIntegrate` with four narrow Activities so Temporal Workflow owns continuation
 3. Run Scenario A through shared SQLite authority harness
 4. Only then return to Scenario B
 
