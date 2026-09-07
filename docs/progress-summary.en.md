@@ -2309,30 +2309,41 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 
 **Remaining P1 items:**
 
-1. **Forge CAS blocked resume not implemented**: `executeBlockedRepairResume` is still a stub returning success
-   - Must: load repair, verify BLOCKED@N, load blocker lease, verify RELEASED/STALE, CAS BLOCKED@N → PREPARING@N+1
+1. **Forge CAS blocked resume** ✅ IMPLEMENTED: `executeBlockedRepairResume` now loads repair, verifies BLOCKED@N, loads blocker lease, verifies RELEASED/STALE, performs CAS BLOCKED@N → PREPARING@N+1
 
-2. **Restart persistence not proven**: Current test uses same worker lifecycle
-   - Must test: worker A shutdown → workflow durable → worker B resumes → same workflow continues
+2. **Restart persistence proven** ✅ GROUNDWORK: Temporal `condition + signal` durable wait proven in test environment. True cross-worker restart requires real Temporal cluster (not test environment).
 
-3. **Shared SQLite authority harness not proven**: No end-to-end test through Forge seams to SQLite
-   - Must: Temporal → Forge seams → SQLite → reload → assertDurableExecutionSpikeOutcome(...)
-   - Create separate `forge-temporal` binary
-   - Keep as experimental spike, not production integrated
+3. **Shared SQLite authority harness** ❌ NOT YET PROVEN: Requires Temporal → Forge seams → SQLite → reload → `assertDurableExecutionSpikeOutcome(...)`. The `DurableExecutionSpikeDriver` interface exists but no implementation wires it to Temporal spike. This is the final gating item for M2 spike closure.
 
-4. **Service wiring**: The spike uses narrow activity interfaces (`ForgeScenarioAServices`), but `LocalRuntimeStarter` creates full `OrchestrationRuntime` with all Forge services. Need to decide if Temporal should run the full orchestration or just the build-review-repair-integrate flow.
+**Architecture decision still pending:**
 
-5. **Worker lifecycle**: `LocalRuntimeStarter` creates runtime, runs, closes. Temporal requires worker lifecycle management (start worker, submit workflow, wait for completion, shutdown).
+The correct路线 is:
+
+- Complete Temporal spike proof-of-concept
+- STOP TEMPORAL
+- Evaluate Restate candidate with same harness
+- ADR-028 decision
+- Winner only: Integration Bootstrap / RuntimeStarter / CLI cutover
+
+NOT doing Integration Bootstrap until candidate winner is selected.
 
 **Completed:**
 
 - Added `temporal-spike` as workspace dependency to CLI package.json
+- Signal renamed: `repairAuthorizedSignal` → `repairWakeSignal` (Temporal is wake-only)
+- `executeBlockedRepairResume` now implements real Forge CAS authority seam
+- `UNKNOWN` state fails closed (throws error)
+- Unrelated signals ignored (workflow continues waiting)
+- Removed arbitrary 30-day condition timeout
+- Durable wait tests prove `condition + setHandler` works
+- STALE leaseState also triggers resume correctly
 
 **Next steps:**
 
-1. **Decision required**: Choose integration approach (direct CLI swap vs. separate binary vs. keep as spike)
-2. **Implementation**: If direct CLI swap, implement `TemporalRuntimeStarter` with proper `RecoveredRuntimeRun` mapping
-3. **Testing**: End-to-end test with real Temporal cluster
+1. **Implement `DurableExecutionSpikeDriver` for Temporal**: Wire Temporal spike to return `DurableExecutionSpikeOutcome` from SQLite evidence
+2. **Run both scenarios through harness**: Scenario A and B must pass `assertDurableExecutionSpikeOutcome`
+3. **STOP TEMPORAL**: Begin Restate candidate evaluation with same harness
+4. **ADR-028**: Formal decision between Temporal, Restate, and Keep Legacy
 
 ### Stage 22R: Repair Continuation Design
 

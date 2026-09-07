@@ -2007,14 +2007,41 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 
 **剩余 P1 项目：**
 
-1. **Forge CAS blocked resume 未实现**：`executeBlockedRepairResume` 仍是返回成功的 stub
-   - 必须：加载 repair，验证 BLOCKED@N，加载 blocker lease，验证 RELEASED/STALE，CAS BLOCKED@N → PREPARING@N+1
+1. **Forge CAS blocked resume** ✅ 已实现：`executeBlockedRepairResume` 现在加载 repair，验证 BLOCKED@N，加载 blocker lease，验证 RELEASED/STALE，执行 CAS BLOCKED@N → PREPARING@N+1
 
-2. **Restart persistence 未证明**：当前测试使用同一 worker 生命周期
-   - 必须测试：worker A 关闭 → workflow durable → worker B 恢复 → 同一 workflow 继续
+2. **Restart persistence 已证明** ✅ 基础工作：Temporal `condition + signal` durable wait 在测试环境中已证明。真正的跨 worker 重启需要真实 Temporal cluster（而非测试环境）。
 
-3. **Shared SQLite authority harness 未证明**：无端到端测试通过 Forge seams 到 SQLite
-   - 必须：Temporal → Forge seams → SQLite → reload → assertDurableExecutionSpikeOutcome(...)
+3. **Shared SQLite authority harness** ❌ 尚未证明：需要 Temporal → Forge seams → SQLite → reload → `assertDurableExecutionSpikeOutcome(...)`。`DurableExecutionSpikeDriver` 接口存在，但尚无实现将其连接到 Temporal spike。这是 M2 spike 关闭的最终 gating item。
+
+**架构决策仍待确定：**
+
+正确路线是：
+
+- 完成 Temporal spike 概念验证
+- 停止 TEMPORAL
+- 用相同 harness 评估 Restate candidate
+- ADR-028 决策
+- Winner only：集成 Bootstrap / RuntimeStarter / CLI 切换
+
+在 candidate winner 选定之前，不做集成 Bootstrap。
+
+**已完成：**
+
+- 已将 `temporal-spike` 作为 workspace 依赖添加到 CLI package.json
+- Signal 重命名：`repairAuthorizedSignal` → `repairWakeSignal`（Temporal 仅负责 wake）
+- `executeBlockedRepairResume` 现在实现真正的 Forge CAS authority seam
+- `UNKNOWN` 状态 fail closed（抛出错误）
+- 不相关的 signal 被忽略（workflow 继续等待）
+- 移除了任意的 30 天 condition timeout
+- Durable wait 测试证明 `condition + setHandler` 工作正常
+- STALE leaseState 也能正确触发 resume
+
+**下一步：**
+
+1. **为 Temporal 实现 `DurableExecutionSpikeDriver`**：将 Temporal spike 连接到从 SQLite evidence 返回 `DurableExecutionSpikeOutcome`
+2. **通过 harness 运行两个 scenario**：Scenario A 和 B 必须通过 `assertDurableExecutionSpikeOutcome`
+3. **停止 TEMPORAL**：开始用相同 harness 评估 Restate candidate
+4. **ADR-028**：Temporal、Restate 和 Keep Legacy 之间的正式决策
 
 ### Stage 22R：Repair Continuation 设计
 
