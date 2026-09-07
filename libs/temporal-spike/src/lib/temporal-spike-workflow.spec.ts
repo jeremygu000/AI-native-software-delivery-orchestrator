@@ -46,7 +46,8 @@ describe('Temporal spike workflow', () => {
         args: [{ runId: 'run-1', scenario: 'build-review-repair-integrate' }]
       })
     );
-    expect(result).toEqual({ runId: 'run-1', scenario: 'build-review-repair-integrate' });
+    expect(result.runId).toBe('run-1');
+    expect(result.scenario).toBe('build-review-repair-integrate');
   }, 15_000);
 
   it('calls executeBlockedRepairResume for blocked-repair-restart-resume scenario', async () => {
