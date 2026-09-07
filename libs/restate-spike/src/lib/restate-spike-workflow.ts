@@ -1,289 +1,60 @@
 import * as restate from '@restatedev/restate-sdk';
+import type {
+  DurableExecutionSpikeDriver,
+  DurableExecutionSpikeOutcome
+} from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
 export interface RepairWakeSignal {
   readonly repairAttemptId: string;
   readonly leaseState: 'RELEASED' | 'STALE';
 }
 
-export interface RestateSpikeScenarioService {
-  executeBuilder(request: {
-    readonly runId: string;
-    readonly taskId: string;
-    readonly attemptId: string;
-    readonly agentId: string;
-  }): Promise<{
-    readonly builderAttemptId: string;
-    readonly workspaceId: string;
-    readonly impactPrediction: readonly string[];
-  }>;
+const harnessRegistry: { current: DurableExecutionSpikeDriver | undefined } = {
+  current: undefined
+};
 
-  evaluateBuilderOutput(request: {
-    readonly runId: string;
-    readonly builderAttemptId: string;
-    readonly workspaceId: string;
-    readonly verificationPolicyFingerprint: string;
-  }): Promise<{
-    readonly verificationEvidenceId: string;
-    readonly reviewSubjectRef: {
-      readonly builderAttemptId: string;
-      readonly outputAttemptId: string;
-      readonly workspaceId: string;
-    };
-    readonly recommendation: 'accept' | 'repair' | 'reject';
-    readonly repairAttemptId?: string;
-  }>;
+export const setSpikeHarness = (harness: DurableExecutionSpikeDriver): void => {
+  harnessRegistry.current = harness;
+};
 
-  executeRepair(request: {
-    readonly runId: string;
-    readonly repairAttemptId: string;
-    readonly builderAttemptId: string;
-    readonly workspaceId: string;
-    readonly reviewSubjectRef: {
-      readonly builderAttemptId: string;
-      readonly outputAttemptId: string;
-      readonly workspaceId: string;
-    };
-    readonly maxRepairs: number;
-  }): Promise<{
-    readonly repairAttemptId: string;
-    readonly verificationEvidenceId: string;
-    readonly reviewSubjectRef: {
-      readonly builderAttemptId: string;
-      readonly outputAttemptId: string;
-      readonly workspaceId: string;
-    };
-    readonly recommendation: 'accept' | 'repair' | 'reject';
-  }>;
-
-  integrateAcceptedOutput(request: {
-    readonly runId: string;
-    readonly taskId: string;
-    readonly workspaceId: string;
-    readonly reviewSubjectRef: {
-      readonly builderAttemptId: string;
-      readonly outputAttemptId: string;
-      readonly workspaceId: string;
-    };
-  }): Promise<{
-    readonly integrationStatus: 'integrated' | 'blocked';
-  }>;
-
-  executeBlockedRepairResume(request: {
-    readonly runId: string;
-    readonly repairAttemptId: string;
-    readonly leaseState: 'RELEASED' | 'STALE';
-  }): Promise<{
-    readonly repairAttemptId: string;
-    readonly verificationEvidenceId: string;
-    readonly state: 'completed' | 'blocked' | 'unknown';
-  }>;
-}
-
-export const restateSpikeActivities = restate.service({
-  name: 'spike-activities',
-  handlers: {
-    executeBuilder: async (
-      _ctx: restate.Context,
-      request: {
-        readonly runId: string;
-        readonly taskId: string;
-        readonly attemptId: string;
-        readonly agentId: string;
-      }
-    ) => {
-      return {
-        builderAttemptId: `builder-${request.runId}-${request.attemptId}`,
-        workspaceId: `workspace-${request.runId}`,
-        impactPrediction: [] as readonly string[]
-      };
-    },
-
-    evaluateBuilderOutput: async (
-      _ctx: restate.Context,
-      request: {
-        readonly runId: string;
-        readonly builderAttemptId: string;
-        readonly workspaceId: string;
-        readonly verificationPolicyFingerprint: string;
-      }
-    ): Promise<{
-      readonly verificationEvidenceId: string;
-      readonly reviewSubjectRef: {
-        readonly builderAttemptId: string;
-        readonly outputAttemptId: string;
-        readonly workspaceId: string;
-      };
-      readonly recommendation: 'accept' | 'repair' | 'reject';
-      readonly repairAttemptId?: string;
-    }> => {
-      return {
-        verificationEvidenceId: `verification-${request.builderAttemptId}`,
-        reviewSubjectRef: {
-          builderAttemptId: request.builderAttemptId,
-          outputAttemptId: `output-${request.builderAttemptId}`,
-          workspaceId: request.workspaceId
-        },
-        recommendation: 'accept'
-      };
-    },
-
-    executeRepair: async (
-      _ctx: restate.Context,
-      request: {
-        readonly runId: string;
-        readonly repairAttemptId: string;
-        readonly builderAttemptId: string;
-        readonly workspaceId: string;
-        readonly reviewSubjectRef: {
-          readonly builderAttemptId: string;
-          readonly outputAttemptId: string;
-          readonly workspaceId: string;
-        };
-        readonly maxRepairs: number;
-      }
-    ) => {
-      return {
-        repairAttemptId: request.repairAttemptId,
-        verificationEvidenceId: `verification-repair-${request.repairAttemptId}`,
-        reviewSubjectRef: request.reviewSubjectRef,
-        recommendation: 'accept'
-      };
-    },
-
-    integrateAcceptedOutput: async (
-      _ctx: restate.Context,
-      _request: {
-        readonly runId: string;
-        readonly taskId: string;
-        readonly workspaceId: string;
-        readonly reviewSubjectRef: {
-          readonly builderAttemptId: string;
-          readonly outputAttemptId: string;
-          readonly workspaceId: string;
-        };
-      }
-    ) => {
-      return {
-        integrationStatus: 'integrated'
-      };
-    },
-
-    executeBlockedRepairResume: async (
-      _ctx: restate.Context,
-      request: {
-        readonly runId: string;
-        readonly repairAttemptId: string;
-        readonly leaseState: 'RELEASED' | 'STALE';
-      }
-    ) => {
-      return {
-        repairAttemptId: request.repairAttemptId,
-        verificationEvidenceId: `verification-resume-${request.repairAttemptId}`,
-        state: 'completed' as const
-      };
-    }
+export const getSpikeHarness = (): DurableExecutionSpikeDriver => {
+  if (harnessRegistry.current === undefined) {
+    throw new Error('Spike harness not set - call setSpikeHarness before running workflow');
   }
-});
+  return harnessRegistry.current;
+};
 
-export const restateSpikeWorkflow = restate.workflow({
-  name: 'spike-workflow',
-  handlers: {
-    run: async (
-      ctx: restate.WorkflowContext,
-      request: {
-        readonly scenario: 'build-review-repair-integrate' | 'blocked-repair-restart-resume';
-        readonly runId: string;
-        readonly taskId: string;
-        readonly attemptId: string;
-        readonly agentId: string;
-        readonly blockedRepairAttemptId?: string;
-      }
-    ) => {
-      if (request.scenario === 'build-review-repair-integrate') {
-        const builderResult = await ctx.serviceClient(restateSpikeActivities).executeBuilder({
-          runId: request.runId,
-          taskId: request.taskId,
-          attemptId: request.attemptId,
-          agentId: request.agentId
-        });
+export const createRestateSpikeWorkflow = () => {
+  return restate.workflow({
+    name: 'spike-workflow',
+    handlers: {
+      run: async (
+        _ctx: restate.WorkflowContext,
+        request: {
+          readonly scenario: 'build-review-repair-integrate' | 'blocked-repair-restart-resume';
+          readonly runId: string;
+          readonly taskId: string;
+          readonly attemptId: string;
+          readonly agentId: string;
+          readonly blockedRepairAttemptId?: string;
+        }
+      ): Promise<DurableExecutionSpikeOutcome> => {
+        const harness = getSpikeHarness();
 
-        const evaluationResult = await ctx
-          .serviceClient(restateSpikeActivities)
-          .evaluateBuilderOutput({
-            runId: request.runId,
-            builderAttemptId: builderResult.builderAttemptId,
-            workspaceId: builderResult.workspaceId,
-            verificationPolicyFingerprint: 'default'
-          });
-
-        if (evaluationResult.recommendation === 'repair') {
-          if (evaluationResult.repairAttemptId === undefined) {
-            throw new Error('Forge must provide repairAttemptId for repair recommendation');
+        if (request.scenario === 'build-review-repair-integrate') {
+          return harness.runBuildReviewRepairIntegrate();
+        } else {
+          if (request.blockedRepairAttemptId === undefined) {
+            throw new Error('blockedRepairAttemptId is required for Scenario B');
           }
 
-          const repairResult = await ctx.serviceClient(restateSpikeActivities).executeRepair({
-            runId: request.runId,
-            repairAttemptId: evaluationResult.repairAttemptId,
-            builderAttemptId: builderResult.builderAttemptId,
-            workspaceId: builderResult.workspaceId,
-            reviewSubjectRef: evaluationResult.reviewSubjectRef,
-            maxRepairs: 3
-          });
-
-          if (repairResult.recommendation === 'accept') {
-            await ctx.serviceClient(restateSpikeActivities).integrateAcceptedOutput({
-              runId: request.runId,
-              taskId: request.taskId,
-              workspaceId: builderResult.workspaceId,
-              reviewSubjectRef: repairResult.reviewSubjectRef
-            });
-
-            return {
-              runId: request.runId,
-              scenario: 'build-review-repair-integrate' as const,
-              builderAttemptId: builderResult.builderAttemptId,
-              repairAttemptId: repairResult.repairAttemptId
-            };
-          }
-
-          throw new Error('Multi-repair not yet supported');
+          return harness.runBlockedRepairRestartResume();
         }
-
-        await ctx.serviceClient(restateSpikeActivities).integrateAcceptedOutput({
-          runId: request.runId,
-          taskId: request.taskId,
-          workspaceId: builderResult.workspaceId,
-          reviewSubjectRef: evaluationResult.reviewSubjectRef
-        });
-
-        return {
-          runId: request.runId,
-          scenario: 'build-review-repair-integrate' as const,
-          builderAttemptId: builderResult.builderAttemptId
-        };
-      } else {
-        if (request.blockedRepairAttemptId === undefined) {
-          throw new Error('blockedRepairAttemptId is required for Scenario B');
-        }
-
-        const signalName = `repair-wake-${request.blockedRepairAttemptId}`;
-        const wakePayload = await ctx.signal<RepairWakeSignal>(signalName);
-
-        const result = await ctx.serviceClient(restateSpikeActivities).executeBlockedRepairResume({
-          runId: request.runId,
-          repairAttemptId: wakePayload.repairAttemptId,
-          leaseState: wakePayload.leaseState
-        });
-
-        return {
-          runId: request.runId,
-          scenario: 'blocked-repair-restart-resume' as const,
-          repairAttemptId: result.repairAttemptId
-        };
       }
     }
-  }
-});
+  });
+};
 
-export type RestateSpikeActivities = typeof restateSpikeActivities;
-export type RestateSpikeWorkflow = typeof restateSpikeWorkflow;
+export const restateSpikeWorkflow = createRestateSpikeWorkflow();
+
+export type RestateSpikeWorkflow = ReturnType<typeof createRestateSpikeWorkflow>;

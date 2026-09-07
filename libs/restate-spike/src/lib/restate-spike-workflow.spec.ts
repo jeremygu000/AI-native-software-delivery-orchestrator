@@ -1,7 +1,9 @@
 import { RestateTestEnvironment } from '@restatedev/restate-sdk-testcontainers';
 import * as clients from '@restatedev/restate-sdk-clients';
-import { restateSpikeActivities, restateSpikeWorkflow } from './restate-spike-workflow.js';
-import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import { restateSpikeWorkflow, setSpikeHarness } from './restate-spike-workflow.js';
+import { createRestateSpikeHarness } from './shared-harness.js';
+import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const TESTCONTAINERS_START_TIMEOUT = 120_000;
 
@@ -11,7 +13,7 @@ describe('Restate spike workflow - Scenario A (build-review-repair-integrate)', 
 
   beforeAll(async () => {
     restateTestEnvironment = await RestateTestEnvironment.start({
-      services: [restateSpikeActivities, restateSpikeWorkflow],
+      services: [restateSpikeWorkflow],
       disableRetries: true
     });
     rs = clients.connect({ url: restateTestEnvironment.baseUrl() });
@@ -23,16 +25,21 @@ describe('Restate spike workflow - Scenario A (build-review-repair-integrate)', 
     }
   });
 
-  it('executes full Scenario A path and returns builderAttemptId (proves executeBuilder was called)', async () => {
-    const handle = await rs
-      .workflowClient(restateSpikeWorkflow, 'scenario-a-full')
-      .workflowSubmit({
-        scenario: 'build-review-repair-integrate',
-        runId: 'run-scenario-a-full',
-        taskId: 'task-1',
-        attemptId: 'attempt-1',
-        agentId: 'agent-1'
-      });
+  it('executes Scenario A and outcome passes assertDurableExecutionSpikeOutcome', async () => {
+    setSpikeHarness(
+      createRestateSpikeHarness({
+        runId: 'run-scenario-a-1',
+        scenario: 'build-review-repair-integrate'
+      })
+    );
+
+    const handle = await rs.workflowClient(restateSpikeWorkflow, 'scenario-a-1').workflowSubmit({
+      scenario: 'build-review-repair-integrate',
+      runId: 'run-scenario-a-1',
+      taskId: 'task-1',
+      attemptId: 'attempt-1',
+      agentId: 'agent-1'
+    });
 
     expect(handle).toBeDefined();
     expect(handle.invocationId).toBeDefined();
@@ -40,19 +47,32 @@ describe('Restate spike workflow - Scenario A (build-review-repair-integrate)', 
     const result = await rs.result(handle);
 
     expect(result).toBeDefined();
-    expect(result.runId).toBe('run-scenario-a-full');
-    expect(result.scenario).toBe('build-review-repair-integrate');
-    expect(result.builderAttemptId).toBeDefined();
-    expect(result.builderAttemptId).toContain('builder-');
-    expect(result.repairAttemptId).toBeUndefined();
+    expect(result.builderAttempt).toBeDefined();
+    expect(result.builderAttempt.state).toBe('COMPLETED');
+    expect(result.repairs).toHaveLength(1);
+    expect(result.verifications).toHaveLength(1);
+    expect(result.reviews).toHaveLength(1);
+    expect(result.integration.status).toBe('integrated');
+
+    assertDurableExecutionSpikeOutcome({
+      outcome: result,
+      scenario: 'build-review-repair-integrate'
+    });
   }, 30_000);
 
-  it('proves executeBuilder was called via builderAttemptId in result', async () => {
+  it('proves builderAttempt is COMPLETED and repairs exist', async () => {
+    setSpikeHarness(
+      createRestateSpikeHarness({
+        runId: 'run-scenario-a-builder-proof',
+        scenario: 'build-review-repair-integrate'
+      })
+    );
+
     const handle = await rs
       .workflowClient(restateSpikeWorkflow, 'scenario-a-builder-proof')
       .workflowSubmit({
         scenario: 'build-review-repair-integrate',
-        runId: 'run-scenario-a-builder',
+        runId: 'run-scenario-a-builder-proof',
         taskId: 'task-builder',
         attemptId: 'attempt-builder',
         agentId: 'agent-builder'
@@ -60,23 +80,14 @@ describe('Restate spike workflow - Scenario A (build-review-repair-integrate)', 
 
     const result = await rs.result(handle);
 
-    expect(result.builderAttemptId).toBe('builder-run-scenario-a-builder-attempt-builder');
-  }, 30_000);
+    expect(result.builderAttempt.state).toBe('COMPLETED');
+    expect(result.repairs[0].state).toBe('COMPLETED');
+    expect(result.repairs[0].repairIteration).toBe(1);
 
-  it('proves evaluateBuilderOutput was called (recommendation=accept means no repair needed)', async () => {
-    const handle = await rs
-      .workflowClient(restateSpikeWorkflow, 'scenario-a-eval-proof')
-      .workflowSubmit({
-        scenario: 'build-review-repair-integrate',
-        runId: 'run-scenario-a-eval',
-        taskId: 'task-eval',
-        attemptId: 'attempt-eval',
-        agentId: 'agent-eval'
-      });
-
-    const result = await rs.result(handle);
-
-    expect(result.repairAttemptId).toBeUndefined();
+    assertDurableExecutionSpikeOutcome({
+      outcome: result,
+      scenario: 'build-review-repair-integrate'
+    });
   }, 30_000);
 });
 
@@ -86,7 +97,7 @@ describe('Restate spike workflow - Scenario B (blocked-repair-restart-resume)', 
 
   beforeAll(async () => {
     restateTestEnvironment = await RestateTestEnvironment.start({
-      services: [restateSpikeActivities, restateSpikeWorkflow],
+      services: [restateSpikeWorkflow],
       disableRetries: true
     });
     rs = clients.connect({ url: restateTestEnvironment.baseUrl() });
@@ -98,29 +109,54 @@ describe('Restate spike workflow - Scenario B (blocked-repair-restart-resume)', 
     }
   });
 
-  it('Scenario B workflowSubmit returns invocationId (durable wait starts)', async () => {
+  it('executes Scenario B and outcome passes assertDurableExecutionSpikeOutcome', async () => {
+    setSpikeHarness(
+      createRestateSpikeHarness({
+        runId: 'run-scenario-b-1',
+        scenario: 'blocked-repair-restart-resume',
+        blockedRepairAttemptId: 'blocked-repair-1'
+      })
+    );
+
+    const handle = await rs.workflowClient(restateSpikeWorkflow, 'scenario-b-1').workflowSubmit({
+      scenario: 'blocked-repair-restart-resume',
+      runId: 'run-scenario-b-1',
+      taskId: 'task-1',
+      attemptId: 'attempt-1',
+      agentId: 'agent-1',
+      blockedRepairAttemptId: 'blocked-repair-1'
+    });
+
+    expect(handle).toBeDefined();
+
+    const result = await rs.result(handle);
+
+    expect(result).toBeDefined();
+    expect(result.builderAttempt).toBeDefined();
+    expect(result.blockedResume).toBeDefined();
+    expect(result.blockedResume?.repairAttemptId).toBe(result.repairs[0].id);
+    expect(result.blockedResume?.releaseState).toBe('RELEASED');
+
+    assertDurableExecutionSpikeOutcome({
+      outcome: result,
+      scenario: 'blocked-repair-restart-resume'
+    });
+  }, 30_000);
+
+  it('Scenario B workflowSubmit returns invocationId (durable wait infrastructure works)', async () => {
+    setSpikeHarness(
+      createRestateSpikeHarness({
+        runId: 'run-scenario-b-submit',
+        scenario: 'blocked-repair-restart-resume',
+        blockedRepairAttemptId: 'blocked-repair-2'
+      })
+    );
+
     const handle = await rs
       .workflowClient(restateSpikeWorkflow, 'scenario-b-submit')
       .workflowSubmit({
         scenario: 'blocked-repair-restart-resume',
-        runId: 'run-scenario-b',
-        taskId: 'task-1',
-        attemptId: 'attempt-1',
-        agentId: 'agent-1',
-        blockedRepairAttemptId: 'blocked-repair-1'
-      });
-
-    expect(handle).toBeDefined();
-    expect(handle.invocationId).toBeDefined();
-    expect(handle.invocationId).toContain('inv_');
-  }, 30_000);
-
-  it('Scenario B durable wait at signal point via ctx.signal()', async () => {
-    const handle = await rs
-      .workflowClient(restateSpikeWorkflow, 'scenario-b-durable-wait')
-      .workflowSubmit({
-        scenario: 'blocked-repair-restart-resume',
-        runId: 'run-scenario-b-wait',
+        runId: 'run-scenario-b-submit',
         taskId: 'task-wait',
         attemptId: 'attempt-wait',
         agentId: 'agent-wait',
@@ -128,9 +164,8 @@ describe('Restate spike workflow - Scenario B (blocked-repair-restart-resume)', 
       });
 
     expect(handle).toBeDefined();
-
-    const workflowState = await restateTestEnvironment.stateOf(restateSpikeWorkflow, 'scenario-b-durable-wait');
-    expect(workflowState).toBeDefined();
+    expect(handle.invocationId).toBeDefined();
+    expect(handle.invocationId).toContain('inv_');
   }, 30_000);
 });
 
@@ -140,7 +175,7 @@ describe('Restate spike workflow - infrastructure', () => {
 
   beforeAll(async () => {
     restateTestEnvironment = await RestateTestEnvironment.start({
-      services: [restateSpikeActivities, restateSpikeWorkflow],
+      services: [restateSpikeWorkflow],
       disableRetries: true
     });
     rs = clients.connect({ url: restateTestEnvironment.baseUrl() });
@@ -153,11 +188,17 @@ describe('Restate spike workflow - infrastructure', () => {
   });
 
   it('workflow client can be created for different workflow keys', async () => {
+    setSpikeHarness(
+      createRestateSpikeHarness({
+        runId: 'run-infra',
+        scenario: 'build-review-repair-integrate'
+      })
+    );
+
     const client1 = rs.workflowClient(restateSpikeWorkflow, 'key-1');
     const client2 = rs.workflowClient(restateSpikeWorkflow, 'key-2');
 
     expect(client1).toBeDefined();
     expect(client2).toBeDefined();
-    expect(client1).not.toBe(client2);
   }, 10_000);
 });

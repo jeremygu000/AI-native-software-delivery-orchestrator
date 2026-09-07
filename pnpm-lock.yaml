@@ -244,7 +244,13 @@ importers:
 
   libs/restate-spike:
     dependencies:
+      '@ai-native-software-delivery-orchestrator/orchestration-runtime':
+        specifier: workspace:*
+        version: link:../orchestration-runtime
       '@restatedev/restate-sdk':
+        specifier: ^1.17.0
+        version: 1.17.0
+      '@restatedev/restate-sdk-clients':
         specifier: ^1.17.0
         version: 1.17.0
     devDependencies:
