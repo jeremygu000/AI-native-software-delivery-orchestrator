@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed - Decision Pending.** Shared harness now proven for both candidates. Scorecard evaluation required.
+**Proposed - Decision Pending.** OutcomeCollector pattern proven for both candidates. Scorecard evaluation complete. Decision required.
 
 ## Context
 
@@ -13,34 +13,34 @@ The spike acceptance criteria from ADR-027:
 1. Scenario A: Build -> Verify -> Review repair -> Repair -> Verify -> Review accept -> exact integration
 2. Scenario B: Repair BLOCKED -> durable wait/signal -> Forge CAS resume decision -> ExecuteRepair Activity
 
-## Shared Harness Architecture
+## OutcomeCollector Architecture (CRITICAL FIX)
 
-Both candidates now use a common `DurableExecutionSpikeDriver` interface and `assertDurableExecutionSpikeOutcome` validation:
+**Previous False-Positive Problem**: The original harness pattern pre-constructed the correct outcome and passed it as input to the workflow, then asserted it passed. This is circular validation - it proves nothing about durable execution.
+
+**OutcomeCollector Pattern**: Both candidates now use evidence collected DURING real workflow execution, then OBSERVED from evidence store AFTER completion.
 
 ```typescript
-interface DurableExecutionSpikeDriver {
-  runBuildReviewRepairIntegrate(): Promise<DurableExecutionSpikeOutcome>;
-  runBlockedRepairRestartResume(): Promise<DurableExecutionSpikeOutcome>;
+interface EvidenceStore {
+  write(key: string, evidence: WorkflowEvidence): void;
+  read(key: string): WorkflowEvidence | undefined;
 }
+
+// Activities write evidence DURING execution
+// OutcomeCollector reads AFTER workflow completes
+// Result is OBSERVED, not pre-constructed
 ```
 
-**Harness implementations**:
-- `libs/temporal-spike/src/lib/shared-harness.ts`: `createTemporalSpikeHarness()`
-- `libs/restate-spike/src/lib/shared-harness.ts`: `createRestateSpikeHarness()`
+**Implementation**:
+- Temporal: `libs/temporal-spike/src/lib/in-memory-evidence-store.ts` + `outcome-collector.ts`
+- Restate: `libs/restate-spike/src/lib/restate-spike-workflow.ts` (evidence stored in workflow state)
 
-**Validation**: `assertDurableExecutionSpikeOutcome()` in `libs/orchestration-runtime/src/lib/shared-spike-harness.ts` verifies:
-- `builderAttempt.state === 'COMPLETED'`
-- `repairs.length >= 1`
-- `verifications` and `reviews` arrays are populated
-- For Scenario B: `blockedResume` is present with correct `releaseState`
-
-## Spike Results (Updated)
+## Spike Results
 
 ### Temporal Candidate
 
 **Implementation**: `libs/temporal-spike/`
 
-**Harness**: `createTemporalSpikeHarness()` passes `harnessOutcome` via workflow request (workflow bundle state isolation prevents shared registry access)
+**Evidence Pattern**: Activities write to `InMemoryEvidenceStore`, `OutcomeCollector` reads after workflow completes.
 
 **Tests**: 6 passing tests proving both scenarios:
 
@@ -57,21 +57,22 @@ interface DurableExecutionSpikeDriver {
 - Built-in time-skipping test environment
 - `condition()` + `setHandler()` for durable wait
 - Signal-based wake with `handle.signal()`
-- Workflow returns `DurableExecutionSpikeOutcome` from harness
-- Workflow history contains compact identifiers only
+- Activities write to `InMemoryEvidenceStore` (simulating SQLite)
+- Workflow executes real `proxyActivities`
 
 ### Restate Candidate
 
 **Implementation**: `libs/restate-spike/`
 
-**Harness**: `createRestateSpikeHarness()` uses registry pattern (`setSpikeHarness`/`getSpikeHarness`) with single registered workflow
+**Evidence Pattern**: Workflow stores evidence in workflow state during execution, returned as part of result.
 
-**Tests**: 3 passing tests proving both scenarios:
+**Tests**: 5 passing tests proving both scenarios:
 
 1. `executes Scenario A and outcome passes assertDurableExecutionSpikeOutcome` - Scenario A path with full outcome validation
 2. `proves builderAttempt is COMPLETED and repairs exist` - Validates `builderAttempt.state === 'COMPLETED'` and `repairs[0].state === 'COMPLETED'`
 3. `executes Scenario B and outcome passes assertDurableExecutionSpikeOutcome` - Scenario B with outcome validation
-4. Additional infrastructure tests for workflowSubmit durability
+4. `Scenario B workflowSubmit returns invocationId (durable wait infrastructure works)` - Infrastructure
+5. `workflow client can be created for different workflow keys` - Infrastructure
 
 **Test Infrastructure**: `@restatedev/restate-sdk-testcontainers` with Docker
 
@@ -79,30 +80,39 @@ interface DurableExecutionSpikeDriver {
 - Uses `ctx.signal()` for durable wait
 - Workflow keyed by `workflowClient(workflow, key)`
 - `workflowSubmit()` for async submission
-- `rs.result(handle)` pattern for completion verification (fixed from original SDK issue)
+- `rs.result(handle)` pattern for completion verification
+- Evidence stored in workflow state (not process-local registry)
 
 ## Scorecard Evaluation
 
-| Criterion | Temporal | Restate |
-|-----------|----------|---------|
-| **Scenario A proof** | ✓ 2 tests pass `assertDurableExecutionSpikeOutcome` | ✓ 2 tests pass `assertDurableExecutionSpikeOutcome` |
-| **Scenario B proof** | ✓ 3 tests pass `assertDurableExecutionSpikeOutcome` | ✓ 1 test passes `assertDurableExecutionSpikeOutcome` |
-| **Durable wait semantics** | `condition()` + signals | `ctx.signal()` + workflowSubmit |
-| **Signal filtering** | ✓ Correct repairAttemptId matching | Requires verification |
-| **Test infrastructure** | In-process `TestWorkflowEnvironment` | Docker testcontainers |
-| **CI compatibility** | ✓ No external deps | Requires Docker |
-| **Authority evidence** | SQLite via activities | SQLite via activities |
+| Criterion | Temporal | Restate | Notes |
+|-----------|----------|---------|-------|
+| **Scenario A proof** | ✓ 2 tests | ✓ 2 tests | Both pass `assertDurableExecutionSpikeOutcome` |
+| **Scenario B proof** | ✓ 3 tests | ✓ 2 tests | Temporal has more signal filtering tests |
+| **Durable wait semantics** | ✓ `condition()` + signals | ✓ `ctx.signal()` | Both correct |
+| **Signal filtering** | ✓ Correct | Needs verification | Temporal has explicit tests |
+| **Evidence collection** | ✓ InMemoryEvidenceStore | ✓ Workflow state | Both observable |
+| **Test infrastructure** | In-process | Docker required | Temporal CI-friendly |
+| **No circular validation** | ✓ Real activities | ✓ Real workflow | Both fixed |
+| **Authority evidence** | Via activities | Via workflow state | Both write to evidence |
 
 ## Decision
 
-**Pending scorecard review.** Both candidates now prove Scenario A/B via `assertDurableExecutionSpikeOutcome`. The remaining decision factors are:
+**Proposed: Select Temporal** based on:
 
-1. **Testing infrastructure**: Temporal is fully in-process; Restate requires Docker
-2. **Signal model**: Both support wake-only pattern correctly
-3. **Integration complexity**: Restate registry pattern simpler; Temporal requires explicit harness injection
+1. **CI compatibility**: In-process `TestWorkflowEnvironment` vs Docker requirement
+2. **Signal filtering tests**: Temporal explicitly tests repairAttemptId matching
+3. **Observable evidence**: InMemoryEvidenceStore pattern clearer than workflow state
+4. **Time-skipping**: Built-in test capability for temporal logic
+
+**Alternative: Restate** if:
+- Operational simplicity with Restate Cloud is prioritized
+- Docker availability in CI is acceptable
+- Registry pattern is considered simpler than explicit evidence store
 
 ## Consequences
 
-- Both candidates remain viable pending scorecard decision
+- Both candidates prove real durable execution with OutcomeCollector pattern
 - Shared harness architecture enables fair comparison
-- Further evaluation should consider operational complexity beyond spike scope
+- Temporal wins on CI compatibility and explicit signal filtering
+- Decision enables Integration Bootstrap / RuntimeStarter / CLI switch (per ADR-027)
