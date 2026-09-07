@@ -214,7 +214,8 @@ export const createTemporalSpikeScenarioService = (
             outputAttemptId: result.subject.outputAttemptId,
             workspaceId: result.subject.workspaceId
           },
-          recommendation: result.recommendation
+          recommendation: result.recommendation,
+          repairAttemptId: result.repairAttempt?.id
         };
       }
 

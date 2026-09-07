@@ -43,6 +43,7 @@ export interface TemporalSpikeActivity {
       readonly workspaceId: string;
     };
     readonly recommendation: 'accept' | 'repair' | 'reject';
+    readonly repairAttemptId?: string;
   }>;
 
   /**
@@ -149,6 +150,7 @@ export interface TemporalSpikeScenarioService {
       readonly workspaceId: string;
     };
     readonly recommendation: 'accept' | 'repair' | 'reject';
+    readonly repairAttemptId?: string;
   }>;
 
   executeRepair(request: {

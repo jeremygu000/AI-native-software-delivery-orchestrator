@@ -68,16 +68,19 @@ export class ForgeRepairExecutionService {
     readonly maxRepairs: number;
     readonly leases?: readonly WriteLease[];
     readonly feedback?: RepairRuntimeFeedback;
+    readonly preCreatedRepairAttempt?: TaskRepairAttempt;
   }): Promise<RepairExecutionOutcome> {
-    const repair = await this.#repairs.prepare({
-      runId: request.runId,
-      taskId: request.task.id,
-      agentId: request.agentId,
-      workspaceId: request.workspace.id,
-      reviewIteration: request.reviewIteration,
-      review: request.review,
-      subject: request.subject
-    });
+    const repair =
+      request.preCreatedRepairAttempt ??
+      (await this.#repairs.prepare({
+        runId: request.runId,
+        taskId: request.task.id,
+        agentId: request.agentId,
+        workspaceId: request.workspace.id,
+        reviewIteration: request.reviewIteration,
+        review: request.review,
+        subject: request.subject
+      }));
 
     let result: Awaited<ReturnType<RepairExecutionCoordinator['execute']>> | undefined;
     try {

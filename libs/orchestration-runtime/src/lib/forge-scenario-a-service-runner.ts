@@ -92,7 +92,8 @@ export class ForgeScenarioAServiceRunner {
         verificationPolicyFingerprint: request.verificationPolicyFingerprint,
         repository: request.repository,
         maxRepairs: request.maxRepairs,
-        feedback: request.feedback
+        feedback: request.feedback,
+        preCreatedRepairAttempt: evaluationResult.repairAttempt
       });
 
       if (repairResult.state !== 'completed') {

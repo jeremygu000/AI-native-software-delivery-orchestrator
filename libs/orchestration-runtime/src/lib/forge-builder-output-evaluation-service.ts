@@ -7,6 +7,7 @@ import type {
   TaskCodeReviewSubjectProvider,
   TaskContract,
   TaskImpact,
+  TaskRepairAttempt,
   TaskVerificationEvidence,
   TaskVerificationEvidenceStore
 } from '@ai-native-software-delivery-orchestrator/domain';
@@ -14,6 +15,7 @@ import type { RepositoryGraph } from '@ai-native-software-delivery-orchestrator/
 
 import { TaskOutputAdmissionCoordinator } from './task-output-admission-coordinator.js';
 import { TaskCodeReviewCollector } from './task-code-review-collector.js';
+import { TaskRepairCoordinator } from './task-repair-coordinator.js';
 
 export class ForgeBuilderOutputEvaluationError extends Error {
   constructor(message: string) {
@@ -27,10 +29,12 @@ export interface ForgeBuilderOutputEvaluationResult {
   readonly subject: TaskCodeReviewSubject;
   readonly review: TaskCodeReview;
   readonly recommendation: 'accept' | 'repair' | 'reject';
+  readonly repairAttempt?: TaskRepairAttempt;
 }
 
 export class ForgeBuilderOutputEvaluationService {
   readonly #coordinator: TaskOutputAdmissionCoordinator;
+  readonly #repairs?: TaskRepairCoordinator;
 
   constructor(options: {
     readonly snapshots: RepositorySnapshotProvider;
@@ -50,6 +54,7 @@ export class ForgeBuilderOutputEvaluationService {
       readonly verifiedAt: Date;
     }) => TaskVerificationEvidence;
     readonly createEvidenceId: () => string;
+    readonly repairs?: TaskRepairCoordinator;
     readonly now?: () => Date;
   }) {
     this.#coordinator = new TaskOutputAdmissionCoordinator({
@@ -62,6 +67,7 @@ export class ForgeBuilderOutputEvaluationService {
       createEvidenceId: options.createEvidenceId,
       now: options.now
     });
+    this.#repairs = options.repairs;
   }
 
   async evaluate(request: {
@@ -82,6 +88,26 @@ export class ForgeBuilderOutputEvaluationService {
       verificationPolicyFingerprint: request.verificationPolicyFingerprint,
       repository: request.repository
     });
+
+    if (review.recommendation === 'repair' && this.#repairs !== undefined) {
+      const repairAttempt = await this.#repairs.prepare({
+        runId: request.runId,
+        taskId: request.task.id,
+        agentId: request.builderAttempt.agentId,
+        workspaceId: request.workspace.id,
+        reviewIteration: 1,
+        review,
+        subject
+      });
+
+      return {
+        verification,
+        subject,
+        review,
+        recommendation: review.recommendation,
+        repairAttempt
+      };
+    }
 
     return {
       verification,

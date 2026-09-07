@@ -61,7 +61,7 @@ export const runTemporalSpikeWorkflow = async (request: {
     if (evaluationResult.recommendation === 'repair') {
       const repairResult = await activities.executeRepair({
         runId: request.runId,
-        repairAttemptId: `repair-${Date.now()}`,
+        repairAttemptId: evaluationResult.repairAttemptId ?? `repair-${Date.now()}`,
         builderAttemptId: builderResult.builderAttemptId,
         workspaceId: builderResult.workspaceId,
         reviewSubjectRef: evaluationResult.reviewSubjectRef,
