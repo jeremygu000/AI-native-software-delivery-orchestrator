@@ -16,6 +16,7 @@
     "@ai-native-software-delivery-orchestrator/run-preparation": "workspace:*",
     "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*",
     "@ai-native-software-delivery-orchestrator/task-impact": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/temporal-spike": "workspace:*",
     "@ai-native-software-delivery-orchestrator/workspace-git": "workspace:*",
     "commander": "15.0.0"
   }

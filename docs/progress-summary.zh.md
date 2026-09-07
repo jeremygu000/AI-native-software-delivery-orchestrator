@@ -2005,9 +2005,32 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - 验证确保 signal 的 `repairAttemptId` 与预期的 blocked repair 匹配
 - Commit: `temporal-spike-workflow.ts` 已更新
 
+**集成 bootstrap（需要架构决策）：**
+
+M2 spike 已验证 Temporal 可作为 durable execution substrate。但将 spike 接入生产 CLI 需要解决以下架构问题：
+
+1. **返回类型不匹配**：`RuntimeStarter.startOrResumeRun` 返回 `RecoveredRuntimeRun`（包含 tasks、leases、events 的丰富类型），但 spike workflow 返回 `{runId, scenario, builderAttemptId, repairAttemptId}`。`TemporalRuntimeStarter` 需要：
+   - 将 spike 结果映射到 `RecoveredRuntimeRun` 结构
+   - 或重构 `RunPreparation` 以处理多态 runtime 响应
+
+2. **包结构**：目前 `temporal-spike` 是独立 package。选项：
+   - 添加为 CLI package 的依赖（已完成）
+   - 创建独立的 `forge-temporal` 二进制文件
+   - 保持为实验性 spike，不接入生产
+
+3. **服务 wiring**：Spike 使用窄 activity 接口（`ForgeScenarioAServices`），但 `LocalRuntimeStarter` 创建完整的 `OrchestrationRuntime`。需决定 Temporal 是运行完整 orchestration 还是仅运行 build-review-repair-integrate flow。
+
+4. **Worker 生命周期**：`LocalRuntimeStarter` 创建 runtime、运行、关闭。Temporal 需要 worker 生命周期管理（启动 worker、提交 workflow、等待完成、关闭）。
+
+**已完成：**
+
+- 已将 `temporal-spike` 作为 workspace 依赖添加到 CLI package.json
+
 **下一步：**
 
-1. **集成 bootstrap**：将 `createTemporalSpikeWorker(config, service)` 接入实际应用启动，使用真实的 `ForgeScenarioAServices` 和 `OrchestrationPersistence`。需要关于包结构（直接 CLI 集成 vs. 独立 worker 进程）的架构决策。
+1. **需要决策**：选择集成方式（直接 CLI 替换 vs. 独立二进制 vs. 保持为 spike）
+2. **实现**：若直接 CLI 替换，实现具有正确 `RecoveredRuntimeRun` 映射的 `TemporalRuntimeStarter`
+3. **测试**：使用真实 Temporal cluster 进行端到端测试
 
 ### Stage 22R：Repair Continuation 设计
 

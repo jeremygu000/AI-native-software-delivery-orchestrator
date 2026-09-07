@@ -2307,9 +2307,32 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - Validation ensures signal's `repairAttemptId` matches expected blocked repair
 - Commit: `temporal-spike-workflow.ts` updated
 
+**Integration bootstrap (ARCHITECTURAL DECISION REQUIRED):**
+
+The M2 spike has validated that Temporal can serve as a durable execution substrate. However, integrating the spike into the production CLI requires resolving several architectural questions:
+
+1. **Return type mismatch**: `RuntimeStarter.startOrResumeRun` returns `RecoveredRuntimeRun` (rich type with tasks, leases, events), but the spike workflow returns `{runId, scenario, builderAttemptId, repairAttemptId}`. A `TemporalRuntimeStarter` would need to either:
+   - Map spike results to `RecoveredRuntimeRun` structure
+   - Refactor `RunPreparation` to handle polymorphic runtime responses
+
+2. **Package structure**: Currently `temporal-spike` is a separate package. Options:
+   - Add as dependency to CLI package (done)
+   - Create separate `forge-temporal` binary
+   - Keep as experimental spike, not production integrated
+
+3. **Service wiring**: The spike uses narrow activity interfaces (`ForgeScenarioAServices`), but `LocalRuntimeStarter` creates full `OrchestrationRuntime` with all Forge services. Need to decide if Temporal should run the full orchestration or just the build-review-repair-integrate flow.
+
+4. **Worker lifecycle**: `LocalRuntimeStarter` creates runtime, runs, closes. Temporal requires worker lifecycle management (start worker, submit workflow, wait for completion, shutdown).
+
+**Completed:**
+
+- Added `temporal-spike` as workspace dependency to CLI package.json
+
 **Next steps:**
 
-1. **Integration bootstrap**: Wire `createTemporalSpikeWorker(config, service)` into actual application startup with real `ForgeScenarioAServices` and `OrchestrationPersistence`. Requires architectural decision about package structure (direct CLI integration vs. separate worker process).
+1. **Decision required**: Choose integration approach (direct CLI swap vs. separate binary vs. keep as spike)
+2. **Implementation**: If direct CLI swap, implement `TemporalRuntimeStarter` with proper `RecoveredRuntimeRun` mapping
+3. **Testing**: End-to-end test with real Temporal cluster
 
 ### Stage 22R: Repair Continuation Design
 

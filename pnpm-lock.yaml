@@ -81,6 +81,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/task-impact':
         specifier: workspace:*
         version: link:../../libs/task-impact
+      '@ai-native-software-delivery-orchestrator/temporal-spike':
+        specifier: workspace:*
+        version: link:../../libs/temporal-spike
       '@ai-native-software-delivery-orchestrator/workspace-git':
         specifier: workspace:*
         version: link:../../libs/workspace-git
