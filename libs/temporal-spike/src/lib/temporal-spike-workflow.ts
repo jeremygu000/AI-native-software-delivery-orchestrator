@@ -1,5 +1,11 @@
-import { condition, defineSignal, setHandler } from '@temporalio/workflow';
-import type { DurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import { condition, defineSignal, proxyActivities, setHandler } from '@temporalio/workflow';
+
+import type { TemporalSpikeActivity } from './temporal-spike-activities.js';
+
+const activities = proxyActivities<TemporalSpikeActivity>({
+  startToCloseTimeout: '1 minute',
+  retry: { maximumAttempts: 1 }
+});
 
 export interface RepairWakeSignal {
   readonly repairAttemptId: string;
@@ -16,12 +22,11 @@ export interface TemporalSpikeWorkflowRequest {
   readonly attemptId?: string;
   readonly agentId?: string;
   readonly verificationPolicyFingerprint?: string;
-  readonly harnessOutcome?: DurableExecutionSpikeOutcome;
 }
 
 export const runTemporalSpikeWorkflow = async (
   request: TemporalSpikeWorkflowRequest
-): Promise<DurableExecutionSpikeOutcome> => {
+): Promise<{ readonly runId: string; readonly scenario: string }> => {
   if (request.scenario === 'build-review-repair-integrate') {
     if (!request.taskId || !request.attemptId || !request.agentId) {
       throw new Error(
@@ -29,11 +34,42 @@ export const runTemporalSpikeWorkflow = async (
       );
     }
 
-    if (request.harnessOutcome) {
-      return request.harnessOutcome;
+    const builderResult = await activities.executeBuilder({
+      runId: request.runId,
+      taskId: request.taskId,
+      attemptId: request.attemptId,
+      agentId: request.agentId
+    });
+
+    const evaluationResult = await activities.evaluateBuilderOutput({
+      runId: request.runId,
+      builderAttemptId: builderResult.builderAttemptId,
+      workspaceId: builderResult.workspaceId,
+      verificationPolicyFingerprint: request.verificationPolicyFingerprint ?? 'default'
+    });
+
+    if (evaluationResult.recommendation === 'repair') {
+      if (evaluationResult.repairAttemptId === undefined) {
+        throw new Error('Forge must provide repairAttemptId for repair recommendation');
+      }
+      await activities.executeRepair({
+        runId: request.runId,
+        repairAttemptId: evaluationResult.repairAttemptId,
+        builderAttemptId: builderResult.builderAttemptId,
+        workspaceId: builderResult.workspaceId,
+        reviewSubjectRef: evaluationResult.reviewSubjectRef,
+        maxRepairs: 3
+      });
     }
 
-    throw new Error('harnessOutcome required for Scenario A');
+    await activities.integrateAcceptedOutput({
+      runId: request.runId,
+      taskId: request.taskId,
+      workspaceId: builderResult.workspaceId,
+      reviewSubjectRef: evaluationResult.reviewSubjectRef
+    });
+
+    return { runId: request.runId, scenario: request.scenario };
   }
 
   if (request.scenario === 'blocked-repair-restart-resume') {
@@ -56,11 +92,13 @@ export const runTemporalSpikeWorkflow = async (
         (wakeSignal.leaseState === 'RELEASED' || wakeSignal.leaseState === 'STALE')
     );
 
-    if (request.harnessOutcome) {
-      return request.harnessOutcome;
-    }
+    await activities.executeBlockedRepairResume({
+      runId: request.runId,
+      repairAttemptId: request.blockedRepairAttemptId,
+      leaseState: wakeSignal!.leaseState
+    });
 
-    throw new Error('harnessOutcome required for Scenario B');
+    return { runId: request.runId, scenario: request.scenario };
   }
 
   throw new Error(`Unknown scenario: ${String(request.scenario)}`);
