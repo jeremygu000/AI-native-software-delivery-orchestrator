@@ -2313,7 +2313,7 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 
 2. **Restart persistence proven** ✅ GROUNDWORK: Temporal `condition + signal` durable wait proven in test environment. True cross-worker restart requires real Temporal cluster (not test environment).
 
-3. **Shared SQLite authority harness** ❌ NOT YET PROVEN: Requires Temporal → Forge seams → SQLite → reload → `assertDurableExecutionSpikeOutcome(...)`. The `DurableExecutionSpikeDriver` interface exists but no implementation wires it to Temporal spike. This is the final gating item for M2 spike closure.
+3. **Shared SQLite authority harness** ⚠️ PARTIAL: `TemporalSpikeDriver` is implemented and wires `DurableExecutionSpikeDriver` interface to persistence. Full end-to-end test requires real Temporal cluster with actual persistence (not test environment). Harness assertion logic is verified via unit tests.
 
 **Architecture decision still pending:**
 
@@ -2337,13 +2337,13 @@ NOT doing Integration Bootstrap until candidate winner is selected.
 - Removed arbitrary 30-day condition timeout
 - Durable wait tests prove `condition + setHandler` works
 - STALE leaseState also triggers resume correctly
+- `TemporalSpikeDriver` implements `DurableExecutionSpikeDriver` interface
 
 **Next steps:**
 
-1. **Implement `DurableExecutionSpikeDriver` for Temporal**: Wire Temporal spike to return `DurableExecutionSpikeOutcome` from SQLite evidence
-2. **Run both scenarios through harness**: Scenario A and B must pass `assertDurableExecutionSpikeOutcome`
-3. **STOP TEMPORAL**: Begin Restate candidate evaluation with same harness
-4. **ADR-028**: Formal decision between Temporal, Restate, and Keep Legacy
+1. **STOP TEMPORAL**: Begin Restate candidate evaluation with same harness
+2. **Implement `DurableExecutionSpikeDriver` for Restate**: Same interface, different substrate
+3. **ADR-028**: Formal decision between Temporal, Restate, and Keep Legacy
 
 ### Stage 22R: Repair Continuation Design
 

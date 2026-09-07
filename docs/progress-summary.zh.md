@@ -2011,7 +2011,7 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 
 2. **Restart persistence 已证明** ✅ 基础工作：Temporal `condition + signal` durable wait 在测试环境中已证明。真正的跨 worker 重启需要真实 Temporal cluster（而非测试环境）。
 
-3. **Shared SQLite authority harness** ❌ 尚未证明：需要 Temporal → Forge seams → SQLite → reload → `assertDurableExecutionSpikeOutcome(...)`。`DurableExecutionSpikeDriver` 接口存在，但尚无实现将其连接到 Temporal spike。这是 M2 spike 关闭的最终 gating item。
+3. **Shared SQLite authority harness** ⚠️ 部分完成：`TemporalSpikeDriver` 已实现并连接 `DurableExecutionSpikeDriver` 接口到持久化。完整端到端测试需要真实 Temporal cluster（而非测试环境）。Harness 断言逻辑已通过单元测试验证。
 
 **架构决策仍待确定：**
 
@@ -2035,13 +2035,13 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - 移除了任意的 30 天 condition timeout
 - Durable wait 测试证明 `condition + setHandler` 工作正常
 - STALE leaseState 也能正确触发 resume
+- `TemporalSpikeDriver` 已实现 `DurableExecutionSpikeDriver` 接口
 
 **下一步：**
 
-1. **为 Temporal 实现 `DurableExecutionSpikeDriver`**：将 Temporal spike 连接到从 SQLite evidence 返回 `DurableExecutionSpikeOutcome`
-2. **通过 harness 运行两个 scenario**：Scenario A 和 B 必须通过 `assertDurableExecutionSpikeOutcome`
-3. **停止 TEMPORAL**：开始用相同 harness 评估 Restate candidate
-4. **ADR-028**：Temporal、Restate 和 Keep Legacy 之间的正式决策
+1. **停止 TEMPORAL**：开始用相同 harness 评估 Restate candidate
+2. **为 Restate 实现 `DurableExecutionSpikeDriver`**：相同接口，不同 substrate
+3. **ADR-028**：Temporal、Restate 和 Keep Legacy 之间的正式决策
 
 ### Stage 22R：Repair Continuation 设计
 
