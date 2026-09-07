@@ -24,6 +24,10 @@ export {
   ForgeBuilderExecutionService
 } from './lib/forge-builder-execution-service.js';
 export {
+  createTemporalSpikeScenarioService,
+  type TemporalSpikeScenarioServiceDependencies
+} from './lib/temporal-spike-scenario-service.js';
+export {
   assertDurableExecutionSpikeOutcome,
   DurableExecutionSpikeAuthorityError,
   type DurableExecutionSpikeDriver,
