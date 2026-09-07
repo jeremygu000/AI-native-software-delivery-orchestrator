@@ -31,6 +31,7 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
   let builderAttemptId: string | undefined;
   let repairIteration = 0;
   let reviewIteration = 0;
+  let currentRepairLineage: { parentReviewIteration: number; parentReviewSubject: TaskCodeReviewSubject } | undefined;
 
   return {
     async executeBuilder(_request) {
@@ -158,6 +159,7 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
 
       repairIteration++;
       const repairAttemptId = `repair-${runId}-${repairIteration}`;
+      currentRepairLineage = { parentReviewIteration: reviewIteration, parentReviewSubject: reviewSubject };
 
       const repairAttempt: TaskRepairAttempt = {
         id: repairAttemptId,
@@ -168,10 +170,8 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
         parentReviewIteration: reviewIteration,
         parentReviewSubject: reviewSubject,
         repairIteration,
-        state: 'COMPLETED',
-        revision: 3,
-        startedAt: new Date(),
-        completedAt: new Date()
+        state: 'PREPARING',
+        revision: 3
       };
 
       await persistence.persistRepairAttempt({ runId, attempt: repairAttempt });
@@ -238,6 +238,23 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
 
       await persistence.persistReview(persistedReview);
 
+      const completedRepair: TaskRepairAttempt = {
+        id: request.repairAttemptId,
+        runId,
+        taskId,
+        agentId: `repair-agent-${repairIteration}`,
+        workspaceId,
+        parentReviewIteration: currentRepairLineage!.parentReviewIteration,
+        parentReviewSubject: currentRepairLineage!.parentReviewSubject,
+        repairIteration,
+        state: 'COMPLETED',
+        revision: 4,
+        startedAt: new Date(),
+        completedAt: new Date()
+      };
+
+      await persistence.persistRepairAttempt({ runId, attempt: completedRepair });
+
       return {
         repairAttemptId: request.repairAttemptId,
         verificationEvidenceId: verificationId,
@@ -251,6 +268,7 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
     },
 
     async integrateAcceptedOutput(_request) {
+      await persistence.persistIntegration(runId, 'integrated');
       return {
         integrationStatus: 'integrated' as const
       };
@@ -265,6 +283,7 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
 
       if (resumeResult.status === 'resumed') {
         const verificationId = `verification-resume-${makeId()}`;
+        const dispatchId = `dispatch-resume-${makeId()}`;
 
         const verificationPayload: Omit<TaskVerificationEvidence, 'fingerprint'> = {
           id: verificationId,
@@ -285,6 +304,15 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
 
         await persistence.persistVerificationEvidence(verification);
 
+        await persistence.persistRepairResumeDispatch({
+          runId,
+          taskId,
+          repairAttemptId: request.repairAttemptId,
+          repairRevision: resumeResult.attempt.revision,
+          dispatchId,
+          authorizedAt: new Date().toISOString()
+        });
+
         return {
           repairAttemptId: request.repairAttemptId,
           verificationEvidenceId: verificationId,
@@ -297,6 +325,88 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
         verificationEvidenceId: `verification-unknown-${makeId()}`,
         state: 'unknown' as const
       };
+    },
+
+    async setupBlockedRepair(request) {
+      await persistence.createRun({
+        run: {
+          id: runId,
+          repositoryId: 'test-repo',
+          state: 'ACTIVE',
+          createdAt: new Date().toISOString(),
+          authority: {
+            artifactId: 'test-artifact',
+            artifactRevision: 1,
+            approvalId: 'test-approval',
+            planFingerprint: FINGERPRINT_BASE,
+            approvalFingerprint: FINGERPRINT_BASE,
+            claimFingerprint: FINGERPRINT_BASE,
+            executionFingerprint: FINGERPRINT_BASE,
+            repositoryRoot: '/tmp/test',
+            baseCommit: 'a'.repeat(40),
+            workingTreeFingerprint: FINGERPRINT_BASE,
+            repositoryFactsFingerprint: FINGERPRINT_BASE,
+            sharedResourcePolicyFingerprint: FINGERPRINT_BASE,
+            verificationPolicyFingerprint: FINGERPRINT_BASE,
+            codeReviewPolicyFingerprint: FINGERPRINT_BASE
+          }
+        },
+        tasks: [
+          {
+            id: taskId,
+            title: 'Test task',
+            goal: 'Execute test build',
+            dependencies: [],
+            expectedReads: [],
+            expectedWrites: [],
+            sharedResources: [],
+            verification: []
+          }
+        ],
+        hardConflicts: [],
+        riskConflicts: [],
+        scheduleOptions: { maxConcurrency: 1 }
+      });
+
+      const blockedRepair: TaskRepairAttempt = {
+        id: request.repairAttemptId,
+        runId,
+        taskId,
+        agentId: `repair-agent-blocked`,
+        workspaceId,
+        parentReviewIteration: 1,
+        parentReviewSubject: {
+          builderAttemptId: 'placeholder',
+          outputAttemptId: 'placeholder',
+          workspaceId,
+          workspaceRevision: 1,
+          workspaceChangeFingerprint: FINGERPRINT_BASE,
+          impactFingerprint: FINGERPRINT_BASE,
+          verificationFingerprint: FINGERPRINT_BASE
+        },
+        repairIteration: 1,
+        state: 'BLOCKED',
+        revision: 1,
+        startedAt: new Date(),
+        blocker: { type: 'lease', leaseId: request.blockerLeaseId }
+      };
+
+      await persistence.persistRepairAttempt({ runId, attempt: blockedRepair });
+
+      const lease = {
+        id: request.blockerLeaseId,
+        runId,
+        agentId: `lease-agent-${request.blockerLeaseId}`,
+        taskId,
+        resource: { type: 'project' as const, projectId: 'test-project' },
+        mode: 'exclusive' as const,
+        version: 1,
+        state: 'ACTIVE' as const,
+        acquiredAt: new Date(),
+        lastHeartbeatAt: new Date()
+      };
+
+      await persistence.persistLease({ runId, lease });
     }
   };
 };

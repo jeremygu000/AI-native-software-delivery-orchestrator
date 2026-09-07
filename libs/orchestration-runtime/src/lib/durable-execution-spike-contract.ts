@@ -93,6 +93,12 @@ export interface DurableExecutionScenarioService {
     readonly verificationEvidenceId: string;
     readonly state: 'completed' | 'blocked' | 'unknown';
   }>;
+
+  setupBlockedRepair(request: {
+    readonly runId: string;
+    readonly repairAttemptId: string;
+    readonly blockerLeaseId: string;
+  }): Promise<void>;
 }
 
 export interface DurableExecutionSpikeOutcome {

@@ -138,6 +138,15 @@ export interface PersistedDispatch {
   readonly attempts: readonly PersistedAgentExecutionAttempt[];
 }
 
+export interface PersistedRepairResumeDispatch {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly repairAttemptId: string;
+  readonly repairRevision: number;
+  readonly dispatchId: string;
+  readonly authorizedAt: string;
+}
+
 export interface RecoveredRun {
   readonly run: PersistedRun;
   readonly tasks: readonly TaskContract[];
@@ -161,6 +170,10 @@ export interface OrchestrationPersistence {
   recoverDispatches(runId: string): Promise<readonly PersistedDispatch[]>;
   recoverAttempts(runId: string): Promise<readonly PersistedAgentExecutionAttempt[]>;
   recoverLeases(runId: string): Promise<readonly PersistedWriteLease[]>;
+  persistIntegration(runId: string, status: 'integrated' | 'blocked'): Promise<void>;
+  recoverIntegration(runId: string): Promise<'integrated' | 'blocked' | undefined>;
+  persistRepairResumeDispatch(dispatch: PersistedRepairResumeDispatch): Promise<void>;
+  recoverRepairResumeDispatches(runId: string): Promise<readonly PersistedRepairResumeDispatch[]>;
   persistImpact(impact: PersistedTaskImpact): Promise<void>;
   persistConflict(conflict: PersistedTaskConflict): Promise<void>;
   persistLease(lease: PersistedWriteLease): Promise<void>;
@@ -180,6 +193,7 @@ export interface TaskCodeReviewStore {
 export interface TaskRepairAttemptStore {
   persistRepairAttempt(attempt: PersistedTaskRepairAttempt): Promise<void>;
   recoverRepairAttempts(runId: string): Promise<readonly PersistedTaskRepairAttempt[]>;
+  recoverRepairAttemptHistory(runId: string): Promise<readonly PersistedTaskRepairAttempt[]>;
 }
 
 export interface TaskRepairAdmissionStore extends TaskRepairAttemptStore {
@@ -220,6 +234,11 @@ export interface TaskRepairWorkItemStore {
 export interface TaskVerificationEvidenceStore {
   persistVerificationEvidence(evidence: TaskVerificationEvidence): Promise<void>;
   recoverVerificationEvidence(runId: string): Promise<readonly TaskVerificationEvidence[]>;
+}
+
+export interface TaskIntegrationStore {
+  persistIntegration(runId: string, status: 'integrated' | 'blocked'): Promise<void>;
+  recoverIntegration(runId: string): Promise<'integrated' | 'blocked' | undefined>;
 }
 
 export const taskDecisionsWithTransitions = (

@@ -34,8 +34,9 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
   const reviews = await persistence.recoverReviews(runId);
   const verifications = await persistence.recoverVerificationEvidence(runId);
   const repairAttempts = await persistence.recoverRepairAttempts(runId);
-  const dispatches = await persistence.recoverDispatches(runId);
   const leases = await persistence.recoverLeases(runId);
+  const integrationStatus = await persistence.recoverIntegration(runId);
+  const repairResumeDispatches = await persistence.recoverRepairResumeDispatches(runId);
 
   const builderAttempt = attempts.find(
     (a: PersistedAgentExecutionAttempt) => a.attempt.state === 'COMPLETED'
@@ -46,7 +47,7 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
 
   const repairs = repairAttempts.map((r: PersistedTaskRepairAttempt) => r.attempt);
 
-  const integration = { status: 'integrated' as const };
+  const integration = { status: integrationStatus ?? 'blocked' as const };
 
   let blockedResume: DurableExecutionSpikeOutcome['blockedResume'] | undefined;
   const blockedRepair = repairs.find((r) => r.state === 'BLOCKED');
@@ -55,17 +56,20 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
       (p: PersistedWriteLease) => p.lease.id === blockedRepair.blocker!.leaseId
     );
     if (blockerLease && (blockerLease.lease.state === 'RELEASED' || blockerLease.lease.state === 'STALE')) {
+      const resumeDispatch = repairResumeDispatches.find(
+        (d) => d.repairAttemptId === blockedRepair.id
+      );
       blockedResume = {
         blockerLeaseId: blockerLease.lease.id,
         blockedRevision: blockedRepair.revision,
-        resumedRevision: blockedRepair.revision + 1,
+        resumedRevision: resumeDispatch?.repairRevision ?? blockedRepair.revision + 1,
         repairAttemptId: blockedRepair.id,
         releaseState: blockerLease.lease.state
       };
     }
   }
 
-  const dispatchCount = dispatches.length;
+  const dispatchCount = repairResumeDispatches.length;
 
   return {
     builderAttempt: builderAttempt.attempt as DurableExecutionSpikeOutcome['builderAttempt'],

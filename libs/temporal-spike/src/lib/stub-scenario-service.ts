@@ -32,5 +32,6 @@ export const createStubTemporalSpikeScenarioService = (): DurableExecutionScenar
     repairAttemptId: request.repairAttemptId,
     verificationEvidenceId: 'stub-resume-verification-id',
     state: 'completed' as const
-  })
+  }),
+  setupBlockedRepair: async () => {}
 });

@@ -120,6 +120,7 @@ describe('Temporal spike - Scenario B real authority (SQLite)', () => {
   let worker: Worker;
   let client: Client;
   let fixture: SqliteSpikeFixture;
+  let serviceImpl: ReturnType<typeof createForgeScenarioService>;
   let runId: string;
   let taskId: string;
   let attemptId: string;
@@ -136,7 +137,7 @@ describe('Temporal spike - Scenario B real authority (SQLite)', () => {
 
     fixture = createSqliteSpikeFixture();
 
-    const serviceImpl = createForgeScenarioService({
+    serviceImpl = createForgeScenarioService({
       fixture,
       runId,
       taskId,
@@ -156,6 +157,13 @@ describe('Temporal spike - Scenario B real authority (SQLite)', () => {
 
   it('executes Scenario B with blocked-repair-restart-resume and signal', async () => {
     const blockedRepairAttemptId = `repair-blocked-${runId}`;
+    const blockerLeaseId = `lease-${blockedRepairAttemptId}`;
+
+    await serviceImpl.setupBlockedRepair({
+      runId,
+      repairAttemptId: blockedRepairAttemptId,
+      blockerLeaseId
+    });
 
     const handle = await client.workflow.start(runTemporalSpikeWorkflow, {
       taskQueue: worker.options.taskQueue,

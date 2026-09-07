@@ -13,6 +13,7 @@ import type {
   TaskVerificationEvidenceStore,
   OrchestrationRunState,
   PersistedReevaluation,
+  PersistedRepairResumeDispatch,
   PersistedTaskConflict,
   PersistedTaskImpact,
   PersistedTaskCodeReview,
@@ -110,6 +111,14 @@ const taskRepairAttempts = sqliteTable('task_repair_attempts', {
   attemptJson: text('attempt_json').notNull()
 });
 
+const taskRepairAttemptHistory = sqliteTable('task_repair_attempt_history', {
+  runId: text('run_id').notNull(),
+  attemptId: text('attempt_id').notNull(),
+  revision: integer('revision').notNull(),
+  attemptJson: text('attempt_json').notNull(),
+  recordedAt: text('recorded_at').notNull()
+});
+
 const taskRepairWorkItems = sqliteTable('task_repair_work_items', {
   runId: text('run_id').notNull(),
   repairAttemptId: text('repair_attempt_id').notNull(),
@@ -147,6 +156,20 @@ const agentExecutionAttempts = sqliteTable('agent_execution_attempts', {
   runId: text('run_id').notNull(),
   attemptId: text('attempt_id').notNull(),
   attemptJson: text('attempt_json').notNull()
+});
+
+const integrations = sqliteTable('task_integrations', {
+  runId: text('run_id').primaryKey(),
+  status: text('status').notNull()
+});
+
+const repairResumeDispatches = sqliteTable('repair_resume_dispatches', {
+  runId: text('run_id').notNull(),
+  taskId: text('task_id').notNull(),
+  repairAttemptId: text('repair_attempt_id').notNull(),
+  repairRevision: integer('repair_revision').notNull(),
+  dispatchId: text('dispatch_id').notNull(),
+  authorizedAt: text('authorized_at').notNull()
 });
 
 const jsonReplacer = (_key: string, value: unknown): unknown => {
@@ -398,6 +421,14 @@ export class DrizzleSqliteOrchestrationPersistence
         attempt_json TEXT NOT NULL,
         PRIMARY KEY (run_id, attempt_id)
       );
+      CREATE TABLE IF NOT EXISTS task_repair_attempt_history (
+        run_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        attempt_json TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, attempt_id, revision)
+      );
       CREATE TABLE IF NOT EXISTS task_repair_work_items (
         run_id TEXT NOT NULL,
         repair_attempt_id TEXT NOT NULL,
@@ -436,6 +467,19 @@ export class DrizzleSqliteOrchestrationPersistence
         attempt_id TEXT NOT NULL,
         attempt_json TEXT NOT NULL,
         PRIMARY KEY (run_id, attempt_id)
+      );
+      CREATE TABLE IF NOT EXISTS task_integrations (
+        run_id TEXT NOT NULL PRIMARY KEY,
+        status TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS repair_resume_dispatches (
+        run_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        repair_attempt_id TEXT NOT NULL,
+        repair_revision INTEGER NOT NULL,
+        dispatch_id TEXT NOT NULL,
+        authorized_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, repair_attempt_id, repair_revision)
       );
     `);
     const runColumns = this.#sqlite.prepare('PRAGMA table_info(orchestration_runs)').all();
@@ -1141,6 +1185,63 @@ export class DrizzleSqliteOrchestrationPersistence
       }));
   }
 
+  async persistIntegration(runId: string, status: 'integrated' | 'blocked'): Promise<void> {
+    this.#assertRunId(runId);
+    this.#sqlite.transaction(() => {
+      this.#assertRunExists(runId);
+      this.#db
+        .insert(integrations)
+        .values({ runId, status })
+        .run();
+    })();
+  }
+
+  async recoverIntegration(runId: string): Promise<'integrated' | 'blocked' | undefined> {
+    this.#assertRunId(runId);
+    const record = this.#db
+      .select()
+      .from(integrations)
+      .where(eq(integrations.runId, runId))
+      .get();
+    return record?.status as 'integrated' | 'blocked' | undefined;
+  }
+
+  async persistRepairResumeDispatch(dispatch: PersistedRepairResumeDispatch): Promise<void> {
+    this.#assertRunId(dispatch.runId);
+    this.#sqlite.transaction(() => {
+      this.#assertRunExists(dispatch.runId);
+      this.#db
+        .insert(repairResumeDispatches)
+        .values({
+          runId: dispatch.runId,
+          taskId: dispatch.taskId,
+          repairAttemptId: dispatch.repairAttemptId,
+          repairRevision: dispatch.repairRevision,
+          dispatchId: dispatch.dispatchId,
+          authorizedAt: dispatch.authorizedAt
+        })
+        .run();
+    })();
+  }
+
+  async recoverRepairResumeDispatches(runId: string): Promise<readonly PersistedRepairResumeDispatch[]> {
+    this.#assertRunId(runId);
+    return this.#db
+      .select()
+      .from(repairResumeDispatches)
+      .where(eq(repairResumeDispatches.runId, runId))
+      .orderBy(asc(repairResumeDispatches.repairRevision))
+      .all()
+      .map((record) => ({
+        runId: record.runId,
+        taskId: record.taskId,
+        repairAttemptId: record.repairAttemptId,
+        repairRevision: record.repairRevision,
+        dispatchId: record.dispatchId,
+        authorizedAt: record.authorizedAt
+      }));
+  }
+
   async recoverReviews(runId: string): Promise<readonly PersistedTaskCodeReview[]> {
     this.#assertRunId(runId);
     return this.#db
@@ -1291,6 +1392,16 @@ export class DrizzleSqliteOrchestrationPersistence
       if (record.attempt.revision === stored.revision) {
         return;
       }
+      this.#db
+        .insert(taskRepairAttemptHistory)
+        .values({
+          runId: record.runId,
+          attemptId: record.attempt.id,
+          revision: stored.revision,
+          attemptJson: existing.attemptJson,
+          recordedAt: new Date().toISOString()
+        })
+        .run();
     }
     this.#db
       .insert(taskRepairAttempts)
@@ -1330,6 +1441,20 @@ export class DrizzleSqliteOrchestrationPersistence
       .from(taskRepairAttempts)
       .where(eq(taskRepairAttempts.runId, runId))
       .orderBy(asc(taskRepairAttempts.attemptId))
+      .all()
+      .map((record) => ({
+        runId: record.runId,
+        attempt: decode(record.attemptJson, isTaskRepairAttempt, 'task repair attempt')
+      }));
+  }
+
+  async recoverRepairAttemptHistory(runId: string): Promise<readonly PersistedTaskRepairAttempt[]> {
+    this.#assertRunId(runId);
+    return this.#db
+      .select()
+      .from(taskRepairAttemptHistory)
+      .where(eq(taskRepairAttemptHistory.runId, runId))
+      .orderBy(asc(taskRepairAttemptHistory.attemptId), asc(taskRepairAttemptHistory.revision))
       .all()
       .map((record) => ({
         runId: record.runId,
