@@ -1955,11 +1955,35 @@ durable-runtime-neutral Forge read model 以及 inspect/status/cancel API。Runt
 architecture、evidence drawer contract、status vocabulary 和 visual language，但不绑定 legacy runtime。
 
 Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activity skeleton，并用 Temporal test environment
-验证。Workflow history 只包含 run ID 与 scenario discriminator。第一个 Scenario A Activity 只返回 evidence ID；
-verification、review、lease 和 repository payload 保留在 Forge authority store。这只是 Activity groundwork，不是
-Scenario A 已完成：下一增量会把 builder、evaluation、repair 和 exact integration boundary 委托给现有 Forge
-service，再在 Temporal 外部加载 SQLite authority evidence，使用 shared harness 验证。不得把 legacy runtime 包装成
-一个 opaque Activity。
+验证。Workflow history 只包含 run ID 与 scenario discriminator。
+
+**当前 spike 状态：**
+
+- M1 spike contract：CLOSED
+- M2.1 Temporal skeleton：CLOSED
+- M2.2 Activity infrastructure：CLOSED
+
+**Scenario A（未完成）：**
+
+- `ForgeBuilderExecutionService`：已实现（ExecuteBuilder seam）
+- 其余三个 seams 未提交：EvaluateBuilderOutput、ExecuteRepair、IntegrateAcceptedOutput
+- Scenario A 仍使用一个 opaque `runBuildReviewRepairIntegrate` Activity
+- Temporal durable continuation 未证明（Workflow 未拥有 continuation）
+
+**Scenario B（未完成）：**
+
+- `executeBlockedRepairResume` Activity：仅为部分 wiring
+- Durable wait/signal：未实现
+- Restart persistence：未证明
+- Forge CAS wake authorization：未证明
+- 共享 SQLite harness：未完成
+
+**下一步：**
+
+1. 完成四个 Temporal-free Forge application seams
+2. 将 opaque `runBuildReviewRepairIntegrate` 替换为 narrow Activities，使 Temporal Workflow 拥有 continuation
+3. 通过共享 SQLite authority harness 运行 Scenario A
+4. 仅在那之后回归 Scenario B
 
 ### Stage 22R：Repair Continuation 设计
 

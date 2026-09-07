@@ -2257,10 +2257,35 @@ inspect/status/cancel API; early UI work may define information architecture, ev
 status vocabulary, and visual language without binding to the legacy runtime.
 
 The Temporal candidate now has an isolated real worker, workflow, and Activity skeleton validated with
-Temporal's test environment. Workflow history contains only the run ID and scenario discriminator. The first
-Scenario A Activity returns only evidence IDs; verification, review, lease, and repository payloads remain in
-Forge's authority store. This is Activity groundwork, not Scenario A completion: the next increment delegates
-opaque Activity.
+Temporal's test environment. Workflow history contains only the run ID and scenario discriminator.
+
+**Current spike state is:**
+
+- M1 spike contract: CLOSED
+- M2.1 Temporal skeleton: CLOSED
+- M2.2 Activity infrastructure: CLOSED
+
+**Scenario A (NOT complete):**
+
+- `ForgeBuilderExecutionService`: implemented (ExecuteBuilder seam)
+- Remaining three seams NOT committed: EvaluateBuilderOutput, ExecuteRepair, IntegrateAcceptedOutput
+- Scenario A still uses one opaque `runBuildReviewRepairIntegrate` Activity
+- Temporal durable continuation NOT proven (Workflow does not own continuation)
+
+**Scenario B (NOT complete):**
+
+- `executeBlockedRepairResume` Activity: partial wiring only
+- Durable wait/signal: NOT implemented
+- Restart persistence: NOT proven
+- Forge CAS wake authorization: NOT proven
+- Shared SQLite harness: NOT complete
+
+**Next steps:**
+
+1. Complete the four Temporal-free Forge application seams
+2. Replace opaque `runBuildReviewRepairIntegrate` with narrow Activities so Temporal Workflow owns continuation
+3. Run Scenario A through shared SQLite authority harness
+4. Only then return to Scenario B
 
 ### Stage 22R: Repair Continuation Design
 
