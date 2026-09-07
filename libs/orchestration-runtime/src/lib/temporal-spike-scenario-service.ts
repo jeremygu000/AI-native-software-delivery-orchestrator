@@ -264,6 +264,24 @@ export const createTemporalSpikeScenarioService = (
           maxRepairs: request.maxRepairs
         });
 
+        if (result.state === 'blocked') {
+          return {
+            repairAttemptId: result.attempt.id,
+            verificationEvidenceId: '',
+            reviewSubjectRef: request.reviewSubjectRef,
+            recommendation: 'repair' as const
+          };
+        }
+
+        if (result.state === 'unknown') {
+          return {
+            repairAttemptId: result.attempt.id,
+            verificationEvidenceId: '',
+            reviewSubjectRef: request.reviewSubjectRef,
+            recommendation: 'repair' as const
+          };
+        }
+
         return {
           repairAttemptId: result.attempt.id,
           verificationEvidenceId: result.verification.id,

@@ -21,13 +21,25 @@ export class ForgeRepairExecutionError extends Error {
   }
 }
 
-export interface ForgeRepairExecutionResult {
-  readonly attempt: TaskRepairAttempt;
-  readonly reviewSubject: TaskCodeReviewSubject;
-  readonly review: TaskCodeReview;
-  readonly verification: TaskVerificationEvidence;
-  readonly recommendation: 'accept' | 'repair' | 'reject';
-}
+export type RepairExecutionOutcome =
+  | {
+      readonly state: 'completed';
+      readonly attempt: TaskRepairAttempt;
+      readonly reviewSubject: TaskCodeReviewSubject;
+      readonly review: TaskCodeReview;
+      readonly verification: TaskVerificationEvidence;
+      readonly recommendation: 'accept' | 'repair' | 'reject';
+    }
+  | {
+      readonly state: 'blocked';
+      readonly attempt: TaskRepairAttempt;
+      readonly blockerLeaseId: string;
+    }
+  | {
+      readonly state: 'unknown';
+      readonly attempt: TaskRepairAttempt;
+      readonly detail: string;
+    };
 
 export class ForgeRepairExecutionService {
   readonly #repairs: TaskRepairCoordinator;
@@ -56,7 +68,7 @@ export class ForgeRepairExecutionService {
     readonly maxRepairs: number;
     readonly leases?: readonly WriteLease[];
     readonly feedback?: RepairRuntimeFeedback;
-  }): Promise<ForgeRepairExecutionResult> {
+  }): Promise<RepairExecutionOutcome> {
     const repair = await this.#repairs.prepare({
       runId: request.runId,
       taskId: request.task.id,
@@ -83,18 +95,26 @@ export class ForgeRepairExecutionService {
       });
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Repair blocked by lease:')) {
+        const leaseId = error.message.replace('Repair blocked by lease: ', '');
         return {
+          state: 'blocked',
           attempt: repair,
-          reviewSubject: request.subject,
-          review: request.review,
-          verification: result!.verification,
-          recommendation: 'repair'
+          blockerLeaseId: leaseId
+        };
+      }
+      if (error instanceof Error && error.message.startsWith('Repair outcome is unknown:')) {
+        const detail = error.message.replace('Repair outcome is unknown: ', '');
+        return {
+          state: 'unknown',
+          attempt: repair,
+          detail
         };
       }
       throw error;
     }
 
     return {
+      state: 'completed',
       attempt: result.attempt,
       reviewSubject: result.reviewSubject,
       review: result.review,

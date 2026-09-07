@@ -95,6 +95,12 @@ export class ForgeScenarioAServiceRunner {
         feedback: request.feedback
       });
 
+      if (repairResult.state !== 'completed') {
+        throw new Error(
+          `Repair did not complete: ${repairResult.state}${'detail' in repairResult ? ` - ${repairResult.detail}` : ''}`
+        );
+      }
+
       if (repairResult.recommendation === 'repair') {
         throw new Error('Multi-repair not yet supported in Scenario A');
       }
