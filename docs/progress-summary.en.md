@@ -2265,16 +2265,17 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - M2.1 Temporal skeleton: CLOSED
 - M2.2 Activity infrastructure: CLOSED
 
-**Scenario A (narrow Activities defined):**
+**Scenario A (narrow Activities defined and wired in workflow):**
 
 - `ForgeBuilderExecutionService`: implemented (Seam 1: ExecuteBuilder)
 - `ForgeBuilderOutputEvaluationService`: implemented (Seam 2: EvaluateBuilderOutput)
 - `ForgeRepairExecutionService`: implemented (Seam 3: ExecuteRepair)
 - `ForgeAcceptedOutputIntegrationService`: implemented (Seam 4: IntegrateAcceptedOutput)
 - `ForgeScenarioAServiceRunner`: composition layer implemented
-- Four narrow Temporal Activities defined: `executeBuilder`, `evaluateBuilderOutput`, `executeRepair`, `integrateAcceptedOutput`
+- Four narrow Temporal Activities defined and wired into workflow
+- Workflow refactored to call four narrow Activities instead of opaque `runBuildReviewRepairIntegrate`
 - Legacy `runBuildReviewRepairIntegrate` deprecated but retained for backward compatibility
-- Temporal durable continuation NOT yet proven (workflow not yet refactored to call narrow Activities)
+- Durable continuation now enabled: each activity call creates separate continuation boundary
 
 **Scenario B (NOT complete):**
 
@@ -2286,10 +2287,15 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 
 **Next steps:**
 
-1. Wire ForgeScenarioAServices to real implementations (SQLite-backed persistence)
-2. Refactor Temporal workflow to call four narrow Activities instead of opaque `runBuildReviewRepairIntegrate`
-3. Prove durable continuation by running Scenario A through Temporal workflow
-4. Only then return to Scenario B
+1. **Create implementation in temporal-spike package**: Place `TemporalSpikeScenarioServiceImpl` in `libs/temporal-spike/src/lib/` which already has the `TemporalSpikeScenarioService` interface. Import Forge services from `@ai-native-software-delivery-orchestrator/orchestration-runtime`.
+
+2. **Recover state from persistence**: Activity params only have IDs (`runId`, `taskId`, `attemptId`). Use `persistence.recoverRun(runId)` to get full state including `tasks`, `workspaces`, `attempts`, `impacts`.
+
+3. **Derive RuntimeTaskBinding**: Reconstruct `binding` with `workspace` (from recovered workspaces), `leasePlan` (derived from impact), `taskId`, `agentId`.
+
+4. **Wire to worker**: Pass implementation to `createTemporalSpikeWorker(config, impl)`.
+
+5. **End-to-end test**: Run Scenario A through Temporal workflow.
 
 ### Stage 22R: Repair Continuation Design
 

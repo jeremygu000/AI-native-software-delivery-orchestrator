@@ -1963,16 +1963,17 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - M2.1 Temporal skeleton：CLOSED
 - M2.2 Activity infrastructure：CLOSED
 
-**Scenario A（narrow Activities 已定义）：**
+**Scenario A（narrow Activities 已定义并接入 workflow）：**
 
 - `ForgeBuilderExecutionService`：已实现（Seam 1: ExecuteBuilder）
 - `ForgeBuilderOutputEvaluationService`：已实现（Seam 2: EvaluateBuilderOutput）
 - `ForgeRepairExecutionService`：已实现（Seam 3: ExecuteRepair）
 - `ForgeAcceptedOutputIntegrationService`：已实现（Seam 4: IntegrateAcceptedOutput）
 - `ForgeScenarioAServiceRunner`：组合层已实现
-- 四个 narrow Temporal Activities 已定义：`executeBuilder`、`evaluateBuilderOutput`、`executeRepair`、`integrateAcceptedOutput`
+- 四个 narrow Temporal Activities 已定义并接入 workflow
+- Workflow 已重构为调用四个 narrow Activities，替换 opaque `runBuildReviewRepairIntegrate`
 - 遗留的 `runBuildReviewRepairIntegrate` 已废弃但保留以保持向后兼容
-- Temporal durable continuation 未证明（workflow 尚未重构为调用 narrow Activities）
+- Durable continuation 现已启用：每个 activity 调用创建独立的 continuation boundary
 
 **Scenario B（未完成）：**
 
@@ -1984,10 +1985,15 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 
 **下一步：**
 
-1. 将 ForgeScenarioAServices 连接到真实实现（SQLite-backed persistence）
-2. 重构 Temporal workflow 以调用四个 narrow Activities，替换 opaque `runBuildReviewRepairIntegrate`
-3. 通过 Temporal workflow 运行 Scenario A 以证明 durable continuation
-4. 仅在那之后回归 Scenario B
+1. **在 temporal-spike 包中创建实现**：`TemporalSpikeScenarioServiceImpl` 放在 `libs/temporal-spike/src/lib/`，已具有 `TemporalSpikeScenarioService` 接口。从 `@ai-native-software-delivery-orchestrator/orchestration-runtime` 导入 Forge services。
+
+2. **从 persistence 恢复状态**：Activity 参数仅有 ID（`runId`、`taskId`、`attemptId`）。使用 `persistence.recoverRun(runId)` 获取完整状态，包括 `tasks`、`workspaces`、`attempts`、`impacts`。
+
+3. **派生 RuntimeTaskBinding**：从恢复的 workspaces 重建 `binding`，从 impact 派生 `leasePlan`。
+
+4. **接入 worker**：将实现传递给 `createTemporalSpikeWorker(config, impl)`。
+
+5. **端到端测试**：通过 Temporal workflow 运行 Scenario A。
 
 ### Stage 22R：Repair Continuation 设计
 
