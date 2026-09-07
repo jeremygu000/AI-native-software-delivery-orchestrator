@@ -1962,8 +1962,10 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - M1 spike contract：CLOSED
 - M2.1 Temporal skeleton：CLOSED
 - M2.2 Activity infrastructure：CLOSED
+- M2.3A Authority adapter hardening：CLOSED
+- M2.3B Repair seam authority shape：CLOSED
 
-**Scenario A（narrow Activities 已定义并接入 workflow）：**
+**Scenario A（已完成）：**
 
 - `ForgeBuilderExecutionService`：已实现（Seam 1: ExecuteBuilder）
 - `ForgeBuilderOutputEvaluationService`：已实现（Seam 2: EvaluateBuilderOutput）
@@ -1976,6 +1978,23 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - Durable continuation 现已启用：每个 activity 调用创建独立的 continuation boundary
 - `createTemporalSpikeScenarioService` adapter：接受可选的 `ForgeScenarioAServices` 用于真实委托，未提供时回退到 stubs
 
+**M2.3A - Authority adapter hardening（CLOSED）：**
+- 修复了 `temporal-spike-scenario-service.ts` 中的 reject→accept 腐败问题
+- 移除了 `ALWAYS_EMPTY_FINGERPRINT` 常量和假 fingerprint
+- 移除了假 review 伪造（'Repair via temporal'）
+- 更新了 `taskCodeReviewSchema` 以支持 'reject' recommendation
+- Commit: `531445e`
+
+**M2.3B - Repair seam authority shape（CLOSED）：**
+- 修复了 P1-4 崩溃 bug：`ForgeRepairExecutionService` blocked case 在 result 为 undefined 时访问了 `result!.verification`
+- 创建了 `RepairExecutionOutcome` 联合类型，包含 `completed`、`blocked` 和 `unknown` 状态
+- 更新了 `ForgeRepairExecutionService.execute()` 返回 `RepairExecutionOutcome`
+- 更新了 `forge-scenario-a-service-runner.ts` 以在访问属性前检查状态
+- 更新了 `temporal-spike-scenario-service.ts` 以处理 blocked/unknown 状态
+- 将 repair admission 移入 `evaluateBuilderOutput`：Forge 现在通过 `TaskRepairCoordinator.prepare()` 拥有 repair identity
+- Workflow 使用 Forge 返回的 `repairAttemptId` 而不是 `Date.now()`
+- Commit: `7812ac5`、`23b819f`
+
 **Scenario B（未完成）：**
 
 - `executeBlockedRepairResume` Activity：仅为部分 wiring
@@ -1986,9 +2005,9 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 
 **下一步：**
 
-1. **集成 bootstrap**：将 `createTemporalSpikeWorker(config, service)` 接入实际应用启动，使用真实的 `ForgeScenarioAServices` 和 `OrchestrationPersistence`。
+1. **集成 bootstrap**：将 `createTemporalSpikeWorker(config, service)` 接入实际应用启动，使用真实的 `ForgeScenarioAServices` 和 `OrchestrationPersistence`。需要关于包结构（直接 CLI 集成 vs. 独立 worker 进程）的架构决策。
 
-2. **Scenario B**：实现 durable wait/signal 用于 `executeBlockedRepairResume`，restart persistence，Forge CAS wake authorization。
+2. **Scenario B**：使用 Temporal 的 `defineSignal`、`condition` 和 `setHandler` API 实现 durable wait/signal 用于 `executeBlockedRepairResume`。需要 Temporal SDK signal 研究和外部 signal client 实现。
 
 ### Stage 22R：Repair Continuation 设计
 

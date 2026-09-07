@@ -2264,8 +2264,10 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - M1 spike contract: CLOSED
 - M2.1 Temporal skeleton: CLOSED
 - M2.2 Activity infrastructure: CLOSED
+- M2.3A Authority adapter hardening: CLOSED
+- M2.3B Repair seam authority shape: CLOSED
 
-**Scenario A (narrow Activities defined and wired in workflow):**
+**Scenario A (complete):**
 
 - `ForgeBuilderExecutionService`: implemented (Seam 1: ExecuteBuilder)
 - `ForgeBuilderOutputEvaluationService`: implemented (Seam 2: EvaluateBuilderOutput)
@@ -2278,6 +2280,23 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - Durable continuation now enabled: each activity call creates separate continuation boundary
 - `createTemporalSpikeScenarioService` adapter: accepts optional `ForgeScenarioAServices` for real delegation, falls back to stubs when not provided
 
+**M2.3A - Authority adapter hardening (CLOSED):**
+- Fixed reject→accept corruption in temporal-spike-scenario-service.ts
+- Removed `ALWAYS_EMPTY_FINGERPRINT` constant and fake fingerprints
+- Removed fake review fabrication ('Repair via temporal')
+- Updated `taskCodeReviewSchema` to support 'reject' recommendation
+- Commit: `531445e`
+
+**M2.3B - Repair seam authority shape (CLOSED):**
+- Fixed P1-4 crash bug: `ForgeRepairExecutionService` blocked case accessed `result!.verification` when result was undefined
+- Created `RepairExecutionOutcome` union type with `completed`, `blocked`, and `unknown` states
+- Updated `ForgeRepairExecutionService.execute()` to return `RepairExecutionOutcome`
+- Updated `forge-scenario-a-service-runner.ts` to check state before accessing properties
+- Updated `temporal-spike-scenario-service.ts` to handle blocked/unknown states
+- Moved repair admission into `evaluateBuilderOutput`: Forge now owns repair identity via `TaskRepairCoordinator.prepare()`
+- Workflow uses Forge-returned `repairAttemptId` instead of `Date.now()`
+- Commit: `7812ac5`, `23b819f`
+
 **Scenario B (NOT complete):**
 
 - `executeBlockedRepairResume` Activity: partial wiring only
@@ -2288,9 +2307,9 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 
 **Next steps:**
 
-1. **Integration bootstrap**: Wire `createTemporalSpikeWorker(config, service)` into actual application startup with real `ForgeScenarioAServices` and `OrchestrationPersistence`.
+1. **Integration bootstrap**: Wire `createTemporalSpikeWorker(config, service)` into actual application startup with real `ForgeScenarioAServices` and `OrchestrationPersistence`. Requires architectural decision about package structure (direct CLI integration vs. separate worker process).
 
-2. **Scenario B**: Implement durable wait/signal for `executeBlockedRepairResume`, restart persistence, Forge CAS wake authorization.
+2. **Scenario B**: Implement durable wait/signal for `executeBlockedRepairResume` using Temporal's `defineSignal`, `condition`, and `setHandler` APIs. Requires Temporal SDK signal research and external signal client implementation.
 
 ### Stage 22R: Repair Continuation Design
 
