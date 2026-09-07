@@ -7,7 +7,9 @@ import type {
   PersistedTaskWorkspace,
   PersistedAgentExecutionAttempt,
   PersistedTaskImpact,
-  TaskLeasePlan
+  TaskLeasePlan,
+  PersistedTaskRepairAttempt,
+  WriteLease
 } from '@ai-native-software-delivery-orchestrator/domain';
 import type { TemporalSpikeScenarioService } from '@ai-native-software-delivery-orchestrator/temporal-spike';
 
@@ -24,6 +26,26 @@ export interface TemporalSpikeScenarioServiceDependencies {
       }
     | undefined
   >;
+  readonly recoverRepairAttempts?: (
+    runId: string
+  ) => Promise<readonly PersistedTaskRepairAttempt[]>;
+  readonly resumeRepairAttempt?: (request: {
+    readonly runId: string;
+    readonly attemptId: string;
+    readonly expectedRevision: number;
+  }) => Promise<
+    | {
+        readonly status: 'resumed';
+        readonly attempt: import('@ai-native-software-delivery-orchestrator/domain').TaskRepairAttempt;
+      }
+    | { readonly status: 'not-found' }
+    | {
+        readonly status: 'not-blocked';
+        readonly state: import('@ai-native-software-delivery-orchestrator/domain').TaskRepairAttempt['state'];
+      }
+    | { readonly status: 'version-conflict'; readonly actualRevision: number }
+  >;
+  readonly recoverLeases?: (runId: string) => Promise<readonly WriteLease[]>;
   readonly repository?: Pick<RepositoryGraph, 'files' | 'symbols'>;
 }
 
@@ -338,11 +360,80 @@ export const createTemporalSpikeScenarioService = (
     },
 
     executeBlockedRepairResume: async (request) => {
-      return {
-        repairAttemptId: request.repairAttemptId,
-        verificationEvidenceId: createId(),
-        state: 'completed' as const
-      };
+      if (
+        dependencies.resumeRepairAttempt === undefined ||
+        dependencies.recoverRepairAttempts === undefined
+      ) {
+        return {
+          repairAttemptId: request.repairAttemptId,
+          verificationEvidenceId: createId(),
+          state: 'completed' as const
+        };
+      }
+
+      const repairAttempts = await dependencies.recoverRepairAttempts(request.runId);
+      const blockedAttempt = repairAttempts.find((a) => a.attempt.id === request.repairAttemptId);
+
+      if (blockedAttempt === undefined) {
+        throw new Error(`Repair attempt not found: ${request.repairAttemptId}`);
+      }
+
+      if (blockedAttempt.attempt.state !== 'BLOCKED') {
+        throw new Error(
+          `Repair attempt ${request.repairAttemptId} is not BLOCKED, current state: ${blockedAttempt.attempt.state}`
+        );
+      }
+
+      if (
+        blockedAttempt.attempt.blocker === undefined ||
+        blockedAttempt.attempt.blocker.type !== 'lease'
+      ) {
+        throw new Error(`Repair attempt ${request.repairAttemptId} blocker is not a lease`);
+      }
+
+      const blockerLeaseId = blockedAttempt.attempt.blocker.leaseId;
+      const leases = (await dependencies.recoverLeases?.(request.runId)) ?? [];
+      const blockerLease = leases.find((l) => l.id === blockerLeaseId);
+
+      if (blockerLease === undefined) {
+        throw new Error(`Blocker lease not found: ${blockerLeaseId}`);
+      }
+
+      if (request.leaseState === 'RELEASED' && blockerLease.state !== 'RELEASED') {
+        throw new Error(`Lease ${blockerLease.id} is ${blockerLease.state}, not RELEASED`);
+      }
+
+      if (request.leaseState === 'STALE' && blockerLease.state !== 'STALE') {
+        throw new Error(`Lease ${blockerLease.id} is ${blockerLease.state}, not STALE`);
+      }
+
+      const resumeResult = await dependencies.resumeRepairAttempt({
+        runId: request.runId,
+        attemptId: request.repairAttemptId,
+        expectedRevision: blockedAttempt.attempt.revision
+      });
+
+      if (resumeResult.status === 'resumed') {
+        return {
+          repairAttemptId: resumeResult.attempt.id,
+          verificationEvidenceId: createId(),
+          state: 'completed' as const
+        };
+      }
+
+      if (resumeResult.status === 'version-conflict') {
+        throw new Error(
+          `CAS failed for repair ${request.repairAttemptId}: version conflict, expected revision ${blockedAttempt.attempt.revision}, actual ${resumeResult.actualRevision}`
+        );
+      }
+
+      if (resumeResult.status === 'not-blocked') {
+        throw new Error(
+          `CAS failed for repair ${request.repairAttemptId}: repair is ${resumeResult.state}, not BLOCKED`
+        );
+      }
+
+      throw new Error(`CAS failed for repair ${request.repairAttemptId}: ${resumeResult.status}`);
     }
   };
 };
