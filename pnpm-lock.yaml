@@ -145,6 +145,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../domain
+      '@ai-native-software-delivery-orchestrator/temporal-spike':
+        specifier: workspace:*
+        version: link:../temporal-spike
     devDependencies:
       '@ai-native-software-delivery-orchestrator/agent-runtime':
         specifier: workspace:*
