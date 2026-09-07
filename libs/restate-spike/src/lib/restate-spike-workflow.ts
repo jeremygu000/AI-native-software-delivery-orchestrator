@@ -5,6 +5,80 @@ export interface RepairWakeSignal {
   readonly leaseState: 'RELEASED' | 'STALE';
 }
 
+export interface RestateSpikeScenarioService {
+  executeBuilder(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly attemptId: string;
+    readonly agentId: string;
+  }): Promise<{
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly impactPrediction: readonly string[];
+  }>;
+
+  evaluateBuilderOutput(request: {
+    readonly runId: string;
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly verificationPolicyFingerprint: string;
+  }): Promise<{
+    readonly verificationEvidenceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly recommendation: 'accept' | 'repair' | 'reject';
+    readonly repairAttemptId?: string;
+  }>;
+
+  executeRepair(request: {
+    readonly runId: string;
+    readonly repairAttemptId: string;
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly maxRepairs: number;
+  }): Promise<{
+    readonly repairAttemptId: string;
+    readonly verificationEvidenceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly recommendation: 'accept' | 'repair' | 'reject';
+  }>;
+
+  integrateAcceptedOutput(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+  }): Promise<{
+    readonly integrationStatus: 'integrated' | 'blocked';
+  }>;
+
+  executeBlockedRepairResume(request: {
+    readonly runId: string;
+    readonly repairAttemptId: string;
+    readonly leaseState: 'RELEASED' | 'STALE';
+  }): Promise<{
+    readonly repairAttemptId: string;
+    readonly verificationEvidenceId: string;
+    readonly state: 'completed' | 'blocked' | 'unknown';
+  }>;
+}
+
 export const restateSpikeActivities = restate.service({
   name: 'restate-spike-activities',
   handlers: {
