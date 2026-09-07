@@ -24,5 +24,25 @@ describe('TemporalSpikeScenarioService', () => {
       const result = await service.runBuildReviewRepairIntegrate({ runId: 'any-run-id' });
       expect(result.builderAttemptId).toBeTruthy();
     });
+
+    it('executeBlockedRepairResume returns stubbed identifiers using repairAttemptId', async () => {
+      const service = createStubTemporalSpikeScenarioService();
+      const result = await service.executeBlockedRepairResume({
+        runId: 'run-1',
+        repairAttemptId: 'blocked-repair-1'
+      });
+      expect(result.repairAttemptId).toBe('blocked-repair-1');
+      expect(result.verificationEvidenceId).toBe('stub-resume-verification-id');
+      expect(result.reviewEvidenceId).toBe('stub-resume-review-id');
+    });
+
+    it('executeBlockedRepairResume passes through the repairAttemptId parameter', async () => {
+      const service = createStubTemporalSpikeScenarioService();
+      const result = await service.executeBlockedRepairResume({
+        runId: 'run-1',
+        repairAttemptId: 'my-repair-id'
+      });
+      expect(result.repairAttemptId).toBe('my-repair-id');
+    });
   });
 });

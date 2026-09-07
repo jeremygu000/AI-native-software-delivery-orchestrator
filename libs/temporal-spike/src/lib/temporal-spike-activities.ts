@@ -6,6 +6,14 @@ export interface TemporalSpikeActivity {
     readonly verificationEvidenceId: string;
     readonly reviewEvidenceId: string;
   }>;
+  executeBlockedRepairResume(request: {
+    readonly runId: string;
+    readonly repairAttemptId: string;
+  }): Promise<{
+    readonly repairAttemptId: string;
+    readonly verificationEvidenceId: string;
+    readonly reviewEvidenceId: string;
+  }>;
 }
 
 export interface TemporalSpikeScenarioService {
@@ -15,14 +23,26 @@ export interface TemporalSpikeScenarioService {
     readonly verificationEvidenceId: string;
     readonly reviewEvidenceId: string;
   }>;
+  executeBlockedRepairResume(request: {
+    readonly runId: string;
+    readonly repairAttemptId: string;
+  }): Promise<{
+    readonly repairAttemptId: string;
+    readonly verificationEvidenceId: string;
+    readonly reviewEvidenceId: string;
+  }>;
 }
 
 export const createTemporalSpikeActivities = (
   service: TemporalSpikeScenarioService = {
     runBuildReviewRepairIntegrate: async () => {
       throw new Error('Temporal spike scenario service is not configured');
+    },
+    executeBlockedRepairResume: async () => {
+      throw new Error('Temporal spike scenario service is not configured');
     }
   }
 ): TemporalSpikeActivity => ({
-  runBuildReviewRepairIntegrate: (request) => service.runBuildReviewRepairIntegrate(request)
+  runBuildReviewRepairIntegrate: (request) => service.runBuildReviewRepairIntegrate(request),
+  executeBlockedRepairResume: (request) => service.executeBlockedRepairResume(request)
 });
