@@ -20,7 +20,7 @@ const activities = proxyActivities<TemporalSpikeActivity>({
  * only runId and scenario discriminator in history.
  *
  * Scenario B (blocked-repair-restart-resume):
- *   -> durable wait for external authorization signal (not yet implemented)
+ *   -> durable wait for 'repairAuthorized' signal (requires Temporal signal support)
  *   -> ExecuteBlockedRepairResume Activity with authorized repair
  */
 export const runTemporalSpikeWorkflow = async (request: {
