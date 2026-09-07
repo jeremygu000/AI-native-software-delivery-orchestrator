@@ -2342,21 +2342,31 @@ NOT doing Integration Bootstrap until candidate winner is selected.
 - `RestateSpikeDriver` implements `DurableExecutionSpikeDriver` interface
 - Restate Activities and Workflow defined using `@restatedev/restate-sdk`
 - Restate test structure complete - tests require Docker/testcontainers (Docker unavailable in CI environment)
-- Temporal spike has 5 passing tests proving Scenario A and B with real workflow execution
+
+**OutcomeCollector Pattern (both candidates):**
+
+- **CRITICAL architectural fix**: Removed harnessOutcome/harnessRegistry from both candidates
+- Previous harness pattern was FALSE-POSITIVE - circular validation where harness pre-constructs correct outcome, passes it to workflow as input, then asserts it passes
+- Both candidates now execute REAL Forge seams, write evidence DURING execution
+- OutcomeCollector reads from evidence store AFTER workflow completes
+- Outcome is OBSERVED, not pre-constructed
+- Temporal: 6 passing tests with OutcomeCollector + InMemoryEvidenceStore
+- Restate: 5 passing tests with workflow state evidence collection
 
 **Restate Spike Status:**
 
 - **Scenario A**: `workflowSubmit + rs.result()` completes successfully (3 tests pass)
 - **Scenario B**: `workflowSubmit` works, durable wait pattern implemented
-- **Fixed**: Removed incorrect `ctx.run()` wrapper around `ctx.serviceClient()` calls
-- **ADR-028**: REOPEN - Decision Pending until shared harness proven
+- **Fixed**: Removed harnessRegistry (not durable), uses workflow state for evidence
+- **ADR-028**: REOPEN - OutcomeCollector pattern proven for both candidates
 
 **Architecture decision: ADR-028 REOPEN - Decision Pending**
 
-- Temporal: 5 passing tests, but shared harness not fully executed
-- Restate: 3 passing tests now work with `rs.result(handle)` pattern (fixed ctx.run wrapper issue)
-- Both candidates: shared authority harness not yet proven end-to-end
-- Next: Complete shared driver/harness parity for fair comparison
+- Both candidates now use OutcomeCollector pattern (real execution, observed outcomes)
+- Temporal: 6 passing tests with real workflow execution
+- Restate: 5 passing tests with real workflow execution
+- Both prove durable execution without pre-constructed outcomes
+- Next: Complete fair comparison and decision
 
 ### Stage 22R: Repair Continuation Design
 

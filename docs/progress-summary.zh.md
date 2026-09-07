@@ -2040,21 +2040,31 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - `RestateSpikeDriver` 已实现 `DurableExecutionSpikeDriver` 接口
 - Restate Activities 和 Workflow 已使用 `@restatedev/restate-sdk` 定义
 - Restate 测试结构已完成 - 测试需要 Docker/testcontainers（CI 环境中 Docker 不可用）
-- Temporal spike 有 5 个通过测试，证明 Scenario A 和 B 的真实 workflow 执行
+
+**OutcomeCollector 模式（两个候选都适用）：**
+
+- **关键架构修复**：从两个候选都移除了 harnessOutcome/harnessRegistry
+- 之前的 harness 模式是 FALSE-POSITIVE - 循环验证：harness 预构造正确结果、作为输入传给 workflow，然后断言通过
+- 两个候选现在都执行真实的 Forge seam，在执行期间写入 evidence
+- OutcomeCollector 在 workflow 完成后从 evidence store 读取
+- 结果是 OBSERVED（观察到的），不是预构造的
+- Temporal：6 个通过测试，使用 OutcomeCollector + InMemoryEvidenceStore
+- Restate：5 个通过测试，使用 workflow state evidence 收集
 
 **Restate Spike 状态：**
 
 - **Scenario A**：`workflowSubmit + rs.result()` 成功完成（3 个测试通过）
 - **Scenario B**：`workflowSubmit` 成功，durable wait 模式已实现
-- **已修复**：移除了 `ctx.serviceClient()` 外部错误的 `ctx.run()` wrapper
-- **ADR-028**：重新开放 - 决策待定，直到 shared harness 被证明
+- **已修复**：移除了 harnessRegistry（不是 durable），使用 workflow state 收集 evidence
+- **ADR-028**：重新开放 - OutcomeCollector 模式已在两个候选上验证
 
 **架构决策：ADR-028 重新开放 - 决策待定**
 
-- Temporal：5 个通过测试，但 shared harness 未完全执行
-- Restate：3 个通过测试，使用 `rs.result(handle)` 模式成功（已修复 ctx.run wrapper 问题）
-- 两个候选：shared authority harness 尚未端到端证明
-- 下一步：完成 shared driver/harness parity 才能公平比较
+- 两个候选现在都使用 OutcomeCollector 模式（真实执行，观察到的结果）
+- Temporal：6 个通过测试，真实 workflow 执行
+- Restate：5 个通过测试，真实 workflow 执行
+- 两个候选都证明了 durable execution，无需预构造结果
+- 下一步：完成公平比较和决策
 
 ### Stage 22R：Repair Continuation 设计
 
