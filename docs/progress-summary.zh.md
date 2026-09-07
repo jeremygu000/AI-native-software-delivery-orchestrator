@@ -1974,6 +1974,7 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - Workflow 已重构为调用四个 narrow Activities，替换 opaque `runBuildReviewRepairIntegrate`
 - 遗留的 `runBuildReviewRepairIntegrate` 已废弃但保留以保持向后兼容
 - Durable continuation 现已启用：每个 activity 调用创建独立的 continuation boundary
+- `createTemporalSpikeScenarioService` adapter：接受可选的 `ForgeScenarioAServices` 用于真实委托，未提供时回退到 stubs
 
 **Scenario B（未完成）：**
 
@@ -1985,11 +1986,9 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 
 **下一步：**
 
-1. **完成 Forge service 集成**：`createTemporalSpikeScenarioService` 恢复状态但返回 stub 值。连接到真实的 `ForgeBuilderExecutionService`、`ForgeBuilderOutputEvaluationService`、`ForgeRepairExecutionService`、`ForgeAcceptedOutputIntegrationService`。
+1. **端到端测试**：通过真实 persistence 运行 Scenario A 通过 Temporal workflow，以证明执行。
 
-2. **端到端测试**：通过真实 persistence 运行 Scenario A 通过 Temporal workflow，以证明执行。
-
-3. **Scenario B**：实现 durable wait/signal 用于 `executeBlockedRepairResume`，restart persistence，Forge CAS wake authorization。
+2. **Scenario B**：实现 durable wait/signal 用于 `executeBlockedRepairResume`，restart persistence，Forge CAS wake authorization。
 
 ### Stage 22R：Repair Continuation 设计
 

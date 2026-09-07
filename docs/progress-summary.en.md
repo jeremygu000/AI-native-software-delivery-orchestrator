@@ -2276,6 +2276,7 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - Workflow refactored to call four narrow Activities instead of opaque `runBuildReviewRepairIntegrate`
 - Legacy `runBuildReviewRepairIntegrate` deprecated but retained for backward compatibility
 - Durable continuation now enabled: each activity call creates separate continuation boundary
+- `createTemporalSpikeScenarioService` adapter: accepts optional `ForgeScenarioAServices` for real delegation, falls back to stubs when not provided
 
 **Scenario B (NOT complete):**
 
@@ -2287,11 +2288,9 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 
 **Next steps:**
 
-1. **Complete Forge service integration**: `createTemporalSpikeScenarioService` recovers state but returns stub values. Connect to real `ForgeBuilderExecutionService`, `ForgeBuilderOutputEvaluationService`, `ForgeRepairExecutionService`, `ForgeAcceptedOutputIntegrationService`.
+1. **End-to-end test**: Run Scenario A through Temporal workflow with real persistence to prove execution.
 
-2. **End-to-end test**: Run Scenario A through Temporal workflow with real persistence to prove execution.
-
-3. **Scenario B**: Implement durable wait/signal for `executeBlockedRepairResume`, restart persistence, Forge CAS wake authorization.
+2. **Scenario B**: Implement durable wait/signal for `executeBlockedRepairResume`, restart persistence, Forge CAS wake authorization.
 
 ### Stage 22R: Repair Continuation Design
 
