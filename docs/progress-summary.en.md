@@ -2287,15 +2287,11 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 
 **Next steps:**
 
-1. **Create implementation in temporal-spike package**: Place `TemporalSpikeScenarioServiceImpl` in `libs/temporal-spike/src/lib/` which already has the `TemporalSpikeScenarioService` interface. Import Forge services from `@ai-native-software-delivery-orchestrator/orchestration-runtime`.
+1. **Complete Forge service integration**: `createTemporalSpikeScenarioService` recovers state but returns stub values. Connect to real `ForgeBuilderExecutionService`, `ForgeBuilderOutputEvaluationService`, `ForgeRepairExecutionService`, `ForgeAcceptedOutputIntegrationService`.
 
-2. **Recover state from persistence**: Activity params only have IDs (`runId`, `taskId`, `attemptId`). Use `persistence.recoverRun(runId)` to get full state including `tasks`, `workspaces`, `attempts`, `impacts`.
+2. **End-to-end test**: Run Scenario A through Temporal workflow with real persistence to prove execution.
 
-3. **Derive RuntimeTaskBinding**: Reconstruct `binding` with `workspace` (from recovered workspaces), `leasePlan` (derived from impact), `taskId`, `agentId`.
-
-4. **Wire to worker**: Pass implementation to `createTemporalSpikeWorker(config, impl)`.
-
-5. **End-to-end test**: Run Scenario A through Temporal workflow.
+3. **Scenario B**: Implement durable wait/signal for `executeBlockedRepairResume`, restart persistence, Forge CAS wake authorization.
 
 ### Stage 22R: Repair Continuation Design
 

@@ -1985,15 +1985,11 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 
 **下一步：**
 
-1. **在 temporal-spike 包中创建实现**：`TemporalSpikeScenarioServiceImpl` 放在 `libs/temporal-spike/src/lib/`，已具有 `TemporalSpikeScenarioService` 接口。从 `@ai-native-software-delivery-orchestrator/orchestration-runtime` 导入 Forge services。
+1. **完成 Forge service 集成**：`createTemporalSpikeScenarioService` 恢复状态但返回 stub 值。连接到真实的 `ForgeBuilderExecutionService`、`ForgeBuilderOutputEvaluationService`、`ForgeRepairExecutionService`、`ForgeAcceptedOutputIntegrationService`。
 
-2. **从 persistence 恢复状态**：Activity 参数仅有 ID（`runId`、`taskId`、`attemptId`）。使用 `persistence.recoverRun(runId)` 获取完整状态，包括 `tasks`、`workspaces`、`attempts`、`impacts`。
+2. **端到端测试**：通过真实 persistence 运行 Scenario A 通过 Temporal workflow，以证明执行。
 
-3. **派生 RuntimeTaskBinding**：从恢复的 workspaces 重建 `binding`，从 impact 派生 `leasePlan`。
-
-4. **接入 worker**：将实现传递给 `createTemporalSpikeWorker(config, impl)`。
-
-5. **端到端测试**：通过 Temporal workflow 运行 Scenario A。
+3. **Scenario B**：实现 durable wait/signal 用于 `executeBlockedRepairResume`，restart persistence，Forge CAS wake authorization。
 
 ### Stage 22R：Repair Continuation 设计
 
