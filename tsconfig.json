@@ -50,6 +50,9 @@
     },
     {
       "path": "./libs/run-preparation"
+    },
+    {
+      "path": "./libs/runtime-v2-spike-harness"
     }
   ]
 }

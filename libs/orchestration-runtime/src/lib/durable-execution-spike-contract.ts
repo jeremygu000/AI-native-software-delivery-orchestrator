@@ -16,6 +16,85 @@ export interface DurableExecutionSpikeDriver {
   runBlockedRepairRestartResume(): Promise<DurableExecutionSpikeOutcome>;
 }
 
+/**
+ * Candidate-neutral Forge scenario service interface.
+ * Both Temporal and Restate adapters implement this interface to compose real Forge services.
+ * This interface lives in orchestration-runtime to break the candidate→runtime dependency cycle.
+ */
+export interface DurableExecutionScenarioService {
+  executeBuilder(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly attemptId: string;
+    readonly agentId: string;
+  }): Promise<{
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly impactPrediction: readonly string[];
+  }>;
+
+  evaluateBuilderOutput(request: {
+    readonly runId: string;
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly verificationPolicyFingerprint: string;
+  }): Promise<{
+    readonly verificationEvidenceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly recommendation: 'accept' | 'repair' | 'reject';
+    readonly repairAttemptId?: string;
+  }>;
+
+  executeRepair(request: {
+    readonly runId: string;
+    readonly repairAttemptId: string;
+    readonly builderAttemptId: string;
+    readonly workspaceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly maxRepairs: number;
+  }): Promise<{
+    readonly repairAttemptId: string;
+    readonly verificationEvidenceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+    readonly recommendation: 'accept' | 'repair' | 'reject';
+  }>;
+
+  integrateAcceptedOutput(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly reviewSubjectRef: {
+      readonly builderAttemptId: string;
+      readonly outputAttemptId: string;
+      readonly workspaceId: string;
+    };
+  }): Promise<{
+    readonly integrationStatus: 'integrated' | 'blocked';
+  }>;
+
+  executeBlockedRepairResume(request: {
+    readonly runId: string;
+    readonly repairAttemptId: string;
+    readonly leaseState: 'RELEASED' | 'STALE';
+  }): Promise<{
+    readonly repairAttemptId: string;
+    readonly verificationEvidenceId: string;
+    readonly state: 'completed' | 'blocked' | 'unknown';
+  }>;
+}
+
 export interface DurableExecutionSpikeOutcome {
   readonly builderAttempt: AgentExecutionAttempt;
   readonly repairs: readonly TaskRepairAttempt[];

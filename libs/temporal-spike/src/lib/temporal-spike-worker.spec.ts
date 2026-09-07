@@ -36,7 +36,7 @@ describe('TemporalSpikeWorker', () => {
         workflowsPath: '/path/to/workflows.js'
       });
       expect(options.activities).toBeDefined();
-      expect(typeof options.activities!.runBuildReviewRepairIntegrate).toBe('function');
+      expect(typeof options.activities!.executeBuilder).toBe('function');
     });
 
     it('activities use stub service when no service is provided', async () => {
@@ -44,20 +44,16 @@ describe('TemporalSpikeWorker', () => {
         taskQueue: 'test-queue',
         workflowsPath: '/path/to/workflows.js'
       });
-      const result = await options.activities!.runBuildReviewRepairIntegrate({ runId: 'run-1' });
+      const result = await options.activities!.executeBuilder({
+        runId: 'run-1',
+        taskId: 'task-1',
+        attemptId: 'attempt-1',
+        agentId: 'agent-1'
+      });
       expect(result.builderAttemptId).toBe('stub-builder-attempt-id');
     });
 
     it('activities delegate to provided service', async () => {
-      const expectedResult = {
-        builderAttemptId: 'builder-2',
-        verificationEvidenceId: 'verification-2',
-        reviewSubjectRef: {
-          builderAttemptId: 'builder-2',
-          outputAttemptId: 'output-2',
-          workspaceId: 'workspace-2'
-        }
-      };
       const options = createTemporalSpikeWorkerOptions({
         taskQueue: 'test-queue',
         workflowsPath: '/path/to/workflows.js',
@@ -87,15 +83,20 @@ describe('TemporalSpikeWorker', () => {
             recommendation: 'accept' as const
           }),
           integrateAcceptedOutput: async () => ({ integrationStatus: 'integrated' as const }),
-          runBuildReviewRepairIntegrate: async () => expectedResult,
           executeBlockedRepairResume: async () => ({
             repairAttemptId: 'repair-2',
-            verificationEvidenceId: 'verification-2'
+            verificationEvidenceId: 'verification-2',
+            state: 'completed' as const
           })
         }
       });
-      const result = await options.activities!.runBuildReviewRepairIntegrate({ runId: 'run-2' });
-      expect(result).toEqual(expectedResult);
+      const result = await options.activities!.executeBuilder({
+        runId: 'run-2',
+        taskId: 'task-2',
+        attemptId: 'attempt-2',
+        agentId: 'agent-2'
+      });
+      expect(result.builderAttemptId).toBe('builder-2');
     });
   });
 });

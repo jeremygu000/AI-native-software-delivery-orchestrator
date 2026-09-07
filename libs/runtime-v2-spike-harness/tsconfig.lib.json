@@ -1,0 +1,29 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.lib.tsbuildinfo",
+    "emitDeclarationOnly": false,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    {
+      "path": "../domain/tsconfig.lib.json"
+    },
+    {
+      "path": "../orchestration-runtime/tsconfig.lib.json"
+    },
+    {
+      "path": "../persistence/tsconfig.lib.json"
+    },
+    {
+      "path": "../temporal-spike/tsconfig.lib.json"
+    },
+    {
+      "path": "../restate-spike/tsconfig.lib.json"
+    }
+  ],
+  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"]
+}

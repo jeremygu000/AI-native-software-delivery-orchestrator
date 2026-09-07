@@ -28,6 +28,7 @@ export default defineConfig({
         'libs/domain/src/lib/repository-graph.ts',
         'libs/temporal-spike/src/**/*.ts',
         'libs/restate-spike/src/**/*.ts',
+        'libs/runtime-v2-spike-harness/src/**',
         'libs/orchestration-runtime/src/lib/*spike*.ts',
         'libs/orchestration-runtime/src/lib/forge-builder-execution-service.ts',
         'libs/orchestration-runtime/src/lib/forge-builder-output-evaluation-service.ts',

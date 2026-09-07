@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.lib.json",
+  "compilerOptions": {
+    "composite": true
+  },
+  "references": [
+    { "path": "../domain/tsconfig.lib.json" },
+    { "path": "../orchestration-runtime/tsconfig.lib.json" },
+    { "path": "../persistence/tsconfig.lib.json" },
+    { "path": "../temporal-spike/tsconfig.lib.json" },
+    { "path": "../restate-spike/tsconfig.lib.json" }
+  ]
+}

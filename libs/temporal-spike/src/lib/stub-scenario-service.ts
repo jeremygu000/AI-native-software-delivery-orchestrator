@@ -1,6 +1,6 @@
-import type { TemporalSpikeScenarioService } from './temporal-spike-activities.js';
+import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
-export const createStubTemporalSpikeScenarioService = (): TemporalSpikeScenarioService => ({
+export const createStubTemporalSpikeScenarioService = (): DurableExecutionScenarioService => ({
   executeBuilder: async () => ({
     builderAttemptId: 'stub-builder-attempt-id',
     workspaceId: 'stub-workspace-id',
@@ -27,16 +27,6 @@ export const createStubTemporalSpikeScenarioService = (): TemporalSpikeScenarioS
   }),
   integrateAcceptedOutput: async () => ({
     integrationStatus: 'integrated' as const
-  }),
-  runBuildReviewRepairIntegrate: async () => ({
-    builderAttemptId: 'stub-builder-attempt-id',
-    finalRepairAttemptId: 'stub-repair-attempt-id',
-    verificationEvidenceId: 'stub-verification-id',
-    reviewSubjectRef: {
-      builderAttemptId: 'stub-builder-attempt-id',
-      outputAttemptId: 'stub-output-attempt-id',
-      workspaceId: 'stub-workspace-id'
-    }
   }),
   executeBlockedRepairResume: async (request) => ({
     repairAttemptId: request.repairAttemptId,

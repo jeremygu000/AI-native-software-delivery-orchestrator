@@ -15,8 +15,7 @@
     }
   },
   "dependencies": {
-    "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/temporal-spike": "workspace:*"
+    "@ai-native-software-delivery-orchestrator/domain": "workspace:*"
   },
   "devDependencies": {
     "@ai-native-software-delivery-orchestrator/agent-runtime": "workspace:*",

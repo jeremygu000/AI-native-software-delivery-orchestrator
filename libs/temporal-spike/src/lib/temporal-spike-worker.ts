@@ -1,17 +1,14 @@
 import { NativeConnection, type WorkerOptions, Worker } from '@temporalio/worker';
 import { fileURLToPath } from 'node:url';
 
-import {
-  createTemporalSpikeActivities,
-  type TemporalSpikeScenarioService
-} from './temporal-spike-activities.js';
+import { createTemporalSpikeActivities } from './temporal-spike-activities.js';
 import { createStubTemporalSpikeScenarioService } from './stub-scenario-service.js';
 import type { TemporalSpikeConfiguration } from './temporal-spike-driver.js';
+import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
-/** Creates, but does not run, an isolated M2 Temporal worker. */
 export const createTemporalSpikeWorker = async (
   configuration: TemporalSpikeConfiguration,
-  service?: TemporalSpikeScenarioService
+  service?: DurableExecutionScenarioService
 ) => {
   const connection = await NativeConnection.connect({ address: configuration.address });
   return Worker.create({
@@ -26,7 +23,7 @@ export const createTemporalSpikeWorker = async (
 export const createTemporalSpikeWorkerOptions = (request: {
   readonly taskQueue: string;
   readonly workflowsPath: string;
-  readonly service?: TemporalSpikeScenarioService;
+  readonly service?: DurableExecutionScenarioService;
 }): WorkerOptions => ({
   taskQueue: request.taskQueue,
   workflowsPath: request.workflowsPath,
