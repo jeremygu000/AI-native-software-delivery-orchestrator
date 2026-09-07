@@ -1963,15 +1963,16 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - M2.1 Temporal skeleton：CLOSED
 - M2.2 Activity infrastructure：CLOSED
 
-**Scenario A（部分完成）：**
+**Scenario A（narrow Activities 已定义）：**
 
 - `ForgeBuilderExecutionService`：已实现（Seam 1: ExecuteBuilder）
 - `ForgeBuilderOutputEvaluationService`：已实现（Seam 2: EvaluateBuilderOutput）
 - `ForgeRepairExecutionService`：已实现（Seam 3: ExecuteRepair）
 - `ForgeAcceptedOutputIntegrationService`：已实现（Seam 4: IntegrateAcceptedOutput）
-- 服务尚未接入 runtime 或 Temporal Activities
-- Scenario A 仍使用一个 opaque `runBuildReviewRepairIntegrate` Activity
-- Temporal durable continuation 未证明（Workflow 未拥有 continuation）
+- `ForgeScenarioAServiceRunner`：组合层已实现
+- 四个 narrow Temporal Activities 已定义：`executeBuilder`、`evaluateBuilderOutput`、`executeRepair`、`integrateAcceptedOutput`
+- 遗留的 `runBuildReviewRepairIntegrate` 已废弃但保留以保持向后兼容
+- Temporal durable continuation 未证明（workflow 尚未重构为调用 narrow Activities）
 
 **Scenario B（未完成）：**
 
@@ -1983,9 +1984,9 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 
 **下一步：**
 
-1. 将四个 Forge services 接入 legacy runtime 或创建 ForgeScenarioAServices 组合层
-2. 将 opaque `runBuildReviewRepairIntegrate` 替换为四个 narrow Activities，使 Temporal Workflow 拥有 continuation
-3. 通过共享 SQLite authority harness 运行 Scenario A
+1. 将 ForgeScenarioAServices 连接到真实实现（SQLite-backed persistence）
+2. 重构 Temporal workflow 以调用四个 narrow Activities，替换 opaque `runBuildReviewRepairIntegrate`
+3. 通过 Temporal workflow 运行 Scenario A 以证明 durable continuation
 4. 仅在那之后回归 Scenario B
 
 ### Stage 22R：Repair Continuation 设计
