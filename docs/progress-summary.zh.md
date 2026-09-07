@@ -1986,7 +1986,7 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 
 **下一步：**
 
-1. **端到端测试**：通过真实 persistence 运行 Scenario A 通过 Temporal workflow，以证明执行。
+1. **集成 bootstrap**：将 `createTemporalSpikeWorker(config, service)` 接入实际应用启动，使用真实的 `ForgeScenarioAServices` 和 `OrchestrationPersistence`。
 
 2. **Scenario B**：实现 durable wait/signal 用于 `executeBlockedRepairResume`，restart persistence，Forge CAS wake authorization。
 

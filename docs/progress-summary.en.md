@@ -2288,7 +2288,7 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 
 **Next steps:**
 
-1. **End-to-end test**: Run Scenario A through Temporal workflow with real persistence to prove execution.
+1. **Integration bootstrap**: Wire `createTemporalSpikeWorker(config, service)` into actual application startup with real `ForgeScenarioAServices` and `OrchestrationPersistence`.
 
 2. **Scenario B**: Implement durable wait/signal for `executeBlockedRepairResume`, restart persistence, Forge CAS wake authorization.
 
