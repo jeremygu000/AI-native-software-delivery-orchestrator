@@ -224,7 +224,11 @@ export const createMockActivities = (ctx: MockActivityContext) => ({
     return {
       repairAttemptId: request.repairAttemptId,
       verificationEvidenceId: verificationId,
-      reviewSubjectRef: request.reviewSubjectRef,
+      reviewSubjectRef: {
+        builderAttemptId: request.builderAttemptId,
+        outputAttemptId: request.repairAttemptId,
+        workspaceId: request.workspaceId
+      },
       recommendation: 'accept'
     };
   },

@@ -48,11 +48,13 @@ export const runTemporalSpikeWorkflow = async (
       verificationPolicyFingerprint: request.verificationPolicyFingerprint ?? 'default'
     });
 
+    let finalReviewSubjectRef = evaluationResult.reviewSubjectRef;
+
     if (evaluationResult.recommendation === 'repair') {
       if (evaluationResult.repairAttemptId === undefined) {
         throw new Error('Forge must provide repairAttemptId for repair recommendation');
       }
-      await activities.executeRepair({
+      const repairResult = await activities.executeRepair({
         runId: request.runId,
         repairAttemptId: evaluationResult.repairAttemptId,
         builderAttemptId: builderResult.builderAttemptId,
@@ -60,13 +62,21 @@ export const runTemporalSpikeWorkflow = async (
         reviewSubjectRef: evaluationResult.reviewSubjectRef,
         maxRepairs: 3
       });
+
+      if (repairResult.recommendation === 'accept') {
+        finalReviewSubjectRef = repairResult.reviewSubjectRef;
+      } else if (repairResult.recommendation === 'repair') {
+        throw new Error('Repair loop not yet implemented: maxRepairs exceeded or subsequent repair rejected');
+      } else {
+        throw new Error(`Repair resulted in ${repairResult.recommendation} - cannot integrate`);
+      }
     }
 
     await activities.integrateAcceptedOutput({
       runId: request.runId,
       taskId: request.taskId,
       workspaceId: builderResult.workspaceId,
-      reviewSubjectRef: evaluationResult.reviewSubjectRef
+      reviewSubjectRef: finalReviewSubjectRef
     });
 
     return { runId: request.runId, scenario: request.scenario };
