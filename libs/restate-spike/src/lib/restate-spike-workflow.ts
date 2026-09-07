@@ -200,48 +200,42 @@ export const restateSpikeWorkflow = restate.workflow({
       }
     ) => {
       if (request.scenario === 'build-review-repair-integrate') {
-        const builderResult = await ctx.run('executeBuilder', async () => {
-          return ctx.serviceClient(restateSpikeActivities).executeBuilder({
-            runId: request.runId,
-            taskId: request.taskId,
-            attemptId: request.attemptId,
-            agentId: request.agentId
-          });
+        const builderResult = await ctx.serviceClient(restateSpikeActivities).executeBuilder({
+          runId: request.runId,
+          taskId: request.taskId,
+          attemptId: request.attemptId,
+          agentId: request.agentId
         });
 
-        const evaluationResult = await ctx.run('evaluateBuilderOutput', async () => {
-          return ctx.serviceClient(restateSpikeActivities).evaluateBuilderOutput({
+        const evaluationResult = await ctx
+          .serviceClient(restateSpikeActivities)
+          .evaluateBuilderOutput({
             runId: request.runId,
             builderAttemptId: builderResult.builderAttemptId,
             workspaceId: builderResult.workspaceId,
             verificationPolicyFingerprint: 'default'
           });
-        });
 
         if (evaluationResult.recommendation === 'repair') {
           if (evaluationResult.repairAttemptId === undefined) {
             throw new Error('Forge must provide repairAttemptId for repair recommendation');
           }
 
-          const repairResult = await ctx.run('executeRepair', async () => {
-            return ctx.serviceClient(restateSpikeActivities).executeRepair({
-              runId: request.runId,
-              repairAttemptId: evaluationResult.repairAttemptId!,
-              builderAttemptId: builderResult.builderAttemptId,
-              workspaceId: builderResult.workspaceId,
-              reviewSubjectRef: evaluationResult.reviewSubjectRef,
-              maxRepairs: 3
-            });
+          const repairResult = await ctx.serviceClient(restateSpikeActivities).executeRepair({
+            runId: request.runId,
+            repairAttemptId: evaluationResult.repairAttemptId,
+            builderAttemptId: builderResult.builderAttemptId,
+            workspaceId: builderResult.workspaceId,
+            reviewSubjectRef: evaluationResult.reviewSubjectRef,
+            maxRepairs: 3
           });
 
           if (repairResult.recommendation === 'accept') {
-            await ctx.run('integrateAcceptedOutput', async () => {
-              return ctx.serviceClient(restateSpikeActivities).integrateAcceptedOutput({
-                runId: request.runId,
-                taskId: request.taskId,
-                workspaceId: builderResult.workspaceId,
-                reviewSubjectRef: repairResult.reviewSubjectRef
-              });
+            await ctx.serviceClient(restateSpikeActivities).integrateAcceptedOutput({
+              runId: request.runId,
+              taskId: request.taskId,
+              workspaceId: builderResult.workspaceId,
+              reviewSubjectRef: repairResult.reviewSubjectRef
             });
 
             return {
@@ -255,13 +249,11 @@ export const restateSpikeWorkflow = restate.workflow({
           throw new Error('Multi-repair not yet supported');
         }
 
-        await ctx.run('integrateDirectAccept', async () => {
-          return ctx.serviceClient(restateSpikeActivities).integrateAcceptedOutput({
-            runId: request.runId,
-            taskId: request.taskId,
-            workspaceId: builderResult.workspaceId,
-            reviewSubjectRef: evaluationResult.reviewSubjectRef
-          });
+        await ctx.serviceClient(restateSpikeActivities).integrateAcceptedOutput({
+          runId: request.runId,
+          taskId: request.taskId,
+          workspaceId: builderResult.workspaceId,
+          reviewSubjectRef: evaluationResult.reviewSubjectRef
         });
 
         return {
@@ -277,12 +269,10 @@ export const restateSpikeWorkflow = restate.workflow({
         const signalName = `repair-wake-${request.blockedRepairAttemptId}`;
         const wakePayload = await ctx.signal<RepairWakeSignal>(signalName);
 
-        const result = await ctx.run('executeBlockedRepairResume', async () => {
-          return ctx.serviceClient(restateSpikeActivities).executeBlockedRepairResume({
-            runId: request.runId,
-            repairAttemptId: wakePayload.repairAttemptId,
-            leaseState: wakePayload.leaseState
-          });
+        const result = await ctx.serviceClient(restateSpikeActivities).executeBlockedRepairResume({
+          runId: request.runId,
+          repairAttemptId: wakePayload.repairAttemptId,
+          leaseState: wakePayload.leaseState
         });
 
         return {

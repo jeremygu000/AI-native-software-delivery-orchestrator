@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted - Temporal selected as Runtime V2 durable execution substrate.
+Proposed - Decision Pending. Spike evidence insufficient for selection.
 
 ## Context
 

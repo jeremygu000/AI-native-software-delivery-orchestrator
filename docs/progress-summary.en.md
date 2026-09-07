@@ -2346,16 +2346,17 @@ NOT doing Integration Bootstrap until candidate winner is selected.
 
 **Restate Spike Status:**
 
-- **Scenario A**: Workflow submission works (3 tests pass: submission + client creation)
-- **Scenario B**: Workflow uses `ctx.signal()` for durable wait/resume pattern
-- **Known Issue**: SDK's `workflowOutput()`/`workflowAttach()` return "awaitNext already pending" error after `workflowSubmit()`, blocking completion verification
-- **ADR-028 Decision**: Temporal selected - 5 passing tests prove Scenario A and B work correctly
+- **Scenario A**: `workflowSubmit + rs.result()` completes successfully (3 tests pass)
+- **Scenario B**: `workflowSubmit` works, durable wait pattern implemented
+- **Fixed**: Removed incorrect `ctx.run()` wrapper around `ctx.serviceClient()` calls
+- **ADR-028**: REOPEN - Decision Pending until shared harness proven
 
-**Architecture decision: ADR-028 SELECTS TEMPORAL**
+**Architecture decision: ADR-028 REOPEN - Decision Pending**
 
-- Temporal: 5 passing tests prove Scenario A and B work correctly (TestWorkflowEnvironment)
-- Restate: 3 passing tests for workflow submission; completion verification blocked by SDK issue
-- Next: Integration Bootstrap / RuntimeStarter / CLI cutover with Temporal
+- Temporal: 5 passing tests, but shared harness not fully executed
+- Restate: 3 passing tests now work with `rs.result(handle)` pattern (fixed ctx.run wrapper issue)
+- Both candidates: shared authority harness not yet proven end-to-end
+- Next: Complete shared driver/harness parity for fair comparison
 
 ### Stage 22R: Repair Continuation Design
 

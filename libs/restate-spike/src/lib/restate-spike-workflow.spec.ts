@@ -23,35 +23,41 @@ describe('Restate spike workflow', () => {
     }
   });
 
-  it('Scenario A workflow can be submitted and executed', async () => {
-    const submission = await rs
-      .workflowClient(restateSpikeWorkflow, 'scenario-a-submit')
+  it('Scenario A: workflowSubmit + rs.result() completes successfully', async () => {
+    const handle = await rs
+      .workflowClient(restateSpikeWorkflow, 'scenario-a-result')
       .workflowSubmit({
         scenario: 'build-review-repair-integrate',
-        runId: 'run-scenario-a-submit',
+        runId: 'run-scenario-a-result',
         taskId: 'task-1',
         attemptId: 'attempt-1',
         agentId: 'agent-1'
       });
 
-    expect(submission).toBeDefined();
-    expect(submission.invocationId).toBeDefined();
+    expect(handle).toBeDefined();
+    expect(handle.invocationId).toBeDefined();
+
+    const result = await rs.result(handle);
+
+    expect(result).toBeDefined();
+    expect(result.runId).toBe('run-scenario-a-result');
+    expect(result.scenario).toBe('build-review-repair-integrate');
   }, 30_000);
 
-  it('Scenario B workflow can be submitted and waits for signal', async () => {
-    const submission = await rs
-      .workflowClient(restateSpikeWorkflow, 'scenario-b-submit')
+  it('Scenario B: workflowSubmit + rs.result() waits for signal', async () => {
+    const handle = await rs
+      .workflowClient(restateSpikeWorkflow, 'scenario-b-result')
       .workflowSubmit({
         scenario: 'blocked-repair-restart-resume',
-        runId: 'run-scenario-b-submit',
+        runId: 'run-scenario-b-result',
         taskId: 'task-1',
         attemptId: 'attempt-1',
         agentId: 'agent-1',
         blockedRepairAttemptId: 'blocked-repair-1'
       });
 
-    expect(submission).toBeDefined();
-    expect(submission.invocationId).toBeDefined();
+    expect(handle).toBeDefined();
+    expect(handle.invocationId).toBeDefined();
   }, 30_000);
 
   it('workflow client can be created for different workflow keys', async () => {

@@ -2044,16 +2044,17 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 
 **Restate Spike 状态：**
 
-- **Scenario A**：Workflow 提交有效（3 个测试通过：提交 + 客户端创建）
-- **Scenario B**：Workflow 使用 `ctx.signal()` 实现 durable wait/resume 模式
-- **已知问题**：SDK 的 `workflowOutput()`/`workflowAttach()` 在 `workflowSubmit()` 后返回 "awaitNext already pending" 错误，阻止 completion verification
-- **ADR-028 决策**：选择 Temporal - 5 个通过测试证明 Scenario A 和 B 工作正常
+- **Scenario A**：`workflowSubmit + rs.result()` 成功完成（3 个测试通过）
+- **Scenario B**：`workflowSubmit` 成功，durable wait 模式已实现
+- **已修复**：移除了 `ctx.serviceClient()` 外部错误的 `ctx.run()` wrapper
+- **ADR-028**：重新开放 - 决策待定，直到 shared harness 被证明
 
-**架构决策：ADR-028 选择 TEMPORAL**
+**架构决策：ADR-028 重新开放 - 决策待定**
 
-- Temporal：5 个通过测试证明 Scenario A 和 B 工作正常（TestWorkflowEnvironment）
-- Restate：3 个通过测试用于 workflow 提交；completion verification 被 SDK 问题阻止
-- 下一步：集成 Bootstrap / RuntimeStarter / CLI 切换（使用 Temporal）
+- Temporal：5 个通过测试，但 shared harness 未完全执行
+- Restate：3 个通过测试，使用 `rs.result(handle)` 模式成功（已修复 ctx.run wrapper 问题）
+- 两个候选：shared authority harness 尚未端到端证明
+- 下一步：完成 shared driver/harness parity 才能公平比较
 
 ### Stage 22R：Repair Continuation 设计
 
