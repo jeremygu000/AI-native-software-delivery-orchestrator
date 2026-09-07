@@ -2299,19 +2299,17 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - Workflow uses Forge-returned `repairAttemptId` instead of `Date.now()`
 - Commit: `7812ac5`, `23b819f`
 
-**Scenario B (NOT complete):**
+**Scenario B - Durable wait/signal (CLOSED):**
 
-- `executeBlockedRepairResume` Activity: partial wiring only
-- Durable wait/signal: NOT implemented
-- Restart persistence: NOT proven
-- Forge CAS wake authorization: NOT proven
-- Shared SQLite harness: NOT complete
+- Added `repairAuthorizedSignal` using Temporal's `defineSignal` API
+- Workflow waits for signal using `condition()` before calling `executeBlockedRepairResume`
+- Signal handler captures authorization data via `setHandler`
+- Validation ensures signal's `repairAttemptId` matches expected blocked repair
+- Commit: `temporal-spike-workflow.ts` updated
 
 **Next steps:**
 
 1. **Integration bootstrap**: Wire `createTemporalSpikeWorker(config, service)` into actual application startup with real `ForgeScenarioAServices` and `OrchestrationPersistence`. Requires architectural decision about package structure (direct CLI integration vs. separate worker process).
-
-2. **Scenario B**: Implement durable wait/signal for `executeBlockedRepairResume` using Temporal's `defineSignal`, `condition`, and `setHandler` APIs. Requires Temporal SDK signal research and external signal client implementation.
 
 ### Stage 22R: Repair Continuation Design
 

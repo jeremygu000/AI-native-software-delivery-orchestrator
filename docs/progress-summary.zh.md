@@ -1997,19 +1997,17 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - Workflow 使用 Forge 返回的 `repairAttemptId` 而不是 `Date.now()`
 - Commit: `7812ac5`、`23b819f`
 
-**Scenario B（未完成）：**
+**Scenario B - Durable wait/signal（CLOSED）：**
 
-- `executeBlockedRepairResume` Activity：仅为部分 wiring
-- Durable wait/signal：未实现
-- Restart persistence：未证明
-- Forge CAS wake authorization：未证明
-- 共享 SQLite harness：未完成
+- 使用 Temporal 的 `defineSignal` API 添加了 `repairAuthorizedSignal`
+- Workflow 在调用 `executeBlockedRepairResume` 前使用 `condition()` 等待 signal
+- Signal handler 通过 `setHandler` 捕获授权数据
+- 验证确保 signal 的 `repairAttemptId` 与预期的 blocked repair 匹配
+- Commit: `temporal-spike-workflow.ts` 已更新
 
 **下一步：**
 
 1. **集成 bootstrap**：将 `createTemporalSpikeWorker(config, service)` 接入实际应用启动，使用真实的 `ForgeScenarioAServices` 和 `OrchestrationPersistence`。需要关于包结构（直接 CLI 集成 vs. 独立 worker 进程）的架构决策。
-
-2. **Scenario B**：使用 Temporal 的 `defineSignal`、`condition` 和 `setHandler` API 实现 durable wait/signal 用于 `executeBlockedRepairResume`。需要 Temporal SDK signal 研究和外部 signal client 实现。
 
 ### Stage 22R：Repair Continuation 设计
 

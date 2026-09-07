@@ -1,4 +1,4 @@
-import { proxyActivities } from '@temporalio/workflow';
+import { condition, defineSignal, setHandler, proxyActivities } from '@temporalio/workflow';
 
 import type { TemporalSpikeActivity } from './temporal-spike-activities.js';
 
@@ -6,6 +6,30 @@ const activities = proxyActivities<TemporalSpikeActivity>({
   startToCloseTimeout: '1 minute',
   retry: { maximumAttempts: 1 }
 });
+
+export interface RepairAuthorizedSignal {
+  readonly repairAttemptId: string;
+  readonly authorizedAt: number;
+}
+
+export const repairAuthorizedSignal = defineSignal<[RepairAuthorizedSignal]>('repairAuthorized');
+
+export interface ScenarioABuildReviewRepairIntegrateRequest {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+  readonly agentId: string;
+  readonly verificationPolicyFingerprint?: string;
+}
+
+export interface ScenarioBBlockedRepairRestartResumeRequest {
+  readonly runId: string;
+  readonly blockedRepairAttemptId: string;
+}
+
+export type TemporalSpikeWorkflowRequest =
+  | ScenarioABuildReviewRepairIntegrateRequest
+  | ScenarioBBlockedRepairRestartResumeRequest;
 
 /**
  * M2 control flow only. Forge authority evidence remains in the authority store, never workflow history.
@@ -20,7 +44,7 @@ const activities = proxyActivities<TemporalSpikeActivity>({
  * only runId and scenario discriminator in history.
  *
  * Scenario B (blocked-repair-restart-resume):
- *   -> durable wait for 'repairAuthorized' signal (requires Temporal signal support)
+ *   -> durable wait for 'repairAuthorized' signal
  *   -> ExecuteBlockedRepairResume Activity with authorized repair
  */
 export const runTemporalSpikeWorkflow = async (request: {
@@ -107,9 +131,27 @@ export const runTemporalSpikeWorkflow = async (request: {
       );
     }
 
+    let authorizedRepair: RepairAuthorizedSignal | undefined;
+
+    setHandler(repairAuthorizedSignal, (signal: RepairAuthorizedSignal) => {
+      if (authorizedRepair === undefined) {
+        authorizedRepair = signal;
+      }
+    });
+
+    await condition(() => authorizedRepair !== undefined, '30 days');
+
+    const signalData = authorizedRepair!;
+
+    if (signalData.repairAttemptId !== request.blockedRepairAttemptId) {
+      throw new Error(
+        `Signal repairAttemptId mismatch: expected ${request.blockedRepairAttemptId}, got ${signalData.repairAttemptId}`
+      );
+    }
+
     const result = await activities.executeBlockedRepairResume({
       runId: request.runId,
-      repairAttemptId: request.blockedRepairAttemptId
+      repairAttemptId: signalData.repairAttemptId
     });
     return {
       runId: request.runId,

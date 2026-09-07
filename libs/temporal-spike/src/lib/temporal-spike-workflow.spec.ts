@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 
 import { createTemporalSpikeActivities } from './temporal-spike-activities.js';
-import { runTemporalSpikeWorkflow } from './temporal-spike-workflow.js';
+import { runTemporalSpikeWorkflow, repairAuthorizedSignal } from './temporal-spike-workflow.js';
 
 const environments: { readonly environment: TestWorkflowEnvironment; readonly worker: Worker }[] =
   [];
@@ -92,7 +92,7 @@ describe('Temporal spike workflow', () => {
     expect(result.builderAttemptId).toBe('builder-1');
   }, 15_000);
 
-  it('calls executeBlockedRepairResume for blocked-repair-restart-resume scenario', async () => {
+  it('waits for repairAuthorized signal before calling executeBlockedRepairResume', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     let resumeActivityCalled = false;
     const worker = await Worker.create({
@@ -146,19 +146,30 @@ describe('Temporal spike workflow', () => {
     });
     environments.push({ environment, worker });
     const client = new Client({ connection: environment.client.connection });
-    const result = await worker.runUntil(
-      client.workflow.execute(runTemporalSpikeWorkflow, {
-        taskQueue: 'temporal-spike-test-blocked',
-        workflowId: 'forge-run:run-blocked',
-        args: [
-          {
-            runId: 'run-blocked',
-            scenario: 'blocked-repair-restart-resume',
-            blockedRepairAttemptId: 'blocked-repair-1'
-          }
-        ]
-      })
-    );
+
+    const handle = await client.workflow.start(runTemporalSpikeWorkflow, {
+      taskQueue: 'temporal-spike-test-blocked',
+      workflowId: 'forge-run:run-blocked',
+      args: [
+        {
+          runId: 'run-blocked',
+          scenario: 'blocked-repair-restart-resume',
+          blockedRepairAttemptId: 'blocked-repair-1'
+        }
+      ]
+    });
+
+    await environment.sleep(100);
+
+    expect(resumeActivityCalled).toBe(false);
+
+    await handle.signal(repairAuthorizedSignal, {
+      repairAttemptId: 'blocked-repair-1',
+      authorizedAt: Date.now()
+    });
+
+    const result = await worker.runUntil(handle.result());
+
     expect(result.runId).toBe('run-blocked');
     expect(result.scenario).toBe('blocked-repair-restart-resume');
     expect(result.repairAttemptId).toBe('blocked-repair-1');
