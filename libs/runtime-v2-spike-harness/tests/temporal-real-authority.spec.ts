@@ -10,7 +10,13 @@ import {
   createTemporalSpikeActivities,
   repairWakeSignal
 } from '@ai-native-software-delivery-orchestrator/temporal-spike';
-import { createSqliteSpikeFixture, type SqliteSpikeFixture } from '../src/index.js';
+import {
+  createSqliteSpikeFixture,
+  createForgeScenarioService,
+  collectDurableExecutionOutcomeFromSqlite,
+  type SqliteSpikeFixture
+} from '../src/index.js';
+import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '../../..');
@@ -42,60 +48,39 @@ describe('Temporal spike - Scenario A real authority (SQLite)', () => {
   let client: Client;
   let fixture: SqliteSpikeFixture;
   let runId: string;
+  let taskId: string;
+  let attemptId: string;
+  let agentId: string;
 
   beforeEach(async () => {
     runId = `run-temporal-real-a-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    taskId = 'task-1';
+    attemptId = 'attempt-1';
+    agentId = 'agent-1';
     fixture = createSqliteSpikeFixture();
 
     environment = await TestWorkflowEnvironment.createTimeSkipping();
     const workflowPath = resolve(PROJECT_ROOT, 'libs/temporal-spike/dist/lib/temporal-spike-workflow.js');
 
-    const service = createTemporalSpikeActivities({
-      executeBuilder: async () => ({
-        builderAttemptId: `builder-${runId}`,
-        workspaceId: `workspace-${runId}`,
-        impactPrediction: []
-      }),
-      evaluateBuilderOutput: async () => ({
-        verificationEvidenceId: `verification-${runId}`,
-        reviewSubjectRef: {
-          builderAttemptId: `builder-${runId}`,
-          outputAttemptId: `output-${runId}`,
-          workspaceId: `workspace-${runId}`
-        },
-        recommendation: 'accept' as const
-      }),
-      executeRepair: async () => ({
-        repairAttemptId: `repair-${runId}`,
-        verificationEvidenceId: `verification-repair-${runId}`,
-        reviewSubjectRef: {
-          builderAttemptId: `builder-${runId}`,
-          outputAttemptId: `output-${runId}`,
-          workspaceId: `workspace-${runId}`
-        },
-        recommendation: 'accept' as const
-      }),
-      integrateAcceptedOutput: async () => ({
-        integrationStatus: 'integrated' as const
-      }),
-      executeBlockedRepairResume: async () => ({
-        repairAttemptId: `repair-${runId}`,
-        verificationEvidenceId: `verification-${runId}`,
-        state: 'completed' as const
-      })
+    const serviceImpl = createForgeScenarioService({
+      fixture,
+      runId,
+      taskId,
+      attemptId,
+      agentId
     });
 
     worker = await Worker.create({
       connection: environment.nativeConnection,
       taskQueue: `temporal-spike-real-a-${runId}`,
       workflowsPath: workflowPath,
-      activities: service
+      activities: createTemporalSpikeActivities(serviceImpl)
     });
     environments.push({ environment, worker });
     client = new Client({ connection: environment.client.connection });
   });
 
-  it('executes Scenario A with real Temporal worker and custom activities', async () => {
+  it('executes Scenario A with real Temporal worker and real Forge service', async () => {
     const result = await worker.runUntil(
       client.workflow.execute(runTemporalSpikeWorkflow, {
         taskQueue: worker.options.taskQueue,
@@ -104,9 +89,9 @@ describe('Temporal spike - Scenario A real authority (SQLite)', () => {
           {
             runId,
             scenario: 'build-review-repair-integrate',
-            taskId: 'task-1',
-            attemptId: 'attempt-1',
-            agentId: 'agent-1'
+            taskId,
+            attemptId,
+            agentId
           }
         ]
       })
@@ -114,6 +99,19 @@ describe('Temporal spike - Scenario A real authority (SQLite)', () => {
 
     expect(result.runId).toBe(runId);
     expect(result.scenario).toBe('build-review-repair-integrate');
+
+    const outcome = await collectDurableExecutionOutcomeFromSqlite(runId, fixture);
+    expect(outcome.builderAttempt.state).toBe('COMPLETED');
+    expect(outcome.repairs.length).toBeGreaterThan(0);
+    expect(outcome.verifications.length).toBeGreaterThan(0);
+    expect(outcome.reviews.length).toBeGreaterThan(0);
+    expect(outcome.integration.status).toBe('integrated');
+    expect(outcome.dispatchCount).toBeGreaterThanOrEqual(0);
+
+    assertDurableExecutionSpikeOutcome({
+      outcome,
+      scenario: 'build-review-repair-integrate'
+    });
   }, 15_000);
 });
 
@@ -121,55 +119,36 @@ describe('Temporal spike - Scenario B real authority (SQLite)', () => {
   let environment: TestWorkflowEnvironment;
   let worker: Worker;
   let client: Client;
+  let fixture: SqliteSpikeFixture;
   let runId: string;
+  let taskId: string;
+  let attemptId: string;
+  let agentId: string;
 
   beforeEach(async () => {
     runId = `run-temporal-real-b-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    taskId = 'task-1';
+    attemptId = 'attempt-1';
+    agentId = 'agent-1';
 
     environment = await TestWorkflowEnvironment.createTimeSkipping();
     const workflowPath = resolve(PROJECT_ROOT, 'libs/temporal-spike/dist/lib/temporal-spike-workflow.js');
 
-    const service = createTemporalSpikeActivities({
-      executeBuilder: async () => ({
-        builderAttemptId: `builder-${runId}`,
-        workspaceId: `workspace-${runId}`,
-        impactPrediction: []
-      }),
-      evaluateBuilderOutput: async () => ({
-        verificationEvidenceId: `verification-${runId}`,
-        reviewSubjectRef: {
-          builderAttemptId: `builder-${runId}`,
-          outputAttemptId: `output-${runId}`,
-          workspaceId: `workspace-${runId}`
-        },
-        recommendation: 'repair' as const,
-        repairAttemptId: `repair-${runId}`
-      }),
-      executeRepair: async () => ({
-        repairAttemptId: `repair-${runId}`,
-        verificationEvidenceId: `verification-repair-${runId}`,
-        reviewSubjectRef: {
-          builderAttemptId: `builder-${runId}`,
-          outputAttemptId: `output-${runId}`,
-          workspaceId: `workspace-${runId}`
-        },
-        recommendation: 'accept' as const
-      }),
-      integrateAcceptedOutput: async () => ({
-        integrationStatus: 'integrated' as const
-      }),
-      executeBlockedRepairResume: async () => ({
-        repairAttemptId: `repair-${runId}`,
-        verificationEvidenceId: `verification-${runId}`,
-        state: 'completed' as const
-      })
+    fixture = createSqliteSpikeFixture();
+
+    const serviceImpl = createForgeScenarioService({
+      fixture,
+      runId,
+      taskId,
+      attemptId,
+      agentId
     });
 
     worker = await Worker.create({
       connection: environment.nativeConnection,
       taskQueue: `temporal-spike-real-b-${runId}`,
       workflowsPath: workflowPath,
-      activities: service
+      activities: createTemporalSpikeActivities(serviceImpl)
     });
     environments.push({ environment, worker });
     client = new Client({ connection: environment.client.connection });

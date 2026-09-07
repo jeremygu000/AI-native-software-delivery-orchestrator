@@ -159,6 +159,8 @@ export interface OrchestrationPersistence {
   persistReevaluation(reevaluation: PersistedReevaluation): Promise<void>;
   persistDispatch(dispatch: PersistedDispatch): Promise<void>;
   recoverDispatches(runId: string): Promise<readonly PersistedDispatch[]>;
+  recoverAttempts(runId: string): Promise<readonly PersistedAgentExecutionAttempt[]>;
+  recoverLeases(runId: string): Promise<readonly PersistedWriteLease[]>;
   persistImpact(impact: PersistedTaskImpact): Promise<void>;
   persistConflict(conflict: PersistedTaskConflict): Promise<void>;
   persistLease(lease: PersistedWriteLease): Promise<void>;

@@ -89,11 +89,11 @@ But current implementation uses mock evidence, not real Forge SQLite persistence
 Required before ADR-028 scoring:
 
 1. **Fix Temporal final repair-output binding** - ✅ DONE
-2. **Temporal A/B through real Forge seams + SQLite** - ✅ DONE (harness package)
-3. **Restate A/B through real Forge seams + SQLite** - ✅ DONE (restate-spike package)
-4. **Real durable wait/wake + executor restart** - ✅ DONE (Restate handles natively via workflowSubmit/rs.result)
-5. **Scenario B must call assertDurableExecutionSpikeOutcome** - ✅ DONE
-6. **dispatchCount from persisted dispatch evidence** - ✅ DONE (recoverDispatches method added)
+2. **Temporal A/B through real Forge seams + SQLite** - PENDING (harness exists, activities still stub)
+3. **Restate A/B through real Forge seams + SQLite** - PENDING (workflow self-constructs evidence)
+4. **Real durable wait/wake + executor restart** - PENDING
+5. **Scenario B must call assertDurableExecutionSpikeOutcome** - PENDING
+6. **dispatchCount from persisted dispatch evidence** - PENDING (recoverDispatches reconstructs scheduler-start, not repair-resume)
 
 ## Scorecard (PRELIMINARY - DO NOT USE FOR DECISION)
 

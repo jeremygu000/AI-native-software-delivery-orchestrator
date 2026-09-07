@@ -134,6 +134,14 @@ class MemoryPersistence implements OrchestrationPersistence {
       }));
   }
 
+  async recoverAttempts(runId: string): Promise<readonly PersistedAgentExecutionAttempt[]> {
+    return this.attempts.filter((a) => a.runId === runId);
+  }
+
+  async recoverLeases(runId: string): Promise<readonly PersistedWriteLease[]> {
+    return this.leases.filter((l) => l.runId === runId);
+  }
+
   async persistImpact(record: PersistedTaskImpact): Promise<void> {
     this.impacts.push(record);
   }

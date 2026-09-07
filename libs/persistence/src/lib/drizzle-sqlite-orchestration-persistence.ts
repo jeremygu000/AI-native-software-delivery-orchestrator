@@ -1024,6 +1024,20 @@ export class DrizzleSqliteOrchestrationPersistence
     };
   }
 
+  async recoverAttempts(runId: string): Promise<readonly PersistedAgentExecutionAttempt[]> {
+    this.#assertRunId(runId);
+    return this.#db
+      .select()
+      .from(agentExecutionAttempts)
+      .where(eq(agentExecutionAttempts.runId, runId))
+      .orderBy(asc(agentExecutionAttempts.attemptId))
+      .all()
+      .map((record) => ({
+        runId: record.runId,
+        attempt: decode(record.attemptJson, isAgentExecutionAttempt, 'agent execution attempt')
+      }));
+  }
+
   async recoverDispatches(runId: string): Promise<readonly PersistedDispatch[]> {
     this.#assertRunId(runId);
     const events = this.#db
@@ -1111,6 +1125,20 @@ export class DrizzleSqliteOrchestrationPersistence
     }
 
     return dispatches;
+  }
+
+  async recoverLeases(runId: string): Promise<readonly PersistedWriteLease[]> {
+    this.#assertRunId(runId);
+    return this.#db
+      .select()
+      .from(writeLeases)
+      .where(eq(writeLeases.runId, runId))
+      .orderBy(asc(writeLeases.leaseId))
+      .all()
+      .map((record) => ({
+        runId: record.runId,
+        lease: decode(record.leaseJson, isWriteLease, 'write lease')
+      }));
   }
 
   async recoverReviews(runId: string): Promise<readonly PersistedTaskCodeReview[]> {
