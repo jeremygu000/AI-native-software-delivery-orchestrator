@@ -29,7 +29,8 @@ export default defineConfig({
         'libs/temporal-spike/src/**/*.ts',
         'libs/orchestration-runtime/src/lib/*spike*.ts',
         'libs/orchestration-runtime/src/lib/forge-builder-execution-service.ts',
-        'libs/orchestration-runtime/src/lib/forge-builder-output-evaluation-service.ts'
+        'libs/orchestration-runtime/src/lib/forge-builder-output-evaluation-service.ts',
+        'libs/orchestration-runtime/src/lib/forge-repair-execution-service.ts'
       ],
       thresholds: {
         branches: 90,
