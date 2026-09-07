@@ -44,7 +44,7 @@ export const taskCodeReviewFindingSchema = z.object({
 
 export const taskCodeReviewSchema = z
   .object({
-    recommendation: z.enum(['accept', 'repair']),
+    recommendation: z.enum(['accept', 'repair', 'reject']),
     summary: nonEmptyStringSchema,
     findings: z.array(taskCodeReviewFindingSchema)
   })
@@ -67,11 +67,14 @@ export const taskCodeReviewSchema = z
         message: 'An accepted code review cannot contain findings'
       });
     }
-    if (review.recommendation === 'repair' && review.findings.length === 0) {
+    if (
+      (review.recommendation === 'repair' || review.recommendation === 'reject') &&
+      review.findings.length === 0
+    ) {
       context.addIssue({
         code: 'custom',
         path: ['recommendation'],
-        message: 'A repair recommendation requires at least one finding'
+        message: 'A repair or reject recommendation requires at least one finding'
       });
     }
   });

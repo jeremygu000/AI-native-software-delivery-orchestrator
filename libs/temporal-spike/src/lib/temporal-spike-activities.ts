@@ -42,7 +42,7 @@ export interface TemporalSpikeActivity {
       readonly outputAttemptId: string;
       readonly workspaceId: string;
     };
-    readonly recommendation: 'accept' | 'repair';
+    readonly recommendation: 'accept' | 'repair' | 'reject';
   }>;
 
   /**
@@ -67,7 +67,7 @@ export interface TemporalSpikeActivity {
       readonly outputAttemptId: string;
       readonly workspaceId: string;
     };
-    readonly recommendation: 'accept' | 'repair';
+    readonly recommendation: 'accept' | 'repair' | 'reject';
   }>;
 
   /**
@@ -148,7 +148,7 @@ export interface TemporalSpikeScenarioService {
       readonly outputAttemptId: string;
       readonly workspaceId: string;
     };
-    readonly recommendation: 'accept' | 'repair';
+    readonly recommendation: 'accept' | 'repair' | 'reject';
   }>;
 
   executeRepair(request: {
@@ -170,7 +170,7 @@ export interface TemporalSpikeScenarioService {
       readonly outputAttemptId: string;
       readonly workspaceId: string;
     };
-    readonly recommendation: 'accept' | 'repair';
+    readonly recommendation: 'accept' | 'repair' | 'reject';
   }>;
 
   integrateAcceptedOutput(request: {

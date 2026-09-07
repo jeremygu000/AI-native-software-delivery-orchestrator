@@ -25,8 +25,6 @@ export interface TemporalSpikeScenarioServiceDependencies {
   >;
 }
 
-const ALWAYS_EMPTY_FINGERPRINT = `sha256:${'0'.repeat(64)}`;
-
 const createId = (): string => `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
 const recoverWorkspace = (
@@ -143,7 +141,7 @@ export const createTemporalSpikeScenarioService = (
           taskId: request.taskId,
           agentId: request.agentId,
           workspaceId,
-          leasePlanFingerprint: ALWAYS_EMPTY_FINGERPRINT,
+          leasePlanFingerprint: '',
           state: 'PREPARING',
           revision: 1
         };
@@ -216,7 +214,7 @@ export const createTemporalSpikeScenarioService = (
             outputAttemptId: result.subject.outputAttemptId,
             workspaceId: result.subject.workspaceId
           },
-          recommendation: result.recommendation === 'reject' ? 'accept' : result.recommendation
+          recommendation: result.recommendation
         };
       }
 
@@ -251,15 +249,15 @@ export const createTemporalSpikeScenarioService = (
           workspace,
           impact,
           reviewIteration: 1,
-          review: { recommendation: 'repair', summary: 'Repair via temporal', findings: [] },
+          review: { recommendation: 'repair', summary: '', findings: [] },
           subject: {
             builderAttemptId: request.reviewSubjectRef.builderAttemptId,
             outputAttemptId: request.reviewSubjectRef.outputAttemptId,
             workspaceId: request.reviewSubjectRef.workspaceId,
-            workspaceRevision: 1,
-            workspaceChangeFingerprint: ALWAYS_EMPTY_FINGERPRINT,
-            impactFingerprint: ALWAYS_EMPTY_FINGERPRINT,
-            verificationFingerprint: ALWAYS_EMPTY_FINGERPRINT
+            workspaceRevision: 0,
+            workspaceChangeFingerprint: '',
+            impactFingerprint: '',
+            verificationFingerprint: ''
           },
           verificationPolicyFingerprint: '',
           repository: { files: new Map(), symbols: new Map() },
@@ -274,7 +272,7 @@ export const createTemporalSpikeScenarioService = (
             outputAttemptId: result.reviewSubject.outputAttemptId,
             workspaceId: result.reviewSubject.workspaceId
           },
-          recommendation: result.recommendation === 'reject' ? 'accept' : result.recommendation
+          recommendation: result.recommendation
         };
       }
 
@@ -304,10 +302,10 @@ export const createTemporalSpikeScenarioService = (
             builderAttemptId: request.reviewSubjectRef.builderAttemptId,
             outputAttemptId: request.reviewSubjectRef.outputAttemptId,
             workspaceId: request.reviewSubjectRef.workspaceId,
-            workspaceRevision: 1,
-            workspaceChangeFingerprint: ALWAYS_EMPTY_FINGERPRINT,
-            impactFingerprint: ALWAYS_EMPTY_FINGERPRINT,
-            verificationFingerprint: ALWAYS_EMPTY_FINGERPRINT
+            workspaceRevision: 0,
+            workspaceChangeFingerprint: '',
+            impactFingerprint: '',
+            verificationFingerprint: ''
           },
           task
         });
