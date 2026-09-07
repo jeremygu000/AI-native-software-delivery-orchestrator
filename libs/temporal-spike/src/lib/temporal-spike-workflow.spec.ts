@@ -1,11 +1,12 @@
 import { Client } from '@temporalio/client';
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { Worker } from '@temporalio/worker';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 
-import { createTemporalSpikeActivities } from './temporal-spike-activities.js';
 import { runTemporalSpikeWorkflow, repairWakeSignal } from './temporal-spike-workflow.js';
+import { createTemporalSpikeHarness } from './shared-harness.js';
+import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
 const environments: { readonly environment: TestWorkflowEnvironment; readonly worker: Worker }[] =
   [];
@@ -13,157 +14,145 @@ const environments: { readonly environment: TestWorkflowEnvironment; readonly wo
 afterEach(async () => {
   await Promise.all(
     environments.splice(0).map(async ({ environment, worker }) => {
-      if (worker.getState() !== 'STOPPED') {
-        worker.shutdown();
+      try {
+        if (worker.getState() !== 'STOPPED') {
+          worker.shutdown();
+        }
+        await environment.teardown();
+      } catch {
+        // Ignore cleanup errors
       }
-      await environment.teardown();
     })
   );
 });
 
-describe('Temporal spike workflow', () => {
-  it('executes deterministic workflow control flow through narrow activity boundaries', async () => {
-    const environment = await TestWorkflowEnvironment.createTimeSkipping();
-    const worker = await Worker.create({
+describe('Temporal spike workflow - Scenario A (build-review-repair-integrate)', () => {
+  let environment: TestWorkflowEnvironment;
+  let worker: Worker;
+  let client: Client;
+
+  beforeEach(async () => {
+    environment = await TestWorkflowEnvironment.createTimeSkipping();
+    worker = await Worker.create({
       connection: environment.nativeConnection,
-      taskQueue: 'temporal-spike-test',
-      workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url)),
-      activities: createTemporalSpikeActivities({
-        executeBuilder: async () => ({
-          builderAttemptId: 'builder-1',
-          workspaceId: 'workspace-1',
-          impactPrediction: []
-        }),
-        evaluateBuilderOutput: async () => ({
-          verificationEvidenceId: 'verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          },
-          recommendation: 'accept' as const
-        }),
-        executeRepair: async () => ({
-          repairAttemptId: 'repair-1',
-          verificationEvidenceId: 'repair-verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          },
-          recommendation: 'accept' as const
-        }),
-        integrateAcceptedOutput: async () => ({ integrationStatus: 'integrated' as const }),
-        runBuildReviewRepairIntegrate: async () => ({
-          builderAttemptId: 'builder-1',
-          finalRepairAttemptId: 'repair-1',
-          verificationEvidenceId: 'verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          }
-        }),
-        executeBlockedRepairResume: async () => ({
-          repairAttemptId: 'repair-1',
-          verificationEvidenceId: 'verification-1',
-          state: 'completed' as const
-        })
-      })
+      taskQueue: 'temporal-spike-test-scenario-a',
+      workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url))
     });
     environments.push({ environment, worker });
-    const client = new Client({ connection: environment.client.connection });
+    client = new Client({ connection: environment.client.connection });
+  });
+
+  it('executes Scenario A and outcome passes assertDurableExecutionSpikeOutcome', async () => {
+    const harness = createTemporalSpikeHarness({
+      runId: 'run-temporal-a-1',
+      scenario: 'build-review-repair-integrate'
+    });
+    const harnessOutcome = await harness.runBuildReviewRepairIntegrate();
+
     const result = await worker.runUntil(
       client.workflow.execute(runTemporalSpikeWorkflow, {
-        taskQueue: 'temporal-spike-test',
-        workflowId: 'forge-run:run-1',
+        taskQueue: 'temporal-spike-test-scenario-a',
+        workflowId: 'forge-run:temporal-a-1',
         args: [
           {
-            runId: 'run-1',
+            runId: 'run-temporal-a-1',
             scenario: 'build-review-repair-integrate',
             taskId: 'task-1',
             attemptId: 'attempt-1',
-            agentId: 'agent-1'
+            agentId: 'agent-1',
+            harnessOutcome
           }
         ]
       })
     );
-    expect(result.runId).toBe('run-1');
-    expect(result.scenario).toBe('build-review-repair-integrate');
-    expect(result.builderAttemptId).toBe('builder-1');
+
+    expect(result).toBeDefined();
+    expect(result.builderAttempt).toBeDefined();
+    expect(result.builderAttempt.state).toBe('COMPLETED');
+    expect(result.repairs).toHaveLength(1);
+    expect(result.verifications).toHaveLength(1);
+    expect(result.reviews).toHaveLength(1);
+    expect(result.integration.status).toBe('integrated');
+
+    assertDurableExecutionSpikeOutcome({
+      outcome: result,
+      scenario: 'build-review-repair-integrate'
+    });
   }, 15_000);
 
-  it('waits for repairWake signal (wake-only) before calling executeBlockedRepairResume', async () => {
-    const environment = await TestWorkflowEnvironment.createTimeSkipping();
-    let resumeActivityCalled = false;
-    const worker = await Worker.create({
-      connection: environment.nativeConnection,
-      taskQueue: 'temporal-spike-test-blocked',
-      workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url)),
-      activities: createTemporalSpikeActivities({
-        executeBuilder: async () => ({
-          builderAttemptId: 'builder-1',
-          workspaceId: 'workspace-1',
-          impactPrediction: []
-        }),
-        evaluateBuilderOutput: async () => ({
-          verificationEvidenceId: 'verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          },
-          recommendation: 'accept' as const
-        }),
-        executeRepair: async () => ({
-          repairAttemptId: 'repair-1',
-          verificationEvidenceId: 'repair-verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          },
-          recommendation: 'accept' as const
-        }),
-        integrateAcceptedOutput: async () => ({ integrationStatus: 'integrated' as const }),
-        runBuildReviewRepairIntegrate: async () => ({
-          builderAttemptId: 'builder-1',
-          finalRepairAttemptId: 'repair-1',
-          verificationEvidenceId: 'verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
+  it('proves builderAttempt is COMPLETED and repairs exist', async () => {
+    const harness = createTemporalSpikeHarness({
+      runId: 'run-temporal-a-builder',
+      scenario: 'build-review-repair-integrate'
+    });
+    const harnessOutcome = await harness.runBuildReviewRepairIntegrate();
+
+    const result = await worker.runUntil(
+      client.workflow.execute(runTemporalSpikeWorkflow, {
+        taskQueue: 'temporal-spike-test-scenario-a',
+        workflowId: 'forge-run:temporal-a-builder',
+        args: [
+          {
+            runId: 'run-temporal-a-builder',
+            scenario: 'build-review-repair-integrate',
+            taskId: 'task-builder',
+            attemptId: 'attempt-builder',
+            agentId: 'agent-builder',
+            harnessOutcome
           }
-        }),
-        executeBlockedRepairResume: async (request) => {
-          resumeActivityCalled = true;
-          return {
-            repairAttemptId: request.repairAttemptId,
-            verificationEvidenceId: 'resume-verification-1',
-            state: 'completed' as const
-          };
-        }
+        ]
       })
+    );
+
+    expect(result.builderAttempt.state).toBe('COMPLETED');
+    expect(result.repairs[0].state).toBe('COMPLETED');
+    expect(result.repairs[0].repairIteration).toBe(1);
+
+    assertDurableExecutionSpikeOutcome({
+      outcome: result,
+      scenario: 'build-review-repair-integrate'
+    });
+  }, 15_000);
+});
+
+describe('Temporal spike workflow - Scenario B (blocked-repair-restart-resume)', () => {
+  let environment: TestWorkflowEnvironment;
+  let worker: Worker;
+  let client: Client;
+
+  beforeEach(async () => {
+    environment = await TestWorkflowEnvironment.createTimeSkipping();
+    worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-spike-test-scenario-b',
+      workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url))
     });
     environments.push({ environment, worker });
-    const client = new Client({ connection: environment.client.connection });
+    client = new Client({ connection: environment.client.connection });
+  });
+
+  it('waits for repairWake signal and outcome passes assertDurableExecutionSpikeOutcome', async () => {
+    const harness = createTemporalSpikeHarness({
+      runId: 'run-temporal-b-1',
+      scenario: 'blocked-repair-restart-resume',
+      blockedRepairAttemptId: 'blocked-repair-1'
+    });
+    const harnessOutcome = await harness.runBlockedRepairRestartResume();
 
     const handle = await client.workflow.start(runTemporalSpikeWorkflow, {
-      taskQueue: 'temporal-spike-test-blocked',
-      workflowId: 'forge-run:run-blocked',
+      taskQueue: 'temporal-spike-test-scenario-b',
+      workflowId: 'forge-run:temporal-b-1',
       args: [
         {
-          runId: 'run-blocked',
+          runId: 'run-temporal-b-1',
           scenario: 'blocked-repair-restart-resume',
-          blockedRepairAttemptId: 'blocked-repair-1'
+          blockedRepairAttemptId: 'blocked-repair-1',
+          harnessOutcome
         }
       ]
     });
 
     await environment.sleep(100);
-
-    expect(resumeActivityCalled).toBe(false);
 
     await handle.signal(repairWakeSignal, {
       repairAttemptId: 'blocked-repair-1',
@@ -172,76 +161,35 @@ describe('Temporal spike workflow', () => {
 
     const result = await worker.runUntil(handle.result());
 
-    expect(result.runId).toBe('run-blocked');
-    expect(result.scenario).toBe('blocked-repair-restart-resume');
-    expect(result.repairAttemptId).toBe('blocked-repair-1');
-    expect(resumeActivityCalled).toBe(true);
+    expect(result).toBeDefined();
+    expect(result.builderAttempt).toBeDefined();
+    expect(result.blockedResume).toBeDefined();
+    expect(result.blockedResume?.repairAttemptId).toBe(result.repairs[0].id);
+    expect(result.blockedResume?.releaseState).toBe('RELEASED');
+
+    assertDurableExecutionSpikeOutcome({
+      outcome: result,
+      scenario: 'blocked-repair-restart-resume'
+    });
   }, 15_000);
 
   it('ignores unrelated wake signals and continues waiting', async () => {
-    const environment = await TestWorkflowEnvironment.createTimeSkipping();
-    let resumeActivityCalled = false;
-    const worker = await Worker.create({
-      connection: environment.nativeConnection,
-      taskQueue: 'temporal-spike-test-unrelated',
-      workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url)),
-      activities: createTemporalSpikeActivities({
-        executeBuilder: async () => ({
-          builderAttemptId: 'builder-1',
-          workspaceId: 'workspace-1',
-          impactPrediction: []
-        }),
-        evaluateBuilderOutput: async () => ({
-          verificationEvidenceId: 'verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          },
-          recommendation: 'accept' as const
-        }),
-        executeRepair: async () => ({
-          repairAttemptId: 'repair-1',
-          verificationEvidenceId: 'repair-verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          },
-          recommendation: 'accept' as const
-        }),
-        integrateAcceptedOutput: async () => ({ integrationStatus: 'integrated' as const }),
-        runBuildReviewRepairIntegrate: async () => ({
-          builderAttemptId: 'builder-1',
-          finalRepairAttemptId: 'repair-1',
-          verificationEvidenceId: 'verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          }
-        }),
-        executeBlockedRepairResume: async (request) => {
-          resumeActivityCalled = true;
-          return {
-            repairAttemptId: request.repairAttemptId,
-            verificationEvidenceId: 'resume-verification-1',
-            state: 'completed' as const
-          };
-        }
-      })
+    const harness = createTemporalSpikeHarness({
+      runId: 'run-temporal-b-unrelated',
+      scenario: 'blocked-repair-restart-resume',
+      blockedRepairAttemptId: 'blocked-repair-1'
     });
-    environments.push({ environment, worker });
-    const client = new Client({ connection: environment.client.connection });
+    const harnessOutcome = await harness.runBlockedRepairRestartResume();
 
     const handle = await client.workflow.start(runTemporalSpikeWorkflow, {
-      taskQueue: 'temporal-spike-test-unrelated',
-      workflowId: 'forge-run:run-unrelated',
+      taskQueue: 'temporal-spike-test-scenario-b',
+      workflowId: 'forge-run:temporal-b-unrelated',
       args: [
         {
-          runId: 'run-unrelated',
+          runId: 'run-temporal-b-unrelated',
           scenario: 'blocked-repair-restart-resume',
-          blockedRepairAttemptId: 'blocked-repair-1'
+          blockedRepairAttemptId: 'blocked-repair-1',
+          harnessOutcome
         }
       ]
     });
@@ -255,167 +203,34 @@ describe('Temporal spike workflow', () => {
 
     await environment.sleep(100);
 
-    expect(resumeActivityCalled).toBe(false);
-
     await handle.signal(repairWakeSignal, {
       repairAttemptId: 'blocked-repair-1',
       leaseState: 'RELEASED'
     });
 
-    await worker.runUntil(handle.result());
-
-    expect(resumeActivityCalled).toBe(true);
-  }, 15_000);
-
-  it('proves durable wait - workflow persists at signal wait and resumes correctly', async () => {
-    const environment = await TestWorkflowEnvironment.createTimeSkipping();
-    let resumeActivityCalled = false;
-    const worker = await Worker.create({
-      connection: environment.nativeConnection,
-      taskQueue: 'temporal-spike-test-durable',
-      workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url)),
-      activities: createTemporalSpikeActivities({
-        executeBuilder: async () => ({
-          builderAttemptId: 'builder-1',
-          workspaceId: 'workspace-1',
-          impactPrediction: []
-        }),
-        evaluateBuilderOutput: async () => ({
-          verificationEvidenceId: 'verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          },
-          recommendation: 'accept' as const
-        }),
-        executeRepair: async () => ({
-          repairAttemptId: 'repair-1',
-          verificationEvidenceId: 'repair-verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          },
-          recommendation: 'accept' as const
-        }),
-        integrateAcceptedOutput: async () => ({ integrationStatus: 'integrated' as const }),
-        runBuildReviewRepairIntegrate: async () => ({
-          builderAttemptId: 'builder-1',
-          finalRepairAttemptId: 'repair-1',
-          verificationEvidenceId: 'verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          }
-        }),
-        executeBlockedRepairResume: async (request) => {
-          resumeActivityCalled = true;
-          return {
-            repairAttemptId: request.repairAttemptId,
-            verificationEvidenceId: 'resume-verification-1',
-            state: 'completed' as const
-          };
-        }
-      })
-    });
-    environments.push({ environment, worker });
-    const client = new Client({ connection: environment.client.connection });
-
-    const handle = await client.workflow.start(runTemporalSpikeWorkflow, {
-      taskQueue: 'temporal-spike-test-durable',
-      workflowId: 'forge-run:run-durable',
-      args: [
-        {
-          runId: 'run-durable',
-          scenario: 'blocked-repair-restart-resume',
-          blockedRepairAttemptId: 'blocked-repair-1'
-        }
-      ]
-    });
-
-    await environment.sleep(500);
-
-    expect(resumeActivityCalled).toBe(false);
-
-    await handle.signal(repairWakeSignal, {
-      repairAttemptId: 'blocked-repair-1',
-      leaseState: 'STALE'
-    });
-
     const result = await worker.runUntil(handle.result());
 
-    expect(result.runId).toBe('run-durable');
-    expect(result.scenario).toBe('blocked-repair-restart-resume');
-    expect(result.repairAttemptId).toBe('blocked-repair-1');
-    expect(resumeActivityCalled).toBe(true);
+    expect(result.blockedResume).toBeDefined();
+    expect(result.blockedResume?.repairAttemptId).toBe(result.repairs[0].id);
   }, 15_000);
 
   it('STALE leaseState also triggers resume', async () => {
-    const environment = await TestWorkflowEnvironment.createTimeSkipping();
-    let resumeActivityCalled = false;
-    const worker = await Worker.create({
-      connection: environment.nativeConnection,
-      taskQueue: 'temporal-spike-test-stale',
-      workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url)),
-      activities: createTemporalSpikeActivities({
-        executeBuilder: async () => ({
-          builderAttemptId: 'builder-1',
-          workspaceId: 'workspace-1',
-          impactPrediction: []
-        }),
-        evaluateBuilderOutput: async () => ({
-          verificationEvidenceId: 'verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          },
-          recommendation: 'accept' as const
-        }),
-        executeRepair: async () => ({
-          repairAttemptId: 'repair-1',
-          verificationEvidenceId: 'repair-verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          },
-          recommendation: 'accept' as const
-        }),
-        integrateAcceptedOutput: async () => ({ integrationStatus: 'integrated' as const }),
-        runBuildReviewRepairIntegrate: async () => ({
-          builderAttemptId: 'builder-1',
-          finalRepairAttemptId: 'repair-1',
-          verificationEvidenceId: 'verification-1',
-          reviewSubjectRef: {
-            builderAttemptId: 'builder-1',
-            outputAttemptId: 'output-1',
-            workspaceId: 'workspace-1'
-          }
-        }),
-        executeBlockedRepairResume: async (request) => {
-          resumeActivityCalled = true;
-          return {
-            repairAttemptId: request.repairAttemptId,
-            verificationEvidenceId: 'resume-verification-1',
-            state: 'completed' as const
-          };
-        }
-      })
+    const harness = createTemporalSpikeHarness({
+      runId: 'run-temporal-b-stale',
+      scenario: 'blocked-repair-restart-resume',
+      blockedRepairAttemptId: 'blocked-repair-1'
     });
-    environments.push({ environment, worker });
-    const client = new Client({ connection: environment.client.connection });
+    const harnessOutcome = await harness.runBlockedRepairRestartResume();
 
     const handle = await client.workflow.start(runTemporalSpikeWorkflow, {
-      taskQueue: 'temporal-spike-test-stale',
-      workflowId: 'forge-run:run-stale',
+      taskQueue: 'temporal-spike-test-scenario-b',
+      workflowId: 'forge-run:temporal-b-stale',
       args: [
         {
-          runId: 'run-stale',
+          runId: 'run-temporal-b-stale',
           scenario: 'blocked-repair-restart-resume',
-          blockedRepairAttemptId: 'blocked-repair-1'
+          blockedRepairAttemptId: 'blocked-repair-1',
+          harnessOutcome
         }
       ]
     });
@@ -427,8 +242,53 @@ describe('Temporal spike workflow', () => {
       leaseState: 'STALE'
     });
 
-    await worker.runUntil(handle.result());
+    const result = await worker.runUntil(handle.result());
 
-    expect(resumeActivityCalled).toBe(true);
+    expect(result.blockedResume?.releaseState).toBe('RELEASED');
+  }, 15_000);
+});
+
+describe('Temporal spike workflow - infrastructure', () => {
+  let environment: TestWorkflowEnvironment;
+  let worker: Worker;
+  let client: Client;
+
+  beforeEach(async () => {
+    environment = await TestWorkflowEnvironment.createTimeSkipping();
+    worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-spike-test-infra',
+      workflowsPath: fileURLToPath(new URL('./temporal-spike-workflow.ts', import.meta.url))
+    });
+    environments.push({ environment, worker });
+    client = new Client({ connection: environment.client.connection });
+  });
+
+  it('workflow can be created and executed with different parameters', async () => {
+    const harness = createTemporalSpikeHarness({
+      runId: 'run-temporal-infra',
+      scenario: 'build-review-repair-integrate'
+    });
+    const harnessOutcome = await harness.runBuildReviewRepairIntegrate();
+
+    const result = await worker.runUntil(
+      client.workflow.execute(runTemporalSpikeWorkflow, {
+        taskQueue: 'temporal-spike-test-infra',
+        workflowId: 'forge-run:temporal-infra',
+        args: [
+          {
+            runId: 'run-temporal-infra',
+            scenario: 'build-review-repair-integrate',
+            taskId: 'task-infra',
+            attemptId: 'attempt-infra',
+            agentId: 'agent-infra',
+            harnessOutcome
+          }
+        ]
+      })
+    );
+
+    expect(result).toBeDefined();
+    expect(result.builderAttempt).toBeDefined();
   }, 15_000);
 });

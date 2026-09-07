@@ -311,6 +311,9 @@ importers:
 
   libs/temporal-spike:
     dependencies:
+      '@ai-native-software-delivery-orchestrator/orchestration-runtime':
+        specifier: workspace:*
+        version: link:../orchestration-runtime
       '@temporalio/client':
         specifier: ^1.22.0
         version: 1.22.0
