@@ -7,7 +7,8 @@ import { resolve, dirname } from 'node:path';
 
 import {
   runTemporalSpikeWorkflow,
-  createTemporalSpikeActivities
+  createTemporalSpikeActivities,
+  repairWakeSignal
 } from '@ai-native-software-delivery-orchestrator/temporal-spike';
 import { createSqliteSpikeFixture, type SqliteSpikeFixture } from '../src/index.js';
 
@@ -113,5 +114,92 @@ describe('Temporal spike - Scenario A real authority (SQLite)', () => {
 
     expect(result.runId).toBe(runId);
     expect(result.scenario).toBe('build-review-repair-integrate');
+  }, 15_000);
+});
+
+describe('Temporal spike - Scenario B real authority (SQLite)', () => {
+  let environment: TestWorkflowEnvironment;
+  let worker: Worker;
+  let client: Client;
+  let runId: string;
+
+  beforeEach(async () => {
+    runId = `run-temporal-real-b-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+    environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const workflowPath = resolve(PROJECT_ROOT, 'libs/temporal-spike/dist/lib/temporal-spike-workflow.js');
+
+    const service = createTemporalSpikeActivities({
+      executeBuilder: async () => ({
+        builderAttemptId: `builder-${runId}`,
+        workspaceId: `workspace-${runId}`,
+        impactPrediction: []
+      }),
+      evaluateBuilderOutput: async () => ({
+        verificationEvidenceId: `verification-${runId}`,
+        reviewSubjectRef: {
+          builderAttemptId: `builder-${runId}`,
+          outputAttemptId: `output-${runId}`,
+          workspaceId: `workspace-${runId}`
+        },
+        recommendation: 'repair' as const,
+        repairAttemptId: `repair-${runId}`
+      }),
+      executeRepair: async () => ({
+        repairAttemptId: `repair-${runId}`,
+        verificationEvidenceId: `verification-repair-${runId}`,
+        reviewSubjectRef: {
+          builderAttemptId: `builder-${runId}`,
+          outputAttemptId: `output-${runId}`,
+          workspaceId: `workspace-${runId}`
+        },
+        recommendation: 'accept' as const
+      }),
+      integrateAcceptedOutput: async () => ({
+        integrationStatus: 'integrated' as const
+      }),
+      executeBlockedRepairResume: async () => ({
+        repairAttemptId: `repair-${runId}`,
+        verificationEvidenceId: `verification-${runId}`,
+        state: 'completed' as const
+      })
+    });
+
+    worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: `temporal-spike-real-b-${runId}`,
+      workflowsPath: workflowPath,
+      activities: service
+    });
+    environments.push({ environment, worker });
+    client = new Client({ connection: environment.client.connection });
+  });
+
+  it('executes Scenario B with blocked-repair-restart-resume and signal', async () => {
+    const blockedRepairAttemptId = `repair-blocked-${runId}`;
+
+    const handle = await client.workflow.start(runTemporalSpikeWorkflow, {
+      taskQueue: worker.options.taskQueue,
+      workflowId: `forge-run:temporal-real-b-${runId}`,
+      args: [
+        {
+          runId,
+          scenario: 'blocked-repair-restart-resume' as const,
+          blockedRepairAttemptId
+        }
+      ]
+    });
+
+    await environment.sleep(100);
+
+    await handle.signal(repairWakeSignal, {
+      repairAttemptId: blockedRepairAttemptId,
+      leaseState: 'RELEASED' as const
+    });
+
+    const result = await worker.runUntil(handle.result());
+
+    expect(result.runId).toBe(runId);
+    expect(result.scenario).toBe('blocked-repair-restart-resume');
   }, 15_000);
 });
