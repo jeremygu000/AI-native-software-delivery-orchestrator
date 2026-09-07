@@ -2039,12 +2039,21 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - 创建了 `restate-spike` 包，包含 SDK 结构
 - `RestateSpikeDriver` 已实现 `DurableExecutionSpikeDriver` 接口
 - Restate Activities 和 Workflow 已使用 `@restatedev/restate-sdk` 定义
+- Restate 测试结构已完成 - 测试需要 Docker/testcontainers（CI 环境中 Docker 不可用）
+- Temporal spike 有 5 个通过测试，证明 Scenario A 和 B 的真实 workflow 执行
 
-**下一步：**
+**Restate Spike 状态：**
 
-1. **ADR-028**：Temporal、Restate 和 Keep Legacy 之间的正式决策
-2. **运行 Restate spike scenarios**：通过 shared harness 运行 Scenario A 和 B
-3. **集成 Bootstrap**：仅在 candidate winner 选定后进行
+- **Scenario A**：Workflow 提交有效（3 个测试通过：提交 + 客户端创建）
+- **Scenario B**：Workflow 使用 `ctx.signal()` 实现 durable wait/resume 模式
+- **已知问题**：SDK 的 `workflowOutput()`/`workflowAttach()` 在 `workflowSubmit()` 后返回 "awaitNext already pending" 错误，阻止 completion verification
+- **ADR-028 决策**：选择 Temporal - 5 个通过测试证明 Scenario A 和 B 工作正常
+
+**架构决策：ADR-028 选择 TEMPORAL**
+
+- Temporal：5 个通过测试证明 Scenario A 和 B 工作正常（TestWorkflowEnvironment）
+- Restate：3 个通过测试用于 workflow 提交；completion verification 被 SDK 问题阻止
+- 下一步：集成 Bootstrap / RuntimeStarter / CLI 切换（使用 Temporal）
 
 ### Stage 22R：Repair Continuation 设计
 

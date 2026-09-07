@@ -80,7 +80,7 @@ export interface RestateSpikeScenarioService {
 }
 
 export const restateSpikeActivities = restate.service({
-  name: 'restate-spike-activities',
+  name: 'spike-activities',
   handlers: {
     executeBuilder: async (
       _ctx: restate.Context,
@@ -106,7 +106,16 @@ export const restateSpikeActivities = restate.service({
         readonly workspaceId: string;
         readonly verificationPolicyFingerprint: string;
       }
-    ) => {
+    ): Promise<{
+      readonly verificationEvidenceId: string;
+      readonly reviewSubjectRef: {
+        readonly builderAttemptId: string;
+        readonly outputAttemptId: string;
+        readonly workspaceId: string;
+      };
+      readonly recommendation: 'accept' | 'repair' | 'reject';
+      readonly repairAttemptId?: string;
+    }> => {
       return {
         verificationEvidenceId: `verification-${request.builderAttemptId}`,
         reviewSubjectRef: {
@@ -114,7 +123,7 @@ export const restateSpikeActivities = restate.service({
           outputAttemptId: `output-${request.builderAttemptId}`,
           workspaceId: request.workspaceId
         },
-        recommendation: 'accept' as const
+        recommendation: 'accept'
       };
     },
 
@@ -137,7 +146,7 @@ export const restateSpikeActivities = restate.service({
         repairAttemptId: request.repairAttemptId,
         verificationEvidenceId: `verification-repair-${request.repairAttemptId}`,
         reviewSubjectRef: request.reviewSubjectRef,
-        recommendation: 'accept' as const
+        recommendation: 'accept'
       };
     },
 
@@ -155,7 +164,7 @@ export const restateSpikeActivities = restate.service({
       }
     ) => {
       return {
-        integrationStatus: 'integrated' as const
+        integrationStatus: 'integrated'
       };
     },
 
@@ -177,7 +186,7 @@ export const restateSpikeActivities = restate.service({
 });
 
 export const restateSpikeWorkflow = restate.workflow({
-  name: 'restate-spike-workflow',
+  name: 'spike-workflow',
   handlers: {
     run: async (
       ctx: restate.WorkflowContext,
@@ -217,7 +226,7 @@ export const restateSpikeWorkflow = restate.workflow({
           const repairResult = await ctx.run('executeRepair', async () => {
             return ctx.serviceClient(restateSpikeActivities).executeRepair({
               runId: request.runId,
-              repairAttemptId: evaluationResult.repairAttemptId,
+              repairAttemptId: evaluationResult.repairAttemptId!,
               builderAttemptId: builderResult.builderAttemptId,
               workspaceId: builderResult.workspaceId,
               reviewSubjectRef: evaluationResult.reviewSubjectRef,

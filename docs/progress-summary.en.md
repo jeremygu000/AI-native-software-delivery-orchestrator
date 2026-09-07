@@ -2341,12 +2341,21 @@ NOT doing Integration Bootstrap until candidate winner is selected.
 - Created `restate-spike` package with SDK structure
 - `RestateSpikeDriver` implements `DurableExecutionSpikeDriver` interface
 - Restate Activities and Workflow defined using `@restatedev/restate-sdk`
+- Restate test structure complete - tests require Docker/testcontainers (Docker unavailable in CI environment)
+- Temporal spike has 5 passing tests proving Scenario A and B with real workflow execution
 
-**Next steps:**
+**Restate Spike Status:**
 
-1. **ADR-028**: Formal decision between Temporal, Restate, and Keep Legacy
-2. **Run Restate spike scenarios**: Scenario A and B through shared harness
-3. **Integration Bootstrap**: Only after candidate winner selected
+- **Scenario A**: Workflow submission works (3 tests pass: submission + client creation)
+- **Scenario B**: Workflow uses `ctx.signal()` for durable wait/resume pattern
+- **Known Issue**: SDK's `workflowOutput()`/`workflowAttach()` return "awaitNext already pending" error after `workflowSubmit()`, blocking completion verification
+- **ADR-028 Decision**: Temporal selected - 5 passing tests prove Scenario A and B work correctly
+
+**Architecture decision: ADR-028 SELECTS TEMPORAL**
+
+- Temporal: 5 passing tests prove Scenario A and B work correctly (TestWorkflowEnvironment)
+- Restate: 3 passing tests for workflow submission; completion verification blocked by SDK issue
+- Next: Integration Bootstrap / RuntimeStarter / CLI cutover with Temporal
 
 ### Stage 22R: Repair Continuation Design
 

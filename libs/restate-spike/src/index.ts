@@ -5,7 +5,3 @@ export type {
   RestateSpikeWorkflow,
   RepairWakeSignal
 } from './lib/restate-spike-workflow.js';
-
-export { createRestateSpikeDriver } from './lib/restate-spike-driver.js';
-
-export type { RestateSpikeDriverOptions } from './lib/restate-spike-driver.js';
