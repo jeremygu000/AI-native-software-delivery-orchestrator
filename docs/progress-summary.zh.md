@@ -358,6 +358,62 @@ TypeScript。
 **这一阶段的成果**:项目现在只有一套编译器版本,减少了一个长期需要维护、解释、担心版本
 不一致的负担。
 
+## 阶段五b:用于持久化执行的 Temporal 运行时地基
+
+这一阶段加入了第一个基于 Temporal 的持久化执行切片。目标不是一次把所有生产服务都接完,
+而是先把工作流边界定下来,证明它可以用 Temporal 自己的 worker 和测试环境来验证,并保持
+工作流的确定性。
+
+Temporal 运行时现在有两个清晰职责:
+
+- **工作流**只负责编排持久化步骤,输入和输出都保持为紧凑的 ID 和枚举;
+- **Activity 层**则是以后真正运行 Forge 服务的地方,因为 side effect 只能放在 Activity 里。
+
+### 现在这个 Temporal 切片做了什么
+
+Temporal 运行时包现在包含:
+
+- 工作流输入和结果的紧凑 Zod 合同;
+- builder 执行、repair admission、输出集成和运行最终化的紧凑 Activity 合同;
+- 一个 Scenario A 工作流,会重新评估运行、执行已授权 builder、评估输出、把 repair
+  admission 从 repair execution 中拆开,并在最后完成 run state finalization;
+- 一个 worker factory,它不再默认猜测 Activity 实现,而是要求显式传入 Forge Activities;
+- 一组工作流测试,覆盖无任务、accept、repair、再次 reevaluate 这些路径。
+
+### 第一次切片后修正了什么
+
+第一次 M3.3 切片之后,review 发现了三个 authority 问题,并且已经在 workflow/contracts 层
+修正:
+
+- 工作流现在消费的是已授权的 builder start,而不是原始 scheduler 状态;
+- repair admission 变成了独立的 Activity,放在 repair execution 之前;
+- 工作流会在处理中再次 reevaluate,并且在结束时 finalizes run state。
+
+### 现在已经验证了什么
+
+下面这些检查已经通过:
+
+- `pnpm exec tsc -b libs/temporal-runtime/tsconfig.lib.json apps/temporal-worker/tsconfig.app.json --force`
+- `pnpm exec vitest run --config vitest.config.ts libs/temporal-runtime/src/lib/temporal-runtime.spec.ts`
+
+Temporal 测试证明工作流可以正确走到这些分支:
+
+- 没有任何已授权工作时的运行;
+- 一个在评估后被接受的任务;
+- 一个需要 repair admission 和 repair execution 的任务;
+- 一个在 reevaluate 之后又发现了新已授权任务的运行。
+
+### 还有什么没有完成
+
+生产 worker 的 composition root 还没有接完。当前 `apps/temporal-worker` 包里仍然需要一个
+真正的 adapter,用来构造 Forge services 并把它们传给 Temporal worker。现在的 worker 已经可以
+更安全地关闭,但它仍然只是 runtime shell,还不是最终的生产 wiring。
+
+### 这一阶段下一步能做什么
+
+这一阶段让下一步可以直接去写真实的生产 worker composition root,而不用再猜工作流 contract
+ 应该长什么样。下一阶段可以把持久化运行时依赖接进 Activity 层,而不是再修改 workflow 边界。
+
 ## 阶段六:读取真实的 pnpm 工作区
 
 在这一阶段之前,"代码仓库结构图"还只是一套关于"仓库信息应该长什么样"的定义。测试可以

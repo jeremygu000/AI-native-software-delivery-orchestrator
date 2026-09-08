@@ -33,23 +33,12 @@ export type ForgeRunResult = z.infer<typeof ForgeRunResultSchema>;
 
 // ─── Scenario A: reevaluateRun ────────────────────────────────────────────────
 
-export const TaskDecisionActionSchema = z.enum([
-  'ready',
-  'start',
-  'block',
-  'unblock',
-  'cancel',
-  'defer',
-]);
-export type TaskDecisionAction = z.infer<typeof TaskDecisionActionSchema>;
-
-export const TaskDecisionSchema = z.object({
+export const AuthorizedTaskSchema = z.object({
   taskId: z.string().min(1),
-  action: TaskDecisionActionSchema,
-  bindingId: z.string().min(1).optional(),
-  attemptId: z.string().min(1).optional(),
+  bindingId: z.string().min(1),
+  attemptId: z.string().min(1),
 });
-export type TaskDecision = z.infer<typeof TaskDecisionSchema>;
+export type AuthorizedTask = z.infer<typeof AuthorizedTaskSchema>;
 
 export const ReevaluateRunInputSchema = z.object({
   runId: RunIdSchema,
@@ -58,7 +47,7 @@ export type ReevaluateRunInput = z.infer<typeof ReevaluateRunInputSchema>;
 
 export const ReevaluateRunResultSchema = z.object({
   runId: RunIdSchema,
-  taskDecisions: z.array(TaskDecisionSchema),
+  authorizedTasks: z.array(AuthorizedTaskSchema),
 });
 export type ReevaluateRunResult = z.infer<typeof ReevaluateRunResultSchema>;
 
@@ -108,9 +97,25 @@ export const EvaluateBuilderOutputResultSchema = z.object({
   verificationId: z.string().min(1),
   subjectRef: SubjectRefSchema,
   reviewId: z.string().min(1),
-  repairAttemptId: z.string().min(1).optional(),
 });
 export type EvaluateBuilderOutputResult = z.infer<typeof EvaluateBuilderOutputResultSchema>;
+
+// ─── Scenario A: admitRepair ──────────────────────────────────────────────────
+
+export const AdmitRepairInputSchema = z.object({
+  runId: RunIdSchema,
+  taskId: z.string().min(1),
+  reviewId: z.string().min(1),
+  subjectRef: SubjectRefSchema,
+});
+export type AdmitRepairInput = z.infer<typeof AdmitRepairInputSchema>;
+
+export const AdmitRepairResultSchema = z.object({
+  runId: RunIdSchema,
+  taskId: z.string().min(1),
+  repairAttemptId: z.string().min(1),
+});
+export type AdmitRepairResult = z.infer<typeof AdmitRepairResultSchema>;
 
 // ─── Scenario A: executeRepair ────────────────────────────────────────────────
 
@@ -155,3 +160,16 @@ export const IntegrateAcceptedOutputResultSchema = z.object({
   status: z.enum(['integrated', 'blocked']),
 });
 export type IntegrateAcceptedOutputResult = z.infer<typeof IntegrateAcceptedOutputResultSchema>;
+
+// ─── Scenario A: finalizeRunState ─────────────────────────────────────────────
+
+export const FinalizeRunStateInputSchema = z.object({
+  runId: RunIdSchema,
+});
+export type FinalizeRunStateInput = z.infer<typeof FinalizeRunStateInputSchema>;
+
+export const FinalizeRunStateResultSchema = z.object({
+  runId: RunIdSchema,
+  status: z.enum(['completed', 'failed']),
+});
+export type FinalizeRunStateResult = z.infer<typeof FinalizeRunStateResultSchema>;

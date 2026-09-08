@@ -5,10 +5,14 @@ import type {
   ExecuteBuilderResult,
   EvaluateBuilderOutputInput,
   EvaluateBuilderOutputResult,
+  AdmitRepairInput,
+  AdmitRepairResult,
   ExecuteRepairInput,
   ExecuteRepairResult,
   IntegrateAcceptedOutputInput,
   IntegrateAcceptedOutputResult,
+  FinalizeRunStateInput,
+  FinalizeRunStateResult,
 } from '../contracts.js';
 
 /**
@@ -27,8 +31,10 @@ export type ForgeActivities = {
   evaluateBuilderOutput(
     input: EvaluateBuilderOutputInput,
   ): Promise<EvaluateBuilderOutputResult>;
+  admitRepair(input: AdmitRepairInput): Promise<AdmitRepairResult>;
   executeRepair(input: ExecuteRepairInput): Promise<ExecuteRepairResult>;
   integrateAcceptedOutput(
     input: IntegrateAcceptedOutputInput,
   ): Promise<IntegrateAcceptedOutputResult>;
+  finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult>;
 };

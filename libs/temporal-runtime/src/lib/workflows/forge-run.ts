@@ -6,8 +6,10 @@ const {
   reevaluateRun,
   executeBuilder,
   evaluateBuilderOutput,
+  admitRepair,
   executeRepair,
   integrateAcceptedOutput,
+  finalizeRunState,
 } = proxyActivities<ForgeActivities>({
   startToCloseTimeout: '5 minutes',
 });
@@ -17,40 +19,51 @@ const {
  *
  * Topology:
  *   reevaluateRun
- *     → for each ready task:
+ *     → for each authorized task start:
  *         executeBuilder
+ *         → reevaluateRun
  *         → evaluateBuilderOutput
- *             → [repair path] executeRepair
+ *             → [repair path] admitRepair → executeRepair
  *         → integrateAcceptedOutput (if accept)
+ *   finalizeRunState
  */
 export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunResult> {
   const { runId } = input;
 
-  // Step 1: ask the scheduler which tasks are ready
-  const { taskDecisions } = await reevaluateRun({ runId });
+  // Step 1: ask the scheduler which tasks are authorized to start
+  const initialReevaluation = await reevaluateRun({ runId });
+  const authorizedTasks = [...initialReevaluation.authorizedTasks];
+  const seenTaskIds = new Set(authorizedTasks.map((task) => task.taskId));
 
-  // Step 2: process each task the scheduler declared ready
-  for (const decision of taskDecisions) {
-    if (
-      decision.action !== 'ready' ||
-      decision.bindingId === undefined ||
-      decision.attemptId === undefined
-    ) {
+  // Step 2: process each task start authorized by Forge
+  while (authorizedTasks.length > 0) {
+    const task = authorizedTasks.shift();
+    if (task === undefined) {
       continue;
     }
 
     // Step 3: run the builder agent
     const builderResult = await executeBuilder({
       runId,
-      taskId: decision.taskId,
-      bindingId: decision.bindingId,
-      attemptId: decision.attemptId,
+      taskId: task.taskId,
+      bindingId: task.bindingId,
+      attemptId: task.attemptId,
     });
 
-    // Step 4: evaluate the builder output
+    // Step 4: advance Forge task state after the builder run
+    const reevaluation = await reevaluateRun({ runId });
+    for (const nextTask of reevaluation.authorizedTasks) {
+      if (seenTaskIds.has(nextTask.taskId)) {
+        continue;
+      }
+      seenTaskIds.add(nextTask.taskId);
+      authorizedTasks.push(nextTask);
+    }
+
+    // Step 5: evaluate the builder output
     const evalResult = await evaluateBuilderOutput({
       runId,
-      taskId: decision.taskId,
+      taskId: task.taskId,
       workspaceId: builderResult.workspaceId,
       builderAttemptId: builderResult.attemptId,
       impactId: builderResult.impactId,
@@ -63,16 +76,23 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
 
     let finalSubjectRef = evalResult.subjectRef;
 
-    // Step 5 (optional): repair path
-    if (evalResult.recommendation === 'repair' && evalResult.repairAttemptId !== undefined) {
+    // Step 6 (optional): repair admission + execution path
+    if (evalResult.recommendation === 'repair') {
+      const admittedRepair = await admitRepair({
+        runId,
+        taskId: task.taskId,
+        reviewId: evalResult.reviewId,
+        subjectRef: evalResult.subjectRef,
+      });
+
       const repairResult = await executeRepair({
         runId,
-        taskId: decision.taskId,
+        taskId: task.taskId,
         workspaceId: builderResult.workspaceId,
         builderAttemptId: builderResult.attemptId,
         impactId: builderResult.impactId,
         reviewId: evalResult.reviewId,
-        repairAttemptId: evalResult.repairAttemptId,
+        repairAttemptId: admittedRepair.repairAttemptId,
       });
 
       // Repair did not complete or post-repair recommendation is reject — skip integration
@@ -85,14 +105,17 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
       }
     }
 
-    // Step 6: integrate the accepted output
+    // Step 7: integrate the accepted output
     await integrateAcceptedOutput({
       runId,
-      taskId: decision.taskId,
+      taskId: task.taskId,
       workspaceId: builderResult.workspaceId,
       subjectRef: finalSubjectRef,
     });
   }
+
+  // Step 8: finalize the run state
+  await finalizeRunState({ runId });
 
   return { runId, status: 'completed' };
 }

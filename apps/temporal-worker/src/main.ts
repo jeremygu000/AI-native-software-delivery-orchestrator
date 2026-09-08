@@ -18,10 +18,16 @@ async function main(): Promise<void> {
       async evaluateBuilderOutput() {
         throw new Error('temporal-worker has no Forge activity implementation yet');
       },
+      async admitRepair() {
+        throw new Error('temporal-worker has no Forge activity implementation yet');
+      },
       async executeRepair() {
         throw new Error('temporal-worker has no Forge activity implementation yet');
       },
       async integrateAcceptedOutput() {
+        throw new Error('temporal-worker has no Forge activity implementation yet');
+      },
+      async finalizeRunState() {
         throw new Error('temporal-worker has no Forge activity implementation yet');
       },
     },
@@ -29,7 +35,6 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     await handle.shutdown();
-    process.exit(0);
   };
 
   process.on('SIGTERM', shutdown);

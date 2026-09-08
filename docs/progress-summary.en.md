@@ -413,6 +413,66 @@ that feature at that time — not pre-installed now and left unused.
 **Outcome of this stage**: the project now has a single compiler toolchain, removing an ongoing
 burden of maintaining, explaining, and worrying about version consistency between two compilers.
 
+## Stage 5b: Temporal runtime foundation for durable execution
+
+This stage added the first Temporal-backed runtime slice for durable execution. The aim was not to
+wire every production service yet. The goal was to establish the workflow boundary, prove it is
+testable with Temporal's own worker/test environment, and keep the workflow deterministic.
+
+The Temporal runtime now has two clear responsibilities:
+
+- the workflow only orchestrates durable steps using compact IDs and enums;
+- the activity layer is where Forge services will eventually run, because activities are where side
+  effects are allowed.
+
+### What the Temporal slice now does
+
+The Temporal runtime package now contains:
+
+- compact Zod contracts for the workflow input and result;
+- compact activity contracts for builder execution, repair admission, output integration, and run
+  finalization;
+- a Scenario A workflow that reevaluates the run, executes authorized builders, evaluates their
+  outputs, separates repair admission from repair execution, and finalizes the run;
+- a worker factory that requires explicit Forge activities instead of silently assuming a default;
+- workflow tests that verify the no-task, accept, repair, and reevaluation paths.
+
+### What was corrected after the first slice
+
+After the first M3.3 slice, review found three authority issues and they were corrected in the
+workflow/contracts layer:
+
+- the workflow now consumes authorized builder starts instead of raw scheduler state;
+- repair admission is a separate activity before repair execution;
+- the workflow re-evaluates the run during processing and finalizes the run state at the end.
+
+### What is verified now
+
+The following checks already pass:
+
+- `pnpm exec tsc -b libs/temporal-runtime/tsconfig.lib.json apps/temporal-worker/tsconfig.app.json --force`
+- `pnpm exec vitest run --config vitest.config.ts libs/temporal-runtime/src/lib/temporal-runtime.spec.ts`
+
+The Temporal tests prove the workflow reaches the correct branches for:
+
+- a run with no authorized work;
+- a task that is accepted after evaluation;
+- a task that requires repair admission and repair execution;
+- a run that discovers additional authorized work after reevaluation.
+
+### What still remains unimplemented
+
+The production worker composition root is still not wired. The current `apps/temporal-worker`
+package still needs a real adapter that constructs Forge services and passes them into the Temporal
+worker. The worker now shuts down more safely, but it is still only the runtime shell, not the final
+production wiring.
+
+### What this stage enables next
+
+This stage makes it possible to build the real production worker composition root without guessing
+the contract shape. The next stage can focus on wiring durable runtime dependencies into the activity
+layer instead of redesigning the workflow boundary again.
+
 ## Stage 6: Reading a real pnpm workspace
 
 Until this stage, the repository graph was only a definition of what repository information should
