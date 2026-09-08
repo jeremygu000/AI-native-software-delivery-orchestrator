@@ -1,0 +1,12 @@
+{
+  "name": "@ai-native-software-delivery-orchestrator/temporal-worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "forge-worker": "./dist/main.js"
+  },
+  "dependencies": {
+    "@ai-native-software-delivery-orchestrator/temporal-runtime": "workspace:*"
+  }
+}

@@ -91,6 +91,12 @@ importers:
         specifier: 15.0.0
         version: 15.0.0
 
+  apps/temporal-worker:
+    dependencies:
+      '@ai-native-software-delivery-orchestrator/temporal-runtime':
+        specifier: workspace:*
+        version: link:../../libs/temporal-runtime
+
   libs/agent-runtime:
     dependencies:
       '@ai-native-software-delivery-orchestrator/domain':
@@ -339,6 +345,22 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+
+  libs/temporal-runtime:
+    dependencies:
+      '@temporalio/client':
+        specifier: ^1.22.0
+        version: 1.22.0
+      '@temporalio/worker':
+        specifier: ^1.22.0
+        version: 1.22.0(@swc/helpers@0.5.23)(esbuild@0.27.7)
+      '@temporalio/workflow':
+        specifier: ^1.22.0
+        version: 1.22.0
+    devDependencies:
+      '@temporalio/testing':
+        specifier: ^1.22.0
+        version: 1.22.0(@swc/helpers@0.5.23)(esbuild@0.27.7)
 
   libs/temporal-spike:
     dependencies:

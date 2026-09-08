@@ -53,6 +53,12 @@
     },
     {
       "path": "./libs/runtime-v2-spike-harness"
+    },
+    {
+      "path": "./libs/temporal-runtime"
+    },
+    {
+      "path": "./apps/temporal-worker"
     }
   ]
 }
