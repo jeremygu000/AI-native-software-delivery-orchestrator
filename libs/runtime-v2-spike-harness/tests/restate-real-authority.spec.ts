@@ -189,6 +189,95 @@ describe('Restate spike - Scenario B real authority (SQLite)', () => {
     });
   }, 30_000);
 
+  it('wrong wake for R2 does not consume R1 promise — R1 resumes after correct wake', async () => {
+    const negRunId = `run-restate-real-b-wrong-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const negFixture = createSqliteSpikeFixture();
+    const negService = createForgeScenarioService({
+      fixture: negFixture,
+      runId: negRunId,
+      taskId,
+      attemptId,
+      agentId
+    });
+    const negActivities = createRestateSpikeActivities(negService);
+    const negWorkflow = createRestateSpikeWorkflow(negActivities);
+
+    const negEnv = await RestateTestEnvironment.start({
+      services: [negWorkflow],
+      disableRetries: true
+    });
+    environments.push(negEnv);
+    const negRs = clients.connect({ url: negEnv.baseUrl() });
+
+    const r1RepairId = `repair-r1-${negRunId}`;
+    const r1LeaseId = `lease-${r1RepairId}`;
+    const r2RepairId = `repair-r2-${negRunId}`;
+
+    await negService.setupBlockedRepair({
+      runId: negRunId,
+      repairAttemptId: r1RepairId,
+      blockerLeaseId: r1LeaseId,
+      builderAttemptId: `builder-r1-${negRunId}`
+    });
+
+    const client = negRs.workflowClient(negWorkflow, `wrong-wake-${negRunId}`);
+
+    const r1Handle = await client.workflowSubmit({
+      scenario: 'blocked-repair-restart-resume',
+      runId: negRunId,
+      taskId,
+      attemptId,
+      agentId,
+      blockedRepairAttemptId: r1RepairId
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const r1Leases = await negFixture.persistence.recoverLeases(negRunId);
+    const r1ActiveLease = r1Leases.find(
+      (l) => l.lease.id === r1LeaseId && l.lease.state === 'ACTIVE'
+    );
+    if (r1ActiveLease) {
+      await negFixture.persistence.persistLease({
+        runId: negRunId,
+        lease: {
+          ...r1ActiveLease.lease,
+          state: 'RELEASED' as const,
+          version: r1ActiveLease.lease.version + 1
+        }
+      });
+    }
+
+    await client.sendWake({ repairAttemptId: r2RepairId });
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const dispatchesAfterWrongWake = await negFixture.persistence.recoverRepairResumeDispatches(negRunId);
+    expect(
+      dispatchesAfterWrongWake.filter((d) => d.repairAttemptId === r1RepairId)
+    ).toHaveLength(0);
+
+    const r1Repairs = await negFixture.persistence.recoverRepairAttempts(negRunId);
+    const r1Repair = r1Repairs.find((r) => r.attempt.id === r1RepairId);
+    expect(r1Repair?.attempt.state).toBe('BLOCKED');
+
+    await client.sendWake({ repairAttemptId: r1RepairId });
+
+    const r1Result = await negRs.result(r1Handle);
+
+    expect(r1Result.runId).toBe(negRunId);
+    expect(r1Result.scenario).toBe('blocked-repair-restart-resume');
+
+    const outcome = await collectDurableExecutionOutcomeFromSqlite(negRunId, negFixture);
+    expect(outcome.blockedResume).toBeDefined();
+    expect(outcome.blockedResume?.repairAttemptId).toBe(r1RepairId);
+
+    assertDurableExecutionSpikeOutcome({
+      outcome,
+      scenario: 'blocked-repair-restart-resume'
+    });
+  }, 60_000);
+
   it('rejects resume when blocker lease is still ACTIVE but unrelated lease is RELEASED', async () => {
     const negRunId = `run-restate-real-b-neg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const negFixture = createSqliteSpikeFixture();

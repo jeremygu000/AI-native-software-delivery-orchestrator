@@ -98,13 +98,8 @@ export const createRestateSpikeWorkflow = (activities: RestateSpikeActivity) => 
             );
           }
 
-          const wakeSignal = await ctx.promise<RepairWakeSignal>('repairWake').get();
-
-          if (wakeSignal.repairAttemptId !== request.blockedRepairAttemptId) {
-            throw new Error(
-              `Wake signal repairAttemptId ${wakeSignal.repairAttemptId} does not match expected ${request.blockedRepairAttemptId}`
-            );
-          }
+          const wakeKey = `repairWake:${request.blockedRepairAttemptId}`;
+          await ctx.promise<RepairWakeSignal>(wakeKey).get();
 
           const resumeResult = await ctx.run('executeBlockedRepairResume', () =>
             activities.executeBlockedRepairResume({
@@ -129,7 +124,9 @@ export const createRestateSpikeWorkflow = (activities: RestateSpikeActivity) => 
         ctx: restate.WorkflowSharedContext,
         request: RepairWakeSignal
       ): Promise<void> => {
-        await ctx.promise<RepairWakeSignal>('repairWake').resolve(request);
+        await ctx.promise<RepairWakeSignal>(
+          `repairWake:${request.repairAttemptId}`
+        ).resolve(request);
       }
     }
   });
