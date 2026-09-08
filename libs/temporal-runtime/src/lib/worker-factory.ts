@@ -1,6 +1,7 @@
 import { NativeConnection, Worker } from '@temporalio/worker';
 import { fileURLToPath } from 'node:url';
 import type { TemporalConfig } from './config.js';
+import type { ForgeActivities } from './activities/forge-activities.js';
 
 export interface TemporalWorkerHandle {
   readonly worker: Worker;
@@ -14,21 +15,26 @@ export function getWorkflowsPath(): string {
 
 export async function createTemporalWorker(
   config: TemporalConfig,
-  options?: { workflowsPath?: string; activities?: Record<string, (...args: unknown[]) => Promise<unknown>> },
+  options?: {
+    workflowsPath?: string;
+    /** Forge Scenario A activities implementation. */
+    forgeActivities?: ForgeActivities;
+  },
 ): Promise<TemporalWorkerHandle> {
   const connection = await NativeConnection.connect({
     address: new URL(config.serverUrl).host,
   });
 
-  const { bootstrap } = await import('./activities/index.js');
-  const activities = options?.activities ?? { bootstrap };
+  if (options?.forgeActivities === undefined) {
+    throw new Error('createTemporalWorker requires forgeActivities for the Scenario A workflow');
+  }
 
   const worker = await Worker.create({
     connection,
     namespace: config.namespace,
     taskQueue: config.taskQueue,
     workflowsPath: options?.workflowsPath ?? getWorkflowsPath(),
-    activities,
+    activities: options.forgeActivities,
   });
 
   let shutdownRequested = false;

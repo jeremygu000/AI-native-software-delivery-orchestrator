@@ -1978,6 +1978,40 @@ Temporal candidate 现已拥有 isolated 的真实 worker、workflow 和 Activit
 - Durable continuation 现已启用：每个 activity 调用创建独立的 continuation boundary
 - `createTemporalSpikeScenarioService` adapter：接受可选的 `ForgeScenarioAServices` 用于真实委托，未提供时回退到 stubs
 
+### M3.3：Temporal runtime 的 Scenario A 垂直切片
+
+这一阶段把真实的 Temporal runtime 包继续推进到更接近生产的形状。重点不是一次性做完所有 Forge 服务接线，而是证明 workflow 层、activity 合同、worker factory 和测试能够用同一套 Scenario A 语言协同工作。
+
+本阶段完成了什么：
+
+- `libs/temporal-runtime/src/lib/contracts.ts` 增加了 Scenario A 的紧凑 schema：Scheduler 重新评估、builder 执行、builder 输出评估、repair 执行、accepted output 集成。
+- `libs/temporal-runtime/src/lib/activities/forge-activities.ts` 定义了 worker 进程必须提供的 activity 表面。
+- `libs/temporal-runtime/src/lib/workflows/forge-run.ts` 现在按照 `accept`、`repair`、`reject` 分支顺序编排 Scenario A 流程，并依次调用窄 activity。
+- `libs/temporal-runtime/src/lib/worker-factory.ts` 现在要求显式提供 Scenario A activity 实现，不再静默回退到旧的 bootstrap stub。
+- `apps/temporal-worker/src/main.ts` 现在传入了占位的 Scenario A activity 映射，使新的 worker 形状是显式的。
+- `libs/temporal-runtime/src/lib/temporal-runtime.spec.ts` 现在覆盖三个 workflow 场景：没有任务就绪、accept 路径、repair 路径。
+
+这一阶段证明了什么：
+
+- Temporal workflow 可以在不把业务逻辑放进 workflow sandbox 的前提下，完成真实的多步骤编排。
+- workflow history 保持紧凑：输入和输出都是 ID 与小型枚举，而不是大型领域对象。
+- worker 和测试环境都能够注册 workflow 所期望的同一组 activity 名称。
+
+已经做过的验证：
+
+- `pnpm exec tsc -b libs/temporal-runtime/tsconfig.lib.json apps/temporal-worker/tsconfig.app.json --force`
+- `pnpm exec vitest run --config vitest.config.ts libs/temporal-runtime/src/lib/temporal-runtime.spec.ts`
+
+当前限制：
+
+- 生产 worker 入口仍然使用会抛错的占位 activity，因此真实 Forge 服务接线还没有完成。
+- 现在验证的是 Temporal runtime 的 workflow 形状，但还不是 worker 进程里真实的端到端 Forge 编排。
+
+这一步为下一阶段做了什么准备：
+
+- 下一阶段可以把 worker 的占位 activity 替换成真正调用 Forge 服务的适配器。
+- 一旦接线完成，Temporal runtime 就可以从“已验证的骨架”升级为真正的生产执行路径。
+
 **M2.3A - Authority adapter hardening（REOPENED）：**
 
 - 原始 commits 尝试移除假数据但部分仍存在

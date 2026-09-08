@@ -2280,6 +2280,40 @@ Temporal's test environment. Workflow history contains only the run ID and scena
 - Durable continuation now enabled: each activity call creates separate continuation boundary
 - `createTemporalSpikeScenarioService` adapter: accepts optional `ForgeScenarioAServices` for real delegation, falls back to stubs when not provided
 
+### M3.3: Temporal runtime Scenario A vertical slice
+
+This stage moved the real Temporal runtime package closer to the production shape of the orchestrator. The focus was not to finish every Forge service integration yet, but to prove that the workflow layer, activity contracts, worker factory, and tests can all speak the same Scenario A language.
+
+What was built:
+
+- `libs/temporal-runtime/src/lib/contracts.ts` now defines compact schemas for the Scenario A flow: scheduler reevaluation, builder execution, builder-output evaluation, repair execution, and accepted-output integration.
+- `libs/temporal-runtime/src/lib/activities/forge-activities.ts` now defines the activity surface that the worker process must provide.
+- `libs/temporal-runtime/src/lib/workflows/forge-run.ts` now orchestrates the Scenario A path by calling narrow activities in sequence and branching on `accept`, `repair`, and `reject` results.
+- `libs/temporal-runtime/src/lib/worker-factory.ts` now requires an explicit Scenario A activity implementation instead of silently falling back to the legacy bootstrap stub.
+- `apps/temporal-worker/src/main.ts` now passes a placeholder Scenario A activity map so the new worker shape is explicit.
+- `libs/temporal-runtime/src/lib/temporal-runtime.spec.ts` now covers three workflow cases: nothing ready, accept path, and repair path.
+
+What this stage proves:
+
+- The Temporal workflow can move through a real multi-step orchestration without putting business logic in the workflow sandbox.
+- The workflow history stays compact: the inputs and outputs are IDs and small enums instead of large domain objects.
+- The worker and test environment can register the same activity names that the workflow expects.
+
+Verification already performed:
+
+- `pnpm exec tsc -b libs/temporal-runtime/tsconfig.lib.json apps/temporal-worker/tsconfig.app.json --force`
+- `pnpm exec vitest run --config vitest.config.ts libs/temporal-runtime/src/lib/temporal-runtime.spec.ts`
+
+Current limitation:
+
+- The production worker entrypoint still uses placeholder activities that throw, so real Forge service wiring is not finished yet.
+- The new workflow shape is validated, but it is not yet executing the actual orchestration services end-to-end in the worker process.
+
+What this enables next:
+
+- The next stage can replace the placeholder worker activities with real adapters that call the Forge services.
+- Once that wiring exists, the Temporal runtime can become the real production execution path instead of a validated skeleton.
+
 **M2.3A - Authority adapter hardening (REOPENED):**
 
 - Original commits attempted to remove fake data but some remained

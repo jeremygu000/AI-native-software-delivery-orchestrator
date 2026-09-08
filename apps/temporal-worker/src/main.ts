@@ -7,7 +7,25 @@ async function main(): Promise<void> {
     taskQueue: process.env.TEMPORAL_TASK_QUEUE ?? 'forge-run',
   });
 
-  const handle = await createTemporalWorker(config);
+  const handle = await createTemporalWorker(config, {
+    forgeActivities: {
+      async reevaluateRun() {
+        throw new Error('temporal-worker has no Forge activity implementation yet');
+      },
+      async executeBuilder() {
+        throw new Error('temporal-worker has no Forge activity implementation yet');
+      },
+      async evaluateBuilderOutput() {
+        throw new Error('temporal-worker has no Forge activity implementation yet');
+      },
+      async executeRepair() {
+        throw new Error('temporal-worker has no Forge activity implementation yet');
+      },
+      async integrateAcceptedOutput() {
+        throw new Error('temporal-worker has no Forge activity implementation yet');
+      },
+    },
+  });
 
   const shutdown = async () => {
     await handle.shutdown();
