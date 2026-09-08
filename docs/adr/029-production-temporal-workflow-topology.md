@@ -2,7 +2,7 @@
 
 ## Status
 
-**Draft — M3.1**
+**Accepted — M3.1 Complete**
 
 ## Context
 
@@ -41,30 +41,60 @@ Concrete implications:
 ```
 ForgeRunWorkflow(runId)
   │
-  ├── for each task (sequentially or bounded-concurrent):
-  │     ├── acquireTaskLeases activity
+  ├── reevaluateRun activity  ← FIRST: Forge scheduler authority
+  │     (returns: runnable task IDs + attempt IDs)
+  │
+  ├── for each authorized task:
   │     ├── executeBuilder activity
-  │     ├── releaseTaskLeases activity
+  │     │     (includes workspace creation, lease lifecycle, impact reconciliation)
+  │     │
+  │     ├── reevaluateRun activity  ← post-build: Forge decides accept/repair
+  │     │
   │     ├── evaluateBuilderOutput activity
+  │     │     (verification + code review only; no repairs injection)
   │     │
   │     ├── if recommendation === 'repair':
   │     │     └── repairLoop (inline, not child workflow):
-  │     │           ├── admitRepair activity
+  │     │           ├── admitRepair activity  ← separate Forge admission gate
+  │     │           │
   │     │           ├── executeRepair activity
-  │     │           ├── releaseRepairLeases activity
-  │     │           ├── verifyRepairOutput activity
-  │     │           ├── reviewRepair activity
+  │     │           │     (execution + lease release + verify + review)
   │     │           │
   │     │           ├── if BLOCKED:
-  │     │           │     └── awaitBlockedRepair signal/promise
+  │     │           │     ├── Workflow: await signal (condition/signal wait)
+  │     │           │     └── resumeBlockedRepair activity  ← after wake
+  │     │           │
+  │     │           ├── reevaluateRun activity  ← post-repair: Forge decides next
   │     │           │
   │     │           └── if recommendation === 'repair' (multi-repair):
   │     │                 └── admitRepair → executeRepair → ... (loop)
   │     │
   │     └── integrateAcceptedOutput activity
   │
-  └── finalize run state
+  └── finalizeRunState activity
 ```
+
+### How Scheduler Authority Is Preserved
+
+The workflow does NOT decide task order or dispatch. Every state transition flows through `reevaluateRun`:
+
+1. Workflow calls `reevaluateRun` with a compact event description (runId, eventType, taskId?, leaseId?).
+2. `reevaluateRun` loads full Forge state, calls `Scheduler.reevaluate()`, persists the reevaluation + transitions + attempts atomically.
+3. Returns runnable task/attempt IDs to the workflow.
+4. Workflow ONLY dispatches activities for IDs returned by Forge scheduler.
+
+This means the workflow is a **consumer** of Forge scheduler decisions, not a scheduler itself. Temporal handles execution timing; Forge handles authorization of what runs.
+
+## Decision 2b: Workflow Cannot Self-Schedule
+
+The workflow MUST NOT:
+
+- Decide which task to run next based on workflow state alone
+- Create attempt IDs (Forge assigns these in `reevaluateRun`)
+- Skip `reevaluateRun` and directly dispatch `executeBuilder` or `executeRepair`
+- Use activity return values to determine task ordering
+
+Every dispatch must be preceded by a `reevaluateRun` call that returns the authorized IDs. This is the concrete implementation of Decision 1 (authority boundary).
 
 ### Why One Workflow Per Run (Not Per Task or Per Repair)
 
@@ -84,22 +114,41 @@ Activities map to **existing Forge application service seams** — the durable c
 
 ### Activity Inventory
 
+Activities map to **coarse Forge application service seams** — one activity per meaningful Forge operation. Activities do NOT split existing service responsibilities; they delegate to the existing service which owns its full transaction boundary.
+
 | Activity | Maps To | Forge Service | Authority Owned |
 |----------|---------|---------------|-----------------|
-| `acquireTaskLeases` | `OrchestrationRuntime.#acquireLeasePlan` | `WriteGuard` | Lease acquisition, conflict detection |
-| `executeBuilder` | `ForgeBuilderExecutionService.execute()` | `AgentRunner` + `WorkspaceManager` | Agent dispatch, workspace mutation, impact reconciliation, lease release |
-| `evaluateBuilderOutput` | `ForgeBuilderOutputEvaluationService.evaluate()` | `TaskOutputAdmissionCoordinator` | Verification evidence, review subject, code review collection |
-| `admitRepair` | `TaskRepairCoordinator.prepare()` | `TaskRepairAdmissionStore` | Budget enforcement, repair admission, work item creation |
-| `executeRepair` | `RepairExecutionCoordinator.execute()` | `TaskRepairRunner` + `AgentRunner` | Repair agent dispatch, verification, review, lease management |
-| `awaitBlockedRepair` | Signal/promise wait | Forge (via activity re-validation) | Wake → reload → CAS → only winner dispatches |
-| `integrateAcceptedOutput` | `ForgeAcceptedOutputIntegrationService.integrate()` | `WorkspaceManager` | Integration admission, workspace commit, merge |
-| `finalizeRunState` | `OrchestrationRuntime.#finalizeRunState` | `OrchestrationPersistence` | Run state transition |
+| `reevaluateRun` | `Scheduler.reevaluate()` + `OrchestrationPersistence.persistDispatch()` | `Scheduler` + `Persistence` | **Scheduler authority**: reevaluates state machine, persists transitions + attempts atomically, returns runnable IDs |
+| `executeBuilder` | `ForgeBuilderExecutionService.execute()` | `AgentRunner` + `WorkspaceManager` + `WriteGuard` | Workspace creation, lease acquisition, agent dispatch, impact reconciliation, lease release — all in one service boundary |
+| `evaluateBuilderOutput` | `TaskOutputAdmissionCoordinator.reviewBuilder()` | `TaskOutputAdmissionCoordinator` | Verification evidence + code review collection only. MUST NOT inject `TaskRepairCoordinator` (repair admission is a separate activity) |
+| `admitRepair` | `TaskRepairCoordinator.prepare()` | `TaskRepairAdmissionStore` | Repair admission gate: budget enforcement, work item creation. Separate from evaluation to avoid double budget consumption |
+| `executeRepair` | `RepairExecutionCoordinator.execute()` | `AgentRunner` + `WriteGuard` + `TaskVerifier` + review | Full repair lifecycle: agent dispatch, lease management, impact reconciliation, verification, code review — all in one service boundary |
+| `resumeBlockedRepair` | `TaskRepairCoordinator.tryResume()` + lease/CAS reload | `TaskRepairResumeStore` + `WriteGuard` | After workflow signal wake: reload Forge state, validate released lease, CAS resume. Only CAS winner dispatches |
+| `integrateAcceptedOutput` | `ForgeAcceptedOutputIntegrationService.integrate()` | `WorkspaceManager` | Integration admission assertion, workspace commit, merge |
+| `finalizeRunState` | `OrchestrationRuntime.#finalizeRunState` | `OrchestrationPersistence` | Run state transition based on final task states |
 
 ### What Activities Must NOT Be
 
 - **CRUD wrappers.** `persistAttemptActivity`, `readLeaseActivity`, `updateRevisionActivity` are NOT activities. These belong inside Forge application service transactions.
 - **Authority-bypassing.** An activity must never trust Temporal state as authorization. Every side-effecting activity must re-validate Forge state.
 - **Stateful.** Activities are stateless functions. All state lives in SQLite (Forge) or Temporal workflow state (execution position).
+- **Splitting an existing service boundary.** Do NOT create `acquireTaskLeases` + `executeBuilder` + `releaseTaskLeases` as separate activities when `ForgeBuilderExecutionService.execute()` already does all three atomically. Splitting creates double acquire/release risk and undermines Forge transaction boundaries.
+
+### Workflow: Signal Wait (NOT an Activity)
+
+`awaitBlockedRepair` is NOT an activity. It is a workflow-level signal wait:
+
+```
+Workflow (deterministic):
+  if repair is BLOCKED:
+    await signal(repairAttemptId: <id>)   ← durable wait, no activity
+    // signal arrives, workflow continues
+
+Activity:
+  resumeBlockedRepair(repairAttemptId)    ← Forge reloads state, CAS
+```
+
+This matches the invariant: signal wakes → activity reloads Forge state → CAS → only winner dispatches.
 
 ### Activity Implementation Pattern
 
@@ -116,18 +165,18 @@ Each activity implementation:
 
 The following MUST remain Forge-owned and MUST NOT be replaced by Temporal primitives:
 
-| Forge Authority | Why Temporal Cannot Replace It |
-|-----------------|-------------------------------|
-| Scheduler reevaluation | Domain state machine, not execution timing |
-| Write lease acquisition/release | Exclusive resource access requires CAS |
-| Repair admission + budget | Domain constraint, not durability concern |
-| Blocker lease validation | Must reload from SQLite after wake, not trust signal payload |
-| CAS before dispatch | Compare-and-swap is the authorization gate |
-| Verification evidence | Business evidence, not coordination data |
-| Review evidence | Business evidence, not coordination data |
-| Integration admission | Workspace fingerprint matching, not timing |
-| Agent attempt identity | Forge assigns attempt IDs, not Temporal |
-| Tenant/ownership semantics | Domain concept, not execution concept |
+| Forge Authority | Concrete Seam | Why Temporal Cannot Replace It |
+|-----------------|---------------|-------------------------------|
+| Scheduler reevaluation | `reevaluateRun` activity (calls `Scheduler.reevaluate()`, persists atomically) | Domain state machine, not execution timing |
+| Write lease acquisition/release | Inside `executeBuilder` / `executeRepair` activities (via `WriteGuard`) | Exclusive resource access requires CAS |
+| Repair admission + budget | `admitRepair` activity (via `TaskRepairCoordinator.prepare()`) | Domain constraint, not durability concern |
+| Blocker lease validation | `resumeBlockedRepair` activity (reloads from SQLite after signal wake) | Must reload from SQLite after wake, not trust signal payload |
+| CAS before dispatch | `resumeBlockedRepair` activity (optimistic concurrency via `TaskRepairResumeStore`) | Compare-and-swap is the authorization gate |
+| Verification evidence | Inside `executeBuilder` / `executeRepair` / `evaluateBuilderOutput` activities | Business evidence, not coordination data |
+| Review evidence | Inside `evaluateBuilderOutput` / `executeRepair` activities | Business evidence, not coordination data |
+| Integration admission | `integrateAcceptedOutput` activity (workspace fingerprint matching) | Workspace fingerprint matching, not timing |
+| Agent attempt identity | Inside `reevaluateRun` activity (Forge assigns attempt IDs) | Forge assigns attempt IDs, not Temporal |
+| Tenant/ownership semantics | Inside all Forge activities | Domain concept, not execution concept |
 
 The invariant that must never break:
 
@@ -150,7 +199,7 @@ Two implementation options, to be evaluated during M3.2 bootstrap:
 - External process (lease release callback) sends signal with `{ repairAttemptId }`
 - Workflow validates `repairAttemptId` matches the blocked repair before dispatching activity
 - Pro: Direct, explicit, proven in spike
-- Con: Signal is fire-and-forget; no delivery guarantee without retry
+- Con: Sender needs safe retry / idempotent wake semantics for RPC failure cases (Temporal signals are durable once recorded by the server; the failure window is client-side RPC)
 
 **Option B: Durable Promise / Selector (Restate-style, adapted)**
 - Workflow awaits a Temporal query or timer-based poll
@@ -220,7 +269,7 @@ Activities that fail due to infrastructure issues (network timeout, Temporal ser
 
 | Activity | Retry Policy | Rationale |
 |----------|-------------|-----------|
-| `acquireTaskLeases` | Retryable (max 3) | Lease acquisition is idempotent via CAS |
+| `reevaluateRun` | Retryable (max 3) | Read-only reevaluation + idempotent persist |
 | `evaluateBuilderOutput` | Retryable (max 2) | Read-only evaluation, idempotent |
 | `admitRepair` | Retryable (max 2) | Budget check is idempotent |
 | `integrateAcceptedOutput` | Retryable (max 2) | Admission check is idempotent |
@@ -239,73 +288,119 @@ After `onStarted`, if the activity fails, the attempt is marked `UNKNOWN` and th
 2. A retry would start a new agent session with a stale workspace state.
 3. The `UNKNOWN → fail-closed` invariant from ADR-027 must be preserved.
 
-### BLOCKED Repair (Not Retryable)
+### BLOCKED Repair (Workflow Wait, Not Activity)
 
-| Activity | Retry Policy | Rationale |
-|----------|-------------|-----------|
-| `awaitBlockedRepair` | No retry; waits for signal | This is a durable wait, not a failure |
+| Component | Retry Policy | Rationale |
+|-----------|-------------|-----------|
+| Signal wait in workflow | No retry; durable wait | This is a workflow-level `await signal()`, not an activity |
+| `resumeBlockedRepair` | Retryable (max 2) | CAS-gated; re-validates on each attempt |
 
 ## Decision 8: Cancellation Semantics
 
-### Cancel Flow
+### Cancel Flow (Intent → Reconcile → Final State)
+
+Cancellation is a **two-phase** process. Forge never persists final `CANCELLED` until in-flight work is reconciled and authority state permits.
 
 ```
 forge cancel --run-id <id>
   │
-  ├── Forge persists CANCELLED state to SQLite
+  ├── Phase 1: Record user intent
+  │     Forge persists CANCEL_REQUESTED to SQLite
+  │     (NOT final CANCELLED — work may still be in-flight)
   │
-  └── Temporal requestCancellation(workflowId)
-        │
-        ├── Workflow stops scheduling new activities
-        │
-        ├── In-flight activities receive cancellation:
-        │     ├── acquireTaskLeases → safe to cancel (no side effects yet)
-        │     ├── executeBuilder → check onStarted:
-        │     │     ├── before onStarted → safe to cancel
-        │     │     └── after onStarted → activity cooperates or times out
-        │     ├── evaluateBuilderOutput → safe to cancel (read-only)
-        │     ├── executeRepair → same as executeBuilder
-        │     └── integrateAcceptedOutput → safe to cancel (admission-gated)
-        │
-        └── Workflow completes with cancellation status
+  ├── Phase 2: Request Temporal cancellation
+  │     Temporal cancelWorkflow(workflowId)
+  │     → workflow stops scheduling new activities (no new reevaluateRun)
+  │     → in-flight activities receive cancellation token
+  │
+  ├── Phase 3: Reconcile in-flight work
+  │     ├── executeBuilder (before onStarted): safe to cancel, no side effects
+  │     ├── executeBuilder (after onStarted): activity cooperates or times out;
+  │     │     Forge marks attempt UNKNOWN, releases leases
+  │     ├── executeRepair: same as executeBuilder
+  │     ├── evaluateBuilderOutput: safe to cancel (read-only)
+  │     ├── resumeBlockedRepair: safe to cancel (CAS-gated)
+  │     └── integrateAcceptedOutput: safe to cancel (admission-gated)
+  │
+  └── Phase 4: Forge persists final CANCELLED
+        Only after all in-flight work is reconciled:
+        - All leases released
+        - All UNKNOWN attempts resolved
+        - Authority state permits transition to CANCELLED
 ```
 
-### Four Distinct States (Must Not Conflate)
+### Why Not Persist CANCELLED Immediately
+
+If Forge persists `CANCELLED` before stopping the workflow:
+
+1. Builder may already be `onStarted` and mutating workspace.
+2. The business state says "done/cancelled" while mutation is still running.
+3. Lease holders see a `CANCELLED` run but can't determine if workspace is clean.
+
+With `CANCEL_REQUESTED`:
+1. `CANCEL_REQUESTED` is the **user intent**, not the business state.
+2. The workflow sees the cancellation and stops scheduling.
+3. In-flight activities complete or time out, releasing leases.
+4. Only then does Forge persist final `CANCELLED`.
+
+### CANCEL_REQUESTED State
+
+If the current domain does not have a `CANCEL_REQUESTED` state, this ADR requires it to be added. It is:
+
+- A **request intent**, not a final business state.
+- Triggered by `forge cancel`.
+- Consumed by the workflow (stops scheduling) and by `reevaluateRun` (returns no runnable tasks).
+- Transitions to `CANCELLED` only after reconciliation completes.
+
+### Five Distinct States (Must Not Conflate)
 
 | State | Meaning | Triggered By |
 |-------|---------|-------------|
-| `CANCELLED` | User-initiated, graceful stop | `forge cancel` command |
+| `CANCEL_REQUESTED` | User intent to stop; work may still be in-flight | `forge cancel` command |
+| `CANCELLED` | Graceful stop complete; all work reconciled | `reevaluateRun` after all work reconciled |
 | `FAILED` | Execution error or authority violation | Activity failure, assertion error |
 | `COMPLETED` | All tasks integrated successfully | Normal completion |
 | `UNKNOWN` | Lost contact with in-flight agent | Process crash after `onStarted` |
 
 ### Cancellation ≠ Termination
 
-- `cancel`: Workflow finishes in-progress activities, cleans up, records outcome. Forge decides business state.
+- `cancel`: Two-phase intent → reconcile → Forge decides final business state.
 - `terminate`: Immediate kill. Use only for unrecoverable situations. Forge marks run as `FAILED`.
-
-### Forge Decides Business State
-
-Temporal cancellation does NOT automatically mean Forge task state is `CANCELLED`. The activity must:
-1. Receive cancellation signal
-2. Persist appropriate business state to Forge
-3. Release any held leases
-4. Return cancellation result
 
 ## Decision 9: Worker / Process Lifecycle
 
-### Worker Startup
+### Two Composition Roots
 
 ```
-CLI / composition root:
+forge CLI (composition root 1):
   1. Create Temporal client (connect to Temporal server)
-  2. Wire Forge services (persistence, workspace, agent, verifier, etc.)
-  3. Create activities (inject Forge service dependencies)
-  4. Register workflow + activities with Worker
-  5. Start worker (worker.run())
-  6. Wait for shutdown signal
-  7. Graceful shutdown (worker.shutdown())
+  2. start/query/cancel workflows via Temporal Client API
+  3. Does NOT start or host a Worker
+  4. Does NOT wire Forge services (no persistence, no AgentRunner)
+
+Temporal Worker process (composition root 2):
+  1. Wire Forge services (persistence, workspace, agent, verifier, scheduler)
+  2. Create activities (inject Forge service dependencies)
+  3. Register workflow + activities with Worker
+  4. Start worker (worker.run())
+  5. Wait for shutdown signal
+  6. Graceful shutdown (worker.shutdown())
 ```
+
+**CLI cannot be responsible for Worker startup.** The CLI is a command-line tool that starts and exits. The Worker is a long-running process that polls Temporal for tasks. These have different lifecycles, different signal handling, and different process models.
+
+### `libs/temporal-runtime/` provides:
+
+- Worker factory/bootstrap API
+- Activity type registrations (injectable dependencies)
+- Workflow registrations
+- Config (Temporal server connection, task queue)
+
+### Independent process executable calls:
+
+- `libs/temporal-runtime` worker factory
+- Wires Forge services
+- Starts the Worker
 
 ### Worker Shutdown
 
@@ -336,6 +431,7 @@ CLI / composition root:
 | `OrchestrationRuntime.#driveRepairCycle` | ~70 | **REPLACE** with repair activity sequence | Activities compose existing services |
 | `OrchestrationRuntime.#runTask` | ~280 | **REPLACE** with task activity sequence | Activities compose existing services |
 | `OrchestrationRuntime.#finalizeRunState` | ~10 | **KEEP as activity** | Simple state transition, still Forge-owned |
+| `Scheduler.reevaluate()` + `persistDispatch()` | — | **KEEP as `reevaluateRun` activity** | Forge scheduler authority: reevaluation + persist remain Forge-owned, exposed as activity |
 | `ForgeBuilderExecutionService.execute()` | 260 | **KEEP as activity implementation** | Activity delegates to this service |
 | `RepairExecutionCoordinator.execute()` | 292 | **KEEP as activity implementation** | Activity delegates to this service |
 | `TaskRepairCoordinator` | 195 | **KEEP** | Repair state machine remains Forge-owned |
@@ -379,50 +475,61 @@ The production bootstrap (`libs/temporal-runtime/`) is a new package, separate f
 ```
 libs/temporal-runtime/
   ├── src/
-  │   ├── client.ts              # Temporal client creation
-  │   ├── worker.ts              # Worker bootstrap, workflow/activity registration
+  │   ├── client.ts              # Temporal client creation (CLI use only)
+  │   ├── worker-factory.ts      # Worker factory with injectable Forge services
   │   ├── config.ts              # Temporal server connection, task queue config
   │   ├── workflows/
   │   │   └── forge-run.ts       # ForgeRunWorkflow definition
   │   ├── activities/
-  │   │   ├── acquire-task-leases.ts
+  │   │   ├── reevaluate-run.ts
   │   │   ├── execute-builder.ts
   │   │   ├── evaluate-builder-output.ts
   │   │   ├── admit-repair.ts
   │   │   ├── execute-repair.ts
-  │   │   ├── await-blocked-repair.ts
+  │   │   ├── resume-blocked-repair.ts
   │   │   ├── integrate-accepted-output.ts
   │   │   └── finalize-run-state.ts
   │   └── codecs/                # Payload codecs if needed
   └── package.json
 ```
 
-The CLI composition root wires:
+### CLI Client (composition root 1)
 
 ```
-Temporal client creation
-  → Worker startup
-  → Forge service wiring (persistence, workspace, agent, verifier)
+forge CLI:
+  → Temporal client creation (libs/temporal-runtime/client.ts)
+  → start/query/cancel workflows
+  → Does NOT wire Forge services or start Worker
+```
+
+### Worker Process (composition root 2)
+
+```
+forge-worker (separate executable):
+  → libs/temporal-runtime/worker-factory.ts
+  → Wire Forge services (persistence, workspace, agent, verifier, scheduler)
   → Activity composition (inject Forge services into activities)
-  → Graceful shutdown
+  → Start worker (worker.run())
+  → Graceful shutdown on SIGTERM/SIGINT
 ```
 
-The CLI does NOT contain workflow logic. Workflow logic lives in `libs/temporal-runtime/`.
+The CLI does NOT contain workflow logic or Worker startup. Workflow logic lives in `libs/temporal-runtime/`. The Worker is an independent process.
 
 ## Acceptance Criteria
 
 M3.1 is complete when this ADR defines:
 
 1. ✅ Run/workflow topology (Decision 2)
-2. ✅ Workflow ↔ Activity boundaries (Decision 3)
-3. ✅ Forge authority boundaries (Decision 1, Decision 4)
-4. ✅ Signal/wake semantics (Decision 5)
-5. ✅ Payload/history policy (Decision 6)
-6. ✅ Retry + UNKNOWN semantics (Decision 7)
-7. ✅ Cancellation semantics (Decision 8)
-8. ✅ Worker/process lifecycle (Decision 9)
-9. ✅ Legacy component keep/replace/delete-candidate map (Decision 10)
-10. ✅ Production bootstrap boundary (Production Bootstrap Boundary section)
+2. ✅ Workflow cannot self-schedule — scheduler authority preserved (Decision 2b)
+3. ✅ Workflow ↔ Activity boundaries (Decision 3)
+4. ✅ Forge authority boundaries with concrete seams (Decision 1, Decision 4)
+5. ✅ Signal/wake semantics (Decision 5)
+6. ✅ Payload/history policy (Decision 6)
+7. ✅ Retry + UNKNOWN semantics (Decision 7)
+8. ✅ Cancellation semantics — two-phase intent → reconcile → final state (Decision 8)
+9. ✅ Worker/process lifecycle — two composition roots (Decision 9)
+10. ✅ Legacy component keep/replace/delete-candidate map (Decision 10)
+11. ✅ Production bootstrap boundary — CLI client vs Worker process (Production Bootstrap Boundary)
 
 ## Next Step
 
