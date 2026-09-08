@@ -164,11 +164,13 @@ describe('Temporal spike - Scenario B real authority (SQLite)', () => {
   it('executes Scenario B with blocked-repair-restart-resume and signal', async () => {
     const blockedRepairAttemptId = `repair-blocked-${runId}`;
     const blockerLeaseId = `lease-${blockedRepairAttemptId}`;
+    const builderAttemptId = `builder-${runId}`;
 
     await serviceImpl.setupBlockedRepair({
       runId,
       repairAttemptId: blockedRepairAttemptId,
-      blockerLeaseId
+      blockerLeaseId,
+      builderAttemptId
     });
 
     const handle = await client.workflow.start(runTemporalSpikeWorkflow, {
@@ -185,9 +187,21 @@ describe('Temporal spike - Scenario B real authority (SQLite)', () => {
 
     await environment.sleep(100);
 
+    const leases = await fixture.persistence.recoverLeases(runId);
+    const activeLease = leases.find((l) => l.lease.state === 'ACTIVE');
+    if (activeLease) {
+      await fixture.persistence.persistLease({
+        runId,
+        lease: {
+          ...activeLease.lease,
+          state: 'RELEASED' as const,
+          version: activeLease.lease.version + 1
+        }
+      });
+    }
+
     await handle.signal(repairWakeSignal, {
-      repairAttemptId: blockedRepairAttemptId,
-      leaseState: 'RELEASED' as const
+      repairAttemptId: blockedRepairAttemptId
     });
 
     const result = await worker.runUntil(handle.result());
@@ -236,7 +250,8 @@ describe('Temporal spike - Scenario B worker restart (SQLite + Local)', () => {
     await serviceImpl.setupBlockedRepair({
       runId,
       repairAttemptId: blockedRepairAttemptId,
-      blockerLeaseId
+      blockerLeaseId,
+      builderAttemptId: `builder-${runId}`
     });
 
     const workerA = await Worker.create({
@@ -267,16 +282,30 @@ describe('Temporal spike - Scenario B worker restart (SQLite + Local)', () => {
     await workerA.shutdown();
     await workerARun;
 
+    await fixture.persistence.persistLease({
+      runId,
+      lease: {
+        id: blockerLeaseId,
+        runId,
+        agentId: `lease-agent-${blockerLeaseId}`,
+        taskId,
+        resource: { type: 'project' as const, projectId: 'test-project' },
+        mode: 'exclusive' as const,
+        version: 2,
+        state: 'RELEASED' as const,
+        acquiredAt: new Date(),
+        lastHeartbeatAt: new Date()
+      }
+    });
+
     await handle.signal(repairWakeSignal, {
-      repairAttemptId: `wrong-repair-${runId}`,
-      leaseState: 'RELEASED' as const
+      repairAttemptId: `wrong-repair-${runId}`
     });
 
     await environment.sleep(200);
 
     await handle.signal(repairWakeSignal, {
-      repairAttemptId: blockedRepairAttemptId,
-      leaseState: 'RELEASED' as const
+      repairAttemptId: blockedRepairAttemptId
     });
 
     const workerB = await Worker.create({

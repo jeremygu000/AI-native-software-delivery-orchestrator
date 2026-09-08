@@ -277,13 +277,19 @@ export const createMockActivities = (ctx: MockActivityContext) => ({
   executeBlockedRepairResume: async (request: {
     readonly runId: string;
     readonly repairAttemptId: string;
-    readonly leaseState: 'RELEASED' | 'STALE';
   }): Promise<{
     readonly repairAttemptId: string;
     readonly verificationEvidenceId: string;
     readonly state: 'completed' | 'blocked' | 'unknown';
   }> => {
     const repairId = request.repairAttemptId;
+
+    const existingLeases = ctx.evidenceStore.getLeases(request.runId);
+    const blockedLeaseEvidence = existingLeases.find(
+      (l) => l.state === 'RELEASED' || l.state === 'STALE'
+    );
+    const leaseState: 'RELEASED' | 'STALE' =
+      (blockedLeaseEvidence?.state as 'RELEASED' | 'STALE') ?? 'RELEASED';
 
     if (!ctx.evidenceStore.getBuilderAttempt(request.runId)) {
       const builderAttempt: BuilderAttemptEvidence = {
@@ -371,11 +377,10 @@ export const createMockActivities = (ctx: MockActivityContext) => ({
       resource: { type: 'project', projectId: 'core' },
       mode: 'exclusive',
       version: 1,
-      state: request.leaseState,
+      state: leaseState,
       acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
       lastHeartbeatAt: new Date('2026-08-12T00:01:00.000Z'),
-      releasedAt:
-        request.leaseState === 'RELEASED' ? new Date('2026-08-12T00:02:00.000Z') : undefined
+      releasedAt: leaseState === 'RELEASED' ? new Date('2026-08-12T00:02:00.000Z') : undefined
     };
     ctx.evidenceStore.addLease(blockedLease);
 
@@ -384,7 +389,7 @@ export const createMockActivities = (ctx: MockActivityContext) => ({
       blockedRevision: 2,
       resumedRevision: 3,
       repairAttemptId: repairId,
-      releaseState: request.leaseState
+      releaseState: leaseState
     });
 
     return {

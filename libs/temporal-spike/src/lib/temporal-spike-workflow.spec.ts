@@ -152,9 +152,22 @@ describe('Temporal spike workflow - Scenario B (blocked-repair-restart-resume)',
 
     await environment.sleep(100);
 
+    evidenceStore.addLease({
+      id: 'lease-blocker-pre-signal',
+      runId: evidenceStore['runId'],
+      agentId: 'lease-agent',
+      taskId: 'task-1',
+      resource: { type: 'project', projectId: 'core' },
+      mode: 'exclusive',
+      version: 1,
+      state: 'RELEASED',
+      acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-12T00:01:00.000Z'),
+      releasedAt: new Date('2026-08-12T00:02:00.000Z')
+    });
+
     await handle.signal(repairWakeSignal, {
-      repairAttemptId: 'blocked-repair-1',
-      leaseState: 'RELEASED'
+      repairAttemptId: 'blocked-repair-1'
     });
 
     const result = await worker.runUntil(handle.result());
@@ -189,15 +202,27 @@ describe('Temporal spike workflow - Scenario B (blocked-repair-restart-resume)',
     await environment.sleep(100);
 
     await handle.signal(repairWakeSignal, {
-      repairAttemptId: 'other-repair-id',
-      leaseState: 'RELEASED'
+      repairAttemptId: 'other-repair-id'
     });
 
     await environment.sleep(100);
 
+    evidenceStore.addLease({
+      id: 'lease-blocker-pre-signal',
+      runId: evidenceStore['runId'],
+      agentId: 'lease-agent',
+      taskId: 'task-1',
+      resource: { type: 'project', projectId: 'core' },
+      mode: 'exclusive',
+      version: 1,
+      state: 'RELEASED',
+      acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-12T00:01:00.000Z'),
+      releasedAt: new Date('2026-08-12T00:02:00.000Z')
+    });
+
     await handle.signal(repairWakeSignal, {
-      repairAttemptId: 'blocked-repair-1',
-      leaseState: 'RELEASED'
+      repairAttemptId: 'blocked-repair-1'
     });
 
     const result = await worker.runUntil(handle.result());
@@ -223,9 +248,21 @@ describe('Temporal spike workflow - Scenario B (blocked-repair-restart-resume)',
 
     await environment.sleep(100);
 
+    evidenceStore.addLease({
+      id: 'lease-blocker-pre-signal-stale',
+      runId: evidenceStore['runId'],
+      agentId: 'lease-agent',
+      taskId: 'task-1',
+      resource: { type: 'project', projectId: 'core' },
+      mode: 'exclusive',
+      version: 1,
+      state: 'STALE',
+      acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-12T00:01:00.000Z')
+    });
+
     await handle.signal(repairWakeSignal, {
-      repairAttemptId: 'blocked-repair-1',
-      leaseState: 'STALE'
+      repairAttemptId: 'blocked-repair-1'
     });
 
     const result = await worker.runUntil(handle.result());

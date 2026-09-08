@@ -160,7 +160,8 @@ const agentExecutionAttempts = sqliteTable('agent_execution_attempts', {
 
 const integrations = sqliteTable('task_integrations', {
   runId: text('run_id').primaryKey(),
-  status: text('status').notNull()
+  status: text('status').notNull(),
+  outputAttemptId: text('output_attempt_id')
 });
 
 const repairResumeDispatches = sqliteTable('repair_resume_dispatches', {
@@ -470,7 +471,8 @@ export class DrizzleSqliteOrchestrationPersistence
       );
       CREATE TABLE IF NOT EXISTS task_integrations (
         run_id TEXT NOT NULL PRIMARY KEY,
-        status TEXT NOT NULL
+        status TEXT NOT NULL,
+        output_attempt_id TEXT
       );
       CREATE TABLE IF NOT EXISTS repair_resume_dispatches (
         run_id TEXT NOT NULL,
@@ -1195,18 +1197,35 @@ export class DrizzleSqliteOrchestrationPersistence
       }));
   }
 
-  async persistIntegration(runId: string, status: 'integrated' | 'blocked'): Promise<void> {
+  async persistIntegration(
+    runId: string,
+    status: 'integrated' | 'blocked',
+    outputAttemptId?: string
+  ): Promise<void> {
     this.#assertRunId(runId);
     this.#sqlite.transaction(() => {
       this.#assertRunExists(runId);
-      this.#db.insert(integrations).values({ runId, status }).run();
+      this.#db
+        .insert(integrations)
+        .values({ runId, status, outputAttemptId: outputAttemptId ?? null })
+        .run();
     })();
   }
 
-  async recoverIntegration(runId: string): Promise<'integrated' | 'blocked' | undefined> {
+  async recoverIntegration(
+    runId: string
+  ): Promise<
+    { readonly status: 'integrated' | 'blocked'; readonly outputAttemptId?: string } | undefined
+  > {
     this.#assertRunId(runId);
     const record = this.#db.select().from(integrations).where(eq(integrations.runId, runId)).get();
-    return record?.status as 'integrated' | 'blocked' | undefined;
+    if (record === undefined) {
+      return undefined;
+    }
+    return {
+      status: record.status as 'integrated' | 'blocked',
+      ...(record.outputAttemptId != null ? { outputAttemptId: record.outputAttemptId } : {})
+    };
   }
 
   async persistRepairResumeDispatch(dispatch: PersistedRepairResumeDispatch): Promise<void> {
@@ -1471,6 +1490,11 @@ export class DrizzleSqliteOrchestrationPersistence
     readonly runId: string;
     readonly attemptId: string;
     readonly expectedRevision: number;
+    readonly dispatch?: {
+      readonly taskId: string;
+      readonly dispatchId: string;
+      readonly authorizedAt: string;
+    };
   }): Promise<
     | { readonly status: 'resumed'; readonly attempt: PersistedTaskRepairAttempt['attempt'] }
     | { readonly status: 'not-found' }
@@ -1510,6 +1534,19 @@ export class DrizzleSqliteOrchestrationPersistence
           blocker: undefined
         };
         this.#persistRepairAttemptInTransaction({ runId: request.runId, attempt: resumed });
+        if (request.dispatch !== undefined) {
+          this.#db
+            .insert(repairResumeDispatches)
+            .values({
+              runId: request.runId,
+              taskId: request.dispatch.taskId,
+              repairAttemptId: request.attemptId,
+              repairRevision: resumed.revision,
+              dispatchId: request.dispatch.dispatchId,
+              authorizedAt: request.dispatch.authorizedAt
+            })
+            .run();
+        }
         return { status: 'resumed' as const, attempt: resumed };
       })()
     );

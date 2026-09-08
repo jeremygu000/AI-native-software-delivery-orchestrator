@@ -87,7 +87,6 @@ export interface DurableExecutionScenarioService {
   executeBlockedRepairResume(request: {
     readonly runId: string;
     readonly repairAttemptId: string;
-    readonly leaseState: 'RELEASED' | 'STALE';
   }): Promise<{
     readonly repairAttemptId: string;
     readonly verificationEvidenceId: string;
@@ -98,6 +97,7 @@ export interface DurableExecutionScenarioService {
     readonly runId: string;
     readonly repairAttemptId: string;
     readonly blockerLeaseId: string;
+    readonly builderAttemptId: string;
   }): Promise<void>;
 }
 
@@ -117,7 +117,10 @@ export interface DurableExecutionSpikeOutcome {
     readonly repairAttemptId: string;
     readonly releaseState: 'RELEASED' | 'STALE';
   };
-  readonly integration: { readonly status: 'integrated' | 'blocked' };
+  readonly integration: {
+    readonly status: 'integrated' | 'blocked';
+    readonly outputAttemptId?: string;
+  };
   readonly dispatchCount: number;
 }
 
@@ -166,6 +169,14 @@ export const assertDurableExecutionSpikeOutcome = (request: {
   ) {
     throw new DurableExecutionSpikeAuthorityError(
       'Final verification and review must bind the final repair output'
+    );
+  }
+  if (
+    request.outcome.integration.outputAttemptId !== undefined &&
+    request.outcome.integration.outputAttemptId !== repair.id
+  ) {
+    throw new DurableExecutionSpikeAuthorityError(
+      'Integration must bind the specific repair output it admitted'
     );
   }
   if (request.scenario === 'blocked-repair-restart-resume') {

@@ -78,7 +78,6 @@ export interface TemporalSpikeActivity {
   executeBlockedRepairResume(request: {
     readonly runId: string;
     readonly repairAttemptId: string;
-    readonly leaseState: 'RELEASED' | 'STALE';
   }): Promise<{
     readonly repairAttemptId: string;
     readonly verificationEvidenceId: string;

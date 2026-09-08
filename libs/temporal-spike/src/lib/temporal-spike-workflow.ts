@@ -9,7 +9,6 @@ const activities = proxyActivities<TemporalSpikeActivity>({
 
 export interface RepairWakeSignal {
   readonly repairAttemptId: string;
-  readonly leaseState: 'RELEASED' | 'STALE';
 }
 
 export const repairWakeSignal = defineSignal<[RepairWakeSignal]>('repairWake');
@@ -99,15 +98,12 @@ export const runTemporalSpikeWorkflow = async (
 
     await condition(
       () =>
-        wakeSignal !== undefined &&
-        wakeSignal.repairAttemptId === request.blockedRepairAttemptId &&
-        (wakeSignal.leaseState === 'RELEASED' || wakeSignal.leaseState === 'STALE')
+        wakeSignal !== undefined && wakeSignal.repairAttemptId === request.blockedRepairAttemptId
     );
 
     const resumeResult = await activities.executeBlockedRepairResume({
       runId: request.runId,
-      repairAttemptId: request.blockedRepairAttemptId,
-      leaseState: wakeSignal!.leaseState
+      repairAttemptId: request.blockedRepairAttemptId
     });
 
     if (resumeResult.state === 'unknown') {

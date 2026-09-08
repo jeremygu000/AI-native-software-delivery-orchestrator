@@ -207,8 +207,16 @@ class MemoryPersistence implements OrchestrationPersistence {
     return [];
   }
 
-  async persistIntegration(_runId: string, _status: 'integrated' | 'blocked'): Promise<void> {}
-  async recoverIntegration(_runId: string): Promise<'integrated' | 'blocked' | undefined> {
+  async persistIntegration(
+    _runId: string,
+    _status: 'integrated' | 'blocked',
+    _outputAttemptId?: string
+  ): Promise<void> {}
+  async recoverIntegration(
+    _runId: string
+  ): Promise<
+    { readonly status: 'integrated' | 'blocked'; readonly outputAttemptId?: string } | undefined
+  > {
     return undefined;
   }
   async persistRepairResumeDispatch(_dispatch: PersistedRepairResumeDispatch): Promise<void> {}

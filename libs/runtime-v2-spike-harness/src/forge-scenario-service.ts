@@ -272,36 +272,43 @@ export const createForgeScenarioService = (
       };
     },
 
-    async integrateAcceptedOutput(_request) {
-      await persistence.persistIntegration(runId, 'integrated');
+    async integrateAcceptedOutput(request) {
+      await persistence.persistIntegration(
+        runId,
+        'integrated',
+        request.reviewSubjectRef.outputAttemptId
+      );
       return {
         integrationStatus: 'integrated' as const
       };
     },
 
     async executeBlockedRepairResume(request) {
+      const dispatchId = `dispatch-resume-${makeId()}`;
+
       const resumeResult = await persistence.resumeRepairAttempt({
         runId,
         attemptId: request.repairAttemptId,
-        expectedRevision: 1
+        expectedRevision: 1,
+        dispatch: {
+          taskId,
+          dispatchId,
+          authorizedAt: new Date().toISOString()
+        }
       });
 
       if (resumeResult.status === 'resumed') {
         const leases = await persistence.recoverLeases(runId);
-        const activeLease = leases.find((l) => l.lease.state === 'ACTIVE');
-        if (activeLease) {
-          await persistence.persistLease({
-            runId,
-            lease: {
-              ...activeLease.lease,
-              state: request.leaseState,
-              version: activeLease.lease.version + 1
-            }
-          });
+        const blockerLease = leases.find(
+          (l) => l.lease.state === 'RELEASED' || l.lease.state === 'STALE'
+        );
+        if (!blockerLease) {
+          throw new Error(
+            `No RELEASED or STALE lease found after blocked repair resume for run ${runId}`
+          );
         }
 
         const verificationId = `verification-resume-${makeId()}`;
-        const dispatchId = `dispatch-resume-${makeId()}`;
 
         const verificationPayload: Omit<TaskVerificationEvidence, 'fingerprint'> = {
           id: verificationId,
@@ -360,15 +367,6 @@ export const createForgeScenarioService = (
           completedAt: new Date()
         };
         await persistence.persistRepairAttempt({ runId, attempt: completedRepair });
-
-        await persistence.persistRepairResumeDispatch({
-          runId,
-          taskId,
-          repairAttemptId: request.repairAttemptId,
-          repairRevision: resumeResult.attempt.revision,
-          dispatchId,
-          authorizedAt: new Date().toISOString()
-        });
 
         return {
           repairAttemptId: request.repairAttemptId,
@@ -433,8 +431,8 @@ export const createForgeScenarioService = (
         workspaceId,
         parentReviewIteration: 1,
         parentReviewSubject: {
-          builderAttemptId: 'placeholder',
-          outputAttemptId: 'placeholder',
+          builderAttemptId: request.builderAttemptId,
+          outputAttemptId: request.builderAttemptId,
           workspaceId,
           workspaceRevision: 1,
           workspaceChangeFingerprint: FINGERPRINT_BASE,
@@ -449,6 +447,70 @@ export const createForgeScenarioService = (
       };
 
       await persistence.persistRepairAttempt({ runId, attempt: blockedRepair });
+
+      const builderAttempt: AgentExecutionAttempt = {
+        id: request.builderAttemptId,
+        runId,
+        taskId,
+        agentId: `builder-agent-${runId}`,
+        workspaceId,
+        leasePlanFingerprint: FINGERPRINT_BASE,
+        state: 'COMPLETED',
+        revision: 2,
+        startedAt: new Date(),
+        completedAt: new Date()
+      };
+
+      await persistence.persistAttempt({ runId, attempt: builderAttempt });
+
+      const verificationPayload: Omit<TaskVerificationEvidence, 'fingerprint'> = {
+        id: `verification-builder-${makeId()}`,
+        runId,
+        taskId,
+        attemptId: request.builderAttemptId,
+        workspaceId,
+        workspaceRevision: 1,
+        workspaceChangeFingerprint: FINGERPRINT_BASE,
+        verificationPolicyFingerprint: FINGERPRINT_BASE,
+        status: 'passed',
+        verifiedAt: new Date().toISOString()
+      };
+      const verification: TaskVerificationEvidence = {
+        ...verificationPayload,
+        fingerprint: taskVerificationEvidenceFingerprint(verificationPayload)
+      };
+      await persistence.persistVerificationEvidence(verification);
+
+      reviewIteration++;
+      const reviewSubject: TaskCodeReviewSubject = {
+        builderAttemptId: request.builderAttemptId,
+        outputAttemptId: request.builderAttemptId,
+        workspaceId,
+        workspaceRevision: 1,
+        workspaceChangeFingerprint: FINGERPRINT_BASE,
+        impactFingerprint: FINGERPRINT_BASE,
+        verificationFingerprint: FINGERPRINT_BASE
+      };
+      const review: TaskCodeReview = {
+        recommendation: 'repair',
+        summary: 'Builder output needs repair',
+        findings: [
+          {
+            id: `finding-${makeId()}`,
+            severity: 'medium',
+            fileIds: ['test-file.ts'],
+            symbolIds: [],
+            description: 'Fix required'
+          }
+        ]
+      };
+      await persistence.persistReview({
+        runId,
+        taskId,
+        iteration: reviewIteration,
+        subject: reviewSubject,
+        review
+      });
 
       const lease = {
         id: request.blockerLeaseId,

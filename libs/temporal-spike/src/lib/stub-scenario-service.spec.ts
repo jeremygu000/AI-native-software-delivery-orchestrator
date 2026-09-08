@@ -67,8 +67,7 @@ describe('DurableExecutionScenarioService', () => {
       const service = createStubTemporalSpikeScenarioService();
       const result = await service.executeBlockedRepairResume({
         runId: 'run-1',
-        repairAttemptId: 'blocked-repair-1',
-        leaseState: 'RELEASED'
+        repairAttemptId: 'blocked-repair-1'
       });
       expect(result.repairAttemptId).toBe('blocked-repair-1');
       expect(result.verificationEvidenceId).toBe('stub-resume-verification-id');
@@ -79,8 +78,7 @@ describe('DurableExecutionScenarioService', () => {
       const service = createStubTemporalSpikeScenarioService();
       const result = await service.executeBlockedRepairResume({
         runId: 'run-1',
-        repairAttemptId: 'my-repair-id',
-        leaseState: 'STALE'
+        repairAttemptId: 'my-repair-id'
       });
       expect(result.repairAttemptId).toBe('my-repair-id');
       expect(result.state).toBe('completed');

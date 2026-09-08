@@ -170,8 +170,16 @@ export interface OrchestrationPersistence {
   recoverDispatches(runId: string): Promise<readonly PersistedDispatch[]>;
   recoverAttempts(runId: string): Promise<readonly PersistedAgentExecutionAttempt[]>;
   recoverLeases(runId: string): Promise<readonly PersistedWriteLease[]>;
-  persistIntegration(runId: string, status: 'integrated' | 'blocked'): Promise<void>;
-  recoverIntegration(runId: string): Promise<'integrated' | 'blocked' | undefined>;
+  persistIntegration(
+    runId: string,
+    status: 'integrated' | 'blocked',
+    outputAttemptId?: string
+  ): Promise<void>;
+  recoverIntegration(
+    runId: string
+  ): Promise<
+    { readonly status: 'integrated' | 'blocked'; readonly outputAttemptId?: string } | undefined
+  >;
   persistRepairResumeDispatch(dispatch: PersistedRepairResumeDispatch): Promise<void>;
   recoverRepairResumeDispatches(runId: string): Promise<readonly PersistedRepairResumeDispatch[]>;
   persistImpact(impact: PersistedTaskImpact): Promise<void>;
@@ -218,6 +226,11 @@ export interface TaskRepairResumeStore extends TaskRepairAttemptStore {
     readonly runId: string;
     readonly attemptId: string;
     readonly expectedRevision: number;
+    readonly dispatch?: {
+      readonly taskId: string;
+      readonly dispatchId: string;
+      readonly authorizedAt: string;
+    };
   }): Promise<
     | { readonly status: 'resumed'; readonly attempt: TaskRepairAttempt }
     | { readonly status: 'not-found' }
@@ -237,8 +250,16 @@ export interface TaskVerificationEvidenceStore {
 }
 
 export interface TaskIntegrationStore {
-  persistIntegration(runId: string, status: 'integrated' | 'blocked'): Promise<void>;
-  recoverIntegration(runId: string): Promise<'integrated' | 'blocked' | undefined>;
+  persistIntegration(
+    runId: string,
+    status: 'integrated' | 'blocked',
+    outputAttemptId?: string
+  ): Promise<void>;
+  recoverIntegration(
+    runId: string
+  ): Promise<
+    { readonly status: 'integrated' | 'blocked'; readonly outputAttemptId?: string } | undefined
+  >;
 }
 
 export const taskDecisionsWithTransitions = (

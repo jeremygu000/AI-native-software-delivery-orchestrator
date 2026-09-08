@@ -40,7 +40,10 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
 
   const repairs = repairAttempts.map((r: PersistedTaskRepairAttempt) => r.attempt);
 
-  const integration = { status: integrationStatus ?? ('blocked' as const) };
+  const integration = {
+    status: integrationStatus?.status ?? ('blocked' as const),
+    outputAttemptId: integrationStatus?.outputAttemptId
+  };
 
   let blockedResume: DurableExecutionSpikeOutcome['blockedResume'] | undefined;
 
@@ -71,26 +74,7 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
   const dispatchCount = repairResumeDispatches.length;
 
   if (!builderAttempt) {
-    const completedRepair = repairs.find((r) => r.state === 'COMPLETED');
-    if (!completedRepair) {
-      throw new Error(`No COMPLETED builder attempt or repair attempt found for run: ${runId}`);
-    }
-    return {
-      builderAttempt: {
-        ...completedRepair,
-        id: 'synthetic',
-        state: 'COMPLETED'
-      } as unknown as DurableExecutionSpikeOutcome['builderAttempt'],
-      repairs: repairs as DurableExecutionSpikeOutcome['repairs'],
-      verifications: verifications as DurableExecutionSpikeOutcome['verifications'],
-      reviews: normalizeReviews(reviews),
-      leases: leases.map(
-        (p: PersistedWriteLease) => p.lease
-      ) as DurableExecutionSpikeOutcome['leases'],
-      integration,
-      blockedResume,
-      dispatchCount
-    };
+    throw new Error(`No COMPLETED builder attempt found for run: ${runId}`);
   }
 
   return {
