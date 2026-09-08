@@ -41,8 +41,6 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
   const seenTaskIds = new Set(authorizedTasks.map((task) => task.taskId));
 
   // Step 2: process each task start authorized by Forge
-  let runSucceeded = true;
-
   while (authorizedTasks.length > 0) {
     const task = authorizedTasks.shift();
     if (task === undefined) {
@@ -83,6 +81,7 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
 
     let finalSubjectRef = evalResult.subjectRef;
     let recommendation: 'accept' | 'repair' | 'reject' = evalResult.recommendation;
+    let currentReviewId = evalResult.reviewId;
     let repairFailed = false;
 
     // Step 6 (optional): repair admission + execution loop.
@@ -90,7 +89,7 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
       const admittedRepair = await admitRepair({
         runId,
         taskId: task.taskId,
-        reviewId: evalResult.reviewId,
+        reviewId: currentReviewId,
         subjectRef: finalSubjectRef
       });
 
@@ -100,32 +99,37 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
         workspaceId: builderResult.workspaceId,
         builderAttemptId: builderResult.attemptId,
         impactId: builderResult.impactId,
-        reviewId: evalResult.reviewId,
+        reviewId: currentReviewId,
         repairAttemptId: admittedRepair.repairAttemptId
       });
 
       if (repairResult.state !== 'completed' || repairResult.subjectRef === undefined) {
-        runSucceeded = false;
         repairFailed = true;
         break;
       }
 
       if (repairResult.recommendation === undefined) {
-        runSucceeded = false;
         repairFailed = true;
         break;
       }
 
       finalSubjectRef = repairResult.subjectRef;
+
+      if (repairResult.reviewId !== undefined) {
+        currentReviewId = repairResult.reviewId;
+      } else if (repairResult.recommendation === 'repair') {
+        repairFailed = true;
+        break;
+      }
+
       recommendation = repairResult.recommendation;
     }
 
-    if (!runSucceeded || repairFailed) {
+    if (repairFailed) {
       continue;
     }
 
     if (recommendation !== 'accept') {
-      runSucceeded = false;
       continue;
     }
 
@@ -143,7 +147,7 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
 
   const finalResult = ForgeRunResultSchema.parse({
     runId,
-    status: runSucceeded && finalState.status === 'completed' ? 'completed' : 'failed'
+    status: finalState.status
   });
   return finalResult;
 }

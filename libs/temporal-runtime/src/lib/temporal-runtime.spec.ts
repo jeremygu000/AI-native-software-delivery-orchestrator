@@ -312,6 +312,8 @@ describe('temporal-runtime Scenario A workflow', () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     const calls: string[] = [];
     let repairCallCount = 0;
+    const admittedReviewIds: string[] = [];
+    const repairReviewIds: string[] = [];
 
     const activities: ForgeActivities = {
       async reevaluateRun(_input: ReevaluateRunInput) {
@@ -348,6 +350,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       },
       async admitRepair(input: AdmitRepairInput) {
         calls.push(`admitRepair:${input.taskId}`);
+        admittedReviewIds.push(input.reviewId);
         return AdmitRepairResultSchema.parse({
           runId: input.runId,
           taskId: input.taskId,
@@ -357,6 +360,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       async executeRepair(input: ExecuteRepairInput) {
         repairCallCount += 1;
         calls.push(`executeRepair:${input.taskId}:${input.repairAttemptId}`);
+        repairReviewIds.push(input.reviewId);
         return ExecuteRepairResultSchema.parse({
           runId: input.runId,
           taskId: input.taskId,
@@ -419,6 +423,9 @@ describe('temporal-runtime Scenario A workflow', () => {
         'integrateAcceptedOutput',
         'finalizeRunState'
       ]);
+      expect(admittedReviewIds).toEqual(['review-5', 'review-5b']);
+      expect(repairReviewIds).toEqual(['review-5', 'review-5b']);
+      expect(repairCallCount).toBe(2);
     } finally {
       worker.shutdown();
       await workerPromise;
