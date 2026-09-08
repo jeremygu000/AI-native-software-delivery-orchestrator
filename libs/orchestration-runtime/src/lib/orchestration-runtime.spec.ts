@@ -4,6 +4,7 @@ import type {
   OrchestrationPersistence,
   PersistedReevaluation,
   PersistedDispatch,
+  PersistedRepairResumeDispatch,
   PersistedTaskConflict,
   PersistedTaskImpact,
   PersistedAgentExecutionAttempt,
@@ -119,15 +120,15 @@ class MemoryPersistence implements OrchestrationPersistence {
     }
   }
 
-  async recoverDispatches(runId: string): Promise<readonly PersistedDispatch[]> {
+  async recoverDispatches(_runId: string): Promise<readonly PersistedDispatch[]> {
     return this.reevaluations
       .filter((reeval) =>
-        reeval.decision.taskDecisions.some((td) => td.action === 'start')
+        reeval.decision.decision.taskDecisions.some((td) => td.action === 'start')
       )
       .map((reeval) => ({
         reevaluation: reeval,
         attempts: this.attempts.filter((a) =>
-          reeval.decision.taskDecisions
+          reeval.decision.decision.taskDecisions
             .filter((td) => td.action === 'start')
             .some((td) => td.taskId === a.attempt.taskId)
         )
@@ -203,6 +204,17 @@ class MemoryPersistence implements OrchestrationPersistence {
   }
 
   async replayRun(): Promise<readonly []> {
+    return [];
+  }
+
+  async persistIntegration(_runId: string, _status: 'integrated' | 'blocked'): Promise<void> {}
+  async recoverIntegration(_runId: string): Promise<'integrated' | 'blocked' | undefined> {
+    return undefined;
+  }
+  async persistRepairResumeDispatch(_dispatch: PersistedRepairResumeDispatch): Promise<void> {}
+  async recoverRepairResumeDispatches(
+    _runId: string
+  ): Promise<readonly PersistedRepairResumeDispatch[]> {
     return [];
   }
 }
@@ -436,7 +448,8 @@ describe('OrchestrationRuntime', () => {
       persistRepairAttempt: async (record) => {
         repairRecords[0] = record;
       },
-      recoverRepairAttempts: async () => repairRecords
+      recoverRepairAttempts: async () => repairRecords,
+      recoverRepairAttemptHistory: async () => []
     };
     const runtime = new OrchestrationRuntime({
       scheduler: new DeterministicScheduler(),

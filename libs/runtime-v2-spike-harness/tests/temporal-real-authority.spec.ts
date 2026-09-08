@@ -60,7 +60,10 @@ describe('Temporal spike - Scenario A real authority (SQLite)', () => {
     fixture = createSqliteSpikeFixture();
 
     environment = await TestWorkflowEnvironment.createTimeSkipping();
-    const workflowPath = resolve(PROJECT_ROOT, 'libs/temporal-spike/dist/lib/temporal-spike-workflow.js');
+    const workflowPath = resolve(
+      PROJECT_ROOT,
+      'libs/temporal-spike/dist/lib/temporal-spike-workflow.js'
+    );
 
     const serviceImpl = createForgeScenarioService({
       fixture,
@@ -133,7 +136,10 @@ describe('Temporal spike - Scenario B real authority (SQLite)', () => {
     agentId = 'agent-1';
 
     environment = await TestWorkflowEnvironment.createTimeSkipping();
-    const workflowPath = resolve(PROJECT_ROOT, 'libs/temporal-spike/dist/lib/temporal-spike-workflow.js');
+    const workflowPath = resolve(
+      PROJECT_ROOT,
+      'libs/temporal-spike/dist/lib/temporal-spike-workflow.js'
+    );
 
     fixture = createSqliteSpikeFixture();
 
@@ -201,4 +207,102 @@ describe('Temporal spike - Scenario B real authority (SQLite)', () => {
       scenario: 'blocked-repair-restart-resume'
     });
   }, 15_000);
+});
+
+describe('Temporal spike - Scenario B worker restart (SQLite + Local)', () => {
+  it('survives worker shutdown and resume on new worker', async () => {
+    const environment = await TestWorkflowEnvironment.createLocal();
+    const workflowPath = resolve(
+      PROJECT_ROOT,
+      'libs/temporal-spike/dist/lib/temporal-spike-workflow.js'
+    );
+    const runId = `run-worker-restart-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const taskId = 'task-1';
+    const attemptId = 'attempt-1';
+    const agentId = 'agent-1';
+    const taskQueue = `temporal-spike-worker-restart-${runId}`;
+    const blockedRepairAttemptId = `repair-blocked-${runId}`;
+    const blockerLeaseId = `lease-${blockedRepairAttemptId}`;
+
+    const fixture = createSqliteSpikeFixture();
+    const serviceImpl = createForgeScenarioService({
+      fixture,
+      runId,
+      taskId,
+      attemptId,
+      agentId
+    });
+
+    await serviceImpl.setupBlockedRepair({
+      runId,
+      repairAttemptId: blockedRepairAttemptId,
+      blockerLeaseId
+    });
+
+    const workerA = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: workflowPath,
+      activities: createTemporalSpikeActivities(serviceImpl)
+    });
+
+    const workerARun = workerA.run();
+
+    const clientA = new Client({ connection: environment.nativeConnection });
+
+    const handle = await clientA.workflow.start(runTemporalSpikeWorkflow, {
+      taskQueue,
+      workflowId: `forge-run:worker-restart-${runId}`,
+      args: [
+        {
+          runId,
+          scenario: 'blocked-repair-restart-resume' as const,
+          blockedRepairAttemptId
+        }
+      ]
+    });
+
+    await environment.sleep(500);
+
+    await workerA.shutdown();
+    await workerARun;
+
+    await handle.signal(repairWakeSignal, {
+      repairAttemptId: `wrong-repair-${runId}`,
+      leaseState: 'RELEASED' as const
+    });
+
+    await environment.sleep(200);
+
+    await handle.signal(repairWakeSignal, {
+      repairAttemptId: blockedRepairAttemptId,
+      leaseState: 'RELEASED' as const
+    });
+
+    const workerB = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: workflowPath,
+      activities: createTemporalSpikeActivities(serviceImpl)
+    });
+
+    const result = await workerB.runUntil(handle.result());
+
+    expect(result.runId).toBe(runId);
+    expect(result.scenario).toBe('blocked-repair-restart-resume');
+
+    const outcome = await collectDurableExecutionOutcomeFromSqlite(runId, fixture);
+    expect(outcome.repairs.length).toBeGreaterThan(0);
+    expect(outcome.verifications.length).toBeGreaterThan(0);
+    expect(outcome.reviews.length).toBeGreaterThan(0);
+    expect(outcome.blockedResume).toBeDefined();
+    expect(outcome.dispatchCount).toBeGreaterThanOrEqual(1);
+
+    assertDurableExecutionSpikeOutcome({
+      outcome,
+      scenario: 'blocked-repair-restart-resume'
+    });
+
+    await environment.teardown();
+  }, 30_000);
 });

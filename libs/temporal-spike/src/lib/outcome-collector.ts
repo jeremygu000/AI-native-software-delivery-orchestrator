@@ -1,6 +1,4 @@
-import type {
-  DurableExecutionSpikeOutcome
-} from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import type { DurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
 export interface BuilderAttemptEvidence {
   readonly id: string;
@@ -130,7 +128,7 @@ export const collectDurableExecutionOutcome = (
 
   let dispatchCount = 0;
   if (builderAttempt.state === 'COMPLETED') dispatchCount++;
-  dispatchCount += repairs.filter(r => r.state === 'COMPLETED').length;
+  dispatchCount += repairs.filter((r) => r.state === 'COMPLETED').length;
 
   return {
     builderAttempt: builderAttempt as DurableExecutionSpikeOutcome['builderAttempt'],

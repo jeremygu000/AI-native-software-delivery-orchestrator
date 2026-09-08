@@ -61,6 +61,7 @@ const store = (): TaskRepairAdmissionStore &
       }
     },
     recoverRepairAttempts: async (runId) => records.filter((record) => record.runId === runId),
+    recoverRepairAttemptHistory: async () => [],
     admitRepairAttempt: async ({ attempt, maxRepairs }) => {
       const taskAttempts = records.filter(
         ({ attempt: stored }) => stored.taskId === attempt.taskId

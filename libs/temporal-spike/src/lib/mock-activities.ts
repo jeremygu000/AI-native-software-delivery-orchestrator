@@ -374,7 +374,8 @@ export const createMockActivities = (ctx: MockActivityContext) => ({
       state: request.leaseState,
       acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
       lastHeartbeatAt: new Date('2026-08-12T00:01:00.000Z'),
-      releasedAt: request.leaseState === 'RELEASED' ? new Date('2026-08-12T00:02:00.000Z') : undefined
+      releasedAt:
+        request.leaseState === 'RELEASED' ? new Date('2026-08-12T00:02:00.000Z') : undefined
     };
     ctx.evidenceStore.addLease(blockedLease);
 

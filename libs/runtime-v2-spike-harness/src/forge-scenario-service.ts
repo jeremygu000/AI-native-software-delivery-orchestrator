@@ -7,9 +7,7 @@ import {
   type TaskRepairAttempt,
   type TaskVerificationEvidence
 } from '@ai-native-software-delivery-orchestrator/domain';
-import type {
-  DurableExecutionScenarioService
-} from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 import type { SqliteSpikeFixture } from './sqlite-outcome-collector.js';
 
 const FINGERPRINT_BASE = 'sha256:' + 'a'.repeat(64);
@@ -23,7 +21,9 @@ export interface ForgeScenarioServiceDeps {
   readonly agentId: string;
 }
 
-export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): DurableExecutionScenarioService => {
+export const createForgeScenarioService = (
+  deps: ForgeScenarioServiceDeps
+): DurableExecutionScenarioService => {
   const { fixture, runId, taskId, attemptId, agentId } = deps;
   const { persistence } = fixture;
 
@@ -31,7 +31,9 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
   let builderAttemptId: string | undefined;
   let repairIteration = 0;
   let reviewIteration = 0;
-  let currentRepairLineage: { parentReviewIteration: number; parentReviewSubject: TaskCodeReviewSubject } | undefined;
+  let currentRepairLineage:
+    | { parentReviewIteration: number; parentReviewSubject: TaskCodeReviewSubject }
+    | undefined;
 
   return {
     async executeBuilder(_request) {
@@ -159,7 +161,10 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
 
       repairIteration++;
       const repairAttemptId = `repair-${runId}-${repairIteration}`;
-      currentRepairLineage = { parentReviewIteration: reviewIteration, parentReviewSubject: reviewSubject };
+      currentRepairLineage = {
+        parentReviewIteration: reviewIteration,
+        parentReviewSubject: reviewSubject
+      };
 
       const repairAttempt: TaskRepairAttempt = {
         id: repairAttemptId,
@@ -282,6 +287,19 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
       });
 
       if (resumeResult.status === 'resumed') {
+        const leases = await persistence.recoverLeases(runId);
+        const activeLease = leases.find((l) => l.lease.state === 'ACTIVE');
+        if (activeLease) {
+          await persistence.persistLease({
+            runId,
+            lease: {
+              ...activeLease.lease,
+              state: request.leaseState,
+              version: activeLease.lease.version + 1
+            }
+          });
+        }
+
         const verificationId = `verification-resume-${makeId()}`;
         const dispatchId = `dispatch-resume-${makeId()}`;
 
@@ -333,9 +351,9 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
           taskId,
           agentId: `repair-agent-blocked`,
           workspaceId,
-          parentReviewIteration: 1,
-          parentReviewSubject: reviewSubject,
-          repairIteration: 1,
+          parentReviewIteration: resumeResult.attempt.parentReviewIteration,
+          parentReviewSubject: resumeResult.attempt.parentReviewSubject,
+          repairIteration: resumeResult.attempt.repairIteration,
           state: 'COMPLETED',
           revision: resumeResult.attempt.revision + 1,
           startedAt: resumeResult.attempt.startedAt,

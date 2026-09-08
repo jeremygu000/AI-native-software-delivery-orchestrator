@@ -23,9 +23,7 @@ export {
   ForgeBuilderExecutionError,
   ForgeBuilderExecutionService
 } from './lib/forge-builder-execution-service.js';
-export type {
-  DurableExecutionScenarioService
-} from './lib/durable-execution-spike-contract.js';
+export type { DurableExecutionScenarioService } from './lib/durable-execution-spike-contract.js';
 export {
   assertDurableExecutionSpikeOutcome,
   DurableExecutionSpikeAuthorityError,

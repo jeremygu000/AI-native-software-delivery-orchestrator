@@ -18,8 +18,8 @@
     "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
     "@ai-native-software-delivery-orchestrator/orchestration-runtime": "workspace:*",
     "@ai-native-software-delivery-orchestrator/persistence": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/temporal-spike": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/restate-spike": "workspace:*"
+    "@ai-native-software-delivery-orchestrator/restate-spike": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/temporal-spike": "workspace:*"
   },
   "devDependencies": {
     "@restatedev/restate-sdk-clients": "^1.17.0",

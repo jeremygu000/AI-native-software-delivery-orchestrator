@@ -66,7 +66,9 @@ export const runTemporalSpikeWorkflow = async (
       if (repairResult.recommendation === 'accept') {
         finalReviewSubjectRef = repairResult.reviewSubjectRef;
       } else if (repairResult.recommendation === 'repair') {
-        throw new Error('Repair loop not yet implemented: maxRepairs exceeded or subsequent repair rejected');
+        throw new Error(
+          'Repair loop not yet implemented: maxRepairs exceeded or subsequent repair rejected'
+        );
       } else {
         throw new Error(`Repair resulted in ${repairResult.recommendation} - cannot integrate`);
       }

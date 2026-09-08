@@ -10,7 +10,8 @@ import { createMockActivities } from './mock-activities.js';
 import { collectDurableExecutionOutcome } from './outcome-collector.js';
 import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
-const environments: { readonly environment: TestWorkflowEnvironment; readonly worker: Worker }[] = [];
+const environments: { readonly environment: TestWorkflowEnvironment; readonly worker: Worker }[] =
+  [];
 
 afterEach(async () => {
   await Promise.all(

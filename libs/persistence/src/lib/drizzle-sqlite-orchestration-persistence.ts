@@ -1136,12 +1136,18 @@ export class DrizzleSqliteOrchestrationPersistence
       for (const taskId of startTaskIds) {
         const attemptRecord = attempts.find((a) => {
           const attempt = decode(a.attemptJson, isAgentExecutionAttempt, 'agent execution attempt');
-          return attempt.taskId === taskId && attempt.state === 'PREPARING' && attempt.revision === 1;
+          return (
+            attempt.taskId === taskId && attempt.state === 'PREPARING' && attempt.revision === 1
+          );
         });
         if (attemptRecord) {
           dispatchAttempts.push({
             runId: attemptRecord.runId,
-            attempt: decode(attemptRecord.attemptJson, isAgentExecutionAttempt, 'agent execution attempt')
+            attempt: decode(
+              attemptRecord.attemptJson,
+              isAgentExecutionAttempt,
+              'agent execution attempt'
+            )
           });
         }
       }
@@ -1159,7 +1165,11 @@ export class DrizzleSqliteOrchestrationPersistence
             decision: {
               runId: decision.runId,
               sequence: decision.sequence,
-              inputSnapshot: decode(decision.snapshotJson, isSchedulerSnapshot, 'scheduler snapshot'),
+              inputSnapshot: decode(
+                decision.snapshotJson,
+                isSchedulerSnapshot,
+                'scheduler snapshot'
+              ),
               decision: decisionObj
             }
           },
@@ -1189,20 +1199,13 @@ export class DrizzleSqliteOrchestrationPersistence
     this.#assertRunId(runId);
     this.#sqlite.transaction(() => {
       this.#assertRunExists(runId);
-      this.#db
-        .insert(integrations)
-        .values({ runId, status })
-        .run();
+      this.#db.insert(integrations).values({ runId, status }).run();
     })();
   }
 
   async recoverIntegration(runId: string): Promise<'integrated' | 'blocked' | undefined> {
     this.#assertRunId(runId);
-    const record = this.#db
-      .select()
-      .from(integrations)
-      .where(eq(integrations.runId, runId))
-      .get();
+    const record = this.#db.select().from(integrations).where(eq(integrations.runId, runId)).get();
     return record?.status as 'integrated' | 'blocked' | undefined;
   }
 
@@ -1224,7 +1227,9 @@ export class DrizzleSqliteOrchestrationPersistence
     })();
   }
 
-  async recoverRepairResumeDispatches(runId: string): Promise<readonly PersistedRepairResumeDispatch[]> {
+  async recoverRepairResumeDispatches(
+    runId: string
+  ): Promise<readonly PersistedRepairResumeDispatch[]> {
     this.#assertRunId(runId);
     return this.#db
       .select()

@@ -191,13 +191,15 @@ export const createRestateSpikeWorkflow = () => {
             review: {
               recommendation: 'repair',
               summary: 'Issues found',
-              findings: [{
-                id: `finding-${makeId()}`,
-                severity: 'medium',
-                fileIds: [],
-                symbolIds: [],
-                description: 'Fix required'
-              }]
+              findings: [
+                {
+                  id: `finding-${makeId()}`,
+                  severity: 'medium',
+                  fileIds: [],
+                  symbolIds: [],
+                  description: 'Fix required'
+                }
+              ]
             }
           });
 

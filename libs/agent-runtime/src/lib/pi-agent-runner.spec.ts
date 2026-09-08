@@ -375,7 +375,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -438,7 +445,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -490,7 +504,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -538,7 +559,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -591,7 +619,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -639,7 +674,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -681,7 +723,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -722,7 +771,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -798,7 +854,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         }),
       createCommands: () =>
@@ -862,7 +925,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         }),
       createCommands: () =>
@@ -911,7 +981,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         }),
       createCommands: () =>
@@ -973,7 +1050,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         }),
       createCommands: () =>
@@ -1027,7 +1111,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -1068,7 +1159,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -1121,7 +1219,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });
@@ -1163,7 +1268,14 @@ describe('PiAgentRunner', () => {
             persistAttempt: async () => {},
             updateRunState: async () => {},
             recoverRun: async () => undefined,
-            replayRun: async () => []
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
           }
         })
     });

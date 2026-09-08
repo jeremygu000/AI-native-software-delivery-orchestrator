@@ -21,9 +21,11 @@ The spike acceptance criteria from ADR-027:
 **Restate**: Constructs `DurableExecutionSpikeOutcome` directly inside workflow
 
 Current proof demonstrates:
+
 > "Temporal/Restate durable control flow can drive mock activities that produce mock evidence"
 
 Does NOT yet prove:
+
 > "Temporal/Restate maintains real Forge authority semantics with real SQLite evidence"
 
 **Required**: Both candidates must call real Forge seams and persist evidence to SQLite.
@@ -31,11 +33,13 @@ Does NOT yet prove:
 ### 2. Scenario B shared assert NOT verified for either candidate
 
 **Temporal**: Test explicitly falls back to manual checks:
+
 > "assertDurableExecutionSpikeOutcome requires specific blockedResume structure... manual checks above suffice."
 
 **Restate**: Same - manual checks only.
 
 ADR-028 scorecard incorrectly claims:
+
 ```
 Scenario B proof
 Temporal: ✓ 3 tests
@@ -43,6 +47,7 @@ Restate: ✓ 2 tests
 ```
 
 **Actual status**:
+
 ```
 Scenario A shared assertion: NOT VERIFIED (mock evidence)
 Scenario B shared assertion: NOT VERIFIED (manual checks only)
@@ -53,6 +58,7 @@ Scenario B shared assertion: NOT VERIFIED (manual checks only)
 ### 3. Restate has no actual `ctx.signal()` wait path
 
 ADR claims:
+
 > "Uses ctx.signal() for durable wait"
 
 **Actual**: Current `restate-spike-workflow.ts` has no `ctx.signal()` call. Scenario B workflow directly constructs successful outcome without any durable wait.
@@ -66,11 +72,13 @@ ADR claims:
 ### 5. dispatchCount derived from completed attempts, not real dispatch events
 
 Current:
+
 ```ts
 dispatchCount = completed builder + completed repairs
 ```
 
 Does not prove:
+
 > "Exactly one resumed external dispatch after CAS resume"
 
 **Required**: Derive from persisted dispatch/attempt lifecycle evidence.
@@ -78,6 +86,7 @@ Does not prove:
 ## OutcomeCollector Architecture (conceptually correct, implementation incomplete)
 
 The pattern itself is sound:
+
 1. Activities write evidence DURING execution
 2. OutcomeCollector reads from evidence store AFTER completion
 3. Result is OBSERVED, not pre-constructed
@@ -97,15 +106,15 @@ Required before ADR-028 scoring:
 
 ## Scorecard (PRELIMINARY - DO NOT USE FOR DECISION)
 
-| Criterion | Temporal | Restate | Weight |
-|-----------|----------|---------|-------|
-| **Authority/correctness preservation** | TBD | TBD | **30%** |
-| **Legacy durable-runtime code actually removable** | TBD | TBD | **20%** |
-| **BLOCKED/restart/UNKNOWN semantics** | TBD | TBD | **15%** |
-| **Framework intrusion / SDK leakage** | TBD | TBD | **15%** |
-| Operational complexity | TBD | TBD | 10% |
-| Observability/debugging | TBD | TBD | 5% |
-| CI/developer testing experience | TBD | TBD | 5% |
+| Criterion                                          | Temporal | Restate | Weight  |
+| -------------------------------------------------- | -------- | ------- | ------- |
+| **Authority/correctness preservation**             | TBD      | TBD     | **30%** |
+| **Legacy durable-runtime code actually removable** | TBD      | TBD     | **20%** |
+| **BLOCKED/restart/UNKNOWN semantics**              | TBD      | TBD     | **15%** |
+| **Framework intrusion / SDK leakage**              | TBD      | TBD     | **15%** |
+| Operational complexity                             | TBD      | TBD     | 10%     |
+| Observability/debugging                            | TBD      | TBD     | 5%      |
+| CI/developer testing experience                    | TBD      | TBD     | 5%      |
 
 **Note**: CI compatibility (Temporal in-process vs Restate Docker) is at most 5% weight, not a primary differentiator.
 
@@ -114,6 +123,7 @@ Required before ADR-028 scoring:
 **Pending M2.11 completion.**
 
 Only after Real Authority Parity Closure:
+
 - Both candidates use real Forge seams
 - Both persist to SQLite
 - Both Scenario A and B pass `assertDurableExecutionSpikeOutcome`

@@ -108,6 +108,7 @@ const store = () => {
       }
     },
     recoverRepairAttempts: async () => attempts,
+    recoverRepairAttemptHistory: async () => [],
     admitRepairAttempt: async ({ attempt }) => {
       const existing = attempts.find(
         ({ attempt: stored }) =>
