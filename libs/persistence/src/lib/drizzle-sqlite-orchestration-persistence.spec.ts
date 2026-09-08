@@ -452,6 +452,22 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
       })
     ).resolves.toEqual({ status: 'not-blocked', state: 'PREPARING' });
     await persistence.persistRepairAttempt({ runId: 'run-1', attempt: blocked });
+    await persistence.persistLease({
+      runId: 'run-1',
+      lease: {
+        id: 'owner-lease',
+        runId: 'run-1',
+        agentId: 'lease-owner',
+        taskId: 'A',
+        resource: { type: 'project', projectId: 'p' },
+        mode: 'exclusive',
+        version: 1,
+        state: 'RELEASED',
+        acquiredAt: new Date('2026-08-13T00:00:00.000Z'),
+        lastHeartbeatAt: new Date('2026-08-13T00:00:00.000Z'),
+        releasedAt: new Date('2026-08-13T00:01:00.000Z')
+      }
+    });
     await expect(
       persistence.resumeRepairAttempt({
         runId: 'run-1',

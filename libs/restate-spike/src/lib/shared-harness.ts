@@ -110,7 +110,7 @@ export const createRestateSpikeHarness = (
         verifications: [verification],
         reviews: [review],
         leases: [lease],
-        integration: { status: 'integrated' },
+        integration: { status: 'integrated', outputAttemptId: repairAttempt.id },
         dispatchCount: 1
       };
 
@@ -142,7 +142,7 @@ export const createRestateSpikeHarness = (
           repairAttemptId: repairAttempt.id,
           releaseState: 'RELEASED'
         },
-        integration: { status: 'integrated' },
+        integration: { status: 'integrated', outputAttemptId: repairAttempt.id },
         dispatchCount: 1
       };
 

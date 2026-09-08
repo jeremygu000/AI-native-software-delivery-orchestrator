@@ -1224,7 +1224,7 @@ export class DrizzleSqliteOrchestrationPersistence
     }
     return {
       status: record.status as 'integrated' | 'blocked',
-      ...(record.outputAttemptId != null ? { outputAttemptId: record.outputAttemptId } : {})
+      ...(record.outputAttemptId !== null ? { outputAttemptId: record.outputAttemptId } : {})
     };
   }
 
@@ -1503,6 +1503,10 @@ export class DrizzleSqliteOrchestrationPersistence
         readonly state: PersistedTaskRepairAttempt['attempt']['state'];
       }
     | { readonly status: 'version-conflict'; readonly actualRevision: number }
+    | {
+        readonly status: 'lease-not-released';
+        readonly actualState: PersistedWriteLease['lease']['state'];
+      }
   > {
     this.#assertRunId(request.runId);
     return this.#exclusiveReevaluation(() =>
@@ -1526,6 +1530,25 @@ export class DrizzleSqliteOrchestrationPersistence
         }
         if (attempt.state !== 'BLOCKED') {
           return { status: 'not-blocked' as const, state: attempt.state };
+        }
+        if (attempt.blocker?.type === 'lease') {
+          const leaseRecord = this.#db
+            .select()
+            .from(writeLeases)
+            .where(
+              and(
+                eq(writeLeases.runId, request.runId),
+                eq(writeLeases.leaseId, attempt.blocker.leaseId)
+              )
+            )
+            .get();
+          if (leaseRecord === undefined) {
+            return { status: 'lease-not-released' as const, actualState: 'ACTIVE' as const };
+          }
+          const lease = decode(leaseRecord.leaseJson, isWriteLease, 'write lease');
+          if (lease.state !== 'RELEASED' && lease.state !== 'STALE') {
+            return { status: 'lease-not-released' as const, actualState: lease.state };
+          }
         }
         const resumed = {
           ...attempt,

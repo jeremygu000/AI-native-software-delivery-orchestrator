@@ -245,7 +245,10 @@ export const createMockActivities = (ctx: MockActivityContext) => ({
   }): Promise<{
     readonly integrationStatus: 'integrated' | 'blocked';
   }> => {
-    const integration: IntegrationEvidence = { status: 'integrated' };
+    const integration: IntegrationEvidence = {
+      status: 'integrated',
+      outputAttemptId: request.reviewSubjectRef.outputAttemptId
+    };
     ctx.evidenceStore.setIntegration(integration);
     return { integrationStatus: 'integrated' };
   },
@@ -366,7 +369,7 @@ export const createMockActivities = (ctx: MockActivityContext) => ({
     };
     ctx.evidenceStore.addReview(review);
 
-    const integration: IntegrationEvidence = { status: 'integrated' };
+    const integration: IntegrationEvidence = { status: 'integrated', outputAttemptId: repairId };
     ctx.evidenceStore.setIntegration(integration);
 
     const blockedLease: LeaseEvidence = {

@@ -90,6 +90,7 @@ export interface LeaseEvidence {
 
 export interface IntegrationEvidence {
   readonly status: 'integrated' | 'blocked';
+  readonly outputAttemptId?: string;
 }
 
 export interface BlockedResumeEvidence {

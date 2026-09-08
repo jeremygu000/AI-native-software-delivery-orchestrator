@@ -93,7 +93,7 @@ interface EvidenceState {
     lastHeartbeatAt: Date;
     releasedAt?: Date;
   }>;
-  integration: { status: 'integrated' | 'blocked' } | null;
+  integration: { status: 'integrated' | 'blocked'; outputAttemptId?: string } | null;
   blockedResume: {
     blockerLeaseId: string;
     blockedRevision: number;
@@ -259,7 +259,7 @@ export const createRestateSpikeWorkflow = () => {
             }
           });
 
-          evidence.integration = { status: 'integrated' };
+          evidence.integration = { status: 'integrated', outputAttemptId: repairId };
 
           return {
             builderAttempt: evidence.builderAttempt,
@@ -348,7 +348,7 @@ export const createRestateSpikeWorkflow = () => {
             }
           });
 
-          evidence.integration = { status: 'integrated' };
+          evidence.integration = { status: 'integrated', outputAttemptId: repairId };
 
           const blockedLeaseId = `lease-blocker-${request.runId}-${makeId()}`;
           evidence.leases.push({

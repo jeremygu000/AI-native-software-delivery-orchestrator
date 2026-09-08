@@ -221,6 +221,63 @@ describe('Temporal spike - Scenario B real authority (SQLite)', () => {
       scenario: 'blocked-repair-restart-resume'
     });
   }, 15_000);
+
+  it('rejects resume when blocker lease is still ACTIVE but unrelated lease is RELEASED', async () => {
+    const blockedRepairAttemptId = `repair-blocked-neg-${runId}`;
+    const blockerLeaseId = `lease-${blockedRepairAttemptId}`;
+    const builderAttemptId = `builder-neg-${runId}`;
+    const unrelatedLeaseId = `lease-unrelated-${runId}`;
+
+    await serviceImpl.setupBlockedRepair({
+      runId,
+      repairAttemptId: blockedRepairAttemptId,
+      blockerLeaseId,
+      builderAttemptId
+    });
+
+    await fixture.persistence.persistLease({
+      runId,
+      lease: {
+        id: unrelatedLeaseId,
+        runId,
+        agentId: 'unrelated-agent',
+        taskId,
+        resource: { type: 'project' as const, projectId: 'other-project' },
+        mode: 'exclusive' as const,
+        version: 1,
+        state: 'RELEASED' as const,
+        acquiredAt: new Date(),
+        lastHeartbeatAt: new Date()
+      }
+    });
+
+    const handle = await client.workflow.start(runTemporalSpikeWorkflow, {
+      taskQueue: worker.options.taskQueue,
+      workflowId: `forge-run:temporal-real-b-neg-${runId}`,
+      args: [
+        {
+          runId,
+          scenario: 'blocked-repair-restart-resume' as const,
+          blockedRepairAttemptId
+        }
+      ]
+    });
+
+    await environment.sleep(100);
+
+    await handle.signal(repairWakeSignal, {
+      repairAttemptId: blockedRepairAttemptId
+    });
+
+    await environment.sleep(500);
+
+    const dispatches = await fixture.persistence.recoverRepairResumeDispatches(runId);
+    expect(dispatches.filter((d) => d.repairAttemptId === blockedRepairAttemptId)).toHaveLength(0);
+
+    const repairs = await fixture.persistence.recoverRepairAttempts(runId);
+    const blockedRepair = repairs.find((r) => r.attempt.id === blockedRepairAttemptId);
+    expect(blockedRepair?.attempt.state).toBe('BLOCKED');
+  }, 15_000);
 });
 
 describe('Temporal spike - Scenario B worker restart (SQLite + Local)', () => {
@@ -279,7 +336,7 @@ describe('Temporal spike - Scenario B worker restart (SQLite + Local)', () => {
 
     await environment.sleep(500);
 
-    await workerA.shutdown();
+    workerA.shutdown();
     await workerARun;
 
     await fixture.persistence.persistLease({

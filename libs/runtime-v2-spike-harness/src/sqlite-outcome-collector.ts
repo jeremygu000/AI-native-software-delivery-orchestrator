@@ -2,9 +2,7 @@ import type {
   PersistedAgentExecutionAttempt,
   PersistedTaskCodeReview,
   PersistedTaskRepairAttempt,
-  PersistedWriteLease,
-  TaskCodeReview,
-  TaskCodeReviewSubject
+  PersistedWriteLease
 } from '@ai-native-software-delivery-orchestrator/domain';
 import type { DurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
@@ -78,13 +76,11 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
   }
 
   return {
-    builderAttempt: builderAttempt.attempt as DurableExecutionSpikeOutcome['builderAttempt'],
-    repairs: repairs as DurableExecutionSpikeOutcome['repairs'],
-    verifications: verifications as DurableExecutionSpikeOutcome['verifications'],
+    builderAttempt: builderAttempt.attempt,
+    repairs,
+    verifications,
     reviews: normalizeReviews(reviews),
-    leases: leases.map(
-      (p: PersistedWriteLease) => p.lease
-    ) as DurableExecutionSpikeOutcome['leases'],
+    leases: leases.map((p: PersistedWriteLease) => p.lease),
     integration,
     blockedResume,
     dispatchCount
@@ -94,8 +90,10 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
 function normalizeReviews(
   reviews: readonly PersistedTaskCodeReview[]
 ): DurableExecutionSpikeOutcome['reviews'] {
-  return reviews.map((r: PersistedTaskCodeReview) => ({
-    review: r.review as TaskCodeReview,
-    subject: r.subject as TaskCodeReviewSubject
-  }));
+  return reviews
+    .filter((r: PersistedTaskCodeReview) => r.subject !== undefined)
+    .map((r: PersistedTaskCodeReview) => ({
+      review: r.review,
+      subject: r.subject!
+    }));
 }

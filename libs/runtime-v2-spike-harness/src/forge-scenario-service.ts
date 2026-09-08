@@ -101,7 +101,7 @@ export const createForgeScenarioService = (
       };
     },
 
-    async evaluateBuilderOutput(request) {
+    async evaluateBuilderOutput(_request) {
       reviewIteration++;
       const verificationId = `verification-${makeId()}`;
       const outputAttemptId = `output-${builderAttemptId}`;
@@ -298,16 +298,6 @@ export const createForgeScenarioService = (
       });
 
       if (resumeResult.status === 'resumed') {
-        const leases = await persistence.recoverLeases(runId);
-        const blockerLease = leases.find(
-          (l) => l.lease.state === 'RELEASED' || l.lease.state === 'STALE'
-        );
-        if (!blockerLease) {
-          throw new Error(
-            `No RELEASED or STALE lease found after blocked repair resume for run ${runId}`
-          );
-        }
-
         const verificationId = `verification-resume-${makeId()}`;
 
         const verificationPayload: Omit<TaskVerificationEvidence, 'fingerprint'> = {
@@ -336,7 +326,7 @@ export const createForgeScenarioService = (
           findings: []
         };
         const reviewSubject: TaskCodeReviewSubject = {
-          builderAttemptId: 'placeholder',
+          builderAttemptId: resumeResult.attempt.parentReviewSubject.builderAttemptId,
           outputAttemptId: request.repairAttemptId,
           workspaceId,
           workspaceRevision: 3,
@@ -367,6 +357,8 @@ export const createForgeScenarioService = (
           completedAt: new Date()
         };
         await persistence.persistRepairAttempt({ runId, attempt: completedRepair });
+
+        await persistence.persistIntegration(runId, 'integrated', request.repairAttemptId);
 
         return {
           repairAttemptId: request.repairAttemptId,

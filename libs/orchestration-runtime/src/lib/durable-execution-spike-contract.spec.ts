@@ -94,7 +94,7 @@ const outcome = (): DurableExecutionSpikeOutcome => ({
     repairAttemptId: 'repair-1',
     releaseState: 'RELEASED'
   },
-  integration: { status: 'integrated' },
+  integration: { status: 'integrated', outputAttemptId: 'repair-1' },
   dispatchCount: 1
 });
 
@@ -135,6 +135,15 @@ describe('durable execution spike authority harness', () => {
         scenario: 'blocked-repair-restart-resume'
       })
     ).toThrow('must bind the final repair output');
+    expect(() =>
+      assertDurableExecutionSpikeOutcome({
+        outcome: {
+          ...outcome(),
+          integration: { status: 'integrated' }
+        },
+        scenario: 'blocked-repair-restart-resume'
+      })
+    ).toThrow('Integration must bind the specific repair output');
     expect(() =>
       assertDurableExecutionSpikeOutcome({
         outcome: { ...outcome(), repairs: [] },

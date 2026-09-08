@@ -171,10 +171,7 @@ export const assertDurableExecutionSpikeOutcome = (request: {
       'Final verification and review must bind the final repair output'
     );
   }
-  if (
-    request.outcome.integration.outputAttemptId !== undefined &&
-    request.outcome.integration.outputAttemptId !== repair.id
-  ) {
+  if (request.outcome.integration.outputAttemptId !== repair.id) {
     throw new DurableExecutionSpikeAuthorityError(
       'Integration must bind the specific repair output it admitted'
     );

@@ -236,6 +236,7 @@ export interface TaskRepairResumeStore extends TaskRepairAttemptStore {
     | { readonly status: 'not-found' }
     | { readonly status: 'not-blocked'; readonly state: TaskRepairAttempt['state'] }
     | { readonly status: 'version-conflict'; readonly actualRevision: number }
+    | { readonly status: 'lease-not-released'; readonly actualState: WriteLease['state'] }
   >;
 }
 
