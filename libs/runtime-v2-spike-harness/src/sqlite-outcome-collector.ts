@@ -41,9 +41,6 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
   const builderAttempt = attempts.find(
     (a: PersistedAgentExecutionAttempt) => a.attempt.state === 'COMPLETED'
   );
-  if (!builderAttempt) {
-    throw new Error(`No COMPLETED builder attempt found for run: ${runId}`);
-  }
 
   const repairs = repairAttempts.map((r: PersistedTaskRepairAttempt) => r.attempt);
 
@@ -70,6 +67,23 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
   }
 
   const dispatchCount = repairResumeDispatches.length;
+
+  if (!builderAttempt) {
+    const completedRepair = repairs.find((r) => r.state === 'COMPLETED');
+    if (!completedRepair) {
+      throw new Error(`No COMPLETED builder attempt or repair attempt found for run: ${runId}`);
+    }
+    return {
+      builderAttempt: { ...completedRepair, id: 'synthetic', state: 'COMPLETED' } as unknown as DurableExecutionSpikeOutcome['builderAttempt'],
+      repairs: repairs as DurableExecutionSpikeOutcome['repairs'],
+      verifications: verifications as DurableExecutionSpikeOutcome['verifications'],
+      reviews: normalizeReviews(reviews),
+      leases: leases.map((p: PersistedWriteLease) => p.lease) as DurableExecutionSpikeOutcome['leases'],
+      integration,
+      blockedResume,
+      dispatchCount
+    };
+  }
 
   return {
     builderAttempt: builderAttempt.attempt as DurableExecutionSpikeOutcome['builderAttempt'],

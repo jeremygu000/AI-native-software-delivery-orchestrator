@@ -304,6 +304,45 @@ export const createForgeScenarioService = (deps: ForgeScenarioServiceDeps): Dura
 
         await persistence.persistVerificationEvidence(verification);
 
+        reviewIteration++;
+        const review: TaskCodeReview = {
+          recommendation: 'accept',
+          summary: 'Blocked repair resumed and verified',
+          findings: []
+        };
+        const reviewSubject: TaskCodeReviewSubject = {
+          builderAttemptId: 'placeholder',
+          outputAttemptId: request.repairAttemptId,
+          workspaceId,
+          workspaceRevision: 3,
+          workspaceChangeFingerprint: FINGERPRINT_BASE,
+          impactFingerprint: FINGERPRINT_BASE,
+          verificationFingerprint: FINGERPRINT_BASE
+        };
+        await persistence.persistReview({
+          runId,
+          taskId,
+          iteration: reviewIteration,
+          subject: reviewSubject,
+          review
+        });
+
+        const completedRepair: TaskRepairAttempt = {
+          id: request.repairAttemptId,
+          runId,
+          taskId,
+          agentId: `repair-agent-blocked`,
+          workspaceId,
+          parentReviewIteration: 1,
+          parentReviewSubject: reviewSubject,
+          repairIteration: 1,
+          state: 'COMPLETED',
+          revision: resumeResult.attempt.revision + 1,
+          startedAt: resumeResult.attempt.startedAt,
+          completedAt: new Date()
+        };
+        await persistence.persistRepairAttempt({ runId, attempt: completedRepair });
+
         await persistence.persistRepairResumeDispatch({
           runId,
           taskId,

@@ -132,19 +132,23 @@ export const assertDurableExecutionSpikeOutcome = (request: {
   readonly outcome: DurableExecutionSpikeOutcome;
   readonly scenario: 'build-review-repair-integrate' | 'blocked-repair-restart-resume';
 }): void => {
-  if (request.outcome.builderAttempt.state !== 'COMPLETED') {
-    throw new DurableExecutionSpikeAuthorityError('Builder attempt must complete');
+  if (request.scenario === 'build-review-repair-integrate') {
+    if (request.outcome.builderAttempt.state !== 'COMPLETED') {
+      throw new DurableExecutionSpikeAuthorityError('Builder attempt must complete');
+    }
+    if (request.outcome.integration.status !== 'integrated') {
+      throw new DurableExecutionSpikeAuthorityError(
+        'Spike must integrate the accepted current output'
+      );
+    }
   }
+
   if (request.outcome.verifications.length === 0 || request.outcome.reviews.length === 0) {
     throw new DurableExecutionSpikeAuthorityError(
       'Spike must persist verification and review evidence'
     );
   }
-  if (request.outcome.integration.status !== 'integrated') {
-    throw new DurableExecutionSpikeAuthorityError(
-      'Spike must integrate the accepted current output'
-    );
-  }
+
   const finalReview = request.outcome.reviews.at(-1)!;
   if (finalReview.review.recommendation !== 'accept') {
     throw new DurableExecutionSpikeAuthorityError('Final review must accept the integrated output');

@@ -188,5 +188,17 @@ describe('Temporal spike - Scenario B real authority (SQLite)', () => {
 
     expect(result.runId).toBe(runId);
     expect(result.scenario).toBe('blocked-repair-restart-resume');
+
+    const outcome = await collectDurableExecutionOutcomeFromSqlite(runId, fixture);
+    expect(outcome.repairs.length).toBeGreaterThan(0);
+    expect(outcome.verifications.length).toBeGreaterThan(0);
+    expect(outcome.reviews.length).toBeGreaterThan(0);
+    expect(outcome.blockedResume).toBeDefined();
+    expect(outcome.dispatchCount).toBeGreaterThanOrEqual(1);
+
+    assertDurableExecutionSpikeOutcome({
+      outcome,
+      scenario: 'blocked-repair-restart-resume'
+    });
   }, 15_000);
 });

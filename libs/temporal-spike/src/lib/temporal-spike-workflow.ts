@@ -102,11 +102,17 @@ export const runTemporalSpikeWorkflow = async (
         (wakeSignal.leaseState === 'RELEASED' || wakeSignal.leaseState === 'STALE')
     );
 
-    await activities.executeBlockedRepairResume({
+    const resumeResult = await activities.executeBlockedRepairResume({
       runId: request.runId,
       repairAttemptId: request.blockedRepairAttemptId,
       leaseState: wakeSignal!.leaseState
     });
+
+    if (resumeResult.state === 'unknown') {
+      throw new Error(
+        `Blocked repair resume returned unknown state for repair ${request.blockedRepairAttemptId}`
+      );
+    }
 
     return { runId: request.runId, scenario: request.scenario };
   }
