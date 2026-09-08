@@ -48,23 +48,24 @@ ForgeRunWorkflow(runId)
   │     ├── executeBuilder activity
   │     │     (includes workspace creation, lease lifecycle, impact reconciliation)
   │     │
-  │     ├── reevaluateRun activity  ← post-build: Forge decides accept/repair
+  │     ├── reevaluateRun activity  ← post-build: advance Forge task state
   │     │
   │     ├── evaluateBuilderOutput activity
-  │     │     (verification + code review only; no repairs injection)
+  │     │     (verification + code review; returns recommendation: accept | repair)
   │     │
   │     ├── if recommendation === 'repair':
   │     │     └── repairLoop (inline, not child workflow):
-  │     │           ├── admitRepair activity  ← separate Forge admission gate
+  │     │           ├── admitRepair activity  ← Forge repair admission authority
+  │     │           │     (budget check → persisted PREPARING RepairAttempt)
   │     │           │
-  │     │           ├── executeRepair activity
+  │     │           ├── executeRepair activity  ← dispatches on PREPARING repair
   │     │           │     (execution + lease release + verify + review)
   │     │           │
   │     │           ├── if BLOCKED:
   │     │           │     ├── Workflow: await signal (condition/signal wait)
-  │     │           │     └── resumeBlockedRepair activity  ← after wake
-  │     │           │
-  │     │           ├── reevaluateRun activity  ← post-repair: Forge decides next
+  │     │           │     └── resumeBlockedRepair activity
+  │     │           │           (lease validation + CAS → PREPARING)
+  │     │           │     └── executeRepair(same repairAttemptId)
   │     │           │
   │     │           └── if recommendation === 'repair' (multi-repair):
   │     │                 └── admitRepair → executeRepair → ... (loop)
@@ -74,27 +75,54 @@ ForgeRunWorkflow(runId)
   └── finalizeRunState activity
 ```
 
-### How Scheduler Authority Is Preserved
+### Two Dispatch Authority Paths
 
-The workflow does NOT decide task order or dispatch. Every state transition flows through `reevaluateRun`:
+The workflow MUST NOT self-authorize any dispatch. But not all dispatches go through the Scheduler. There are two distinct authority paths:
 
-1. Workflow calls `reevaluateRun` with a compact event description (runId, eventType, taskId?, leaseId?).
-2. `reevaluateRun` loads full Forge state, calls `Scheduler.reevaluate()`, persists the reevaluation + transitions + attempts atomically.
-3. Returns runnable task/attempt IDs to the workflow.
-4. Workflow ONLY dispatches activities for IDs returned by Forge scheduler.
+**Path 1: Task/builder dispatch → Scheduler authority**
 
-This means the workflow is a **consumer** of Forge scheduler decisions, not a scheduler itself. Temporal handles execution timing; Forge handles authorization of what runs.
+```
+reevaluateRun activity
+  → Scheduler.reevaluate()
+  → persisted PREPARING AgentExecutionAttempt
+  → executeBuilder
+```
 
-## Decision 2b: Workflow Cannot Self-Schedule
+**Path 2: Repair dispatch → Repair admission/resume authority**
+
+```
+admitRepair activity
+  → TaskRepairCoordinator.prepare()
+  → persisted PREPARING RepairAttempt
+  → executeRepair
+
+BLOCKED repair continuation:
+signal wakes
+  → resumeBlockedRepair activity
+  → exact lease validation + CAS
+  → same RepairAttempt → PREPARING
+  → executeRepair(same repairAttemptId)
+```
+
+The Scheduler owns **task scheduling authority**. `TaskRepairCoordinator` owns **repair admission/resume authority**. The workflow consumes both but authorizes neither.
+
+## Decision 2b: Workflow Cannot Self-Authorize Dispatch
 
 The workflow MUST NOT:
 
 - Decide which task to run next based on workflow state alone
-- Create attempt IDs (Forge assigns these in `reevaluateRun`)
-- Skip `reevaluateRun` and directly dispatch `executeBuilder` or `executeRepair`
+- Create attempt IDs (Forge assigns these in `reevaluateRun` or `admitRepair`)
+- Dispatch `executeBuilder` without a preceding `reevaluateRun` returning that task's attempt ID
+- Dispatch `executeRepair` without a preceding `admitRepair` (or `resumeBlockedRepair`) returning that repair's attempt ID
 - Use activity return values to determine task ordering
 
-Every dispatch must be preceded by a `reevaluateRun` call that returns the authorized IDs. This is the concrete implementation of Decision 1 (authority boundary).
+**Task/builder dispatch:** Every builder dispatch must be preceded by a `reevaluateRun` call that returns the authorized task and attempt IDs. This is the Scheduler's authority.
+
+**Repair dispatch:** Every repair dispatch must be preceded by either:
+- `admitRepair` — creates a new PREPARING repair attempt (repair admission authority), or
+- `resumeBlockedRepair` — resumes a BLOCKED repair to PREPARING via CAS (repair resume authority)
+
+This is the concrete implementation of Decision 1 (authority boundary). The workflow is a consumer of Forge authorization decisions; it does not produce them.
 
 ### Why One Workflow Per Run (Not Per Task or Per Repair)
 
@@ -520,7 +548,7 @@ The CLI does NOT contain workflow logic or Worker startup. Workflow logic lives 
 M3.1 is complete when this ADR defines:
 
 1. ✅ Run/workflow topology (Decision 2)
-2. ✅ Workflow cannot self-schedule — scheduler authority preserved (Decision 2b)
+2. ✅ Workflow cannot self-authorize dispatch — two authority paths (Decision 2b)
 3. ✅ Workflow ↔ Activity boundaries (Decision 3)
 4. ✅ Forge authority boundaries with concrete seams (Decision 1, Decision 4)
 5. ✅ Signal/wake semantics (Decision 5)
