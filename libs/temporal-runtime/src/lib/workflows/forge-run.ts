@@ -1,6 +1,11 @@
 import { proxyActivities } from '@temporalio/workflow';
 import type { ForgeActivities } from '../activities/forge-activities.js';
-import type { ForgeRunInput, ForgeRunResult } from '../contracts.js';
+import {
+  ForgeRunInputSchema,
+  ForgeRunResultSchema,
+  type ForgeRunInput,
+  type ForgeRunResult
+} from '../contracts.js';
 
 const {
   reevaluateRun,
@@ -9,9 +14,9 @@ const {
   admitRepair,
   executeRepair,
   integrateAcceptedOutput,
-  finalizeRunState,
+  finalizeRunState
 } = proxyActivities<ForgeActivities>({
-  startToCloseTimeout: '5 minutes',
+  startToCloseTimeout: '5 minutes'
 });
 
 /**
@@ -28,7 +33,7 @@ const {
  *   finalizeRunState
  */
 export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunResult> {
-  const { runId } = input;
+  const { runId } = ForgeRunInputSchema.parse(input);
 
   // Step 1: ask the scheduler which tasks are authorized to start
   const initialReevaluation = await reevaluateRun({ runId });
@@ -36,6 +41,8 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
   const seenTaskIds = new Set(authorizedTasks.map((task) => task.taskId));
 
   // Step 2: process each task start authorized by Forge
+  let runSucceeded = true;
+
   while (authorizedTasks.length > 0) {
     const task = authorizedTasks.shift();
     if (task === undefined) {
@@ -47,7 +54,7 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
       runId,
       taskId: task.taskId,
       bindingId: task.bindingId,
-      attemptId: task.attemptId,
+      attemptId: task.attemptId
     });
 
     // Step 4: advance Forge task state after the builder run
@@ -66,7 +73,7 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
       taskId: task.taskId,
       workspaceId: builderResult.workspaceId,
       builderAttemptId: builderResult.attemptId,
-      impactId: builderResult.impactId,
+      impactId: builderResult.impactId
     });
 
     // Reject: no integration for this task
@@ -75,14 +82,16 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
     }
 
     let finalSubjectRef = evalResult.subjectRef;
+    let recommendation: 'accept' | 'repair' | 'reject' = evalResult.recommendation;
+    let repairFailed = false;
 
-    // Step 6 (optional): repair admission + execution path
-    if (evalResult.recommendation === 'repair') {
+    // Step 6 (optional): repair admission + execution loop.
+    while (recommendation === 'repair') {
       const admittedRepair = await admitRepair({
         runId,
         taskId: task.taskId,
         reviewId: evalResult.reviewId,
-        subjectRef: evalResult.subjectRef,
+        subjectRef: finalSubjectRef
       });
 
       const repairResult = await executeRepair({
@@ -92,17 +101,32 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
         builderAttemptId: builderResult.attemptId,
         impactId: builderResult.impactId,
         reviewId: evalResult.reviewId,
-        repairAttemptId: admittedRepair.repairAttemptId,
+        repairAttemptId: admittedRepair.repairAttemptId
       });
 
-      // Repair did not complete or post-repair recommendation is reject — skip integration
-      if (repairResult.state !== 'completed' || repairResult.recommendation === 'reject') {
-        continue;
+      if (repairResult.state !== 'completed' || repairResult.subjectRef === undefined) {
+        runSucceeded = false;
+        repairFailed = true;
+        break;
       }
 
-      if (repairResult.subjectRef !== undefined) {
-        finalSubjectRef = repairResult.subjectRef;
+      if (repairResult.recommendation === undefined) {
+        runSucceeded = false;
+        repairFailed = true;
+        break;
       }
+
+      finalSubjectRef = repairResult.subjectRef;
+      recommendation = repairResult.recommendation;
+    }
+
+    if (!runSucceeded || repairFailed) {
+      continue;
+    }
+
+    if (recommendation !== 'accept') {
+      runSucceeded = false;
+      continue;
     }
 
     // Step 7: integrate the accepted output
@@ -110,12 +134,16 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
       runId,
       taskId: task.taskId,
       workspaceId: builderResult.workspaceId,
-      subjectRef: finalSubjectRef,
+      subjectRef: finalSubjectRef
     });
   }
 
   // Step 8: finalize the run state
-  await finalizeRunState({ runId });
+  const finalState = await finalizeRunState({ runId });
 
-  return { runId, status: 'completed' };
+  const finalResult = ForgeRunResultSchema.parse({
+    runId,
+    status: runSucceeded && finalState.status === 'completed' ? 'completed' : 'failed'
+  });
+  return finalResult;
 }

@@ -2503,3 +2503,35 @@ The `forge cancel` command cancels an active run by calling `DrizzleSqliteOrches
 Both commands support `--run-directory` to specify custom database locations, defaulting to `~/.forge/runs/<run-id>`.
 
 `pnpm check` passes with 578 tests passed, 1 skipped, and 90.31% branch coverage; `pnpm build` also passes. Stage 24 is closed.
+
+## Stage M3.3: Temporal runtime Scenario A slice
+
+This stage added the first real Temporal workflow slice for the Forge runtime, and then corrected its authority model after review. The goal was to prove that the workflow can carry only compact identifiers while the worker-side activities own the heavier orchestration work.
+
+What was built:
+
+- compact Zod contracts for the workflow input, result, authorized task data, builder execution, evaluation, repair admission, repair execution, integration, and finalization;
+- a Scenario A workflow that calls `reevaluateRun`, executes builders, admits repairs separately, integrates only accepted output, and then finalizes the run;
+- a Temporal activity surface that matches the workflow boundary;
+- workflow tests for empty runs, accepted output, repaired output, second-repair admission, and finalization failure;
+- a worker factory that now requires explicit Forge activities instead of silently inventing a default.
+
+Why this mattered:
+
+- The workflow must not decide who is allowed to run; that authority belongs to `reevaluateRun`.
+- Repair admission must stay separate from output evaluation, so the workflow can fail closed instead of assuming a repair attempt exists.
+- The workflow must return the final run state from `finalizeRunState`, not a hand-written success flag.
+
+What was verified:
+
+- TypeScript build for `libs/temporal-runtime` and `apps/temporal-worker` passed.
+- Temporal workflow tests passed, including the repaired authority model and the second-repair regression.
+
+Current limitation:
+
+- `apps/temporal-worker/src/main.ts` is still only placeholder wiring and does not yet build the real production service graph.
+
+What this stage enables next:
+
+- the app-local worker composition root can now be wired against a stable workflow contract instead of a placeholder slice;
+- later stages can replace the temporary worker stub with actual Forge runtime services.

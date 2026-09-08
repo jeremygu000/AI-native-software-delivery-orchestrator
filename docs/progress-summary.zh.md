@@ -412,7 +412,7 @@ Temporal 测试证明工作流可以正确走到这些分支:
 ### 这一阶段下一步能做什么
 
 这一阶段让下一步可以直接去写真实的生产 worker composition root,而不用再猜工作流 contract
- 应该长什么样。下一阶段可以把持久化运行时依赖接进 Activity 层,而不是再修改 workflow 边界。
+应该长什么样。下一阶段可以把持久化运行时依赖接进 Activity 层,而不是再修改 workflow 边界。
 
 ## 阶段六:读取真实的 pnpm 工作区
 
@@ -2195,3 +2195,35 @@ Stage 24 为 CLI 添加了运行操作和恢复控制命令。
 两个命令都支持 `--run-directory` 指定自定义数据库位置，默认为 `~/.forge/runs/<run-id>`。
 
 `pnpm check` 通过：578 passed、1 skipped、90.31% branch coverage；`pnpm build` 也通过。Stage 24 已关闭。
+
+## Stage M3.3：Temporal runtime Scenario A slice
+
+这一阶段先做出了 Forge runtime 的第一个真实 Temporal workflow 切片，随后根据评审结果修正了它的授权模型。目标是证明：workflow 只携带紧凑的标识符，而更重的编排工作由 worker 侧 activity 承担。
+
+做了什么：
+
+- 为 workflow 输入、结果、已授权任务数据、builder 执行、评估、repair admission、repair 执行、集成和最终收尾创建了紧凑的 Zod 合同；
+- 实现了 Scenario A workflow：先调用 `reevaluateRun`，再执行 builder，单独做 repair admission，只集成被接受的输出，最后执行 run 收尾；
+- 定义了与 workflow 边界一致的 Temporal activity 接口；
+- 编写了 workflow 测试，覆盖空运行、接受输出、修复输出、第二次 repair admission、以及最终收尾失败；
+- 更新 worker factory，使其必须显式提供 Forge activities，不再默认伪造一个实现。
+
+为什么这样做：
+
+- workflow 不能自己决定谁有执行权限，这个权限属于 `reevaluateRun`。
+- repair admission 必须与输出评估分开，这样 workflow 才能在没有 repair attempt 的情况下 fail closed，而不是默认假定一定有 repair。
+- workflow 必须从 `finalizeRunState` 返回最终运行状态，不能手写一个成功标记就结束。
+
+验证了什么：
+
+- `libs/temporal-runtime` 和 `apps/temporal-worker` 的 TypeScript 构建通过；
+- Temporal workflow 测试通过，包括修正后的授权模型和第二次 repair 的回归场景。
+
+当前限制：
+
+- `apps/temporal-worker/src/main.ts` 目前仍是占位 wiring，还没有真正构建生产用的服务图。
+
+这一阶段为下一步提供了什么：
+
+- app 内部的 worker composition root 现在可以基于稳定的 workflow 合同来接线，而不是围绕占位切片继续猜测；
+- 后续阶段可以把临时 worker stub 替换成真正的 Forge runtime services。

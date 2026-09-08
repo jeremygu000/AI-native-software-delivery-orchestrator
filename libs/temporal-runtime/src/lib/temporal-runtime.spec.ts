@@ -23,14 +23,14 @@ import {
   IntegrateAcceptedOutputResultSchema,
   type FinalizeRunStateInput,
   FinalizeRunStateResultSchema,
-  ForgeRunResultSchema,
+  ForgeRunResultSchema
 } from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '../../../..');
 const WORKFLOWS_PATH = resolve(
   PROJECT_ROOT,
-  'libs/temporal-runtime/dist/lib/workflows/forge-run.js',
+  'libs/temporal-runtime/dist/lib/workflows/forge-run.js'
 );
 
 describe('temporal-runtime Scenario A workflow', () => {
@@ -61,19 +61,23 @@ describe('temporal-runtime Scenario A workflow', () => {
       },
       async integrateAcceptedOutput(_input: IntegrateAcceptedOutputInput) {
         calls.push('integrateAcceptedOutput');
-        throw new Error('integrateAcceptedOutput should not be called');
+        return IntegrateAcceptedOutputResultSchema.parse({
+          runId: 'run-5',
+          taskId: 'task-5',
+          status: 'integrated'
+        });
       },
       async finalizeRunState(_input: FinalizeRunStateInput) {
         calls.push('finalizeRunState');
         return FinalizeRunStateResultSchema.parse({ runId: 'run-1', status: 'completed' });
-      },
+      }
     };
 
     const worker = await Worker.create({
       connection: environment.nativeConnection,
       taskQueue: 'temporal-runtime-test-scenario-a-empty',
       workflowsPath: WORKFLOWS_PATH,
-      activities,
+      activities
     });
 
     const runId = `run-empty-${Date.now()}`;
@@ -84,7 +88,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       const handle = await client.workflow.start(forgeRunWorkflow, {
         taskQueue: 'temporal-runtime-test-scenario-a-empty',
         args: [{ runId }],
-        workflowId: `workflow-${runId}`,
+        workflowId: `workflow-${runId}`
       });
 
       const result = await handle.result();
@@ -106,7 +110,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         calls.push('reevaluateRun');
         return ReevaluateRunResultSchema.parse({
           runId: 'run-2',
-          authorizedTasks: [{ taskId: 'task-1', bindingId: 'binding-1', attemptId: 'attempt-1' }],
+          authorizedTasks: [{ taskId: 'task-1', bindingId: 'binding-1', attemptId: 'attempt-1' }]
         });
       },
       async executeBuilder(input: ExecuteBuilderInput) {
@@ -116,7 +120,7 @@ describe('temporal-runtime Scenario A workflow', () => {
           taskId: input.taskId,
           workspaceId: 'workspace-1',
           attemptId: 'builder-attempt-1',
-          impactId: 'impact-1',
+          impactId: 'impact-1'
         });
       },
       async evaluateBuilderOutput(input: EvaluateBuilderOutputInput) {
@@ -129,9 +133,9 @@ describe('temporal-runtime Scenario A workflow', () => {
           subjectRef: {
             builderAttemptId: 'builder-attempt-1',
             outputAttemptId: 'output-attempt-1',
-            workspaceId: 'workspace-1',
+            workspaceId: 'workspace-1'
           },
-          reviewId: 'review-1',
+          reviewId: 'review-1'
         });
       },
       async admitRepair(_input: AdmitRepairInput) {
@@ -147,20 +151,20 @@ describe('temporal-runtime Scenario A workflow', () => {
         return IntegrateAcceptedOutputResultSchema.parse({
           runId: input.runId,
           taskId: input.taskId,
-          status: 'integrated',
+          status: 'integrated'
         });
       },
       async finalizeRunState(_input: FinalizeRunStateInput) {
         calls.push('finalizeRunState');
         return FinalizeRunStateResultSchema.parse({ runId: 'run-2', status: 'completed' });
-      },
+      }
     };
 
     const worker = await Worker.create({
       connection: environment.nativeConnection,
       taskQueue: 'temporal-runtime-test-scenario-a-accept',
       workflowsPath: WORKFLOWS_PATH,
-      activities,
+      activities
     });
 
     const runId = `run-accept-${Date.now()}`;
@@ -171,7 +175,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       const handle = await client.workflow.start(forgeRunWorkflow, {
         taskQueue: 'temporal-runtime-test-scenario-a-accept',
         args: [{ runId }],
-        workflowId: `workflow-${runId}`,
+        workflowId: `workflow-${runId}`
       });
 
       const result = await handle.result();
@@ -182,7 +186,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         'reevaluateRun',
         'evaluateBuilderOutput:task-1',
         'integrateAcceptedOutput:task-1',
-        'finalizeRunState',
+        'finalizeRunState'
       ]);
     } finally {
       worker.shutdown();
@@ -200,7 +204,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         calls.push('reevaluateRun');
         return ReevaluateRunResultSchema.parse({
           runId: 'run-3',
-          authorizedTasks: [{ taskId: 'task-2', bindingId: 'binding-2', attemptId: 'attempt-2' }],
+          authorizedTasks: [{ taskId: 'task-2', bindingId: 'binding-2', attemptId: 'attempt-2' }]
         });
       },
       async executeBuilder(input: ExecuteBuilderInput) {
@@ -210,7 +214,7 @@ describe('temporal-runtime Scenario A workflow', () => {
           taskId: input.taskId,
           workspaceId: 'workspace-2',
           attemptId: 'builder-attempt-2',
-          impactId: 'impact-2',
+          impactId: 'impact-2'
         });
       },
       async evaluateBuilderOutput(input: EvaluateBuilderOutputInput) {
@@ -223,9 +227,9 @@ describe('temporal-runtime Scenario A workflow', () => {
           subjectRef: {
             builderAttemptId: 'builder-attempt-2',
             outputAttemptId: 'output-attempt-2',
-            workspaceId: 'workspace-2',
+            workspaceId: 'workspace-2'
           },
-          reviewId: 'review-2',
+          reviewId: 'review-2'
         });
       },
       async admitRepair(input: AdmitRepairInput) {
@@ -233,7 +237,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         return AdmitRepairResultSchema.parse({
           runId: input.runId,
           taskId: input.taskId,
-          repairAttemptId: 'repair-attempt-2',
+          repairAttemptId: 'repair-attempt-2'
         });
       },
       async executeRepair(input: ExecuteRepairInput) {
@@ -248,9 +252,9 @@ describe('temporal-runtime Scenario A workflow', () => {
           subjectRef: {
             builderAttemptId: 'builder-attempt-2',
             outputAttemptId: 'repair-output-attempt-2',
-            workspaceId: 'workspace-2',
+            workspaceId: 'workspace-2'
           },
-          reviewId: 'review-3',
+          reviewId: 'review-3'
         });
       },
       async integrateAcceptedOutput(input: IntegrateAcceptedOutputInput) {
@@ -258,20 +262,20 @@ describe('temporal-runtime Scenario A workflow', () => {
         return IntegrateAcceptedOutputResultSchema.parse({
           runId: input.runId,
           taskId: input.taskId,
-          status: 'integrated',
+          status: 'integrated'
         });
       },
       async finalizeRunState(_input: FinalizeRunStateInput) {
         calls.push('finalizeRunState');
         return FinalizeRunStateResultSchema.parse({ runId: 'run-3', status: 'completed' });
-      },
+      }
     };
 
     const worker = await Worker.create({
       connection: environment.nativeConnection,
       taskQueue: 'temporal-runtime-test-scenario-a-repair',
       workflowsPath: WORKFLOWS_PATH,
-      activities,
+      activities
     });
 
     const runId = `run-repair-${Date.now()}`;
@@ -282,7 +286,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       const handle = await client.workflow.start(forgeRunWorkflow, {
         taskQueue: 'temporal-runtime-test-scenario-a-repair',
         args: [{ runId }],
-        workflowId: `workflow-${runId}`,
+        workflowId: `workflow-${runId}`
       });
 
       const result = await handle.result();
@@ -295,8 +299,192 @@ describe('temporal-runtime Scenario A workflow', () => {
         'admitRepair:task-2',
         'executeRepair:task-2',
         'integrateAcceptedOutput:task-2',
-        'finalizeRunState',
+        'finalizeRunState'
       ]);
+    } finally {
+      worker.shutdown();
+      await workerPromise;
+      await environment.teardown();
+    }
+  });
+
+  it('admits a second repair before integrating repaired output', async () => {
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const calls: string[] = [];
+    let repairCallCount = 0;
+
+    const activities: ForgeActivities = {
+      async reevaluateRun(_input: ReevaluateRunInput) {
+        calls.push('reevaluateRun');
+        return ReevaluateRunResultSchema.parse({
+          runId: 'run-5',
+          authorizedTasks: [{ taskId: 'task-5', bindingId: 'binding-5', attemptId: 'attempt-5' }]
+        });
+      },
+      async executeBuilder(input: ExecuteBuilderInput) {
+        calls.push(`executeBuilder:${input.taskId}`);
+        return ExecuteBuilderResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          workspaceId: 'workspace-5',
+          attemptId: 'builder-attempt-5',
+          impactId: 'impact-5'
+        });
+      },
+      async evaluateBuilderOutput(input: EvaluateBuilderOutputInput) {
+        calls.push(`evaluateBuilderOutput:${input.taskId}`);
+        return EvaluateBuilderOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          recommendation: 'repair',
+          verificationId: 'verification-5',
+          subjectRef: {
+            builderAttemptId: 'builder-attempt-5',
+            outputAttemptId: 'output-attempt-5',
+            workspaceId: 'workspace-5'
+          },
+          reviewId: 'review-5'
+        });
+      },
+      async admitRepair(input: AdmitRepairInput) {
+        calls.push(`admitRepair:${input.taskId}`);
+        return AdmitRepairResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          repairAttemptId: `repair-attempt-5${repairCallCount === 0 ? 'a' : 'b'}`
+        });
+      },
+      async executeRepair(input: ExecuteRepairInput) {
+        repairCallCount += 1;
+        calls.push(`executeRepair:${input.taskId}:${input.repairAttemptId}`);
+        return ExecuteRepairResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          state: 'completed',
+          repairAttemptId: input.repairAttemptId,
+          recommendation: repairCallCount === 1 ? 'repair' : 'accept',
+          verificationId: repairCallCount === 1 ? 'verification-5b' : 'verification-5c',
+          subjectRef: {
+            builderAttemptId: 'builder-attempt-5',
+            outputAttemptId:
+              repairCallCount === 1 ? 'repair-output-attempt-5' : 'repair-output-attempt-5b',
+            workspaceId: 'workspace-5'
+          },
+          reviewId: repairCallCount === 1 ? 'review-5b' : 'review-5c'
+        });
+      },
+      async integrateAcceptedOutput(_input: IntegrateAcceptedOutputInput) {
+        calls.push('integrateAcceptedOutput');
+        return IntegrateAcceptedOutputResultSchema.parse({
+          runId: 'run-5',
+          taskId: 'task-5',
+          status: 'integrated'
+        });
+      },
+      async finalizeRunState(_input: FinalizeRunStateInput) {
+        calls.push('finalizeRunState');
+        return FinalizeRunStateResultSchema.parse({ runId: 'run-5', status: 'completed' });
+      }
+    };
+
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-runtime-test-scenario-a-repair-fail-closed',
+      workflowsPath: WORKFLOWS_PATH,
+      activities
+    });
+
+    const runId = `run-repair-fail-${Date.now()}`;
+    const client = new Client({ connection: environment.client.connection });
+
+    const workerPromise = worker.run();
+    try {
+      const handle = await client.workflow.start(forgeRunWorkflow, {
+        taskQueue: 'temporal-runtime-test-scenario-a-repair-fail-closed',
+        args: [{ runId }],
+        workflowId: `workflow-${runId}`
+      });
+
+      const result = await handle.result();
+      expect(result).toEqual({ runId, status: 'completed' });
+      expect(calls).toEqual([
+        'reevaluateRun',
+        'executeBuilder:task-5',
+        'reevaluateRun',
+        'evaluateBuilderOutput:task-5',
+        'admitRepair:task-5',
+        'executeRepair:task-5:repair-attempt-5a',
+        'admitRepair:task-5',
+        'executeRepair:task-5:repair-attempt-5b',
+        'integrateAcceptedOutput',
+        'finalizeRunState'
+      ]);
+    } finally {
+      worker.shutdown();
+      await workerPromise;
+      await environment.teardown();
+    }
+  });
+
+  it('returns failed when Forge finalization fails', async () => {
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const calls: string[] = [];
+
+    const activities: ForgeActivities = {
+      async reevaluateRun(_input: ReevaluateRunInput) {
+        calls.push('reevaluateRun');
+        return ReevaluateRunResultSchema.parse({
+          runId: 'run-6',
+          authorizedTasks: []
+        });
+      },
+      async executeBuilder(_input: ExecuteBuilderInput) {
+        calls.push('executeBuilder');
+        throw new Error('executeBuilder should not be called');
+      },
+      async evaluateBuilderOutput(_input: EvaluateBuilderOutputInput) {
+        calls.push('evaluateBuilderOutput');
+        throw new Error('evaluateBuilderOutput should not be called');
+      },
+      async admitRepair(_input: AdmitRepairInput) {
+        calls.push('admitRepair');
+        throw new Error('admitRepair should not be called');
+      },
+      async executeRepair(_input: ExecuteRepairInput) {
+        calls.push('executeRepair');
+        throw new Error('executeRepair should not be called');
+      },
+      async integrateAcceptedOutput(_input: IntegrateAcceptedOutputInput) {
+        calls.push('integrateAcceptedOutput');
+        throw new Error('integrateAcceptedOutput should not be called');
+      },
+      async finalizeRunState(_input: FinalizeRunStateInput) {
+        calls.push('finalizeRunState');
+        return FinalizeRunStateResultSchema.parse({ runId: 'run-6', status: 'failed' });
+      }
+    };
+
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-runtime-test-scenario-a-finalize-failed',
+      workflowsPath: WORKFLOWS_PATH,
+      activities
+    });
+
+    const runId = `run-finalize-failed-${Date.now()}`;
+    const client = new Client({ connection: environment.client.connection });
+
+    const workerPromise = worker.run();
+    try {
+      const handle = await client.workflow.start(forgeRunWorkflow, {
+        taskQueue: 'temporal-runtime-test-scenario-a-finalize-failed',
+        args: [{ runId }],
+        workflowId: `workflow-${runId}`
+      });
+
+      const result = await handle.result();
+      expect(result).toEqual({ runId, status: 'failed' });
+      expect(calls).toEqual(['reevaluateRun', 'finalizeRunState']);
     } finally {
       worker.shutdown();
       await workerPromise;
@@ -315,13 +503,13 @@ describe('temporal-runtime Scenario A workflow', () => {
         if (reevaluateCount === 0) {
           return ReevaluateRunResultSchema.parse({
             runId: 'run-4',
-            authorizedTasks: [{ taskId: 'task-a', bindingId: 'binding-a', attemptId: 'attempt-a' }],
+            authorizedTasks: [{ taskId: 'task-a', bindingId: 'binding-a', attemptId: 'attempt-a' }]
           });
         }
 
         return ReevaluateRunResultSchema.parse({
           runId: 'run-4',
-          authorizedTasks: [{ taskId: 'task-b', bindingId: 'binding-b', attemptId: 'attempt-b' }],
+          authorizedTasks: [{ taskId: 'task-b', bindingId: 'binding-b', attemptId: 'attempt-b' }]
         });
       },
       async executeBuilder(input: ExecuteBuilderInput) {
@@ -331,7 +519,7 @@ describe('temporal-runtime Scenario A workflow', () => {
           taskId: input.taskId,
           workspaceId: `workspace-${input.taskId}`,
           attemptId: `builder-${input.taskId}`,
-          impactId: `impact-${input.taskId}`,
+          impactId: `impact-${input.taskId}`
         });
       },
       async evaluateBuilderOutput(input: EvaluateBuilderOutputInput) {
@@ -344,9 +532,9 @@ describe('temporal-runtime Scenario A workflow', () => {
           subjectRef: {
             builderAttemptId: `builder-${input.taskId}`,
             outputAttemptId: `output-${input.taskId}`,
-            workspaceId: `workspace-${input.taskId}`,
+            workspaceId: `workspace-${input.taskId}`
           },
-          reviewId: `review-${input.taskId}`,
+          reviewId: `review-${input.taskId}`
         });
       },
       async admitRepair(_input: AdmitRepairInput) {
@@ -362,20 +550,20 @@ describe('temporal-runtime Scenario A workflow', () => {
         return IntegrateAcceptedOutputResultSchema.parse({
           runId: input.runId,
           taskId: input.taskId,
-          status: 'integrated',
+          status: 'integrated'
         });
       },
       async finalizeRunState(_input: FinalizeRunStateInput) {
         calls.push('finalizeRunState');
         return FinalizeRunStateResultSchema.parse({ runId: 'run-4', status: 'completed' });
-      },
+      }
     };
 
     const worker = await Worker.create({
       connection: environment.nativeConnection,
       taskQueue: 'temporal-runtime-test-scenario-a-chain',
       workflowsPath: WORKFLOWS_PATH,
-      activities,
+      activities
     });
 
     const runId = `run-chain-${Date.now()}`;
@@ -386,7 +574,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       const handle = await client.workflow.start(forgeRunWorkflow, {
         taskQueue: 'temporal-runtime-test-scenario-a-chain',
         args: [{ runId }],
-        workflowId: `workflow-${runId}`,
+        workflowId: `workflow-${runId}`
       });
 
       const result = await handle.result();
@@ -401,7 +589,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         'reevaluateRun',
         'evaluateBuilderOutput:task-b',
         'integrateAcceptedOutput:task-b',
-        'finalizeRunState',
+        'finalizeRunState'
       ]);
     } finally {
       worker.shutdown();
@@ -426,12 +614,8 @@ describe('temporal-runtime payload boundary', () => {
   });
 
   it('ForgeRunResultSchema accepts only compact status enum', () => {
-    expect(ForgeRunResultSchema.safeParse({ runId: 'r1', status: 'completed' }).success).toBe(
-      true,
-    );
+    expect(ForgeRunResultSchema.safeParse({ runId: 'r1', status: 'completed' }).success).toBe(true);
     expect(ForgeRunResultSchema.safeParse({ runId: 'r1', status: 'failed' }).success).toBe(true);
-    expect(ForgeRunResultSchema.safeParse({ runId: 'r1', status: 'unknown' }).success).toBe(
-      false,
-    );
+    expect(ForgeRunResultSchema.safeParse({ runId: 'r1', status: 'unknown' }).success).toBe(false);
   });
 });
