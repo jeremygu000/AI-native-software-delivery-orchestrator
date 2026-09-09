@@ -1,5 +1,6 @@
 import type { TaskConflict, TaskImpact } from './conflict.js';
 import type { AgentExecutionAttempt } from './agent-execution.js';
+import type { AgentCommandPolicy } from './command-policy.js';
 import type {
   ScheduleOptions,
   SchedulerDecision,
@@ -11,18 +12,26 @@ import type {
 import type { TaskContract } from './task-contract.js';
 import type { TaskState } from './task-state.js';
 import type { WriteLease } from './write-lease.js';
-import type { TaskWorkspace } from './workspace.js';
+import {
+  CreateTaskWorkspaceRequest,
+  TaskWorkspace,
+  createTaskWorkspaceRequestSchema
+} from './workspace.js';
 import type { TaskCodeReview } from './task-code-review.js';
 import type { TaskCodeReviewSubject } from './task-code-review.js';
 import type { TaskRepairAttempt } from './task-repair-attempt.js';
 import type { TaskVerificationEvidence } from './task-verification-evidence.js';
 import type { TaskRepairWorkItem } from './task-repair-work-item.js';
 import { z } from 'zod';
+import { agentCommandPolicySchema } from './command-policy.js';
+import { taskImpactSchema } from './conflict.js';
+import { taskLeasePlanSchema, type TaskLeasePlan } from './write-lease.js';
 
 export type OrchestrationRunState = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
 const digestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const recordIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+const nonEmptyStringSchema = z.string().trim().min(1);
 
 export const runAuthorityEvidenceSchema = z.object({
   artifactId: recordIdSchema,
@@ -43,6 +52,64 @@ export const runAuthorityEvidenceSchema = z.object({
 
 export type RunAuthorityEvidence = z.infer<typeof runAuthorityEvidenceSchema>;
 
+export type PersistedTaskExecutionBinding = {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly agentId: string;
+  readonly leasePlan: TaskLeasePlan;
+  readonly impact?: TaskImpact;
+  readonly commandPolicy?: AgentCommandPolicy;
+  readonly trustedCommandPath?: string;
+  readonly workspace: CreateTaskWorkspaceRequest;
+};
+
+export const persistedTaskExecutionBindingSchema = z
+  .object({
+    runId: nonEmptyStringSchema,
+    taskId: nonEmptyStringSchema,
+    agentId: nonEmptyStringSchema,
+    leasePlan: taskLeasePlanSchema,
+    impact: taskImpactSchema.optional(),
+    commandPolicy: agentCommandPolicySchema.optional(),
+    trustedCommandPath: nonEmptyStringSchema.optional(),
+    workspace: createTaskWorkspaceRequestSchema
+  })
+  .superRefine((binding, context) => {
+    if (binding.leasePlan.taskId !== binding.taskId) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Task execution binding lease plan must match task ID',
+        path: ['leasePlan', 'taskId']
+      });
+    }
+    if (
+      binding.workspace.runId !== binding.runId ||
+      binding.workspace.taskId !== binding.taskId
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Task execution binding workspace must match run and task IDs',
+        path: ['workspace']
+      });
+    }
+    if (binding.impact !== undefined) {
+      if (binding.impact.predicted.taskId !== binding.taskId) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Task execution binding impact must match task ID',
+          path: ['impact', 'predicted', 'taskId']
+        });
+      }
+      if (binding.impact.observed !== undefined && binding.impact.observed.taskId !== binding.taskId) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Task execution binding observed impact must match task ID',
+          path: ['impact', 'observed', 'taskId']
+        });
+      }
+    }
+  });
+
 export interface PersistedRun {
   readonly id: string;
   readonly repositoryId: string;
@@ -54,6 +121,7 @@ export interface PersistedRun {
 export interface CreatePersistedRunRequest {
   readonly run: PersistedRun;
   readonly tasks: readonly TaskContract[];
+  readonly taskBindings: readonly PersistedTaskExecutionBinding[];
   readonly hardConflicts: readonly Extract<TaskConflict, { readonly severity: 'hard' }>[];
   readonly riskConflicts: readonly Extract<TaskConflict, { readonly severity: 'none' | 'soft' }>[];
   readonly scheduleOptions: ScheduleOptions;
@@ -150,6 +218,7 @@ export interface PersistedRepairResumeDispatch {
 export interface RecoveredRun {
   readonly run: PersistedRun;
   readonly tasks: readonly TaskContract[];
+  readonly taskBindings: readonly PersistedTaskExecutionBinding[];
   readonly hardConflicts: readonly Extract<TaskConflict, { readonly severity: 'hard' }>[];
   readonly riskConflicts: readonly Extract<TaskConflict, { readonly severity: 'none' | 'soft' }>[];
   readonly scheduleOptions: ScheduleOptions;
@@ -165,6 +234,11 @@ export interface RecoveredRun {
 
 export interface OrchestrationPersistence {
   createRun(request: CreatePersistedRunRequest): Promise<void>;
+  recoverTaskBindings(runId: string): Promise<readonly PersistedTaskExecutionBinding[]>;
+  recoverTaskBinding(
+    runId: string,
+    taskId: string
+  ): Promise<PersistedTaskExecutionBinding | undefined>;
   persistReevaluation(reevaluation: PersistedReevaluation): Promise<void>;
   persistDispatch(dispatch: PersistedDispatch): Promise<void>;
   recoverDispatches(runId: string): Promise<readonly PersistedDispatch[]>;

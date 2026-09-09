@@ -22,6 +22,7 @@ import type {
   PersistedTaskWorkspace,
   PersistedAgentExecutionAttempt,
   PersistedDispatch,
+  PersistedTaskExecutionBinding,
   RecoveredRun,
   PersistedSchedulerDecision,
   SchedulerDecision,
@@ -46,6 +47,7 @@ import {
   taskRepairWorkItemSchema,
   taskVerificationEvidenceSchema,
   assertTaskVerificationEvidenceIntegrity,
+  persistedTaskExecutionBindingSchema,
   taskDecisionsWithTransitions,
   taskSpecificationSchema,
   taskContractSchema,
@@ -150,6 +152,12 @@ const taskWorkspaces = sqliteTable('task_workspaces', {
   runId: text('run_id').notNull(),
   workspaceId: text('workspace_id').notNull(),
   workspaceJson: text('workspace_json').notNull()
+});
+
+const taskExecutionBindings = sqliteTable('task_execution_bindings', {
+  runId: text('run_id').notNull(),
+  taskId: text('task_id').notNull(),
+  bindingJson: text('binding_json').notNull()
 });
 
 const agentExecutionAttempts = sqliteTable('agent_execution_attempts', {
@@ -261,6 +269,10 @@ const isWriteLease = (value: unknown): value is PersistedWriteLease['lease'] =>
 
 const isTaskWorkspace = (value: unknown): value is PersistedTaskWorkspace['workspace'] =>
   taskWorkspaceSchema.safeParse(value).success;
+
+const isPersistedTaskExecutionBinding = (
+  value: unknown
+): value is PersistedTaskExecutionBinding => persistedTaskExecutionBindingSchema.safeParse(value).success;
 
 const isAgentExecutionAttempt = (
   value: unknown
@@ -463,6 +475,12 @@ export class DrizzleSqliteOrchestrationPersistence
         workspace_json TEXT NOT NULL,
         PRIMARY KEY (run_id, workspace_id)
       );
+      CREATE TABLE IF NOT EXISTS task_execution_bindings (
+        run_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        binding_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, task_id)
+      );
       CREATE TABLE IF NOT EXISTS agent_execution_attempts (
         run_id TEXT NOT NULL,
         attempt_id TEXT NOT NULL,
@@ -527,6 +545,15 @@ export class DrizzleSqliteOrchestrationPersistence
     taskSpecificationSchema.parse({ tasks: request.tasks });
     scheduleOptionsSchema.parse(request.scheduleOptions);
     runAuthorityEvidenceSchema.parse(request.run.authority);
+    if (request.taskBindings.length !== request.tasks.length) {
+      throw new PersistenceInputError('Task bindings must match task count');
+    }
+    for (const binding of request.taskBindings) {
+      persistedTaskExecutionBindingSchema.parse(binding);
+      if (binding.runId !== request.run.id) {
+        throw new PersistenceInputError('Task execution binding run ID must match persistence run ID');
+      }
+    }
     await this.#exclusiveReevaluation(() =>
       this.#sqlite.transaction(() => {
         this.#db
@@ -543,7 +570,51 @@ export class DrizzleSqliteOrchestrationPersistence
             scheduleOptionsJson: stringify(request.scheduleOptions)
           })
           .run();
+        for (const binding of request.taskBindings) {
+          this.#db
+            .insert(taskExecutionBindings)
+            .values({
+              runId: binding.runId,
+              taskId: binding.taskId,
+              bindingJson: stringify(binding)
+            })
+            .run();
+        }
       })()
+    );
+  }
+
+  async recoverTaskBindings(runId: string): Promise<readonly PersistedTaskExecutionBinding[]> {
+    this.#assertRunId(runId);
+    return this.#db
+      .select()
+      .from(taskExecutionBindings)
+      .where(eq(taskExecutionBindings.runId, runId))
+      .orderBy(asc(taskExecutionBindings.taskId))
+      .all()
+      .map((record) => decode(record.bindingJson, isPersistedTaskExecutionBinding, 'task execution binding'));
+  }
+
+  async recoverTaskBinding(
+    runId: string,
+    taskId: string
+  ): Promise<PersistedTaskExecutionBinding | undefined> {
+    this.#assertRunId(runId);
+    if (taskId.trim().length === 0) {
+      throw new PersistenceInputError('taskId must not be empty');
+    }
+    const record = this.#db
+      .select()
+      .from(taskExecutionBindings)
+      .where(and(eq(taskExecutionBindings.runId, runId), eq(taskExecutionBindings.taskId, taskId)))
+      .get();
+    if (record === undefined) {
+      return undefined;
+    }
+    return decode(
+      record.bindingJson,
+      isPersistedTaskExecutionBinding,
+      'task execution binding'
     );
   }
 
@@ -986,6 +1057,12 @@ export class DrizzleSqliteOrchestrationPersistence
       .where(eq(taskWorkspaces.runId, runId))
       .orderBy(asc(taskWorkspaces.workspaceId))
       .all();
+    const bindings = this.#db
+      .select()
+      .from(taskExecutionBindings)
+      .where(eq(taskExecutionBindings.runId, runId))
+      .orderBy(asc(taskExecutionBindings.taskId))
+      .all();
     const attempts = this.#db
       .select()
       .from(agentExecutionAttempts)
@@ -1010,6 +1087,14 @@ export class DrizzleSqliteOrchestrationPersistence
           conflict.severity !== 'hard'
       ),
       scheduleOptions: decode(run.scheduleOptionsJson, isScheduleOptions, 'schedule options'),
+      taskBindings: bindings.map((binding) =>
+        decode(
+          binding.bindingJson,
+          (value): value is PersistedTaskExecutionBinding =>
+            persistedTaskExecutionBindingSchema.safeParse(value).success,
+          'task execution binding'
+        )
+      ),
       events: events.map((event) => ({
         runId: event.runId,
         sequence: event.sequence,

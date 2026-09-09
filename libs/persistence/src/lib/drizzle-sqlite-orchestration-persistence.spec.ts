@@ -5,6 +5,7 @@ import type {
   PersistedTaskImpact,
   PersistedWriteLease,
   PersistedAgentExecutionAttempt,
+  PersistedTaskExecutionBinding,
   TaskContract,
   TaskRepairAttempt
 } from '@ai-native-software-delivery-orchestrator/domain';
@@ -71,6 +72,7 @@ const createRunRequest = (id = 'run-1'): CreatePersistedRunRequest => ({
     }
   },
   tasks: [task('A'), task('B', ['A'])],
+  taskBindings: [taskBinding(id, 'A'), taskBinding(id, 'B')],
   hardConflicts: [
     {
       taskA: 'A',
@@ -99,6 +101,46 @@ const createRunRequest = (id = 'run-1'): CreatePersistedRunRequest => ({
   ],
   riskConflicts: [],
   scheduleOptions: { maxConcurrency: 2 }
+});
+
+const taskBinding = (runId = 'run-1', taskId = 'A'): PersistedTaskExecutionBinding => ({
+  runId,
+  taskId,
+  agentId: `agent-${taskId}`,
+  leasePlan: {
+    taskId,
+    predictedResources: [{ type: 'project', projectId: `project-${taskId}` }],
+    source: 'manual'
+  },
+  impact: {
+    predicted: {
+      taskId,
+      projectsRead: new Set([`project-${taskId}`]),
+      projectsWritten: new Set([`project-${taskId}`]),
+      explicitProjectsWritten: new Set(),
+      filesRead: new Set(),
+      filesWritten: new Set(),
+      explicitFilesWritten: new Set(),
+      globFilesWritten: new Set(),
+      symbolDerivedFilesWritten: new Set(),
+      symbolsRead: new Set(),
+      symbolsWritten: new Set(),
+      sharedResources: new Set(),
+      sharedResourceAccesses: [],
+      downstreamProjects: new Set(),
+      riskSignals: []
+    }
+  },
+  workspace: {
+    id: `workspace-${taskId}`,
+    runId,
+    taskId,
+    integrationRepositoryPath: '/integration',
+    workspacePath: `/workspaces/${taskId}`,
+    branchName: `orchestrator/${runId}/${taskId}`,
+    baseRef: 'main',
+    integrationRef: 'main'
+  }
 });
 
 const reevaluation = (sequence = 1): PersistedReevaluation => ({
@@ -243,9 +285,34 @@ const leaseRecord = (): PersistedWriteLease => ({
 });
 
 describe('DrizzleSqliteOrchestrationPersistence', () => {
+  it('persists and recovers task execution bindings independently of the run snapshot', async () => {
+  const persistence = new DrizzleSqliteOrchestrationPersistence();
+  const request = {
+    ...createRunRequest(),
+    taskBindings: [taskBinding('run-1', 'A'), taskBinding('run-1', 'B')]
+  };
+
+    await persistence.createRun(request);
+
+    await expect(persistence.recoverTaskBindings('run-1')).resolves.toEqual(request.taskBindings);
+    await expect(persistence.recoverTaskBinding('run-1', 'A')).resolves.toEqual(
+      request.taskBindings[0]
+    );
+    await expect(persistence.recoverTaskBinding('run-1', 'missing')).resolves.toBeUndefined();
+    await expect(persistence.recoverRun('run-1')).resolves.toMatchObject({
+      run: { id: 'run-1' },
+      taskBindings: request.taskBindings
+    });
+
+    persistence.close();
+  });
+
   it('recovers a complete reconstructable run with structured collections and dates', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
-    await persistence.createRun(createRunRequest());
+    await persistence.createRun({
+      ...createRunRequest(),
+      taskBindings: [taskBinding('run-1', 'A'), taskBinding('run-1', 'B')]
+    });
     await persistence.persistReevaluation(reevaluation());
     await persistence.persistImpact(impactRecord());
     await persistence.persistConflict(conflictRecord());
@@ -262,6 +329,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         authority: createRunRequest().run.authority
       },
       tasks: [task('A'), task('B', ['A'])],
+      taskBindings: [taskBinding('run-1', 'A'), taskBinding('run-1', 'B')],
       scheduleOptions: { maxConcurrency: 2 },
       events: [
         {
