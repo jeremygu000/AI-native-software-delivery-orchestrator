@@ -274,6 +274,31 @@ const isPersistedTaskExecutionBinding = (
   value: unknown
 ): value is PersistedTaskExecutionBinding => persistedTaskExecutionBindingSchema.safeParse(value).success;
 
+const assertBindingRowIdentity = (
+  record: { readonly runId: string; readonly taskId: string; readonly bindingJson: string },
+  binding: PersistedTaskExecutionBinding
+): void => {
+  if (binding.runId !== record.runId || binding.taskId !== record.taskId) {
+    throw new PersistenceInputError('Persisted task execution binding identity mismatch');
+  }
+};
+
+const assertMatchingTaskBindingSets = (
+  tasks: readonly { readonly id: string }[],
+  taskBindings: readonly PersistedTaskExecutionBinding[]
+): void => {
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const bindingIds = new Set(taskBindings.map((binding) => binding.taskId));
+  if (taskIds.size !== bindingIds.size) {
+    throw new PersistenceInputError('Task bindings must match task set');
+  }
+  for (const taskId of taskIds) {
+    if (!bindingIds.has(taskId)) {
+      throw new PersistenceInputError('Task bindings must match task set');
+    }
+  }
+};
+
 const isAgentExecutionAttempt = (
   value: unknown
 ): value is PersistedAgentExecutionAttempt['attempt'] =>
@@ -554,6 +579,7 @@ export class DrizzleSqliteOrchestrationPersistence
         throw new PersistenceInputError('Task execution binding run ID must match persistence run ID');
       }
     }
+    assertMatchingTaskBindingSets(request.tasks, request.taskBindings);
     await this.#exclusiveReevaluation(() =>
       this.#sqlite.transaction(() => {
         this.#db
@@ -586,13 +612,21 @@ export class DrizzleSqliteOrchestrationPersistence
 
   async recoverTaskBindings(runId: string): Promise<readonly PersistedTaskExecutionBinding[]> {
     this.#assertRunId(runId);
-    return this.#db
+    const records = this.#db
       .select()
       .from(taskExecutionBindings)
       .where(eq(taskExecutionBindings.runId, runId))
       .orderBy(asc(taskExecutionBindings.taskId))
-      .all()
-      .map((record) => decode(record.bindingJson, isPersistedTaskExecutionBinding, 'task execution binding'));
+      .all();
+    return records.map((record) => {
+      const binding = decode(
+        record.bindingJson,
+        isPersistedTaskExecutionBinding,
+        'task execution binding'
+      );
+      assertBindingRowIdentity(record, binding);
+      return binding;
+    });
   }
 
   async recoverTaskBinding(
@@ -611,11 +645,13 @@ export class DrizzleSqliteOrchestrationPersistence
     if (record === undefined) {
       return undefined;
     }
-    return decode(
+    const binding = decode(
       record.bindingJson,
       isPersistedTaskExecutionBinding,
       'task execution binding'
     );
+    assertBindingRowIdentity(record, binding);
+    return binding;
   }
 
   async persistReevaluation(reevaluation: PersistedReevaluation): Promise<void> {
@@ -1063,6 +1099,9 @@ export class DrizzleSqliteOrchestrationPersistence
       .where(eq(taskExecutionBindings.runId, runId))
       .orderBy(asc(taskExecutionBindings.taskId))
       .all();
+    if (bindings.length !== decode(run.tasksJson, isTaskContracts, 'task contracts').length) {
+      throw new PersistenceInputError('Recovered task bindings must match recovered task count');
+    }
     const attempts = this.#db
       .select()
       .from(agentExecutionAttempts)
@@ -1088,12 +1127,16 @@ export class DrizzleSqliteOrchestrationPersistence
       ),
       scheduleOptions: decode(run.scheduleOptionsJson, isScheduleOptions, 'schedule options'),
       taskBindings: bindings.map((binding) =>
-        decode(
-          binding.bindingJson,
-          (value): value is PersistedTaskExecutionBinding =>
-            persistedTaskExecutionBindingSchema.safeParse(value).success,
-          'task execution binding'
-        )
+        (() => {
+          const decoded = decode(
+            binding.bindingJson,
+            (value): value is PersistedTaskExecutionBinding =>
+              persistedTaskExecutionBindingSchema.safeParse(value).success,
+            'task execution binding'
+          );
+          assertBindingRowIdentity(binding, decoded);
+          return decoded;
+        })()
       ),
       events: events.map((event) => ({
         runId: event.runId,

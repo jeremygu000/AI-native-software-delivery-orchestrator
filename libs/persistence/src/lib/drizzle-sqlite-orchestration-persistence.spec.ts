@@ -103,6 +103,11 @@ const createRunRequest = (id = 'run-1'): CreatePersistedRunRequest => ({
   scheduleOptions: { maxConcurrency: 2 }
 });
 
+const createRunRequestWithBindings = (id = 'run-1'): CreatePersistedRunRequest => ({
+  ...createRunRequest(id),
+  taskBindings: [taskBinding(id, 'A'), taskBinding(id, 'B')]
+});
+
 const taskBinding = (runId = 'run-1', taskId = 'A'): PersistedTaskExecutionBinding => ({
   runId,
   taskId,
@@ -285,34 +290,33 @@ const leaseRecord = (): PersistedWriteLease => ({
 });
 
 describe('DrizzleSqliteOrchestrationPersistence', () => {
-  it('persists and recovers task execution bindings independently of the run snapshot', async () => {
-  const persistence = new DrizzleSqliteOrchestrationPersistence();
-  const request = {
-    ...createRunRequest(),
-    taskBindings: [taskBinding('run-1', 'A'), taskBinding('run-1', 'B')]
-  };
+  it('persists and recovers task execution bindings across a fresh SQLite reopen', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'orchestration-bindings-'));
+    const path = join(folder, 'recovery.sqlite');
+    const writer = new DrizzleSqliteOrchestrationPersistence(path);
+    const request = createRunRequestWithBindings();
 
-    await persistence.createRun(request);
+    await writer.createRun(request);
+    writer.close();
 
-    await expect(persistence.recoverTaskBindings('run-1')).resolves.toEqual(request.taskBindings);
-    await expect(persistence.recoverTaskBinding('run-1', 'A')).resolves.toEqual(
+    const reader = new DrizzleSqliteOrchestrationPersistence(path);
+
+    await expect(reader.recoverTaskBindings('run-1')).resolves.toEqual(request.taskBindings);
+    await expect(reader.recoverTaskBinding('run-1', 'A')).resolves.toEqual(
       request.taskBindings[0]
     );
-    await expect(persistence.recoverTaskBinding('run-1', 'missing')).resolves.toBeUndefined();
-    await expect(persistence.recoverRun('run-1')).resolves.toMatchObject({
+    await expect(reader.recoverTaskBinding('run-1', 'missing')).resolves.toBeUndefined();
+    await expect(reader.recoverRun('run-1')).resolves.toMatchObject({
       run: { id: 'run-1' },
       taskBindings: request.taskBindings
     });
 
-    persistence.close();
+    reader.close();
   });
 
   it('recovers a complete reconstructable run with structured collections and dates', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
-    await persistence.createRun({
-      ...createRunRequest(),
-      taskBindings: [taskBinding('run-1', 'A'), taskBinding('run-1', 'B')]
-    });
+    await persistence.createRun(createRunRequestWithBindings());
     await persistence.persistReevaluation(reevaluation());
     await persistence.persistImpact(impactRecord());
     await persistence.persistConflict(conflictRecord());

@@ -13,6 +13,7 @@ import type {
   AgentExecutionAttempt,
   CreatePersistedRunRequest,
   OrchestrationPersistence,
+  PersistedTaskExecutionBinding,
   PersistedReevaluation,
   RecoveredRun,
   Scheduler,
@@ -74,7 +75,7 @@ export interface RuntimeTaskBinding {
   readonly workspace: Parameters<WorkspaceManager['create']>[0];
 }
 
-export interface StartRuntimeRunRequest extends CreatePersistedRunRequest {
+export interface StartRuntimeRunRequest extends Omit<CreatePersistedRunRequest, 'taskBindings'> {
   readonly taskBindings: readonly RuntimeTaskBinding[];
 }
 
@@ -163,7 +164,23 @@ export class OrchestrationRuntime {
 
   async #startRun(request: StartRuntimeRunRequest): Promise<RecoveredRuntimeRun> {
     const bindings = this.#bindingsByTask(request);
-    await this.#persistence.createRun(request);
+    await this.#persistence.createRun({
+      run: request.run,
+      tasks: request.tasks,
+      taskBindings: [...bindings.values()].map((binding) => ({
+        runId: request.run.id,
+        taskId: binding.taskId,
+        agentId: binding.agentId,
+        leasePlan: binding.leasePlan,
+        impact: binding.impact,
+        commandPolicy: binding.commandPolicy,
+        trustedCommandPath: binding.trustedCommandPath,
+        workspace: binding.workspace
+      })) satisfies readonly PersistedTaskExecutionBinding[],
+      hardConflicts: request.hardConflicts,
+      riskConflicts: request.riskConflicts,
+      scheduleOptions: request.scheduleOptions
+    });
     const state = {
       request,
       bindings,
@@ -194,12 +211,12 @@ export class OrchestrationRuntime {
   }
 
   async #startOrResumeRun(request: StartRuntimeRunRequest): Promise<RecoveredRuntimeRun> {
-    this.#bindingsByTask(request);
     const evidence = await this.#persistence.recoverRun(request.run.id);
     if (evidence === undefined) {
       return this.#startRun(request);
     }
-    this.#assertRunRequestEvidence(evidence, request);
+    const recoveredBindings = await this.#persistence.recoverTaskBindings(request.run.id);
+    this.#assertRunRequestEvidence(evidence, request, recoveredBindings);
     if (evidence.run.state !== 'ACTIVE') {
       const recovered = await this.recoverRun(request.run.id);
       if (recovered === undefined) {
@@ -407,6 +424,11 @@ export class OrchestrationRuntime {
       if (binding.leasePlan.taskId !== binding.taskId) {
         throw new OrchestrationRuntimeInputError(`Lease plan must match task: ${binding.taskId}`);
       }
+      if (binding.workspace.runId !== request.run.id) {
+        throw new OrchestrationRuntimeInputError(
+          `Workspace binding must match run: ${binding.taskId}`
+        );
+      }
       taskLeasePlanSchema.parse(binding.leasePlan);
       if (binding.commandPolicy !== undefined) {
         agentCommandPolicySchema.parse(binding.commandPolicy);
@@ -421,11 +443,27 @@ export class OrchestrationRuntime {
     return bindings;
   }
 
-  #assertRunRequestEvidence(recovered: RecoveredRun, request: StartRuntimeRunRequest): void {
+  #assertRunRequestEvidence(
+    recovered: RecoveredRun,
+    request: StartRuntimeRunRequest,
+    recoveredBindings: readonly import('@ai-native-software-delivery-orchestrator/domain').PersistedTaskExecutionBinding[]
+  ): void {
+    const requestBindings = request.taskBindings.map((binding) => ({
+      runId: request.run.id,
+      taskId: binding.taskId,
+      agentId: binding.agentId,
+      leasePlan: binding.leasePlan,
+      impact: binding.impact,
+      commandPolicy: binding.commandPolicy,
+      trustedCommandPath: binding.trustedCommandPath,
+      workspace: binding.workspace
+    }));
     if (
       recovered.run.repositoryId !== request.run.repositoryId ||
       !sameRuntimeEvidence(recovered.run.authority, request.run.authority) ||
       !sameRuntimeEvidence(recovered.tasks, request.tasks) ||
+      !sameRuntimeEvidence(recovered.taskBindings, requestBindings) ||
+      !sameRuntimeEvidence(recovered.taskBindings, recoveredBindings) ||
       !sameRuntimeEvidence(recovered.hardConflicts, request.hardConflicts) ||
       !sameRuntimeEvidence(recovered.riskConflicts, request.riskConflicts) ||
       !sameRuntimeEvidence(recovered.scheduleOptions, request.scheduleOptions)
