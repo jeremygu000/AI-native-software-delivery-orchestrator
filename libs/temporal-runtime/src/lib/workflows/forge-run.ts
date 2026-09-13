@@ -51,7 +51,6 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
     const builderResult = await executeBuilder({
       runId,
       taskId: task.taskId,
-      bindingId: task.bindingId,
       attemptId: task.attemptId
     });
 

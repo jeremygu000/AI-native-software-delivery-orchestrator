@@ -2227,3 +2227,34 @@ Stage 24 为 CLI 添加了运行操作和恢复控制命令。
 
 - app 内部的 worker composition root 现在可以基于稳定的 workflow 合同来接线，而不是围绕占位切片继续猜测；
 - 后续阶段可以把临时 worker stub 替换成真正的 Forge runtime services。
+
+## Stage M3.4：Temporal worker composition root
+
+这一阶段恢复了 `apps/temporal-worker` 缺失的 worker 边界。现在应用入口重新拥有了真正的 `createForgeWorkerComposition()` 实现，因此它可以构建 `forgeActivities`，并在进程退出时把 composition 一并干净关闭。
+
+做了什么：
+
+- 在 `apps/temporal-worker/src/forge-worker-composition.ts` 新建了 worker composition 文件；
+- 接入了真实的运行时服务，包括持久化、工作区管理、仓库快照、影响对账、评审收集、repair 协调、repair 执行和输出集成；
+- 增加了一个 activity 适配层，和 Temporal runtime 里已经确认的紧凑 Scenario A 合同保持一致；
+- 提供了最小化的 `close()` 路径，方便 worker composition 与 Temporal worker 一起销毁。
+
+为什么这很重要：
+
+- `apps/temporal-worker/src/main.ts` 之前导入的是一个缺失模块，worker 应用无法启动；
+- worker 边界必须保持紧凑，并依赖真实运行时服务，而不是合成注册表或 `bindingId` 式的权限模型；
+- composition 需要继续停留在现有 workspace 包边界内，并使用 Temporal runtime 已经确定下来的紧凑 workflow 标识符。
+
+验证了什么：
+
+- `pnpm exec tsc -p apps/temporal-worker/tsconfig.app.json --noEmit` 已通过，说明 worker 应用本身可以成功编译；
+- 运行过 `pnpm check`，但仓库级 TypeScript 阶段仍被其他地方的现存类型错误阻塞，主要来自 `libs/orchestration-runtime` 的测试、`libs/agent-runtime` 的测试，以及 `libs/runtime-v2-spike-harness`。
+
+当前限制：
+
+- worker composition 已经可编译，但仓库里还有与本阶段无关的类型漂移，所以完整的 `pnpm check` 还不能端到端通过。
+
+这一阶段为下一步提供了什么：
+
+- Temporal worker 应用现在可以从真实的 composition root 启动，而不再依赖缺失导入；
+- 后续工作可以专注于收敛剩余的仓库级类型漂移，而不需要先重建 worker 边界。

@@ -15,14 +15,14 @@ The spike acceptance criteria from ADR-027:
 
 ## Known Gaps
 
-| Gap | Status |
-| --- | --- |
+| Gap                                          | Status                                                                                            |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | Mock evidence instead of real Forge + SQLite | **Resolved** — Both candidates now call real `ForgeScenarioService` backed by `SqlitePersistence` |
-| Scenario B shared assert not verified | **Resolved** — Both candidates call `assertDurableExecutionSpikeOutcome` for both scenarios |
-| Restate had no durable wait path | **Resolved** — Restate now uses `ctx.promise()` + `sendWake` handler |
-| Temporal wrong final output binding | **Resolved** — Uses `repairResult.reviewSubjectRef` |
-| dispatchCount from derived data | **Resolved** — Derived from real `recoverRepairResumeDispatches` persisted evidence |
-| Restate executor restart evidence | **Waived** — see below |
+| Scenario B shared assert not verified        | **Resolved** — Both candidates call `assertDurableExecutionSpikeOutcome` for both scenarios       |
+| Restate had no durable wait path             | **Resolved** — Restate now uses `ctx.promise()` + `sendWake` handler                              |
+| Temporal wrong final output binding          | **Resolved** — Uses `repairResult.reviewSubjectRef`                                               |
+| dispatchCount from derived data              | **Resolved** — Derived from real `recoverRepairResumeDispatches` persisted evidence               |
+| Restate executor restart evidence            | **Waived** — see below                                                                            |
 
 ### Waiver: Restate executor-restart direct proof
 
@@ -42,15 +42,15 @@ The Restate executor-restart test (P1-B) was **not directly reproduced** in the 
 
 ## Scorecard
 
-| Criterion                                          | Temporal | Restate | Weight  |
-| -------------------------------------------------- | -------- | ------- | ------- |
-| **Authority/correctness preservation**             | 9        | 8.5     | **30%** |
-| **Legacy durable-runtime code actually removable** | 8        | 8.5     | **20%** |
-| **BLOCKED/restart/UNKNOWN semantics**              | 9        | 8.5     | **15%** |
-| **Framework intrusion / SDK leakage**              | 8        | 7.5     | **15%** |
-| Operational complexity                             | 8        | 7       | 10%     |
-| Observability/debugging                            | 8        | 7       | 5%      |
-| CI/developer testing experience                    | 9        | 6       | 5%      |
+| Criterion                                          | Temporal | Restate  | Weight  |
+| -------------------------------------------------- | -------- | -------- | ------- |
+| **Authority/correctness preservation**             | 9        | 8.5      | **30%** |
+| **Legacy durable-runtime code actually removable** | 8        | 8.5      | **20%** |
+| **BLOCKED/restart/UNKNOWN semantics**              | 9        | 8.5      | **15%** |
+| **Framework intrusion / SDK leakage**              | 8        | 7.5      | **15%** |
+| Operational complexity                             | 8        | 7        | 10%     |
+| Observability/debugging                            | 8        | 7        | 5%      |
+| CI/developer testing experience                    | 9        | 6        | 5%      |
 | **Weighted Total**                                 | **8.50** | **8.00** |         |
 
 ### Scoring Rationale

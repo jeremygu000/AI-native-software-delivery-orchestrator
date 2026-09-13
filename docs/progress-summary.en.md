@@ -2535,3 +2535,34 @@ What this stage enables next:
 
 - the app-local worker composition root can now be wired against a stable workflow contract instead of a placeholder slice;
 - later stages can replace the temporary worker stub with actual Forge runtime services.
+
+## Stage M3.4: Temporal worker composition root
+
+This stage restored the missing worker boundary for `apps/temporal-worker`. The app entrypoint now has a real `createForgeWorkerComposition()` implementation again, so it can build `forgeActivities` and shut the composition down cleanly when the process exits.
+
+What was built:
+
+- a worker composition file at `apps/temporal-worker/src/forge-worker-composition.ts`;
+- concrete runtime wiring for persistence, workspace management, repository snapshots, impact reconciliation, review collection, repair coordination, repair execution, and output integration;
+- an activity adapter that matches the compact Scenario A Temporal contract used by the workflow and its tests;
+- a minimal `close()` path so the worker composition can be torn down alongside the Temporal worker.
+
+Why this mattered:
+
+- `apps/temporal-worker/src/main.ts` was importing a missing module, so the worker app could not start;
+- the worker boundary had to stay compact and rely on real runtime services rather than a synthetic registry or `bindingId`-based authority;
+- the composition needed to stay within the existing workspace package boundaries and use the compact workflow identifiers already established in the Temporal runtime.
+
+What was verified:
+
+- `pnpm exec tsc -p apps/temporal-worker/tsconfig.app.json --noEmit` passed for the worker app;
+- `pnpm check` was run after formatting, but the repository-wide TypeScript phase still fails because of pre-existing type errors in other areas of the codebase, specifically `libs/orchestration-runtime` specs, `libs/agent-runtime` specs, and `libs/runtime-v2-spike-harness`.
+
+Current limitation:
+
+- the worker composition is now compileable, but the repository still has unrelated type drift outside this stage, so the full `pnpm check` pipeline does not yet pass end to end.
+
+What this stage enables next:
+
+- the Temporal worker app can now start from a real composition root instead of a missing import;
+- future work can focus on tightening the remaining repo-wide type drift without having to rebuild the worker boundary first.

@@ -119,6 +119,7 @@ The workflow MUST NOT:
 **Task/builder dispatch:** Every builder dispatch must be preceded by a `reevaluateRun` call that returns the authorized task and attempt IDs. This is the Scheduler's authority.
 
 **Repair dispatch:** Every repair dispatch must be preceded by either:
+
 - `admitRepair` — creates a new PREPARING repair attempt (repair admission authority), or
 - `resumeBlockedRepair` — resumes a BLOCKED repair to PREPARING via CAS (repair resume authority)
 
@@ -144,16 +145,16 @@ Activities map to **existing Forge application service seams** — the durable c
 
 Activities map to **coarse Forge application service seams** — one activity per meaningful Forge operation. Activities do NOT split existing service responsibilities; they delegate to the existing service which owns its full transaction boundary.
 
-| Activity | Maps To | Forge Service | Authority Owned |
-|----------|---------|---------------|-----------------|
-| `reevaluateRun` | `Scheduler.reevaluate()` + `OrchestrationPersistence.persistDispatch()` | `Scheduler` + `Persistence` | **Scheduler authority**: reevaluates state machine, persists transitions + attempts atomically, returns runnable IDs |
-| `executeBuilder` | `ForgeBuilderExecutionService.execute()` | `AgentRunner` + `WorkspaceManager` + `WriteGuard` | Workspace creation, lease acquisition, agent dispatch, impact reconciliation, lease release — all in one service boundary |
-| `evaluateBuilderOutput` | `TaskOutputAdmissionCoordinator.reviewBuilder()` | `TaskOutputAdmissionCoordinator` | Verification evidence + code review collection only. MUST NOT inject `TaskRepairCoordinator` (repair admission is a separate activity) |
-| `admitRepair` | `TaskRepairCoordinator.prepare()` | `TaskRepairAdmissionStore` | Repair admission gate: budget enforcement, work item creation. Separate from evaluation to avoid double budget consumption |
-| `executeRepair` | `RepairExecutionCoordinator.execute()` | `AgentRunner` + `WriteGuard` + `TaskVerifier` + review | Full repair lifecycle: agent dispatch, lease management, impact reconciliation, verification, code review — all in one service boundary |
-| `resumeBlockedRepair` | `TaskRepairCoordinator.tryResume()` + lease/CAS reload | `TaskRepairResumeStore` + `WriteGuard` | After workflow signal wake: reload Forge state, validate released lease, CAS resume. Only CAS winner dispatches |
-| `integrateAcceptedOutput` | `ForgeAcceptedOutputIntegrationService.integrate()` | `WorkspaceManager` | Integration admission assertion, workspace commit, merge |
-| `finalizeRunState` | `OrchestrationRuntime.#finalizeRunState` | `OrchestrationPersistence` | Run state transition based on final task states |
+| Activity                  | Maps To                                                                 | Forge Service                                          | Authority Owned                                                                                                                         |
+| ------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `reevaluateRun`           | `Scheduler.reevaluate()` + `OrchestrationPersistence.persistDispatch()` | `Scheduler` + `Persistence`                            | **Scheduler authority**: reevaluates state machine, persists transitions + attempts atomically, returns runnable IDs                    |
+| `executeBuilder`          | `ForgeBuilderExecutionService.execute()`                                | `AgentRunner` + `WorkspaceManager` + `WriteGuard`      | Workspace creation, lease acquisition, agent dispatch, impact reconciliation, lease release — all in one service boundary               |
+| `evaluateBuilderOutput`   | `TaskOutputAdmissionCoordinator.reviewBuilder()`                        | `TaskOutputAdmissionCoordinator`                       | Verification evidence + code review collection only. MUST NOT inject `TaskRepairCoordinator` (repair admission is a separate activity)  |
+| `admitRepair`             | `TaskRepairCoordinator.prepare()`                                       | `TaskRepairAdmissionStore`                             | Repair admission gate: budget enforcement, work item creation. Separate from evaluation to avoid double budget consumption              |
+| `executeRepair`           | `RepairExecutionCoordinator.execute()`                                  | `AgentRunner` + `WriteGuard` + `TaskVerifier` + review | Full repair lifecycle: agent dispatch, lease management, impact reconciliation, verification, code review — all in one service boundary |
+| `resumeBlockedRepair`     | `TaskRepairCoordinator.tryResume()` + lease/CAS reload                  | `TaskRepairResumeStore` + `WriteGuard`                 | After workflow signal wake: reload Forge state, validate released lease, CAS resume. Only CAS winner dispatches                         |
+| `integrateAcceptedOutput` | `ForgeAcceptedOutputIntegrationService.integrate()`                     | `WorkspaceManager`                                     | Integration admission assertion, workspace commit, merge                                                                                |
+| `finalizeRunState`        | `OrchestrationRuntime.#finalizeRunState`                                | `OrchestrationPersistence`                             | Run state transition based on final task states                                                                                         |
 
 ### What Activities Must NOT Be
 
@@ -193,18 +194,18 @@ Each activity implementation:
 
 The following MUST remain Forge-owned and MUST NOT be replaced by Temporal primitives:
 
-| Forge Authority | Concrete Seam | Why Temporal Cannot Replace It |
-|-----------------|---------------|-------------------------------|
-| Scheduler reevaluation | `reevaluateRun` activity (calls `Scheduler.reevaluate()`, persists atomically) | Domain state machine, not execution timing |
-| Write lease acquisition/release | Inside `executeBuilder` / `executeRepair` activities (via `WriteGuard`) | Exclusive resource access requires CAS |
-| Repair admission + budget | `admitRepair` activity (via `TaskRepairCoordinator.prepare()`) | Domain constraint, not durability concern |
-| Blocker lease validation | `resumeBlockedRepair` activity (reloads from SQLite after signal wake) | Must reload from SQLite after wake, not trust signal payload |
-| CAS before dispatch | `resumeBlockedRepair` activity (optimistic concurrency via `TaskRepairResumeStore`) | Compare-and-swap is the authorization gate |
-| Verification evidence | Inside `executeBuilder` / `executeRepair` / `evaluateBuilderOutput` activities | Business evidence, not coordination data |
-| Review evidence | Inside `evaluateBuilderOutput` / `executeRepair` activities | Business evidence, not coordination data |
-| Integration admission | `integrateAcceptedOutput` activity (workspace fingerprint matching) | Workspace fingerprint matching, not timing |
-| Agent attempt identity | Inside `reevaluateRun` activity (Forge assigns attempt IDs) | Forge assigns attempt IDs, not Temporal |
-| Tenant/ownership semantics | Inside all Forge activities | Domain concept, not execution concept |
+| Forge Authority                 | Concrete Seam                                                                       | Why Temporal Cannot Replace It                               |
+| ------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Scheduler reevaluation          | `reevaluateRun` activity (calls `Scheduler.reevaluate()`, persists atomically)      | Domain state machine, not execution timing                   |
+| Write lease acquisition/release | Inside `executeBuilder` / `executeRepair` activities (via `WriteGuard`)             | Exclusive resource access requires CAS                       |
+| Repair admission + budget       | `admitRepair` activity (via `TaskRepairCoordinator.prepare()`)                      | Domain constraint, not durability concern                    |
+| Blocker lease validation        | `resumeBlockedRepair` activity (reloads from SQLite after signal wake)              | Must reload from SQLite after wake, not trust signal payload |
+| CAS before dispatch             | `resumeBlockedRepair` activity (optimistic concurrency via `TaskRepairResumeStore`) | Compare-and-swap is the authorization gate                   |
+| Verification evidence           | Inside `executeBuilder` / `executeRepair` / `evaluateBuilderOutput` activities      | Business evidence, not coordination data                     |
+| Review evidence                 | Inside `evaluateBuilderOutput` / `executeRepair` activities                         | Business evidence, not coordination data                     |
+| Integration admission           | `integrateAcceptedOutput` activity (workspace fingerprint matching)                 | Workspace fingerprint matching, not timing                   |
+| Agent attempt identity          | Inside `reevaluateRun` activity (Forge assigns attempt IDs)                         | Forge assigns attempt IDs, not Temporal                      |
+| Tenant/ownership semantics      | Inside all Forge activities                                                         | Domain concept, not execution concept                        |
 
 The invariant that must never break:
 
@@ -223,6 +224,7 @@ signal wakes
 Two implementation options, to be evaluated during M3.2 bootstrap:
 
 **Option A: Temporal Signal (current spike approach)**
+
 - Workflow defines a signal channel (`repairWake`)
 - External process (lease release callback) sends signal with `{ repairAttemptId }`
 - Workflow validates `repairAttemptId` matches the blocked repair before dispatching activity
@@ -230,6 +232,7 @@ Two implementation options, to be evaluated during M3.2 bootstrap:
 - Con: Sender needs safe retry / idempotent wake semantics for RPC failure cases (Temporal signals are durable once recorded by the server; the failure window is client-side RPC)
 
 **Option B: Durable Promise / Selector (Restate-style, adapted)**
+
 - Workflow awaits a Temporal query or timer-based poll
 - Less natural for Temporal; signals are the idiomatic pattern
 - Not recommended unless signals prove insufficient
@@ -295,20 +298,20 @@ Prohibited:
 
 Activities that fail due to infrastructure issues (network timeout, Temporal server hiccup, Docker start failure) may be retried by Temporal. The activity must re-validate Forge state on each attempt.
 
-| Activity | Retry Policy | Rationale |
-|----------|-------------|-----------|
-| `reevaluateRun` | Retryable (max 3) | Read-only reevaluation + idempotent persist |
-| `evaluateBuilderOutput` | Retryable (max 2) | Read-only evaluation, idempotent |
-| `admitRepair` | Retryable (max 2) | Budget check is idempotent |
-| `integrateAcceptedOutput` | Retryable (max 2) | Admission check is idempotent |
-| `finalizeRunState` | Retryable (max 3) | State transition is idempotent |
+| Activity                  | Retry Policy      | Rationale                                   |
+| ------------------------- | ----------------- | ------------------------------------------- |
+| `reevaluateRun`           | Retryable (max 3) | Read-only reevaluation + idempotent persist |
+| `evaluateBuilderOutput`   | Retryable (max 2) | Read-only evaluation, idempotent            |
+| `admitRepair`             | Retryable (max 2) | Budget check is idempotent                  |
+| `integrateAcceptedOutput` | Retryable (max 2) | Admission check is idempotent               |
+| `finalizeRunState`        | Retryable (max 3) | State transition is idempotent              |
 
 ### Agent Execution (NOT Blindly Retryable)
 
-| Activity | Retry Policy | Rationale |
-|----------|-------------|-----------|
+| Activity         | Retry Policy                         | Rationale                                 |
+| ---------------- | ------------------------------------ | ----------------------------------------- |
 | `executeBuilder` | No automatic retry after `onStarted` | Agent may have started mutating workspace |
-| `executeRepair` | No automatic retry after `onStarted` | Agent may have started mutating workspace |
+| `executeRepair`  | No automatic retry after `onStarted` | Agent may have started mutating workspace |
 
 After `onStarted`, if the activity fails, the attempt is marked `UNKNOWN` and the Forge recovery path handles reconciliation. Temporal must NOT automatically retry agent execution because:
 
@@ -318,10 +321,10 @@ After `onStarted`, if the activity fails, the attempt is marked `UNKNOWN` and th
 
 ### BLOCKED Repair (Workflow Wait, Not Activity)
 
-| Component | Retry Policy | Rationale |
-|-----------|-------------|-----------|
+| Component               | Retry Policy           | Rationale                                                  |
+| ----------------------- | ---------------------- | ---------------------------------------------------------- |
 | Signal wait in workflow | No retry; durable wait | This is a workflow-level `await signal()`, not an activity |
-| `resumeBlockedRepair` | Retryable (max 2) | CAS-gated; re-validates on each attempt |
+| `resumeBlockedRepair`   | Retryable (max 2)      | CAS-gated; re-validates on each attempt                    |
 
 ## Decision 8: Cancellation Semantics
 
@@ -366,6 +369,7 @@ If Forge persists `CANCELLED` before stopping the workflow:
 3. Lease holders see a `CANCELLED` run but can't determine if workspace is clean.
 
 With `CANCEL_REQUESTED`:
+
 1. `CANCEL_REQUESTED` is the **user intent**, not the business state.
 2. The workflow sees the cancellation and stops scheduling.
 3. In-flight activities complete or time out, releasing leases.
@@ -382,13 +386,13 @@ If the current domain does not have a `CANCEL_REQUESTED` state, this ADR require
 
 ### Five Distinct States (Must Not Conflate)
 
-| State | Meaning | Triggered By |
-|-------|---------|-------------|
-| `CANCEL_REQUESTED` | User intent to stop; work may still be in-flight | `forge cancel` command |
-| `CANCELLED` | Graceful stop complete; all work reconciled | `reevaluateRun` after all work reconciled |
-| `FAILED` | Execution error or authority violation | Activity failure, assertion error |
-| `COMPLETED` | All tasks integrated successfully | Normal completion |
-| `UNKNOWN` | Lost contact with in-flight agent | Process crash after `onStarted` |
+| State              | Meaning                                          | Triggered By                              |
+| ------------------ | ------------------------------------------------ | ----------------------------------------- |
+| `CANCEL_REQUESTED` | User intent to stop; work may still be in-flight | `forge cancel` command                    |
+| `CANCELLED`        | Graceful stop complete; all work reconciled      | `reevaluateRun` after all work reconciled |
+| `FAILED`           | Execution error or authority violation           | Activity failure, assertion error         |
+| `COMPLETED`        | All tasks integrated successfully                | Normal completion                         |
+| `UNKNOWN`          | Lost contact with in-flight agent                | Process crash after `onStarted`           |
 
 ### Cancellation ≠ Termination
 
@@ -450,31 +454,31 @@ Temporal Worker process (composition root 2):
 
 ## Decision 10: Legacy Component Mapping
 
-| Existing Component | Lines | Production Temporal Decision | Rationale |
-|-------------------|-------|------------------------------|-----------|
-| `OrchestrationRuntime.#drain` | ~60 | **REPLACE** with Temporal workflow loop | Temporal workflow IS the drain loop |
-| `OrchestrationRuntime.#startRun` | ~25 | **REPLACE** with workflow start | CLI starts workflow instead of in-process |
-| `OrchestrationRuntime.#recoverAndResumeRun` | ~70 | **REPLACE** with Temporal replay | Workflow replay IS recovery |
-| `OrchestrationRuntime.#enqueueEligibleBlockedRepairs` | ~50 | **REPLACE** with signal + workflow check | Workflow checks BLOCKED repairs after lease release |
-| `OrchestrationRuntime.#driveRepairCycle` | ~70 | **REPLACE** with repair activity sequence | Activities compose existing services |
-| `OrchestrationRuntime.#runTask` | ~280 | **REPLACE** with task activity sequence | Activities compose existing services |
-| `OrchestrationRuntime.#finalizeRunState` | ~10 | **KEEP as activity** | Simple state transition, still Forge-owned |
-| `Scheduler.reevaluate()` + `persistDispatch()` | — | **KEEP as `reevaluateRun` activity** | Forge scheduler authority: reevaluation + persist remain Forge-owned, exposed as activity |
-| `ForgeBuilderExecutionService.execute()` | 260 | **KEEP as activity implementation** | Activity delegates to this service |
-| `RepairExecutionCoordinator.execute()` | 292 | **KEEP as activity implementation** | Activity delegates to this service |
-| `TaskRepairCoordinator` | 195 | **KEEP** | Repair state machine remains Forge-owned |
-| `ForgeAcceptedOutputIntegrationService` | 73 | **KEEP as activity implementation** | Activity delegates to this service |
-| `ForgeScenarioAServiceRunner` | 147 | **ABSORB** into workflow structure | Workflow replaces this runner's sequencing |
-| `TaskOutputAdmissionCoordinator` | 156 | **KEEP** | Integration admission remains Forge-owned |
-| `LocalRuntimeStarter` | 327 | **REPLACE** with Temporal worker bootstrap | Worker startup replaces runtime wiring |
-| `DrizzleSqliteOrchestrationPersistence` | ~1,600 | **KEEP** (minus `repair_resume_dispatches` candidate) | Forge persistence remains; repair_resume_dispatches is candidate for removal |
-| `repair_resume_dispatches` table | — | **CANDIDATE FOR REMOVAL** | Temporal workflow state may replace this, conditional on topology design preserving Forge CAS authority and audit evidence |
-| `OrchestrationPersistence` interface | 279 | **KEEP** (minus repair resume dispatch methods) | Core persistence contract remains |
-| `AgentRunner` interface | 32 | **KEEP** | Provider-neutral agent boundary, per ADR-027 |
-| `PiAgentRunner` | 158 | **KEEP** | Production agent implementation, unchanged |
-| `WorkspaceManager` | — | **KEEP** | Git/workspace operations, unchanged |
-| `WriteGuard` | — | **KEEP** | Lease acquisition/release, unchanged |
-| `Scheduler` | — | **KEEP** | Domain state machine, unchanged |
+| Existing Component                                    | Lines  | Production Temporal Decision                          | Rationale                                                                                                                  |
+| ----------------------------------------------------- | ------ | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `OrchestrationRuntime.#drain`                         | ~60    | **REPLACE** with Temporal workflow loop               | Temporal workflow IS the drain loop                                                                                        |
+| `OrchestrationRuntime.#startRun`                      | ~25    | **REPLACE** with workflow start                       | CLI starts workflow instead of in-process                                                                                  |
+| `OrchestrationRuntime.#recoverAndResumeRun`           | ~70    | **REPLACE** with Temporal replay                      | Workflow replay IS recovery                                                                                                |
+| `OrchestrationRuntime.#enqueueEligibleBlockedRepairs` | ~50    | **REPLACE** with signal + workflow check              | Workflow checks BLOCKED repairs after lease release                                                                        |
+| `OrchestrationRuntime.#driveRepairCycle`              | ~70    | **REPLACE** with repair activity sequence             | Activities compose existing services                                                                                       |
+| `OrchestrationRuntime.#runTask`                       | ~280   | **REPLACE** with task activity sequence               | Activities compose existing services                                                                                       |
+| `OrchestrationRuntime.#finalizeRunState`              | ~10    | **KEEP as activity**                                  | Simple state transition, still Forge-owned                                                                                 |
+| `Scheduler.reevaluate()` + `persistDispatch()`        | —      | **KEEP as `reevaluateRun` activity**                  | Forge scheduler authority: reevaluation + persist remain Forge-owned, exposed as activity                                  |
+| `ForgeBuilderExecutionService.execute()`              | 260    | **KEEP as activity implementation**                   | Activity delegates to this service                                                                                         |
+| `RepairExecutionCoordinator.execute()`                | 292    | **KEEP as activity implementation**                   | Activity delegates to this service                                                                                         |
+| `TaskRepairCoordinator`                               | 195    | **KEEP**                                              | Repair state machine remains Forge-owned                                                                                   |
+| `ForgeAcceptedOutputIntegrationService`               | 73     | **KEEP as activity implementation**                   | Activity delegates to this service                                                                                         |
+| `ForgeScenarioAServiceRunner`                         | 147    | **ABSORB** into workflow structure                    | Workflow replaces this runner's sequencing                                                                                 |
+| `TaskOutputAdmissionCoordinator`                      | 156    | **KEEP**                                              | Integration admission remains Forge-owned                                                                                  |
+| `LocalRuntimeStarter`                                 | 327    | **REPLACE** with Temporal worker bootstrap            | Worker startup replaces runtime wiring                                                                                     |
+| `DrizzleSqliteOrchestrationPersistence`               | ~1,600 | **KEEP** (minus `repair_resume_dispatches` candidate) | Forge persistence remains; repair_resume_dispatches is candidate for removal                                               |
+| `repair_resume_dispatches` table                      | —      | **CANDIDATE FOR REMOVAL**                             | Temporal workflow state may replace this, conditional on topology design preserving Forge CAS authority and audit evidence |
+| `OrchestrationPersistence` interface                  | 279    | **KEEP** (minus repair resume dispatch methods)       | Core persistence contract remains                                                                                          |
+| `AgentRunner` interface                               | 32     | **KEEP**                                              | Provider-neutral agent boundary, per ADR-027                                                                               |
+| `PiAgentRunner`                                       | 158    | **KEEP**                                              | Production agent implementation, unchanged                                                                                 |
+| `WorkspaceManager`                                    | —      | **KEEP**                                              | Git/workspace operations, unchanged                                                                                        |
+| `WriteGuard`                                          | —      | **KEEP**                                              | Lease acquisition/release, unchanged                                                                                       |
+| `Scheduler`                                           | —      | **KEEP**                                              | Domain state machine, unchanged                                                                                            |
 
 ### What Gets Deleted at Cutover
 

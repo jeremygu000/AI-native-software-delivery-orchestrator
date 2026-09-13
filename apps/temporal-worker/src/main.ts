@@ -1,40 +1,25 @@
-import { resolveTemporalConfig, createTemporalWorker } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
+import {
+  resolveTemporalConfig,
+  createTemporalWorker
+} from '@ai-native-software-delivery-orchestrator/temporal-runtime';
+
+import { createForgeWorkerComposition } from './forge-worker-composition.js';
 
 async function main(): Promise<void> {
   const config = resolveTemporalConfig({
     serverUrl: process.env.TEMPORAL_SERVER_URL ?? 'http://localhost:7233',
     namespace: process.env.TEMPORAL_NAMESPACE ?? 'default',
-    taskQueue: process.env.TEMPORAL_TASK_QUEUE ?? 'forge-run',
+    taskQueue: process.env.TEMPORAL_TASK_QUEUE ?? 'forge-run'
   });
 
+  const composition = await createForgeWorkerComposition();
   const handle = await createTemporalWorker(config, {
-    forgeActivities: {
-      async reevaluateRun() {
-        throw new Error('temporal-worker has no Forge activity implementation yet');
-      },
-      async executeBuilder() {
-        throw new Error('temporal-worker has no Forge activity implementation yet');
-      },
-      async evaluateBuilderOutput() {
-        throw new Error('temporal-worker has no Forge activity implementation yet');
-      },
-      async admitRepair() {
-        throw new Error('temporal-worker has no Forge activity implementation yet');
-      },
-      async executeRepair() {
-        throw new Error('temporal-worker has no Forge activity implementation yet');
-      },
-      async integrateAcceptedOutput() {
-        throw new Error('temporal-worker has no Forge activity implementation yet');
-      },
-      async finalizeRunState() {
-        throw new Error('temporal-worker has no Forge activity implementation yet');
-      },
-    },
+    forgeActivities: composition.forgeActivities
   });
 
-  const shutdown = async () => {
+  const shutdown = async (): Promise<void> => {
     await handle.shutdown();
+    await composition.close();
   };
 
   process.on('SIGTERM', shutdown);
@@ -43,7 +28,7 @@ async function main(): Promise<void> {
   await handle.run();
 }
 
-main().catch((err: unknown) => {
-  console.error('Worker failed to start:', err);
+main().catch((error: unknown) => {
+  console.error('Worker failed to start:', error);
   process.exit(1);
 });

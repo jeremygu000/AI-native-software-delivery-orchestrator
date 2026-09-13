@@ -23,6 +23,18 @@ export {
   ForgeBuilderExecutionError,
   ForgeBuilderExecutionService
 } from './lib/forge-builder-execution-service.js';
+export {
+  ForgeBuilderOutputEvaluationError,
+  ForgeBuilderOutputEvaluationService
+} from './lib/forge-builder-output-evaluation-service.js';
+export {
+  ForgeAcceptedOutputIntegrationError,
+  ForgeAcceptedOutputIntegrationService
+} from './lib/forge-accepted-output-integration-service.js';
+export {
+  ForgeRepairExecutionError,
+  ForgeRepairExecutionService
+} from './lib/forge-repair-execution-service.js';
 export type { DurableExecutionScenarioService } from './lib/durable-execution-spike-contract.js';
 export {
   assertDurableExecutionSpikeOutcome,

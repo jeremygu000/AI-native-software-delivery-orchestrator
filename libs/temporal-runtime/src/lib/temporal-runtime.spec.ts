@@ -110,7 +110,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         calls.push('reevaluateRun');
         return ReevaluateRunResultSchema.parse({
           runId: 'run-2',
-          authorizedTasks: [{ taskId: 'task-1', bindingId: 'binding-1', attemptId: 'attempt-1' }]
+          authorizedTasks: [{ taskId: 'task-1', attemptId: 'attempt-1' }]
         });
       },
       async executeBuilder(input: ExecuteBuilderInput) {
@@ -204,7 +204,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         calls.push('reevaluateRun');
         return ReevaluateRunResultSchema.parse({
           runId: 'run-3',
-          authorizedTasks: [{ taskId: 'task-2', bindingId: 'binding-2', attemptId: 'attempt-2' }]
+          authorizedTasks: [{ taskId: 'task-2', attemptId: 'attempt-2' }]
         });
       },
       async executeBuilder(input: ExecuteBuilderInput) {
@@ -320,7 +320,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         calls.push('reevaluateRun');
         return ReevaluateRunResultSchema.parse({
           runId: 'run-5',
-          authorizedTasks: [{ taskId: 'task-5', bindingId: 'binding-5', attemptId: 'attempt-5' }]
+          authorizedTasks: [{ taskId: 'task-5', attemptId: 'attempt-5' }]
         });
       },
       async executeBuilder(input: ExecuteBuilderInput) {
@@ -510,13 +510,13 @@ describe('temporal-runtime Scenario A workflow', () => {
         if (reevaluateCount === 0) {
           return ReevaluateRunResultSchema.parse({
             runId: 'run-4',
-            authorizedTasks: [{ taskId: 'task-a', bindingId: 'binding-a', attemptId: 'attempt-a' }]
+            authorizedTasks: [{ taskId: 'task-a', attemptId: 'attempt-a' }]
           });
         }
 
         return ReevaluateRunResultSchema.parse({
           runId: 'run-4',
-          authorizedTasks: [{ taskId: 'task-b', bindingId: 'binding-b', attemptId: 'attempt-b' }]
+          authorizedTasks: [{ taskId: 'task-b', attemptId: 'attempt-b' }]
         });
       },
       async executeBuilder(input: ExecuteBuilderInput) {
