@@ -76,7 +76,29 @@ export const createForgeScenarioService = (
         ],
         hardConflicts: [],
         riskConflicts: [],
-        scheduleOptions: { maxConcurrency: 1 }
+        scheduleOptions: { maxConcurrency: 1 },
+        taskBindings: [
+          {
+            runId,
+            taskId,
+            agentId,
+            leasePlan: {
+              taskId,
+              predictedResources: [{ type: 'project', projectId: 'project-test' }],
+              source: 'manual'
+            },
+            workspace: {
+              id: workspaceId,
+              runId,
+              taskId,
+              integrationRepositoryPath: '/tmp/test-integration',
+              workspacePath: '/tmp/test-workspace',
+              branchName: `orchestrator/${runId}/${taskId}`,
+              baseRef: 'main',
+              integrationRef: 'main'
+            }
+          }
+        ]
       });
 
       const builderAttempt: AgentExecutionAttempt = {
@@ -412,7 +434,29 @@ export const createForgeScenarioService = (
         ],
         hardConflicts: [],
         riskConflicts: [],
-        scheduleOptions: { maxConcurrency: 1 }
+        scheduleOptions: { maxConcurrency: 1 },
+        taskBindings: [
+          {
+            runId,
+            taskId,
+            agentId,
+            leasePlan: {
+              taskId,
+              predictedResources: [{ type: 'project', projectId: 'project-test' }],
+              source: 'manual'
+            },
+            workspace: {
+              id: workspaceId,
+              runId,
+              taskId,
+              integrationRepositoryPath: '/tmp/test-integration',
+              workspacePath: '/tmp/test-workspace',
+              branchName: `orchestrator/${runId}/${taskId}`,
+              baseRef: 'main',
+              integrationRef: 'main'
+            }
+          }
+        ]
       });
 
       const blockedRepair: TaskRepairAttempt = {

@@ -2,6 +2,8 @@ import type {
   AgentRunner,
   CreatePersistedRunRequest,
   OrchestrationPersistence,
+  PersistedTaskCodeReview,
+  PersistedTaskExecutionBinding,
   PersistedReevaluation,
   PersistedDispatch,
   PersistedRepairResumeDispatch,
@@ -10,6 +12,7 @@ import type {
   PersistedAgentExecutionAttempt,
   PersistedTaskWorkspace,
   PersistedWriteLease,
+  TaskVerificationEvidence,
   RecoveredRun,
   TaskRepairAttemptStore,
   TaskRepairWorkItemStore,
@@ -101,9 +104,27 @@ class MemoryPersistence implements OrchestrationPersistence {
   readonly attempts: PersistedAgentExecutionAttempt[] = [];
   readonly impacts: PersistedTaskImpact[] = [];
   readonly conflicts: PersistedTaskConflict[] = [];
+  readonly reviews: PersistedTaskCodeReview[] = [];
+  readonly verificationEvidence: TaskVerificationEvidence[] = [];
 
   async createRun(request: CreatePersistedRunRequest): Promise<void> {
     this.request = request;
+  }
+
+  async recoverTaskBindings(runId: string): Promise<readonly PersistedTaskExecutionBinding[]> {
+    if (this.request === undefined || this.request.run.id !== runId) {
+      return [];
+    }
+    return this.request.taskBindings;
+  }
+
+  async recoverTaskBinding(
+    runId: string,
+    taskId: string
+  ): Promise<PersistedTaskExecutionBinding | undefined> {
+    return this.request?.run.id === runId
+      ? this.request.taskBindings.find((binding) => binding.taskId === taskId)
+      : undefined;
   }
 
   async persistReevaluation(reevaluation: PersistedReevaluation): Promise<void> {
@@ -145,6 +166,22 @@ class MemoryPersistence implements OrchestrationPersistence {
 
   async persistImpact(record: PersistedTaskImpact): Promise<void> {
     this.impacts.push(record);
+  }
+
+  async persistReview(review: PersistedTaskCodeReview): Promise<void> {
+    this.reviews.push(review);
+  }
+
+  async recoverReviews(runId: string): Promise<readonly PersistedTaskCodeReview[]> {
+    return this.reviews.filter((review) => review.runId === runId);
+  }
+
+  async persistVerificationEvidence(evidence: TaskVerificationEvidence): Promise<void> {
+    this.verificationEvidence.push(evidence);
+  }
+
+  async recoverVerificationEvidence(runId: string): Promise<readonly TaskVerificationEvidence[]> {
+    return this.verificationEvidence.filter((evidence) => evidence.runId === runId);
   }
 
   async persistConflict(record: PersistedTaskConflict): Promise<void> {
@@ -189,6 +226,7 @@ class MemoryPersistence implements OrchestrationPersistence {
     return {
       run: { ...this.request.run, state: this.state },
       tasks: this.request.tasks,
+      taskBindings: this.request.taskBindings,
       hardConflicts: this.request.hardConflicts,
       riskConflicts: this.request.riskConflicts,
       scheduleOptions: this.request.scheduleOptions,
@@ -382,6 +420,18 @@ const request = (tasks: readonly TaskContract[]): StartRuntimeRunRequest => ({
   riskConflicts: [],
   scheduleOptions: { maxConcurrency: 1 },
   taskBindings: bindings(tasks.map((entry) => entry.id))
+});
+
+const persistedRequest = (tasks: readonly TaskContract[]): CreatePersistedRunRequest => ({
+  run: request(tasks).run,
+  tasks,
+  hardConflicts: [],
+  riskConflicts: [],
+  scheduleOptions: { maxConcurrency: 1 },
+  taskBindings: bindings(tasks.map((entry) => entry.id)).map((binding) => ({
+    runId: 'run-1',
+    ...binding
+  }))
 });
 
 const createRuntime = (
@@ -1576,7 +1626,7 @@ describe('OrchestrationRuntime', () => {
 
   it('marks an interrupted external attempt unknown during recovery', async () => {
     const persistence = new MemoryPersistence();
-    await persistence.createRun(request([task('A')]));
+    await persistence.createRun(persistedRequest([task('A')]));
     const commandPolicy = {
       commands: [
         {
@@ -1677,7 +1727,7 @@ describe('OrchestrationRuntime', () => {
   it('reapplies persisted runtime scope conflicts before resuming dispatch', async () => {
     const persistence = new MemoryPersistence();
     const run = request([task('A'), task('B')]);
-    await persistence.createRun(run);
+    await persistence.createRun(persistedRequest([task('A'), task('B')]));
     await persistence.persistReevaluation({
       event: {
         runId: 'run-1',
@@ -1762,7 +1812,7 @@ describe('OrchestrationRuntime', () => {
 
   it('serializes concurrent PREPARING recovery without dispatching the agent twice', async () => {
     const persistence = new MemoryPersistence();
-    await persistence.createRun(request([task('A')]));
+    await persistence.createRun(persistedRequest([task('A')]));
     await persistence.persistDispatch({
       reevaluation: {
         event: {
@@ -1937,7 +1987,7 @@ describe('OrchestrationRuntime', () => {
 
   const prepareRecoveryIdentity = async () => {
     const persistence = new MemoryPersistence();
-    await persistence.createRun(request([task('A')]));
+    await persistence.createRun(persistedRequest([task('A')]));
     const commandPolicy = {
       commands: [
         {
@@ -2126,7 +2176,7 @@ describe('OrchestrationRuntime', () => {
 
   it('rejects a legacy PREPARING attempt without command authority identity', async () => {
     const persistence = new MemoryPersistence();
-    await persistence.createRun(request([task('A')]));
+    await persistence.createRun(persistedRequest([task('A')]));
     await persistence.persistDispatch({
       reevaluation: {
         event: {
@@ -2605,7 +2655,7 @@ describe('OrchestrationRuntime', () => {
   it('removes a released runtime lease blocker from a recovered snapshot', async () => {
     const persistence = new MemoryPersistence();
     const runtime = createRuntime(persistence);
-    await persistence.createRun(request([task('A')]));
+    await persistence.createRun(persistedRequest([task('A')]));
     await persistence.persistReevaluation({
       event: {
         runId: 'run-1',
@@ -2662,7 +2712,7 @@ describe('OrchestrationRuntime', () => {
 
   it('recovers an eventless persisted run without inventing runtime side effects', async () => {
     const persistence = new MemoryPersistence();
-    await persistence.createRun(request([task('A')]));
+    await persistence.createRun(persistedRequest([task('A')]));
     const runtime = createRuntime(persistence);
 
     await expect(runtime.recoverRun('run-1')).resolves.toMatchObject({
@@ -2674,7 +2724,7 @@ describe('OrchestrationRuntime', () => {
 
   it('rejects a persisted decision without its matching runtime event', async () => {
     const persistence = new MemoryPersistence();
-    await persistence.createRun(request([task('A')]));
+    await persistence.createRun(persistedRequest([task('A')]));
     persistence.reevaluations.push({
       event: {
         runId: 'run-1',
