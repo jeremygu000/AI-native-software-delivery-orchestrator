@@ -19,10 +19,10 @@ export async function createTemporalWorker(
     workflowsPath?: string;
     /** Forge Scenario A activities implementation. */
     forgeActivities?: ForgeActivities;
-  },
+  }
 ): Promise<TemporalWorkerHandle> {
   const connection = await NativeConnection.connect({
-    address: new URL(config.serverUrl).host,
+    address: new URL(config.serverUrl).host
   });
 
   if (options?.forgeActivities === undefined) {
@@ -34,7 +34,7 @@ export async function createTemporalWorker(
     namespace: config.namespace,
     taskQueue: config.taskQueue,
     workflowsPath: options?.workflowsPath ?? getWorkflowsPath(),
-    activities: options.forgeActivities,
+    activities: options.forgeActivities
   });
 
   let shutdownRequested = false;
@@ -48,6 +48,6 @@ export async function createTemporalWorker(
       if (shutdownRequested) return;
       shutdownRequested = true;
       await worker.shutdown();
-    },
+    }
   };
 }

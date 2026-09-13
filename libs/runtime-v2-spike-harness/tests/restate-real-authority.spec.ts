@@ -252,10 +252,11 @@ describe('Restate spike - Scenario B real authority (SQLite)', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 500));
 
-    const dispatchesAfterWrongWake = await negFixture.persistence.recoverRepairResumeDispatches(negRunId);
-    expect(
-      dispatchesAfterWrongWake.filter((d) => d.repairAttemptId === r1RepairId)
-    ).toHaveLength(0);
+    const dispatchesAfterWrongWake =
+      await negFixture.persistence.recoverRepairResumeDispatches(negRunId);
+    expect(dispatchesAfterWrongWake.filter((d) => d.repairAttemptId === r1RepairId)).toHaveLength(
+      0
+    );
 
     const r1Repairs = await negFixture.persistence.recoverRepairAttempts(negRunId);
     const r1Repair = r1Repairs.find((r) => r.attempt.id === r1RepairId);

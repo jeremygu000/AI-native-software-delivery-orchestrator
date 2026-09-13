@@ -124,9 +124,9 @@ export const createRestateSpikeWorkflow = (activities: RestateSpikeActivity) => 
         ctx: restate.WorkflowSharedContext,
         request: RepairWakeSignal
       ): Promise<void> => {
-        await ctx.promise<RepairWakeSignal>(
-          `repairWake:${request.repairAttemptId}`
-        ).resolve(request);
+        await ctx
+          .promise<RepairWakeSignal>(`repairWake:${request.repairAttemptId}`)
+          .resolve(request);
       }
     }
   });

@@ -25,7 +25,7 @@ export {
   IntegrateAcceptedOutputInputSchema,
   IntegrateAcceptedOutputResultSchema,
   FinalizeRunStateInputSchema,
-  FinalizeRunStateResultSchema,
+  FinalizeRunStateResultSchema
 } from './lib/contracts.js';
 export type {
   RunId,
@@ -48,7 +48,7 @@ export type {
   IntegrateAcceptedOutputInput,
   IntegrateAcceptedOutputResult,
   FinalizeRunStateInput,
-  FinalizeRunStateResult,
+  FinalizeRunStateResult
 } from './lib/contracts.js';
 export type { ForgeActivities } from './lib/activities/forge-activities.js';
 export { forgeRunWorkflow } from './lib/workflows/forge-run.js';

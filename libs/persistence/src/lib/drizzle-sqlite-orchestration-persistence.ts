@@ -270,9 +270,8 @@ const isWriteLease = (value: unknown): value is PersistedWriteLease['lease'] =>
 const isTaskWorkspace = (value: unknown): value is PersistedTaskWorkspace['workspace'] =>
   taskWorkspaceSchema.safeParse(value).success;
 
-const isPersistedTaskExecutionBinding = (
-  value: unknown
-): value is PersistedTaskExecutionBinding => persistedTaskExecutionBindingSchema.safeParse(value).success;
+const isPersistedTaskExecutionBinding = (value: unknown): value is PersistedTaskExecutionBinding =>
+  persistedTaskExecutionBindingSchema.safeParse(value).success;
 
 const assertBindingRowIdentity = (
   record: { readonly runId: string; readonly taskId: string; readonly bindingJson: string },
@@ -576,7 +575,9 @@ export class DrizzleSqliteOrchestrationPersistence
     for (const binding of request.taskBindings) {
       persistedTaskExecutionBindingSchema.parse(binding);
       if (binding.runId !== request.run.id) {
-        throw new PersistenceInputError('Task execution binding run ID must match persistence run ID');
+        throw new PersistenceInputError(
+          'Task execution binding run ID must match persistence run ID'
+        );
       }
     }
     assertMatchingTaskBindingSets(request.tasks, request.taskBindings);

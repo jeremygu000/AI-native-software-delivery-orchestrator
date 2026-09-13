@@ -82,10 +82,7 @@ export const persistedTaskExecutionBindingSchema = z
         path: ['leasePlan', 'taskId']
       });
     }
-    if (
-      binding.workspace.runId !== binding.runId ||
-      binding.workspace.taskId !== binding.taskId
-    ) {
+    if (binding.workspace.runId !== binding.runId || binding.workspace.taskId !== binding.taskId) {
       context.addIssue({
         code: 'custom',
         message: 'Task execution binding workspace must match run and task IDs',
@@ -100,7 +97,10 @@ export const persistedTaskExecutionBindingSchema = z
           path: ['impact', 'predicted', 'taskId']
         });
       }
-      if (binding.impact.observed !== undefined && binding.impact.observed.taskId !== binding.taskId) {
+      if (
+        binding.impact.observed !== undefined &&
+        binding.impact.observed.taskId !== binding.taskId
+      ) {
         context.addIssue({
           code: 'custom',
           message: 'Task execution binding observed impact must match task ID',

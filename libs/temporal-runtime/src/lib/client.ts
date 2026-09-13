@@ -7,17 +7,15 @@ export interface TemporalClientHandle {
   close(): Promise<void>;
 }
 
-export async function createTemporalClient(
-  config: TemporalConfig,
-): Promise<TemporalClientHandle> {
+export async function createTemporalClient(config: TemporalConfig): Promise<TemporalClientHandle> {
   const connection = await Connection.connect({
     address: new URL(config.serverUrl).host,
-    connectTimeout: config.connectTimeoutMs,
+    connectTimeout: config.connectTimeoutMs
   });
 
   const client = new Client({
     connection,
-    namespace: config.namespace,
+    namespace: config.namespace
   });
 
   return {
@@ -25,6 +23,6 @@ export async function createTemporalClient(
     connection,
     async close() {
       await connection.close();
-    },
+    }
   };
 }

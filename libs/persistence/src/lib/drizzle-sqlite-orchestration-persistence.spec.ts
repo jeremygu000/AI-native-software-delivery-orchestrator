@@ -302,9 +302,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     const reader = new DrizzleSqliteOrchestrationPersistence(path);
 
     await expect(reader.recoverTaskBindings('run-1')).resolves.toEqual(request.taskBindings);
-    await expect(reader.recoverTaskBinding('run-1', 'A')).resolves.toEqual(
-      request.taskBindings[0]
-    );
+    await expect(reader.recoverTaskBinding('run-1', 'A')).resolves.toEqual(request.taskBindings[0]);
     await expect(reader.recoverTaskBinding('run-1', 'missing')).resolves.toBeUndefined();
     await expect(reader.recoverRun('run-1')).resolves.toMatchObject({
       run: { id: 'run-1' },
