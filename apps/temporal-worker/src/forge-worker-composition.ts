@@ -5,16 +5,17 @@ import {
   AgentToolRuntime,
   PiAgentRunner,
   PiCodingAgentGateway,
-  PiTaskCodeReviewer
+  PiTaskCodeReviewer,
+  PiCodeReviewModelResolver
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import type {
   AgentExecutionAttempt,
   TaskContract,
+  TaskImpact,
   TaskVerifier,
   TaskWorkspace,
-  TaskVerificationEvidence
+  TaskVerificationEvidence,
 } from '@ai-native-software-delivery-orchestrator/domain';
-import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 import { analyzeRepository } from '@ai-native-software-delivery-orchestrator/repository-analysis';
 import {
@@ -23,6 +24,7 @@ import {
   SnapshotTaskCodeReviewSubjectProvider,
   TaskVerificationEvidenceFactory
 } from '@ai-native-software-delivery-orchestrator/run-preparation';
+import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import {
   GitRepositorySnapshotProvider,
   GitWorkspaceChangeInspector,
@@ -38,13 +40,26 @@ import {
   TaskOutputAdmissionCoordinator,
   TaskRepairCoordinator
 } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
-import type { ForgeActivities } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
-
-import { PiCodeReviewModelResolver } from '@ai-native-software-delivery-orchestrator/agent-runtime';
+import type {
+  AdmitRepairInput,
+  AdmitRepairResult,
+  ExecuteBuilderInput,
+  ExecuteBuilderResult,
+  ExecuteRepairInput,
+  ExecuteRepairResult,
+  EvaluateBuilderOutputInput,
+  EvaluateBuilderOutputResult,
+  FinalizeRunStateInput,
+  FinalizeRunStateResult,
+  ForgeActivities,
+  IntegrateAcceptedOutputInput,
+  IntegrateAcceptedOutputResult,
+  ReevaluateRunInput,
+  ReevaluateRunResult
+} from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 
 const WORKER_DATABASE_PATH =
-  process.env.FORGE_WORKER_DATABASE_PATH ??
-  resolve(process.cwd(), 'dist', 'temporal-worker.sqlite');
+  process.env.FORGE_WORKER_DATABASE_PATH ?? resolve(process.cwd(), 'dist', 'temporal-worker.sqlite');
 const WORKER_REPOSITORY_PATH = process.env.FORGE_WORKER_REPOSITORY_PATH ?? process.cwd();
 
 const codeReviewPolicy = {
@@ -59,28 +74,11 @@ const codeReviewPolicy = {
   }
 } as const;
 
-const createCompletedAttempt = (input: {
-  readonly runId: string;
-  readonly taskId: string;
-  readonly workspaceId: string;
-  readonly agentId: string;
-  readonly leasePlanFingerprint: string;
-  readonly sessionId?: string;
-}): AgentExecutionAttempt => ({
-  id: input.sessionId ?? randomUUID(),
-  runId: input.runId,
-  taskId: input.taskId,
-  agentId: input.agentId,
-  workspaceId: input.workspaceId,
-  leasePlanFingerprint: input.leasePlanFingerprint,
-  state: 'COMPLETED',
-  revision: 1,
-  startedAt: new Date(),
-  completedAt: new Date(),
-  ...(input.sessionId === undefined
-    ? {}
-    : { sessionRef: { backend: 'pi', value: input.sessionId } })
-});
+const verificationPolicy = {
+  version: 2,
+  autonomousRules: ['package-script-required', 'free-form-command-forbidden'] as const,
+  dockerImage: 'ghcr.io/ai-native-software-delivery-orchestrator/forge-worker:latest'
+} as const;
 
 const createVerificationEvidence = (request: {
   readonly id: string;
@@ -90,6 +88,71 @@ const createVerificationEvidence = (request: {
   readonly verificationPolicyFingerprint: string;
   readonly verifiedAt: Date;
 }): TaskVerificationEvidence => new TaskVerificationEvidenceFactory().create(request);
+
+const createStubTaskVerifier = (): TaskVerifier => ({
+  async verify() {
+    return { status: 'passed' as const };
+  }
+});
+
+const buildBootstrapTask = (repositoryTaskId: string): TaskContract => ({
+  id: repositoryTaskId,
+  title: 'Forge worker bootstrap',
+  goal: 'Resolve and execute Scenario A through durable worker services.',
+  dependencies: [],
+  expectedReads: [],
+  expectedWrites: [],
+  sharedResources: [],
+  verification: []
+});
+
+const createReadyWorkspace = (request: {
+  readonly id: string;
+  readonly runId: string;
+  readonly taskId: string;
+}): TaskWorkspace => ({
+  id: request.id,
+  runId: request.runId,
+  taskId: request.taskId,
+  integrationRepositoryPath: WORKER_REPOSITORY_PATH,
+  workspacePath: WORKER_REPOSITORY_PATH,
+  branchName: 'main',
+  baseRef: 'main',
+  integrationRef: 'forge',
+  revision: 1,
+  phase: 'READY_TO_INTEGRATE'
+});
+
+const createIntegratedWorkspace = (request: {
+  readonly id: string;
+  readonly runId: string;
+  readonly taskId: string;
+}): TaskWorkspace => ({
+  ...createReadyWorkspace(request),
+  revision: 2,
+  phase: 'INTEGRATED',
+  integrationCommit: `${request.taskId}-integrated-commit`
+});
+
+const createSyntheticImpact = (taskId: string): TaskImpact => ({
+  predicted: {
+    taskId,
+    projectsRead: new Set(),
+    projectsWritten: new Set(),
+    explicitProjectsWritten: new Set(),
+    filesRead: new Set(),
+    filesWritten: new Set(),
+    explicitFilesWritten: new Set(),
+    globFilesWritten: new Set(),
+    symbolDerivedFilesWritten: new Set(),
+    symbolsRead: new Set(),
+    symbolsWritten: new Set(),
+    sharedResources: new Set(),
+    sharedResourceAccesses: [],
+    downstreamProjects: new Set(),
+    riskSignals: []
+  }
+});
 
 export interface ForgeWorkerComposition {
   readonly forgeActivities: ForgeActivities;
@@ -108,12 +171,13 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     resources
   });
   const subjects = new SnapshotTaskCodeReviewSubjectProvider();
+
   const reviews = new TaskCodeReviewCollector({
     reviewer: new PiTaskCodeReviewer({
       policy: codeReviewPolicy,
       modelResolver: new PiCodeReviewModelResolver(),
-      createTools: (request) => {
-        const runtime = new AgentToolRuntime({
+      createTools: (request) =>
+        new AgentToolRuntime({
           runId: request.runId,
           taskId: request.task.id,
           attemptId: request.builderAttempt.id,
@@ -123,13 +187,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           resolveFileId: (path) => resources.fileId(path),
           persistence,
           writeGuard
-        });
-        return {
-          read: (path) => runtime.read(path),
-          list: (path) => runtime.list(path),
-          find: (path, text) => runtime.find(path, text)
-        };
-      }
+        })
     }),
     store: persistence
   });
@@ -144,7 +202,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     createEvidenceId: randomUUID
   });
 
-  const repairs = new TaskRepairCoordinator({
+  const repairCoordinator = new TaskRepairCoordinator({
     store: persistence,
     reviews: persistence,
     maxRepairs: 2,
@@ -172,7 +230,6 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     }),
     reconciler
   });
-  void builderExecution;
 
   const evaluation = new ForgeBuilderOutputEvaluationService({
     snapshots,
@@ -182,14 +239,13 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     verificationEvidence: persistence,
     createVerificationEvidence,
     createEvidenceId: randomUUID,
-    repairs
+    repairs: repairCoordinator
   });
-  void evaluation;
 
   const repairExecution = new ForgeRepairExecutionService({
-    repairCoordinator: repairs,
+    repairCoordinator,
     executionCoordinator: new RepairExecutionCoordinator({
-      repairs,
+      repairs: repairCoordinator,
       runner: new PiAgentRunner({
         gateway: new PiCodingAgentGateway(),
         createTools: (request) =>
@@ -206,11 +262,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           })
       }),
       reconciler,
-      verifier: {
-        async verify() {
-          return { status: 'passed' };
-        }
-      } satisfies TaskVerifier,
+      verifier: createStubTaskVerifier(),
       snapshots,
       subjects,
       reviews,
@@ -222,7 +274,6 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
       createVerificationEvidence
     })
   });
-  void repairExecution;
 
   const integration = new ForgeAcceptedOutputIntegrationService({
     coordinator: admission,
@@ -230,118 +281,245 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     persistence
   });
 
-  const task: TaskContract = {
-    id: repository.graph.projects.values().next().value?.id ?? 'task-1',
-    title: 'Forge worker bootstrap',
-    goal: 'Resolve and execute Scenario A through durable worker services.',
-    dependencies: [],
-    expectedReads: [],
-    expectedWrites: [],
-    sharedResources: [],
-    verification: []
-  };
-
-  const builderAttemptCache = new Map<string, AgentExecutionAttempt>();
+  const bootstrapTask = buildBootstrapTask(repository.graph.projects.values().next().value?.id ?? 'task-1');
 
   const forgeActivities: ForgeActivities = {
-    async reevaluateRun(input) {
+    async reevaluateRun(input: ReevaluateRunInput): Promise<ReevaluateRunResult> {
+      const recovered = await persistence.recoverRun(input.runId);
+      if (recovered === undefined) {
+        return { runId: input.runId, authorizedTasks: [] };
+      }
+      const bindings = await persistence.recoverTaskBindings(input.runId);
       return {
         runId: input.runId,
-        authorizedTasks: [{ taskId: task.id, attemptId: input.runId }]
+        authorizedTasks: bindings.map((binding) => ({
+          taskId: binding.taskId,
+          attemptId: binding.taskId
+        }))
       };
     },
-    async executeBuilder(input) {
-      const attempt = createCompletedAttempt({
+    async executeBuilder(input: ExecuteBuilderInput): Promise<ExecuteBuilderResult> {
+      await builderExecution.execute({
+        runId: input.runId,
+        task: bootstrapTask,
+        binding: {
+          taskId: input.taskId,
+          agentId: `${input.taskId}-agent`,
+          leasePlan: { taskId: input.taskId, predictedResources: [], source: 'manual' },
+          workspace: createReadyWorkspace({
+            id: `${input.taskId}-workspace`,
+            runId: input.runId,
+            taskId: input.taskId
+          })
+        },
+        attempt: {
+          id: input.attemptId,
+          runId: input.runId,
+          taskId: input.taskId,
+          agentId: `${input.taskId}-agent`,
+          workspaceId: `${input.taskId}-workspace`,
+          leasePlanFingerprint: `lease:${input.taskId}`,
+          state: 'PREPARING',
+          revision: 1,
+          startedAt: new Date()
+        }
+      });
+      return {
         runId: input.runId,
         taskId: input.taskId,
         workspaceId: `${input.taskId}-workspace`,
-        agentId: 'forge-builder',
-        leasePlanFingerprint: 'sha256:' + '0'.repeat(64),
-        sessionId: input.attemptId
-      });
-      builderAttemptCache.set(input.taskId, attempt);
-      return {
-        runId: input.runId,
-        taskId: input.taskId,
-        workspaceId: attempt.workspaceId,
-        attemptId: attempt.id,
+        attemptId: input.attemptId,
         impactId: `${input.taskId}-impact`
       };
     },
-    async evaluateBuilderOutput(input) {
-      const builderAttempt = builderAttemptCache.get(input.taskId);
-      const workspace = await workspaceManager.create({
+    async evaluateBuilderOutput(input: EvaluateBuilderOutputInput): Promise<EvaluateBuilderOutputResult> {
+      const workspace = createReadyWorkspace({
         id: input.workspaceId,
         runId: input.runId,
-        taskId: input.taskId,
-        integrationRepositoryPath: WORKER_REPOSITORY_PATH,
-        workspacePath: WORKER_REPOSITORY_PATH,
-        branchName: 'main',
-        baseRef: 'main',
-        integrationRef: 'forge'
+        taskId: input.taskId
       });
-      const verification = createVerificationEvidence({
-        id: randomUUID(),
-        attempt:
-          builderAttempt ??
-          createCompletedAttempt({
-            runId: input.runId,
-            taskId: input.taskId,
-            workspaceId: workspace.id,
-            agentId: 'forge-builder',
-            leasePlanFingerprint: 'sha256:' + '0'.repeat(64)
-          }),
+      const builderAttempt: AgentExecutionAttempt = {
+        id: input.builderAttemptId,
+        runId: input.runId,
+        taskId: input.taskId,
+        agentId: `${input.taskId}-agent`,
+        workspaceId: input.workspaceId,
+        leasePlanFingerprint: `lease:${input.taskId}`,
+        state: 'COMPLETED',
+        revision: 2,
+        startedAt: new Date(),
+        completedAt: new Date()
+      };
+      const result = await evaluation.evaluate({
+        runId: input.runId,
+        task: bootstrapTask,
+        builderAttempt,
         workspace,
-        snapshot: await snapshots.capture({ repositoryPath: WORKER_REPOSITORY_PATH }),
-        verificationPolicyFingerprint: 'sha256:' + '1'.repeat(64),
-        verifiedAt: new Date()
+        impact: createSyntheticImpact(input.taskId),
+        verificationPolicyFingerprint: `verification:${verificationPolicy.version}`,
+        repository: { files: repository.graph.files, symbols: repository.graph.symbols }
       });
       return {
         runId: input.runId,
         taskId: input.taskId,
-        recommendation: 'accept' as const,
-        verificationId: verification.id,
+        recommendation: result.recommendation,
+        verificationId: result.verification.id,
         subjectRef: {
-          builderAttemptId: input.builderAttemptId,
-          outputAttemptId: input.builderAttemptId,
-          workspaceId: input.workspaceId
+          builderAttemptId: result.subject.builderAttemptId,
+          outputAttemptId: result.subject.outputAttemptId,
+          workspaceId: result.subject.workspaceId
         },
         reviewId: `${input.taskId}-review`
       };
     },
-    async admitRepair(input) {
-      return {
+    async admitRepair(input: AdmitRepairInput): Promise<AdmitRepairResult> {
+      const repair = await repairCoordinator.prepare({
         runId: input.runId,
         taskId: input.taskId,
-        repairAttemptId: `${input.taskId}-repair`
-      };
-    },
-    async executeRepair(input) {
-      return {
-        runId: input.runId,
-        taskId: input.taskId,
-        state: 'completed' as const,
-        repairAttemptId: input.repairAttemptId,
-        recommendation: 'accept' as const,
-        verificationId: `${input.taskId}-repair-verification`,
-        subjectRef: {
-          builderAttemptId: input.builderAttemptId,
-          outputAttemptId: input.repairAttemptId,
-          workspaceId: input.workspaceId
+        agentId: `${input.taskId}-agent`,
+        workspaceId: input.subjectRef.workspaceId,
+        reviewIteration: 1,
+        review: {
+          recommendation: 'repair',
+          summary: `Repair required for ${input.taskId}`,
+          findings: []
         },
-        reviewId: `${input.taskId}-repair-review`
-      };
-    },
-    async integrateAcceptedOutput(input) {
-      const workspace = await workspaceManager.create({
-        id: `${input.taskId}-integrate`,
+        subject: {
+          builderAttemptId: input.subjectRef.builderAttemptId,
+          outputAttemptId: input.subjectRef.outputAttemptId,
+          workspaceId: input.subjectRef.workspaceId,
+          workspaceRevision: 1,
+          workspaceChangeFingerprint: `lease:${input.taskId}`,
+          impactFingerprint: `impact:${input.taskId}`,
+          verificationFingerprint: `verification:${verificationPolicy.version}`
+        }
+      });
+      const prepared = await repairCoordinator.markStarting(repair);
+      return {
         runId: input.runId,
         taskId: input.taskId,
-        integrationRepositoryPath: WORKER_REPOSITORY_PATH,
-        workspacePath: WORKER_REPOSITORY_PATH,
-        branchName: 'main',
-        baseRef: 'main',
-        integrationRef: 'forge'
+        repairAttemptId: prepared.id
+      };
+    },
+    async executeRepair(input: ExecuteRepairInput): Promise<ExecuteRepairResult> {
+      const repair = await repairCoordinator.prepare({
+        runId: input.runId,
+        taskId: input.taskId,
+        agentId: `${input.taskId}-agent`,
+        workspaceId: input.workspaceId,
+        reviewIteration: 1,
+        review: {
+          recommendation: 'repair',
+          summary: `Repair required for ${input.taskId}`,
+          findings: []
+        },
+        subject: {
+          builderAttemptId: input.builderAttemptId,
+          outputAttemptId: input.reviewId,
+          workspaceId: input.workspaceId,
+          workspaceRevision: 1,
+          workspaceChangeFingerprint: `lease:${input.taskId}`,
+          impactFingerprint: `impact:${input.taskId}`,
+          verificationFingerprint: `verification:${verificationPolicy.version}`
+        }
+      });
+      const workspace = createReadyWorkspace({
+        id: input.workspaceId,
+        runId: input.runId,
+        taskId: input.taskId
+      });
+      const result = await repairExecution.execute({
+        runId: input.runId,
+        agentId: `${input.taskId}-agent`,
+        builderAttempt: {
+          id: input.builderAttemptId,
+          runId: input.runId,
+          taskId: input.taskId,
+          agentId: `${input.taskId}-agent`,
+          workspaceId: input.workspaceId,
+          leasePlanFingerprint: `lease:${input.taskId}`,
+          state: 'COMPLETED',
+          revision: 2,
+          startedAt: new Date(),
+          completedAt: new Date()
+        },
+        task: bootstrapTask,
+        workspace,
+        impact: {
+          predicted: createSyntheticImpact(input.taskId).predicted
+        },
+        leases: [],
+        verificationPolicyFingerprint: `verification:${verificationPolicy.version}`,
+        repository: { files: repository.graph.files, symbols: repository.graph.symbols },
+        reviewIteration: 1,
+        review: {
+          recommendation: 'repair',
+          summary: `Repair required for ${input.taskId}`,
+          findings: []
+        },
+        subject: {
+          builderAttemptId: input.builderAttemptId,
+          outputAttemptId: input.reviewId,
+          workspaceId: input.workspaceId,
+          workspaceRevision: 1,
+          workspaceChangeFingerprint: `lease:${input.taskId}`,
+          impactFingerprint: `impact:${input.taskId}`,
+          verificationFingerprint: `verification:${verificationPolicy.version}`
+        },
+        maxRepairs: 2,
+        preCreatedRepairAttempt: repair
+      });
+      if (result.state !== 'completed') {
+        return {
+          runId: input.runId,
+          taskId: input.taskId,
+          state: result.state,
+          repairAttemptId: result.attempt.id,
+          blockerLeaseId: result.state === 'blocked' ? result.blockerLeaseId : undefined,
+          detail: result.state === 'unknown' ? result.detail : undefined
+        };
+      }
+      const repairReview = await reviews.collect({
+        runId: input.runId,
+        task: bootstrapTask,
+        workspace,
+        impact: createSyntheticImpact(input.taskId),
+        builderAttempt: {
+          id: input.builderAttemptId,
+          runId: input.runId,
+          taskId: input.taskId,
+          agentId: `${input.taskId}-agent`,
+          workspaceId: input.workspaceId,
+          leasePlanFingerprint: `lease:${input.taskId}`,
+          state: 'COMPLETED',
+          revision: 2,
+          startedAt: new Date(),
+          completedAt: new Date()
+        },
+        subject: result.reviewSubject,
+        repository: { files: repository.graph.files, symbols: repository.graph.symbols },
+        iteration: 1
+      });
+      return {
+        runId: input.runId,
+        taskId: input.taskId,
+        state: 'completed',
+        repairAttemptId: result.attempt.id,
+        recommendation: result.recommendation,
+        verificationId: result.verification.id,
+        subjectRef: {
+          builderAttemptId: result.reviewSubject.builderAttemptId,
+          outputAttemptId: result.reviewSubject.outputAttemptId,
+          workspaceId: result.reviewSubject.workspaceId
+        },
+        reviewId: `${input.taskId}-repair-review-${repairReview.recommendation}`
+      };
+    },
+    async integrateAcceptedOutput(input: IntegrateAcceptedOutputInput): Promise<IntegrateAcceptedOutputResult> {
+      const workspace = createIntegratedWorkspace({
+        id: input.workspaceId,
+        runId: input.runId,
+        taskId: input.taskId
       });
       await integration.integrate({
         runId: input.runId,
@@ -352,23 +530,25 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           outputAttemptId: input.subjectRef.outputAttemptId,
           workspaceId: input.subjectRef.workspaceId,
           workspaceRevision: 1,
-          workspaceChangeFingerprint: 'sha256:' + '5'.repeat(64),
-          impactFingerprint: 'sha256:' + '6'.repeat(64),
-          verificationFingerprint: 'sha256:' + '7'.repeat(64)
+          workspaceChangeFingerprint: `lease:${input.taskId}`,
+          impactFingerprint: `impact:${input.taskId}`,
+          verificationFingerprint: `verification:${verificationPolicy.version}`
         },
-        task
+        task: bootstrapTask
       });
-      return { runId: input.runId, taskId: input.taskId, status: 'integrated' as const };
+      return { runId: input.runId, taskId: input.taskId, status: 'integrated' };
     },
-    async finalizeRunState(input) {
-      return { runId: input.runId, status: 'completed' as const };
+    async finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult> {
+      const recovered = await persistence.recoverRun(input.runId);
+      const status = recovered?.run.state === 'FAILED' ? 'failed' : 'completed';
+      return { runId: input.runId, status };
     }
   };
 
   return {
     forgeActivities,
     async close() {
-      persistence.close?.();
+      await persistence.close?.();
     }
   };
 }
