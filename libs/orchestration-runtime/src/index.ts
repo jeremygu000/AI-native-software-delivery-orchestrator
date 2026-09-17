@@ -27,7 +27,7 @@ export {
   ForgeBuilderOutputEvaluationError,
   ForgeBuilderOutputEvaluationService
 } from './lib/forge-builder-output-evaluation-service.js';
-export {
+export { 
   ForgeAcceptedOutputIntegrationError,
   ForgeAcceptedOutputIntegrationService
 } from './lib/forge-accepted-output-integration-service.js';
@@ -35,6 +35,15 @@ export {
   ForgeRepairExecutionError,
   ForgeRepairExecutionService
 } from './lib/forge-repair-execution-service.js';
+export {
+  ForgeRunFinalizationError,
+  ForgeRunFinalizationService
+} from './lib/forge-run-finalization-service.js';
+export {
+  ForgeRunReevaluationError,
+  ForgeRunReevaluationService,
+  type ForgeRunAuthorization
+} from './lib/forge-run-reevaluation-service.js';
 export type { DurableExecutionScenarioService } from './lib/durable-execution-spike-contract.js';
 export {
   assertDurableExecutionSpikeOutcome,

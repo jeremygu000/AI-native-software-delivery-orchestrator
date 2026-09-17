@@ -10,18 +10,8 @@ import {
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import type {
   AgentExecutionAttempt,
-  ExecutionPlan,
-  HardTaskConflict,
-  TaskImpact,
   TaskWorkspace,
   TaskVerificationEvidence,
-  PersistedDispatch,
-  Scheduler,
-  SchedulerDecision,
-  SchedulerEvent,
-  ScheduleOptions,
-  TaskContract,
-  SchedulerSnapshot,
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 import { analyzeRepository } from '@ai-native-software-delivery-orchestrator/repository-analysis';
@@ -63,9 +53,13 @@ import type {
   IntegrateAcceptedOutputInput,
   IntegrateAcceptedOutputResult,
   ReevaluateRunInput,
-  ReevaluateRunResult
+  ReevaluateRunResult,
 } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 import { SandboxedPackageScriptVerifier } from '../../../libs/run-preparation/src/lib/local-runtime-starter.js';
+import { agentCommandPolicyFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
+import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
+import { ForgeRunFinalizationService } from '../../../libs/orchestration-runtime/src/lib/forge-run-finalization-service.js';
+import { ForgeRunReevaluationService } from '../../../libs/orchestration-runtime/src/lib/forge-run-reevaluation-service.js';
 
 const WORKER_DATABASE_PATH =
   process.env.FORGE_WORKER_DATABASE_PATH ?? resolve(process.cwd(), 'dist', 'temporal-worker.sqlite');
@@ -112,71 +106,7 @@ const createVerificationEvidence = (request: {
   readonly verifiedAt: Date;
 }): TaskVerificationEvidence => new TaskVerificationEvidenceFactory().create(request);
 
-const createScheduler = (tasks: readonly TaskContract[]): Scheduler => ({
-  createInitialPlan(): ExecutionPlan {
-    return {
-      waves: tasks.length === 0 ? [] : [{ index: 0, taskIds: tasks.map((task) => task.id) }]
-    };
-  },
-  reevaluate(_event: SchedulerEvent, snapshot: SchedulerSnapshot, nextTasks, _hardConflicts: readonly HardTaskConflict[], _riskConflicts, options: ScheduleOptions): SchedulerDecision {
-    const runningTaskIds = snapshot.taskStates.filter((task) => task.state === 'RUNNING').map((task) => task.taskId);
-    const taskStates = new Map(snapshot.taskStates.map((task) => [task.taskId, task.state]));
-    const taskDecisions = nextTasks
-      .filter((task) => taskStates.get(task.id) === 'PENDING')
-      .map((task) => ({
-        taskId: task.id,
-        action: 'ready' as const,
-        fromState: 'PENDING' as const,
-        toState: 'READY' as const,
-        reasons: [
-          {
-            type: 'dependencies-completed' as const,
-            dependencyTaskIds: task.dependencies,
-            detail: task.dependencies.length === 0 ? 'No dependencies remain.' : undefined
-          }
-        ]
-      }));
-    const readyDecisions = taskDecisions.flatMap((decision) => [
-      decision,
-      {
-        taskId: decision.taskId,
-        action: 'start' as const,
-        fromState: 'READY' as const,
-        toState: 'RUNNING' as const,
-        reasons: [
-          {
-            type: 'selected-by-priority' as const,
-            priority: 0,
-            detail: runningTaskIds.length >= options.maxConcurrency ? 'Awaiting capacity.' : undefined
-          }
-        ]
-      }
-    ]);
-    return { taskDecisions: readyDecisions };
-  }
-});
-
-const createCurrentImpact = (taskId: string): TaskImpact => ({
-  predicted: {
-    taskId,
-    projectsRead: new Set(),
-    projectsWritten: new Set(),
-    explicitProjectsWritten: new Set(),
-    filesRead: new Set(),
-    filesWritten: new Set(),
-    explicitFilesWritten: new Set(),
-    globFilesWritten: new Set(),
-    symbolDerivedFilesWritten: new Set(),
-    symbolsRead: new Set(),
-    symbolsWritten: new Set(),
-    sharedResources: new Set(),
-    sharedResourceAccesses: [],
-    downstreamProjects: new Set(),
-    riskSignals: []
-  }
-});
-
-export interface ForgeWorkerComposition {
+  export interface ForgeWorkerComposition {
   readonly forgeActivities: ForgeActivities;
   close(): Promise<void>;
 }
@@ -218,6 +148,9 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     policy: verificationPolicy,
     graph: repository.graph
   });
+
+  const reevaluation = new ForgeRunReevaluationService({ persistence });
+  const finalization = new ForgeRunFinalizationService({ persistence });
 
   const admission = new TaskOutputAdmissionCoordinator({
     snapshots,
@@ -337,11 +270,11 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     };
   };
 
-  const recoverReviewById = async (runId: string, reviewId: string) => {
+  const recoverReviewById = async (runId: string, taskId: string, reviewId: string) => {
     const reviews = await persistence.recoverReviews(runId);
-    const [taskId, iterationRaw] = reviewId.split(':');
+    const iterationRaw = reviewId.includes(':') ? reviewId.split(':').at(-1) : reviewId;
     const iteration = Number(iterationRaw);
-    if (taskId.length === 0 || !Number.isInteger(iteration) || iteration < 1) {
+    if (!Number.isInteger(iteration) || iteration < 1) {
       throw new Error(`Invalid review reference: ${reviewId}`);
     }
     const review = reviews.find((candidate) => candidate.taskId === taskId && candidate.iteration === iteration);
@@ -351,51 +284,36 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     return review;
   };
 
+  const assertBuilderTuple = (
+    binding: NonNullable<Awaited<ReturnType<typeof persistence.recoverTaskBinding>>>,
+    attempt: AgentExecutionAttempt
+  ): void => {
+    if (attempt.runId !== binding.runId || attempt.taskId !== binding.taskId) {
+      throw new Error(`Builder attempt does not belong to binding: ${attempt.id}`);
+    }
+    if (attempt.agentId !== binding.agentId) {
+      throw new Error(`Builder agent authority mismatch: ${attempt.id}`);
+    }
+    if (attempt.workspaceId !== binding.workspace.id) {
+      throw new Error(`Builder workspace authority mismatch: ${attempt.id}`);
+    }
+    if (attempt.leasePlanFingerprint !== taskLeasePlanFingerprint(binding.leasePlan)) {
+      throw new Error(`Builder lease authority mismatch: ${attempt.id}`);
+    }
+    if (attempt.commandPolicyFingerprint !== agentCommandPolicyFingerprint(binding.commandPolicy)) {
+      throw new Error(`Builder command authority mismatch: ${attempt.id}`);
+    }
+  };
+
   const forgeActivities: ForgeActivities = {
     async reevaluateRun(input: ReevaluateRunInput): Promise<ReevaluateRunResult> {
-      const recovered = await persistence.recoverRun(input.runId);
-      if (recovered === undefined) {
-        return { runId: input.runId, authorizedTasks: [] };
-      }
-      const scheduler = createScheduler(recovered.tasks);
-      const reevaluation = {
-        event: { runId: input.runId, sequence: recovered.events.length + 1, occurredAt: new Date().toISOString(), event: { type: 'run-started' } as never },
-        transitions: [],
-        decision: {
-          runId: input.runId,
-          sequence: recovered.decisions.length + 1,
-          inputSnapshot: { taskStates: [], runtimeBlocks: [] },
-          decision: scheduler.reevaluate(
-            { type: 'run-started' },
-            { taskStates: [], runtimeBlocks: [] },
-            recovered.tasks,
-            recovered.hardConflicts,
-            recovered.riskConflicts,
-            recovered.scheduleOptions
-          )
-        }
-      } satisfies PersistedDispatch['reevaluation'];
-      const attempts = recovered.taskBindings.map((binding) => ({
-        runId: input.runId,
-        attempt: {
-          id: `${input.runId}:${binding.taskId}:preparing`,
-          runId: input.runId,
-          taskId: binding.taskId,
-          agentId: binding.agentId,
-          workspaceId: binding.workspace.id,
-          leasePlanFingerprint: `sha256:${binding.taskId.padEnd(64, '0').slice(0, 64)}`,
-          commandPolicyFingerprint: binding.commandPolicy === undefined ? undefined : `sha256:${binding.taskId.padEnd(64, '1').slice(0, 64)}`,
-          trustedCommandPath: binding.trustedCommandPath,
-          state: 'PREPARING' as const,
-          revision: 1
-        }
-      }));
-      await persistence.persistDispatch({ reevaluation, attempts });
+      const authorizations: readonly { taskId: string; attemptId: string }[] =
+        await reevaluation.recoverAuthorizations(input.runId);
       return {
         runId: input.runId,
-        authorizedTasks: attempts.map(({ attempt }) => ({
-          taskId: attempt.taskId,
-          attemptId: attempt.id
+        authorizedTasks: authorizations.map((authorization) => ({
+          taskId: authorization.taskId,
+          attemptId: authorization.attemptId
         }))
       };
     },
@@ -407,6 +325,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
       if (context.attempt.id !== input.attemptId || context.attempt.state !== 'PREPARING') {
         throw new Error(`Builder attempt authority mismatch: ${input.runId}/${input.taskId}/${input.attemptId}`);
       }
+      assertBuilderTuple(context.binding, context.attempt);
       await builderExecution.execute({
         runId: input.runId,
         task: context.task,
@@ -440,8 +359,11 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
         task: context.task,
         builderAttempt: context.attempt,
         workspace: context.workspace,
-        impact: context.recoveredRun?.impacts.find((impact) => impact.taskId === input.taskId)?.impact ??
-          createCurrentImpact(input.taskId),
+        impact:
+          context.recoveredRun?.impacts.find((impact) => impact.taskId === input.taskId)?.impact ??
+          (() => {
+            throw new Error(`Missing persisted builder impact: ${input.runId}/${input.taskId}`);
+          })(),
         verificationPolicyFingerprint,
         repository: { files: repository.graph.files, symbols: repository.graph.symbols }
       });
@@ -460,11 +382,11 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           outputAttemptId: result.subject.outputAttemptId,
           workspaceId: result.subject.workspaceId
         },
-        reviewId: `${input.taskId}:${reviewRecord.iteration}`
+        reviewId: String(reviewRecord.iteration)
       };
     },
     async admitRepair(input: AdmitRepairInput): Promise<AdmitRepairResult> {
-      const review = await recoverReviewById(input.runId, input.reviewId);
+      const review = await recoverReviewById(input.runId, input.taskId, input.reviewId);
       const context = await recoverTaskContext(input.runId, input.taskId, review.subject?.builderAttemptId);
       if (context.binding === undefined || context.task === undefined || context.workspace === undefined || context.attempt === undefined || review.subject === undefined) {
         throw new Error(`Missing durable repair admission authority: ${input.runId}/${input.taskId}`);
@@ -490,7 +412,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
       if (admittedRepair === undefined) {
         throw new Error(`Repair attempt not admitted: ${input.repairAttemptId}`);
       }
-      const review = await recoverReviewById(input.runId, input.reviewId);
+      const review = await recoverReviewById(input.runId, input.taskId, input.reviewId);
       const context = await recoverTaskContext(input.runId, input.taskId, input.builderAttemptId);
       if (context.binding === undefined || context.task === undefined || context.workspace === undefined || context.attempt === undefined || review.subject === undefined) {
         throw new Error(`Missing durable repair execution authority: ${input.runId}/${input.taskId}`);
@@ -504,7 +426,11 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
         builderAttempt: context.attempt,
         task: context.task,
         workspace: context.workspace,
-        impact: context.recoveredRun?.impacts.find((impact) => impact.taskId === input.taskId)?.impact ?? createCurrentImpact(input.taskId),
+        impact:
+          context.recoveredRun?.impacts.find((impact) => impact.taskId === input.taskId)?.impact ??
+          (() => {
+            throw new Error(`Missing persisted repair impact: ${input.runId}/${input.taskId}`);
+          })(),
         leases: (context.recoveredRun?.leases ?? []).map(({ lease }) => lease).filter((lease) => lease.taskId === input.taskId),
         verificationPolicyFingerprint,
         repository: { files: repository.graph.files, symbols: repository.graph.symbols },
@@ -536,7 +462,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           outputAttemptId: result.reviewSubject.outputAttemptId,
           workspaceId: result.reviewSubject.workspaceId
         },
-        reviewId: `${input.taskId}:${review.iteration + 1}`
+        reviewId: String(review.iteration)
       };
     },
     async integrateAcceptedOutput(input: IntegrateAcceptedOutputInput): Promise<IntegrateAcceptedOutputResult> {
@@ -577,12 +503,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
       return { runId: input.runId, taskId: input.taskId, status: 'integrated' };
     },
     async finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult> {
-      const recovered = await persistence.recoverRun(input.runId);
-      if (recovered === undefined) {
-        throw new Error(`Missing durable finalization authority: ${input.runId}`);
-      }
-      const status = recovered.run.state === 'COMPLETED' ? 'completed' : 'failed';
-      await persistence.updateRunState(input.runId, recovered.run.state === 'COMPLETED' ? 'COMPLETED' : 'FAILED');
+      const status = await finalization.finalize(input.runId);
       return { runId: input.runId, status };
     }
   };
