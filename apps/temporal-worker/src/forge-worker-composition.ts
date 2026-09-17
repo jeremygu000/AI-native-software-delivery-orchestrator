@@ -333,8 +333,11 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
         attempt: context.attempt
       });
       const refreshed = await persistence.recoverRun(input.runId);
-      const impact = refreshed?.impacts.find((impact) => impact.taskId === input.taskId)?.impact;
-      const workspace = refreshed?.workspaces.find((entry) => entry.workspace.taskId === input.taskId)?.workspace;
+      if (refreshed === undefined) {
+        throw new Error(`Missing persisted builder outputs: ${input.runId}/${input.taskId}`);
+      }
+      const impact = refreshed.impacts.find((impact) => impact.taskId === input.taskId)?.impact;
+      const workspace = refreshed.workspaces.find((entry) => entry.workspace.taskId === input.taskId)?.workspace;
       if (workspace === undefined || impact === undefined) {
         throw new Error(`Missing persisted builder outputs: ${input.runId}/${input.taskId}`);
       }
@@ -343,7 +346,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
         taskId: input.taskId,
         workspaceId: workspace.id,
         attemptId: input.attemptId,
-        impactId: `${input.runId}:${input.taskId}`
+        impactId: input.attemptId
       };
     },
     async evaluateBuilderOutput(input: EvaluateBuilderOutputInput): Promise<EvaluateBuilderOutputResult> {
