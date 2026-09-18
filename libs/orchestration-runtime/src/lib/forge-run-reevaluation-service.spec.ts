@@ -140,7 +140,11 @@ class MemoryPersistence implements OrchestrationPersistence {
   async recoverIntegration(): Promise<undefined> { return undefined; }
   async persistRepairResumeDispatch(): Promise<void> {}
   async recoverRepairResumeDispatches(): Promise<readonly []> { return []; }
-  async replayRun(): Promise<readonly PersistedSchedulerDecision[]> { return []; }
+  async replayRun(runId: string): Promise<readonly PersistedSchedulerDecision[]> {
+    return this.dispatches
+      .filter((dispatch) => dispatch.reevaluation.event.runId === runId)
+      .map((dispatch) => dispatch.reevaluation.decision);
+  }
   async close(): Promise<void> {}
 }
 
@@ -167,7 +171,17 @@ describe('ForgeRunReevaluationService', () => {
           runId: 'run-1',
           sequence: 1,
           inputSnapshot: { taskStates: [], runtimeBlocks: [] },
-          decision: { taskDecisions: [] }
+          decision: {
+            taskDecisions: [
+              {
+                taskId: 'task-a',
+                action: 'start',
+                fromState: 'READY',
+                toState: 'RUNNING',
+                reasons: [{ type: 'selected-by-priority', priority: 0, detail: 'test' }]
+              }
+            ]
+          }
         }
       },
       attempts: [

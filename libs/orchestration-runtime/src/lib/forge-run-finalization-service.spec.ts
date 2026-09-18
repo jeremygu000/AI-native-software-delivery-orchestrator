@@ -8,7 +8,10 @@ import { describe, expect, it } from 'vitest';
 
 import { ForgeRunFinalizationError, ForgeRunFinalizationService } from './forge-run-finalization-service.js';
 
-const createRun = (state: 'ACTIVE' | 'COMPLETED' | 'FAILED'): CreatePersistedRunRequest => ({
+const createRun = (
+  state: 'ACTIVE' | 'COMPLETED' | 'FAILED',
+  options?: { readonly attempts?: readonly PersistedAgentExecutionAttempt[] }
+): CreatePersistedRunRequest => ({
   run: {
     id: 'run-1',
     repositoryId: 'repo-1',
@@ -87,25 +90,7 @@ class MemoryPersistence implements OrchestrationPersistence {
       scheduleOptions: this.request.scheduleOptions,
       events: [],
       decisions: [],
-      attempts: this.request.run.state === 'ACTIVE'
-        ? [
-            {
-              runId: 'run-1',
-              attempt: {
-                id: 'attempt-a',
-                runId: 'run-1',
-                taskId: 'task-a',
-                agentId: 'agent-a',
-                workspaceId: 'workspace-a',
-                leasePlanFingerprint: 'lease-a',
-                state: 'COMPLETED',
-                revision: 1,
-                startedAt: new Date('2026-08-12T00:00:00.000Z'),
-                completedAt: new Date('2026-08-12T00:01:00.000Z')
-              }
-            } as PersistedAgentExecutionAttempt
-          ]
-        : [],
+      attempts: this.request.run.state === 'ACTIVE' ? [] : [],
       workspaces: [],
       leases: [],
       impacts: [],
@@ -149,18 +134,38 @@ describe('ForgeRunFinalizationService', () => {
     await expect(service.finalize('missing')).rejects.toThrow(ForgeRunFinalizationError);
   });
 
-  it('reports failed for non-terminal active state without inventing a completed result', async () => {
+  it('fails closed for non-terminal active state without inventing a terminal result', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRun('ACTIVE'));
 
     const service = new ForgeRunFinalizationService({ persistence });
-    await expect(service.finalize('run-1')).resolves.toBe('failed');
-    expect(persistence.states.at(-1)).toBe('ACTIVE');
+    await expect(service.finalize('run-1')).rejects.toThrow(ForgeRunFinalizationError);
+    expect(persistence.states).toHaveLength(0);
   });
 
   it('reports completed for fully completed runs', async () => {
     const persistence = new MemoryPersistence();
-    await persistence.createRun(createRun('COMPLETED'));
+    await persistence.createRun(
+      createRun('COMPLETED', {
+        attempts: [
+          {
+            runId: 'run-1',
+            attempt: {
+              id: 'attempt-a',
+              runId: 'run-1',
+              taskId: 'task-a',
+              agentId: 'agent-a',
+              workspaceId: 'workspace-a',
+              leasePlanFingerprint: 'lease-a',
+              state: 'COMPLETED',
+              revision: 1,
+              startedAt: new Date('2026-08-12T00:00:00.000Z'),
+              completedAt: new Date('2026-08-12T00:01:00.000Z')
+            }
+          } as PersistedAgentExecutionAttempt
+        ]
+      })
+    );
 
     const service = new ForgeRunFinalizationService({ persistence });
     await expect(service.finalize('run-1')).resolves.toBe('completed');

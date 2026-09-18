@@ -30,6 +30,9 @@ export class ForgeRunFinalizationService {
       const attempt = recovered.attempts.find((entry) => entry.attempt.taskId === task.id)?.attempt;
       return attempt?.state ?? 'PENDING';
     });
+    if (recovered.run.state === 'ACTIVE') {
+      throw new ForgeRunFinalizationError(`Run is not terminal: ${runId}`);
+    }
     const state: OrchestrationRunState =
       taskStates.some((taskState) => taskState === 'FAILED')
         ? 'FAILED'
