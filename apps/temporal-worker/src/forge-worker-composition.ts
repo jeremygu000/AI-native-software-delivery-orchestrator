@@ -336,6 +336,11 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
         binding: context.binding,
         attempt: context.attempt
       });
+      await progression.advance(input.runId, {
+        type: 'agent-completed',
+        taskId: input.taskId,
+        state: 'VERIFYING'
+      });
       const refreshed = await persistence.recoverRun(input.runId);
       if (refreshed === undefined) {
         throw new Error(`Missing persisted builder outputs: ${input.runId}/${input.taskId}`);
@@ -427,6 +432,18 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
       if (context.attempt.id !== input.builderAttemptId) {
         throw new Error(`Builder attempt authority mismatch: ${input.runId}/${input.taskId}/${input.builderAttemptId}`);
       }
+      if (
+        admittedRepair.state !== 'PREPARING' ||
+        admittedRepair.runId !== input.runId ||
+        admittedRepair.taskId !== input.taskId ||
+        admittedRepair.workspaceId !== context.workspace.id ||
+        admittedRepair.parentReviewIteration !== review.iteration ||
+        admittedRepair.parentReviewSubject.builderAttemptId !== review.subject.builderAttemptId ||
+        admittedRepair.parentReviewSubject.outputAttemptId !== review.subject.outputAttemptId ||
+        admittedRepair.parentReviewSubject.workspaceId !== review.subject.workspaceId
+      ) {
+        throw new Error(`Repair attempt lineage mismatch: ${input.repairAttemptId}`);
+      }
       const result = await repairExecution.execute({
         runId: input.runId,
         agentId: context.binding.agentId,
@@ -448,6 +465,11 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
         preCreatedRepairAttempt: admittedRepair
       });
       if (result.state !== 'completed') {
+        await progression.advance(input.runId, {
+          type: 'task-failed',
+          taskId: input.taskId,
+          state: 'FAILED'
+        });
         return {
           runId: input.runId,
           taskId: input.taskId,
@@ -457,7 +479,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           detail: result.state === 'unknown' ? result.detail : undefined
         };
       }
-      const persistedRepairReview = await progression.persistCompletedRepairReview({
+      const persistedRepairReview = await progression.recoverCompletedRepairReview({
         runId: input.runId,
         taskId: input.taskId,
         parentReviewIteration: review.iteration,
@@ -514,6 +536,24 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
         subject: acceptedSubject,
         task: context.task
       });
+      if (result.status === 'integrated') {
+        await progression.advance(input.runId, {
+          type: 'verification-completed',
+          taskId: input.taskId,
+          state: 'INTEGRATING'
+        });
+        await progression.advance(input.runId, {
+          type: 'workspace-integrated',
+          taskId: input.taskId,
+          state: 'COMPLETED'
+        });
+      } else {
+        await progression.advance(input.runId, {
+          type: 'task-failed',
+          taskId: input.taskId,
+          state: 'FAILED'
+        });
+      }
       return { runId: input.runId, taskId: input.taskId, status: result.status };
     },
     async finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult> {

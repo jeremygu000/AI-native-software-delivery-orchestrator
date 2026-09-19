@@ -2,6 +2,7 @@
 import type {
   OrchestrationPersistence,
   PersistedAgentExecutionAttempt,
+  PersistedDispatch,
   PersistedReevaluation,
   PersistedTaskCodeReview,
   PersistedTaskExecutionBinding,
@@ -101,6 +102,26 @@ const applyEventBlockers = (
   return snapshot;
 };
 
+/**
+ * State-bearing scheduler events (agent-completed / verification-completed /
+ * workspace-integrated / task-completed / task-failed) require the input snapshot to
+ * already carry the event's target state, because the production runtime persists the
+ * state transition before asking the scheduler to reevaluate. We therefore project the
+ * current snapshot onto the event state before handing it to the scheduler.
+ */
+const projectEventState = (snapshot: SchedulerSnapshot, event: SchedulerEvent): SchedulerSnapshot => {
+  if (!('taskId' in event) || !('state' in event)) {
+    return snapshot;
+  }
+  const taskStates = snapshot.taskStates.map((entry) =>
+    entry.taskId === event.taskId ? { taskId: entry.taskId, state: event.state } : entry
+  );
+  return { taskStates, runtimeBlocks: snapshot.runtimeBlocks };
+};
+
+const sameEvent = (left: SchedulerEvent, right: SchedulerEvent): boolean =>
+  JSON.stringify(left) === JSON.stringify(right);
+
 export class ForgeRunProgressionService {
   readonly #persistence: ForgeRunProgressionPersistence;
   readonly #scheduler: Scheduler;
@@ -133,40 +154,40 @@ export class ForgeRunProgressionService {
     };
   }
 
-  async reevaluate(runId: string): Promise<readonly ForgeRunAuthorization[]> {
+  /**
+   * Advances the run by one lifecycle event. This is the single authoritative write path
+   * used both for the initial run dispatch and for subsequent task lifecycle events.
+   *
+   * Idempotency: if a dispatch for the exact same scheduler event has already been
+   * persisted, the previously persisted PREPARING attempts are returned instead of
+   * creating a new sequence. Temporal activity retries after a lost response therefore
+   * observe the same durable authorizations.
+   */
+  async advance(
+    runId: string,
+    event: SchedulerEvent
+  ): Promise<readonly ForgeRunAuthorization[]> {
     const recovered = await this.#requireRun(runId);
-    if (recovered.run.state !== 'ACTIVE') {
+
+    const existing = await this.#findExistingDispatch(recovered, event);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    if (recovered.run.state !== 'ACTIVE' && event.type !== 'run-started') {
       return [];
     }
 
-    const persistedDecisions = recovered.decisions;
-    const inputSnapshot =
-      persistedDecisions.length === 0
-        ? initialSnapshot(recovered)
-        : this.#currentSnapshot(recovered);
-    const event: SchedulerEvent =
-      persistedDecisions.length === 0
-        ? { type: 'run-started' }
-        : { type: 'runtime-reconciliation-recovered' };
+    const inputSnapshot = projectEventState(this.#currentSnapshot(recovered), event);
     const decision = this.#scheduler.reevaluate(
       event,
       inputSnapshot,
       recovered.tasks,
-      [
-        ...recovered.hardConflicts,
-        ...recovered.conflicts.flatMap((record) =>
-          record.conflict.severity === 'hard' ? [record.conflict] : []
-        )
-      ],
-      [
-        ...recovered.riskConflicts,
-        ...recovered.conflicts.flatMap((record) =>
-          record.conflict.severity === 'hard' ? [] : [record.conflict]
-        )
-      ],
+      this.#hardConflicts(recovered),
+      this.#riskConflicts(recovered),
       recovered.scheduleOptions
     );
-    const sequence = persistedDecisions.length + 1;
+    const sequence = recovered.decisions.length + 1;
     const reevaluation: PersistedReevaluation = {
       event: {
         runId,
@@ -225,6 +246,18 @@ export class ForgeRunProgressionService {
     return attempts.map(({ attempt }) => ({ taskId: attempt.taskId, attemptId: attempt.id }));
   }
 
+  async reevaluate(runId: string): Promise<readonly ForgeRunAuthorization[]> {
+    const recovered = await this.#requireRun(runId);
+    if (recovered.run.state !== 'ACTIVE') {
+      return [];
+    }
+    const event: SchedulerEvent =
+      recovered.decisions.length === 0
+        ? { type: 'run-started' }
+        : { type: 'runtime-reconciliation-recovered' };
+    return this.advance(runId, event);
+  }
+
   async finalize(runId: string): Promise<'completed' | 'failed'> {
     const recovered = await this.#requireRun(runId);
     const snapshot = this.#currentSnapshot(recovered);
@@ -240,62 +273,12 @@ export class ForgeRunProgressionService {
     throw new ForgeRunProgressionError(`Run is not terminal: ${runId}`);
   }
 
-  async applyEvent(
-    runId: string,
-    event: Extract<SchedulerEvent, { readonly taskId: string }>
-  ): Promise<void> {
-    const recovered = await this.#requireRun(runId);
-    const inputSnapshot = this.#currentSnapshot(recovered);
-    const decision = this.#scheduler.reevaluate(
-      event,
-      inputSnapshot,
-      recovered.tasks,
-      [
-        ...recovered.hardConflicts,
-        ...recovered.conflicts.flatMap((record) =>
-          record.conflict.severity === 'hard' ? [record.conflict] : []
-        )
-      ],
-      [
-        ...recovered.riskConflicts,
-        ...recovered.conflicts.flatMap((record) =>
-          record.conflict.severity === 'hard' ? [] : [record.conflict]
-        )
-      ],
-      recovered.scheduleOptions
-    );
-    const sequence = recovered.decisions.length + 1;
-    const reevaluation: PersistedReevaluation = {
-      event: {
-        runId,
-        sequence,
-        occurredAt: this.#now().toISOString(),
-        event
-      },
-      transitions: decision.taskDecisions.flatMap((taskDecision) =>
-        'toState' in taskDecision
-          ? [
-              {
-                runId,
-                sequence,
-                taskId: taskDecision.taskId,
-                fromState: taskDecision.fromState,
-                toState: taskDecision.toState
-              }
-            ]
-          : []
-      ),
-      decision: {
-        runId,
-        sequence,
-        inputSnapshot,
-        decision
-      }
-    };
-    await this.#persistence.persistDispatch({ reevaluation, attempts: [] });
-  }
-
-  async persistCompletedRepairReview(request: {
+  /**
+   * Recovers the persisted repair review produced at parentIteration + 1 and verifies it
+   * matches the execution result exactly. The repair execution coordinator persists this
+   * review itself; the worker must never synthesize a new iteration from it.
+   */
+  async recoverCompletedRepairReview(request: {
     readonly runId: string;
     readonly taskId: string;
     readonly parentReviewIteration: number;
@@ -303,22 +286,33 @@ export class ForgeRunProgressionService {
     readonly review: TaskCodeReview;
   }): Promise<PersistedTaskCodeReview> {
     const reviews = await this.#persistence.recoverReviews(request.runId);
-    const latestIteration = reviews
-      .filter((review: PersistedTaskCodeReview) => review.taskId === request.taskId)
-      .reduce(
-        (iteration: number, review: PersistedTaskCodeReview) =>
-          Math.max(iteration, review.iteration),
-        0
+    const expectedIteration = request.parentReviewIteration + 1;
+    const record = reviews.find(
+      (candidate) => candidate.taskId === request.taskId && candidate.iteration === expectedIteration
+    );
+    if (record === undefined) {
+      throw new ForgeRunProgressionError(
+        `Missing persisted repair review: ${request.runId}/${request.taskId}#${expectedIteration}`
       );
-    const nextIteration = Math.max(latestIteration + 1, request.parentReviewIteration + 1);
-    const record: PersistedTaskCodeReview = {
-      runId: request.runId,
-      taskId: request.taskId,
-      iteration: nextIteration,
-      subject: request.subject,
-      review: request.review
-    };
-    await this.#persistence.persistReview(record);
+    }
+    if (
+      record.subject === undefined ||
+      record.subject.builderAttemptId !== request.subject.builderAttemptId ||
+      record.subject.outputAttemptId !== request.subject.outputAttemptId ||
+      record.subject.workspaceId !== request.subject.workspaceId
+    ) {
+      throw new ForgeRunProgressionError(
+        `Persisted repair review subject mismatch: ${request.runId}/${request.taskId}#${expectedIteration}`
+      );
+    }
+    if (
+      record.review.recommendation !== request.review.recommendation ||
+      record.review.summary !== request.review.summary
+    ) {
+      throw new ForgeRunProgressionError(
+        `Persisted repair review mismatch: ${request.runId}/${request.taskId}#${expectedIteration}`
+      );
+    }
     return record;
   }
 
@@ -339,6 +333,52 @@ export class ForgeRunProgressionService {
     );
   }
 
+  /**
+   * Finds a previously persisted dispatch for the exact same scheduler event and returns
+   * the PREPARING attempts atomically persisted with it, in scheduler decision order.
+   */
+  async #findExistingDispatch(
+    recovered: RecoveredRun,
+    event: SchedulerEvent
+  ): Promise<readonly ForgeRunAuthorization[] | undefined> {
+    const dispatches = await this.#persistence.recoverDispatches(recovered.run.id);
+    const match = dispatches.find((dispatch) => sameEvent(dispatch.reevaluation.event.event, event));
+    if (match === undefined) {
+      return undefined;
+    }
+    return match.reevaluation.decision.decision.taskDecisions
+      .filter((taskDecision) => taskDecision.action === 'start')
+      .map((taskDecision) => {
+        const attempt = match.attempts.find(
+          (candidate) => candidate.attempt.taskId === taskDecision.taskId
+        );
+        if (attempt === undefined) {
+          throw new ForgeRunProgressionError(
+            `Persisted dispatch is missing its PREPARING attempt: ${recovered.run.id}/${taskDecision.taskId}`
+          );
+        }
+        return { taskId: taskDecision.taskId, attemptId: attempt.attempt.id };
+      });
+  }
+
+  #hardConflicts(recovered: RecoveredRun) {
+    return [
+      ...recovered.hardConflicts,
+      ...recovered.conflicts.flatMap((record) =>
+        record.conflict.severity === 'hard' ? [record.conflict] : []
+      )
+    ];
+  }
+
+  #riskConflicts(recovered: RecoveredRun) {
+    return [
+      ...recovered.riskConflicts,
+      ...recovered.conflicts.flatMap((record) =>
+        record.conflict.severity === 'hard' ? [] : [record.conflict]
+      )
+    ];
+  }
+
   async #requireRun(runId: string): Promise<RecoveredRun> {
     const recovered = await this.#persistence.recoverRun(runId);
     if (recovered === undefined) {
@@ -347,3 +387,5 @@ export class ForgeRunProgressionService {
     return recovered;
   }
 }
+
+export type { PersistedDispatch };
