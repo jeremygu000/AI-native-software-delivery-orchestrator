@@ -97,8 +97,8 @@ const verificationPolicy = {
   }
 } as const;
 
-const verificationPolicyFingerprint = fingerprintPlanValue(verificationPolicy);
-const reviewPolicyFingerprint = codeReviewPolicyFingerprint(codeReviewPolicy);
+export const verificationPolicyFingerprint = fingerprintPlanValue(verificationPolicy);
+export const reviewPolicyFingerprint = codeReviewPolicyFingerprint(codeReviewPolicy);
 
 const createVerificationEvidence = (request: {
   readonly id: string;
@@ -114,9 +114,27 @@ const createVerificationEvidence = (request: {
   close(): Promise<void>;
 }
 
-export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposition> {
-  const repository = await analyzeRepository(WORKER_REPOSITORY_PATH);
-  const persistence = new DrizzleSqliteOrchestrationPersistence(WORKER_DATABASE_PATH);
+/**
+ * Test-only injection seams. Production callers pass nothing and get the real
+ * implementations; the worker vertical spec substitutes in-memory/stub versions of the
+ * services that perform external side effects (git, agent runner, reviewer, verifier).
+ */
+export interface ForgeWorkerCompositionOverrides {
+  readonly persistence?: InstanceType<typeof DrizzleSqliteOrchestrationPersistence>;
+  readonly builderExecution?: Pick<ForgeBuilderExecutionService, 'execute'>;
+  readonly evaluation?: Pick<ForgeBuilderOutputEvaluationService, 'evaluate'>;
+  readonly repairExecution?: Pick<ForgeRepairExecutionService, 'execute'>;
+  readonly integration?: Pick<ForgeAcceptedOutputIntegrationService, 'integrate'>;
+  readonly repositoryGraph?: Awaited<ReturnType<typeof analyzeRepository>>['graph'];
+}
+
+export async function createForgeWorkerComposition(
+  overrides: ForgeWorkerCompositionOverrides = {}
+): Promise<ForgeWorkerComposition> {
+  const repository = overrides.repositoryGraph === undefined
+    ? await analyzeRepository(WORKER_REPOSITORY_PATH)
+    : { graph: overrides.repositoryGraph };
+  const persistence = overrides.persistence ?? new DrizzleSqliteOrchestrationPersistence(WORKER_DATABASE_PATH);
   const writeGuard = new InMemoryWriteGuard();
   const workspaceManager = new GitWorkspaceManager();
   const snapshots = new GitRepositorySnapshotProvider();
@@ -173,7 +191,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     createId: randomUUID
   });
 
-  const builderExecution = new ForgeBuilderExecutionService({
+  const builderExecution = overrides.builderExecution ?? new ForgeBuilderExecutionService({
     persistence,
     workspaceManager,
     writeGuard,
@@ -195,7 +213,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     reconciler
   });
 
-  const evaluation = new ForgeBuilderOutputEvaluationService({
+  const evaluation = overrides.evaluation ?? new ForgeBuilderOutputEvaluationService({
     snapshots,
     subjects,
     reviews,
@@ -205,7 +223,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     createEvidenceId: randomUUID
   });
 
-  const repairExecution = new ForgeRepairExecutionService({
+  const repairExecution = overrides.repairExecution ?? new ForgeRepairExecutionService({
     repairCoordinator,
     executionCoordinator: new RepairExecutionCoordinator({
       repairs: repairCoordinator,
@@ -238,7 +256,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     })
   });
 
-  const integration = new ForgeAcceptedOutputIntegrationService({
+  const integration = overrides.integration ?? new ForgeAcceptedOutputIntegrationService({
     coordinator: admission,
     workspaceManager,
     persistence
