@@ -1,10 +1,12 @@
-import { proxyActivities } from '@temporalio/workflow';
+import { condition, defineSignal, proxyActivities, setHandler } from '@temporalio/workflow';
 import type { ForgeActivities } from '../activities/forge-activities.js';
 import {
   ForgeRunInputSchema,
   ForgeRunResultSchema,
+  RepairWakeSignalSchema,
   type ForgeRunInput,
-  type ForgeRunResult
+  type ForgeRunResult,
+  type RepairWakeSignal
 } from '../contracts.js';
 
 const {
@@ -14,15 +16,18 @@ const {
   admitRepair,
   executeRepair,
   integrateAcceptedOutput,
-  finalizeRunState
+  finalizeRunState,
+  resumeBlockedRepair
 } = proxyActivities<ForgeActivities>({
   startToCloseTimeout: '5 minutes'
 });
 
+export const repairWakeSignal = defineSignal<[RepairWakeSignal]>('repairWake');
+
 /**
- * Scenario A Forge run workflow.
+ * Forge run workflow.
  *
- * Topology:
+ * Scenario A topology:
  *   reevaluateRun
  *     → for each authorized task start:
  *         executeBuilder
@@ -31,9 +36,20 @@ const {
  *             → [repair path] admitRepair → executeRepair
  *         → integrateAcceptedOutput (if accept)
  *   finalizeRunState
+ *
+ * Scenario B topology:
+ *   if executeRepair returns BLOCKED:
+ *     await repairWakeSignal for the same repairAttemptId
+ *     → resumeBlockedRepair
+ *     → executeRepair with the same repairAttemptId
  */
 export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunResult> {
   const { runId } = ForgeRunInputSchema.parse(input);
+
+  let wakeSignal: RepairWakeSignal | undefined;
+  setHandler(repairWakeSignal, (signal: RepairWakeSignal) => {
+    wakeSignal = RepairWakeSignalSchema.parse(signal);
+  });
 
   // Step 1: ask the scheduler which tasks are authorized to start
   const initialReevaluation = await reevaluateRun({ runId });
@@ -92,7 +108,7 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
         subjectRef: finalSubjectRef
       });
 
-      const repairResult = await executeRepair({
+      let repairResult = await executeRepair({
         runId,
         taskId: task.taskId,
         workspaceId: builderResult.workspaceId,
@@ -101,6 +117,30 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
         reviewId: currentReviewId,
         repairAttemptId: admittedRepair.repairAttemptId
       });
+
+      if (repairResult.state === 'blocked') {
+        const blockedRepairAttemptId = repairResult.repairAttemptId;
+        await condition(
+          () => wakeSignal !== undefined && wakeSignal.repairAttemptId === blockedRepairAttemptId
+        );
+        const resumeResult = await resumeBlockedRepair({
+          runId,
+          repairAttemptId: blockedRepairAttemptId
+        });
+        if (resumeResult.status !== 'resumed') {
+          repairFailed = true;
+          break;
+        }
+        repairResult = await executeRepair({
+          runId,
+          taskId: task.taskId,
+          workspaceId: builderResult.workspaceId,
+          builderAttemptId: builderResult.attemptId,
+          impactId: builderResult.impactId,
+          reviewId: currentReviewId,
+          repairAttemptId: blockedRepairAttemptId
+        });
+      }
 
       if (repairResult.state !== 'completed' || repairResult.subjectRef === undefined) {
         repairFailed = true;

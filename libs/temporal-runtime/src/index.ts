@@ -25,7 +25,10 @@ export {
   IntegrateAcceptedOutputInputSchema,
   IntegrateAcceptedOutputResultSchema,
   FinalizeRunStateInputSchema,
-  FinalizeRunStateResultSchema
+  FinalizeRunStateResultSchema,
+  ResumeBlockedRepairInputSchema,
+  ResumeBlockedRepairResultSchema,
+  RepairWakeSignalSchema
 } from './lib/contracts.js';
 export type {
   RunId,
@@ -48,8 +51,11 @@ export type {
   IntegrateAcceptedOutputInput,
   IntegrateAcceptedOutputResult,
   FinalizeRunStateInput,
-  FinalizeRunStateResult
+  FinalizeRunStateResult,
+  ResumeBlockedRepairInput,
+  ResumeBlockedRepairResult,
+  RepairWakeSignal
 } from './lib/contracts.js';
 export type { ForgeActivities } from './lib/activities/forge-activities.js';
-export { forgeRunWorkflow } from './lib/workflows/forge-run.js';
+export { forgeRunWorkflow, repairWakeSignal } from './lib/workflows/forge-run.js';
 export { bootstrap } from './lib/activities/index.js';

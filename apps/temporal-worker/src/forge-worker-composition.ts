@@ -54,6 +54,8 @@ import type {
   IntegrateAcceptedOutputResult,
   ReevaluateRunInput,
   ReevaluateRunResult,
+  ResumeBlockedRepairInput,
+  ResumeBlockedRepairResult,
 } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 import { SandboxedPackageScriptVerifier } from '../../../libs/run-preparation/src/lib/local-runtime-starter.js';
 import { agentCommandPolicyFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
@@ -573,6 +575,46 @@ export async function createForgeWorkerComposition(
     async finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult> {
       const status = await finalization.finalize(input.runId);
       return { runId: input.runId, status };
+    },
+    async resumeBlockedRepair(input: ResumeBlockedRepairInput): Promise<ResumeBlockedRepairResult> {
+      const repairAttempts = await persistence.recoverRepairAttempts(input.runId);
+      const repairRecord = repairAttempts.find((record) => record.attempt.id === input.repairAttemptId);
+      if (repairRecord === undefined) {
+        return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'not-found' };
+      }
+      const repair = repairRecord.attempt;
+      if (repair.state !== 'BLOCKED' || repair.blocker?.type !== 'lease') {
+        return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'not-blocked' };
+      }
+      const workItems = await persistence.recoverRepairWorkItems(input.runId);
+      const workItem = workItems.find((item) => item.repairAttemptId === repair.id);
+      const binding = await persistence.recoverTaskBinding(input.runId, repair.taskId);
+      const recoveredRun = await persistence.recoverRun(input.runId);
+      const builderAttempt = recoveredRun?.attempts.find((record) => record.attempt.id === workItem?.builderAttemptId)?.attempt;
+      if (
+        workItem === undefined ||
+        binding === undefined ||
+        builderAttempt === undefined ||
+        builderAttempt.id !== workItem.builderAttemptId ||
+        binding.workspace.id !== workItem.workspaceId ||
+        taskLeasePlanFingerprint(binding.leasePlan) !== workItem.leasePlanFingerprint ||
+        workItem.verificationPolicyFingerprint !== recoveredRun?.run.authority.verificationPolicyFingerprint ||
+        workItem.codeReviewPolicyFingerprint !== recoveredRun?.run.authority.codeReviewPolicyFingerprint ||
+        repair.parentReviewIteration !== workItem.parentReviewIteration ||
+        repair.parentReviewSubject.impactFingerprint !== workItem.impactFingerprint
+      ) {
+        throw new Error(`Blocked repair continuation evidence mismatch: ${repair.id}`);
+      }
+      const resumed = await repairCoordinator.tryResume(repair);
+      if (resumed === undefined) {
+        return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'resume-failed' };
+      }
+      return {
+        runId: input.runId,
+        repairAttemptId: resumed.id,
+        status: 'resumed',
+        taskId: resumed.taskId
+      };
     }
   };
 

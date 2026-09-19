@@ -12,11 +12,13 @@ import type {
   IntegrateAcceptedOutputInput,
   IntegrateAcceptedOutputResult,
   FinalizeRunStateInput,
-  FinalizeRunStateResult
+  FinalizeRunStateResult,
+  ResumeBlockedRepairInput,
+  ResumeBlockedRepairResult
 } from '../contracts.js';
 
 /**
- * The set of Temporal activity functions for a Scenario A Forge run.
+ * The set of Temporal activity functions for a Forge run.
  *
  * Implement this interface in the Worker process — each method receives
  * compact IDs from the workflow, resolves full domain objects via
@@ -35,4 +37,5 @@ export type ForgeActivities = {
     input: IntegrateAcceptedOutputInput
   ): Promise<IntegrateAcceptedOutputResult>;
   finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult>;
+  resumeBlockedRepair(input: ResumeBlockedRepairInput): Promise<ResumeBlockedRepairResult>;
 };

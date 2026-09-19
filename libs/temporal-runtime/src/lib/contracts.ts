@@ -171,3 +171,25 @@ export const FinalizeRunStateResultSchema = z.object({
   status: z.enum(['completed', 'failed'])
 });
 export type FinalizeRunStateResult = z.infer<typeof FinalizeRunStateResultSchema>;
+
+// ─── Scenario B: BLOCKED repair wake / resume ─────────────────────────────────
+
+export const ResumeBlockedRepairInputSchema = z.object({
+  runId: RunIdSchema,
+  repairAttemptId: z.string().min(1)
+});
+export type ResumeBlockedRepairInput = z.infer<typeof ResumeBlockedRepairInputSchema>;
+
+export const ResumeBlockedRepairResultSchema = z.object({
+  runId: RunIdSchema,
+  repairAttemptId: z.string().min(1),
+  status: z.enum(['resumed', 'ignored']),
+  taskId: z.string().min(1).optional(),
+  detail: z.string().optional()
+});
+export type ResumeBlockedRepairResult = z.infer<typeof ResumeBlockedRepairResultSchema>;
+
+export const RepairWakeSignalSchema = z.object({
+  repairAttemptId: z.string().min(1)
+});
+export type RepairWakeSignal = z.infer<typeof RepairWakeSignalSchema>;
