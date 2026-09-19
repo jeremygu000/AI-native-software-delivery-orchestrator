@@ -189,6 +189,14 @@ describe('ForgeRunProgressionService', () => {
     });
 
     expect(afterIntegration).toEqual([{ taskId: 'task-b', attemptId: 'attempt-2' }]);
+
+    // The worker drops advance()'s return value during integration; the workflow then
+    // calls reevaluate, which must recover the same durable PREPARING authorization
+    // instead of minting a new scheduler event.
+    const reevaluated = await progression.reevaluate('run-1');
+    expect(reevaluated).toEqual([{ taskId: 'task-b', attemptId: 'attempt-2' }]);
+    expect(persistence.dispatches).toHaveLength(4);
+
     await progression.advance('run-1', { type: 'agent-completed', taskId: 'task-b', state: 'VERIFYING' });
     await progression.advance('run-1', { type: 'verification-completed', taskId: 'task-b', state: 'INTEGRATING' });
     await progression.advance('run-1', { type: 'workspace-integrated', taskId: 'task-b', state: 'COMPLETED' });

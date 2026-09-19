@@ -246,16 +246,38 @@ export class ForgeRunProgressionService {
     return attempts.map(({ attempt }) => ({ taskId: attempt.taskId, attemptId: attempt.id }));
   }
 
+  /**
+   * Durable authorization recovery seam for the Temporal worker.
+   *
+   * - With no scheduler history, advances the run through `run-started` so the initial
+   *   wave of PREPARING attempts is created and atomically persisted.
+   * - Afterwards, returns the currently durable, unconsumed PREPARING attempts. Task
+   *   lifecycle events (agent-completed, workspace-integrated, ...) persist new START
+   *   authorizations via `advance`; reevaluation simply hands those durable attempts
+   *   back to the workflow. This keeps Temporal activity retries consistent after a
+   *   lost response without fabricating new scheduler history.
+   */
   async reevaluate(runId: string): Promise<readonly ForgeRunAuthorization[]> {
     const recovered = await this.#requireRun(runId);
     if (recovered.run.state !== 'ACTIVE') {
       return [];
     }
-    const event: SchedulerEvent =
-      recovered.decisions.length === 0
-        ? { type: 'run-started' }
-        : { type: 'runtime-reconciliation-recovered' };
-    return this.advance(runId, event);
+    if (recovered.decisions.length === 0) {
+      return this.advance(runId, { type: 'run-started' });
+    }
+    // Only hand out authorizations whose task the scheduler still considers RUNNING,
+    // i.e. STARTed but not yet carried through its lifecycle. Tasks that already
+    // advanced past RUNNING (VERIFYING/INTEGRATING/COMPLETED/...) have had their
+    // attempt consumed by the builder and must not be re-dispatched on retry.
+    const snapshot = this.#currentSnapshot(recovered);
+    const runningTaskIds = new Set(
+      snapshot.taskStates
+        .filter((taskState) => taskState.state === 'RUNNING')
+        .map((taskState) => taskState.taskId)
+    );
+    return recovered.attempts
+      .filter(({ attempt }) => attempt.state === 'PREPARING' && runningTaskIds.has(attempt.taskId))
+      .map(({ attempt }) => ({ taskId: attempt.taskId, attemptId: attempt.id }));
   }
 
   async finalize(runId: string): Promise<'completed' | 'failed'> {

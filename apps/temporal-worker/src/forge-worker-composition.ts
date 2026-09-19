@@ -547,13 +547,9 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           taskId: input.taskId,
           state: 'COMPLETED'
         });
-      } else {
-        await progression.advance(input.runId, {
-          type: 'task-failed',
-          taskId: input.taskId,
-          state: 'FAILED'
-        });
       }
+      // A blocked integration is recoverable/non-terminal: the workspace stays in
+      // INTEGRATION_BLOCKED and the task is not marked FAILED.
       return { runId: input.runId, taskId: input.taskId, status: result.status };
     },
     async finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult> {
