@@ -186,6 +186,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         'reevaluateRun',
         'evaluateBuilderOutput:task-1',
         'integrateAcceptedOutput:task-1',
+        'reevaluateRun',
         'finalizeRunState'
       ]);
     } finally {
@@ -299,6 +300,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         'admitRepair:task-2',
         'executeRepair:task-2',
         'integrateAcceptedOutput:task-2',
+        'reevaluateRun',
         'finalizeRunState'
       ]);
     } finally {
@@ -421,6 +423,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         'admitRepair:task-5',
         'executeRepair:task-5:repair-attempt-5b',
         'integrateAcceptedOutput',
+        'reevaluateRun',
         'finalizeRunState'
       ]);
       expect(admittedReviewIds).toEqual(['review-5', 'review-5b']);
@@ -592,10 +595,12 @@ describe('temporal-runtime Scenario A workflow', () => {
         'reevaluateRun',
         'evaluateBuilderOutput:task-a',
         'integrateAcceptedOutput:task-a',
+        'reevaluateRun',
         'executeBuilder:task-b',
         'reevaluateRun',
         'evaluateBuilderOutput:task-b',
         'integrateAcceptedOutput:task-b',
+        'reevaluateRun',
         'finalizeRunState'
       ]);
     } finally {

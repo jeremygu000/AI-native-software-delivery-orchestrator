@@ -460,6 +460,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
       if (latestRepairReview === undefined) {
         throw new Error(`Missing persisted repair review authority: ${input.runId}/${input.taskId}`);
       }
+      const persistedRepairReviewId = `${input.taskId}:${latestRepairReview.iteration}`;
       return {
         runId: input.runId,
         taskId: input.taskId,
@@ -472,7 +473,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           outputAttemptId: result.reviewSubject.outputAttemptId,
           workspaceId: result.reviewSubject.workspaceId
         },
-        reviewId: `${input.taskId}:${latestRepairReview.iteration}`
+        reviewId: persistedRepairReviewId
       };
     },
     async integrateAcceptedOutput(input: IntegrateAcceptedOutputInput): Promise<IntegrateAcceptedOutputResult> {

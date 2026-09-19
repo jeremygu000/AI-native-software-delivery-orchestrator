@@ -1,4 +1,7 @@
-import type { OrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/domain';
+import type {
+  OrchestrationPersistence
+} from '@ai-native-software-delivery-orchestrator/domain';
+import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
 
 export interface ForgeRunAuthorization {
   readonly taskId: string;
@@ -24,12 +27,12 @@ export class ForgeRunReevaluationService {
     if (recoveredRun === undefined) {
       throw new ForgeRunReevaluationError(`Missing durable reevaluation authority: ${runId}`);
     }
-    const dispatches = await this.#persistence.recoverDispatches(runId);
-    const latestDispatch = dispatches.at(-1);
-    if (latestDispatch === undefined) {
+    const replayedDecisions = await this.#persistence.replayRun(runId, new DeterministicScheduler());
+    const latestDecision = replayedDecisions.at(-1);
+    if (latestDecision === undefined) {
       return [];
     }
-    const currentTaskDecisions = latestDispatch.reevaluation.decision.decision.taskDecisions.filter((taskDecision) => taskDecision.action === 'start');
+    const currentTaskDecisions = latestDecision.decision.taskDecisions.filter((taskDecision) => taskDecision.action === 'start');
     if (currentTaskDecisions.length === 0) {
       return [];
     }

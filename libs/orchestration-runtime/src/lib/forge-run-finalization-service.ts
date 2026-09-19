@@ -30,14 +30,12 @@ export class ForgeRunFinalizationService {
       const attempt = [...recovered.attempts].reverse().find((entry) => entry.attempt.taskId === task.id)?.attempt;
       return attempt?.state ?? 'PENDING';
     });
-    const state: OrchestrationRunState =
-      authoritativeTaskStates.some((taskState) => taskState === 'FAILED')
-        ? 'FAILED'
-        : authoritativeTaskStates.every((taskState) => taskState === 'COMPLETED' || taskState === 'CANCELLED')
-          ? 'COMPLETED'
-          : (() => {
-              throw new ForgeRunFinalizationError(`Run is not terminal: ${runId}`);
-            })();
+    const hasFailedTask = authoritativeTaskStates.some((taskState) => taskState === 'FAILED');
+    const isCompletedRun = authoritativeTaskStates.every((taskState) => taskState === 'COMPLETED' || taskState === 'CANCELLED');
+    if (!hasFailedTask && !isCompletedRun) {
+      throw new ForgeRunFinalizationError(`Run is not terminal: ${runId}`);
+    }
+    const state: OrchestrationRunState = hasFailedTask ? 'FAILED' : 'COMPLETED';
     await this.#persistence.updateRunState(runId, state);
     return state === 'COMPLETED' ? 'completed' : 'failed';
   }

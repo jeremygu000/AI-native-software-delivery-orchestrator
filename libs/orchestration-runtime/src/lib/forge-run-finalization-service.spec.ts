@@ -169,4 +169,30 @@ describe('ForgeRunFinalizationService', () => {
     await expect(service.finalize('run-1')).resolves.toBe('completed');
     expect(persistence.states.at(-1)).toBe('COMPLETED');
   });
+
+  it('reports failed when any completed task failed', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(createRun('COMPLETED'));
+    persistence.attempts = [
+      {
+        runId: 'run-1',
+        attempt: {
+          id: 'attempt-a',
+          runId: 'run-1',
+          taskId: 'task-a',
+          agentId: 'agent-a',
+          workspaceId: 'workspace-a',
+          leasePlanFingerprint: 'lease-a',
+          state: 'FAILED',
+          revision: 1,
+          completedAt: new Date('2026-08-12T00:01:00.000Z'),
+          failure: { type: 'execution-failed', detail: 'boom' }
+        }
+      } as PersistedAgentExecutionAttempt
+    ];
+
+    const service = new ForgeRunFinalizationService({ persistence });
+    await expect(service.finalize('run-1')).resolves.toBe('failed');
+    expect(persistence.states.at(-1)).toBe('FAILED');
+  });
 });
