@@ -119,7 +119,12 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
         repairAttemptId: admittedRepair.repairAttemptId
       });
 
-      if (repairResult.state === 'blocked') {
+      // Scenario B: a repair may BLOCK on a lease, wait for a wake signal
+      // scoped to the same repairAttemptId, then resume and re-execute. This
+      // is a loop because the same repairAttemptId can block again after a
+      // resume, and an early wake (blocker lease still ACTIVE) must not
+      // permanently fail the repair — the wake is a hint, not authority.
+      while (repairResult.state === 'blocked') {
         const blockedRepairAttemptId = repairResult.repairAttemptId;
         await condition(() => pendingWakeRepairIds.has(blockedRepairAttemptId));
         pendingWakeRepairIds.delete(blockedRepairAttemptId);
@@ -127,6 +132,11 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
           runId,
           repairAttemptId: blockedRepairAttemptId
         });
+        if (resumeResult.status === 'ignored') {
+          // Early wake or stale blocker: keep waiting for the next matching
+          // wake instead of abandoning the continuation.
+          continue;
+        }
         if (resumeResult.status !== 'resumed') {
           repairFailed = true;
           break;
@@ -140,6 +150,10 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
           reviewId: currentReviewId,
           repairAttemptId: blockedRepairAttemptId
         });
+      }
+
+      if (repairFailed) {
+        break;
       }
 
       if (repairResult.state !== 'completed' || repairResult.subjectRef === undefined) {

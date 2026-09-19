@@ -69,7 +69,6 @@ import {
 const WORKER_DATABASE_PATH =
   process.env.FORGE_WORKER_DATABASE_PATH ?? resolve(process.cwd(), 'dist', 'temporal-worker.sqlite');
 const WORKER_REPOSITORY_PATH = process.env.FORGE_WORKER_REPOSITORY_PATH ?? process.cwd();
-const WORKER_RUN_ID = process.env.FORGE_WORKER_RUN_ID ?? '';
 
 const codeReviewPolicy = {
   version: 1,
@@ -138,12 +137,16 @@ export async function createForgeWorkerComposition(
     ? await analyzeRepository(WORKER_REPOSITORY_PATH)
     : { graph: overrides.repositoryGraph };
   const persistence = overrides.persistence ?? new DrizzleSqliteOrchestrationPersistence(WORKER_DATABASE_PATH);
-  const recoveredForHydration = WORKER_RUN_ID === '' ? undefined : await persistence.recoverRun(WORKER_RUN_ID);
-  const writeGuard = new InMemoryWriteGuard({
-    initialLeases: recoveredForHydration?.leases
-      .map(({ lease }) => lease)
-      .filter((lease) => lease.state === 'ACTIVE') ?? []
-  });
+  const writeGuards = new Map<string, InMemoryWriteGuard>();
+  const writeGuardForRunSync = (runId: string): InMemoryWriteGuard => {
+    const existing = writeGuards.get(runId);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const guard = new InMemoryWriteGuard();
+    writeGuards.set(runId, guard);
+    return guard;
+  };
   const workspaceManager = new GitWorkspaceManager();
   const snapshots = new GitRepositorySnapshotProvider();
   const resources = new RepositoryResourceResolver(repository.graph);
@@ -167,7 +170,7 @@ export async function createForgeWorkerComposition(
           resolveResource: (path) => resources.resolve(path),
           resolveFileId: (path) => resources.fileId(path),
           persistence,
-          writeGuard
+          writeGuard: writeGuardForRunSync(request.runId)
         })
     }),
     store: persistence
@@ -202,7 +205,7 @@ export async function createForgeWorkerComposition(
   const builderExecution = overrides.builderExecution ?? new ForgeBuilderExecutionService({
     persistence,
     workspaceManager,
-    writeGuard,
+    writeGuard: writeGuardForRunSync('default'),
     agentRunner: new PiAgentRunner({
       gateway: new PiCodingAgentGateway(),
       createTools: (request) =>
@@ -215,7 +218,7 @@ export async function createForgeWorkerComposition(
           resolveResource: (path) => resources.resolve(path),
           resolveFileId: (path) => resources.fileId(path),
           persistence,
-          writeGuard
+          writeGuard: writeGuardForRunSync(request.runId)
         })
     }),
     reconciler
@@ -247,7 +250,7 @@ export async function createForgeWorkerComposition(
             resolveResource: (path) => resources.resolve(path),
             resolveFileId: (path) => resources.fileId(path),
             persistence,
-            writeGuard
+            writeGuard: writeGuardForRunSync(request.runId)
           })
       }),
       reconciler,
@@ -256,7 +259,7 @@ export async function createForgeWorkerComposition(
       subjects,
       reviews,
       verificationEvidence: persistence,
-      writeGuard,
+      writeGuard: writeGuardForRunSync('default'),
       persistence,
       feedback: { leaseBlocked: async () => undefined, scopeExpanded: async () => undefined },
       createEvidenceId: randomUUID,
@@ -607,22 +610,6 @@ export async function createForgeWorkerComposition(
       return { runId: input.runId, status };
     },
     async resumeBlockedRepair(input: ResumeBlockedRepairInput): Promise<ResumeBlockedRepairResult> {
-      const priorDispatches = await persistence.recoverRepairResumeDispatches(input.runId);
-      const priorDispatch = priorDispatches.find((dispatch) => dispatch.repairAttemptId === input.repairAttemptId);
-      if (priorDispatch !== undefined) {
-        const priorRepair = (await persistence.recoverRepairAttempts(input.runId)).find(
-          (record) => record.attempt.id === input.repairAttemptId
-        )?.attempt;
-        if (priorRepair === undefined) {
-          return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'not-found' };
-        }
-        return {
-          runId: input.runId,
-          repairAttemptId: priorRepair.id,
-          status: 'resumed',
-          taskId: priorRepair.taskId
-        };
-      }
       const repairAttempts = await persistence.recoverRepairAttempts(input.runId);
       const repairRecord = repairAttempts.find((record) => record.attempt.id === input.repairAttemptId);
       if (repairRecord === undefined) {
@@ -632,22 +619,58 @@ export async function createForgeWorkerComposition(
       if (repair.state !== 'BLOCKED' || repair.blocker?.type !== 'lease') {
         return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'not-blocked' };
       }
+      const priorDispatches = await persistence.recoverRepairResumeDispatches(input.runId);
+      const priorDispatch = priorDispatches.find(
+        (dispatch) => dispatch.repairAttemptId === repair.id && dispatch.repairRevision === repair.revision + 1
+      );
+      if (priorDispatch !== undefined) {
+        const resumedRepair = repairAttempts.find((record) => record.attempt.id === repair.id)?.attempt;
+        if (resumedRepair === undefined || resumedRepair.state !== 'PREPARING' || resumedRepair.revision !== repair.revision + 1) {
+          return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'stale-resume-dispatch' };
+        }
+        return {
+          runId: input.runId,
+          repairAttemptId: resumedRepair.id,
+          status: 'resumed',
+          taskId: resumedRepair.taskId
+        };
+      }
       const workItems = await persistence.recoverRepairWorkItems(input.runId);
       const workItem = workItems.find((item) => item.repairAttemptId === repair.id);
       const binding = await persistence.recoverTaskBinding(input.runId, repair.taskId);
       const recoveredRun = await persistence.recoverRun(input.runId);
       const builderAttempt = recoveredRun?.attempts.find((record) => record.attempt.id === workItem?.builderAttemptId)?.attempt;
+      const persistedReviews = await persistence.recoverReviews(input.runId);
+      const parentReview = persistedReviews.find(
+        (review) => review.taskId === repair.taskId && review.iteration === repair.parentReviewIteration
+      );
       if (
         workItem === undefined ||
         binding === undefined ||
+        recoveredRun === undefined ||
         builderAttempt === undefined ||
+        parentReview?.subject === undefined ||
+        builderAttempt.runId !== input.runId ||
+        builderAttempt.taskId !== repair.taskId ||
+        builderAttempt.workspaceId !== workItem.workspaceId ||
+        builderAttempt.state !== 'COMPLETED' ||
         builderAttempt.id !== workItem.builderAttemptId ||
         binding.workspace.id !== workItem.workspaceId ||
         taskLeasePlanFingerprint(binding.leasePlan) !== workItem.leasePlanFingerprint ||
-        workItem.verificationPolicyFingerprint !== recoveredRun?.run.authority.verificationPolicyFingerprint ||
-        workItem.codeReviewPolicyFingerprint !== recoveredRun?.run.authority.codeReviewPolicyFingerprint ||
+        workItem.runId !== repair.runId ||
+        workItem.taskId !== repair.taskId ||
+        workItem.repairAttemptId !== repair.id ||
+        workItem.verificationPolicyFingerprint !== recoveredRun.run.authority.verificationPolicyFingerprint ||
+        workItem.codeReviewPolicyFingerprint !== recoveredRun.run.authority.codeReviewPolicyFingerprint ||
         repair.parentReviewIteration !== workItem.parentReviewIteration ||
-        repair.parentReviewSubject.impactFingerprint !== workItem.impactFingerprint
+        parentReview.review.recommendation !== 'repair' ||
+        parentReview.subject.builderAttemptId !== repair.parentReviewSubject.builderAttemptId ||
+        parentReview.subject.outputAttemptId !== repair.parentReviewSubject.outputAttemptId ||
+        parentReview.subject.workspaceId !== repair.parentReviewSubject.workspaceId ||
+        parentReview.subject.impactFingerprint !== repair.parentReviewSubject.impactFingerprint ||
+        parentReview.subject.workspaceRevision !== repair.parentReviewSubject.workspaceRevision ||
+        parentReview.subject.workspaceChangeFingerprint !== repair.parentReviewSubject.workspaceChangeFingerprint ||
+        parentReview.subject.verificationFingerprint !== repair.parentReviewSubject.verificationFingerprint
       ) {
         throw new Error(`Blocked repair continuation evidence mismatch: ${repair.id}`);
       }
@@ -663,14 +686,6 @@ export async function createForgeWorkerComposition(
       if (resumed === undefined) {
         return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'resume-failed' };
       }
-      await persistence.persistRepairResumeDispatch({
-        runId: input.runId,
-        taskId: repair.taskId,
-        repairAttemptId: repair.id,
-        repairRevision: resumed.revision,
-        dispatchId,
-        authorizedAt
-      });
       return {
         runId: input.runId,
         repairAttemptId: resumed.id,
