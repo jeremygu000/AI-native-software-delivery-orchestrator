@@ -2533,8 +2533,8 @@ Current limitation:
 
 What this stage enables next:
 
-- the app-local worker composition root can now be wired against a stable workflow contract instead of a placeholder slice;
-- later stages can replace the temporary worker stub with actual Forge runtime services.
+- M3.4 can reuse the frozen Scenario A authority seams for durable BLOCKED repair continuation;
+- the next work is restart-safe lease hydration, signal/wake handling, exact blocker validation, and CAS resume of the same repair attempt.
 
 ## Stage M3.3 closure: durable authority and production wiring
 
@@ -2567,33 +2567,23 @@ What remains outside this stage:
 - lease hydration from SQLite for restart safety is still deferred to M3.4;
 - broader hardening for repair continuation and blocked-integration resume behavior is also deferred.
 
-## Stage M3.4: Temporal worker composition root
+## Stage M3.4: BLOCKED repair restart and durable continuation
 
-This stage restored the missing worker boundary for `apps/temporal-worker`. The app entrypoint now has a real `createForgeWorkerComposition()` implementation again, so it can build `forgeActivities` and shut the composition down cleanly when the process exits.
+This stage is about Scenario B, not about recreating the worker composition root. The worker boundary is already built in M3.3; M3.4 should extend it with restart-safe BLOCKED repair continuation.
 
-What was built:
+What this stage should cover:
 
-- a worker composition file at `apps/temporal-worker/src/forge-worker-composition.ts`;
-- concrete runtime wiring for persistence, workspace management, repository snapshots, impact reconciliation, review collection, repair coordination, repair execution, and output integration;
-- an activity adapter that matches the compact Scenario A Temporal contract used by the workflow and its tests;
-- a minimal `close()` path so the worker composition can be torn down alongside the Temporal worker.
+- reload Forge authority from SQLite after restart;
+- hydrate active leases so `InMemoryWriteGuard` is restart-safe;
+- wake a BLOCKED repair only after validating the exact blocker;
+- CAS the same repair attempt back from `BLOCKED` to `PREPARING`;
+- re-execute the same `repairAttemptId` and continue through re-review and exact integration.
 
-Why this mattered:
+Why this is separate from M3.3:
 
-- `apps/temporal-worker/src/main.ts` was importing a missing module, so the worker app could not start;
-- the worker boundary had to stay compact and rely on real runtime services rather than a synthetic registry or `bindingId`-based authority;
-- the composition needed to stay within the existing workspace package boundaries and use the compact workflow identifiers already established in the Temporal runtime.
+- M3.3 closed Scenario A production wiring;
+- M3.4 is specifically about restart and durable continuation semantics for BLOCKED repairs.
 
-What was verified:
+## Historical note: earlier worker composition-root wording
 
-- `pnpm exec tsc -p apps/temporal-worker/tsconfig.app.json --noEmit` passed for the worker app;
-- `pnpm check` was run after formatting, but the repository-wide TypeScript phase still fails because of pre-existing type errors in other areas of the codebase, specifically `libs/orchestration-runtime` specs, `libs/agent-runtime` specs, and `libs/runtime-v2-spike-harness`.
-
-Current limitation:
-
-- the worker composition is now compileable, but the repository still has unrelated type drift outside this stage, so the full `pnpm check` pipeline does not yet pass end to end.
-
-What this stage enables next:
-
-- the Temporal worker app can now start from a real composition root instead of a missing import;
-- future work can focus on tightening the remaining repo-wide type drift without having to rebuild the worker boundary first.
+Earlier drafts described the worker composition root as a separate stage. That work is now absorbed into M3.3 and should not be treated as a separate upcoming M3.4 deliverable.

@@ -2225,8 +2225,8 @@ Stage 24 为 CLI 添加了运行操作和恢复控制命令。
 
 这一阶段为下一步提供了什么：
 
-- app 内部的 worker composition root 现在可以基于稳定的 workflow 合同来接线，而不是围绕占位切片继续猜测；
-- 后续阶段可以把临时 worker stub 替换成真正的 Forge runtime services。
+- M3.4 可以复用已经冻结的 Scenario A 授权 seam，继续做可恢复的 BLOCKED repair continuation；
+- 下一步要做的是重启安全的 lease hydration、signal/wake 处理、精确 blocker 校验，以及同一个 repair attempt 的 CAS resume。
 
 ## Stage M3.3 收口：持久化授权与生产化接线
 
@@ -2259,33 +2259,23 @@ Stage 24 为 CLI 添加了运行操作和恢复控制命令。
 - 从 SQLite 重新水合 lease 以支持重启安全，仍然留给 M3.4；
 - repair continuation 和 blocked-integration resume 的更广泛 hardening 也留给后续阶段。
 
-## Stage M3.4：Temporal worker composition root
+## Stage M3.4：BLOCKED repair 的重启与持久续跑
 
-这一阶段恢复了 `apps/temporal-worker` 缺失的 worker 边界。现在应用入口重新拥有了真正的 `createForgeWorkerComposition()` 实现，因此它可以构建 `forgeActivities`，并在进程退出时把 composition 一并干净关闭。
+这一阶段关注的是 Scenario B，而不是再重建一次 worker composition root。worker 边界已经在 M3.3 完成，M3.4 只需要在其上补齐重启安全的 BLOCKED repair 续跑能力。
 
-做了什么：
+这一阶段要覆盖的内容：
 
-- 在 `apps/temporal-worker/src/forge-worker-composition.ts` 新建了 worker composition 文件；
-- 接入了真实的运行时服务，包括持久化、工作区管理、仓库快照、影响对账、评审收集、repair 协调、repair 执行和输出集成；
-- 增加了一个 activity 适配层，和 Temporal runtime 里已经确认的紧凑 Scenario A 合同保持一致；
-- 提供了最小化的 `close()` 路径，方便 worker composition 与 Temporal worker 一起销毁。
+- 重启后从 SQLite 重新加载 Forge authority；
+- 重新水合活跃 lease，保证 `InMemoryWriteGuard` 具备重启安全性；
+- 只有在确认 blocker 完全匹配后，才允许唤醒 BLOCKED repair；
+- 通过 CAS 把同一个 repair attempt 从 `BLOCKED` 恢复到 `PREPARING`；
+- 继续用同一个 `repairAttemptId` 执行 repair，并走后续的 re-review 和精确集成。
 
-为什么这很重要：
+为什么它和 M3.3 分开：
 
-- `apps/temporal-worker/src/main.ts` 之前导入的是一个缺失模块，worker 应用无法启动；
-- worker 边界必须保持紧凑，并依赖真实运行时服务，而不是合成注册表或 `bindingId` 式的权限模型；
-- composition 需要继续停留在现有 workspace 包边界内，并使用 Temporal runtime 已经确定下来的紧凑 workflow 标识符。
+- M3.3 已经完成 Scenario A 的生产化接线；
+- M3.4 专注于 BLOCKED repair 的重启与持久续跑语义。
 
-验证了什么：
+## 历史说明：早期 worker composition-root 表述
 
-- `pnpm exec tsc -p apps/temporal-worker/tsconfig.app.json --noEmit` 已通过，说明 worker 应用本身可以成功编译；
-- 运行过 `pnpm check`，但仓库级 TypeScript 阶段仍被其他地方的现存类型错误阻塞，主要来自 `libs/orchestration-runtime` 的测试、`libs/agent-runtime` 的测试，以及 `libs/runtime-v2-spike-harness`。
-
-当前限制：
-
-- worker composition 已经可编译，但仓库里还有与本阶段无关的类型漂移，所以完整的 `pnpm check` 还不能端到端通过。
-
-这一阶段为下一步提供了什么：
-
-- Temporal worker 应用现在可以从真实的 composition root 启动，而不再依赖缺失导入；
-- 后续工作可以专注于收敛剩余的仓库级类型漂移，而不需要先重建 worker 边界。
+早前的草稿把 worker composition root 单独写成一个阶段；这部分工作已经并入 M3.3，不应再当作独立的 M3.4 交付物。
