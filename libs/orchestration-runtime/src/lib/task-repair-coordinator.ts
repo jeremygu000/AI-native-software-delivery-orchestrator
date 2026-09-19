@@ -158,11 +158,21 @@ export class TaskRepairCoordinator {
     throw new TaskRepairAdmissionError('Repair attempt cannot resume');
   }
 
-  async tryResume(attempt: TaskRepairAttempt): Promise<TaskRepairAttempt | undefined> {
+  async tryResume(
+    attempt: TaskRepairAttempt,
+    options?: {
+      readonly dispatch?: {
+        readonly taskId: string;
+        readonly dispatchId: string;
+        readonly authorizedAt: string;
+      };
+    }
+  ): Promise<TaskRepairAttempt | undefined> {
     const result = await this.#store.resumeRepairAttempt({
       runId: attempt.runId,
       attemptId: attempt.id,
-      expectedRevision: attempt.revision
+      expectedRevision: attempt.revision,
+      ...(options?.dispatch === undefined ? {} : { dispatch: options.dispatch })
     });
     if (result.status === 'resumed') {
       return result.attempt;

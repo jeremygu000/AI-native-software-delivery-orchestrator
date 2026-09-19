@@ -69,6 +69,7 @@ import {
 const WORKER_DATABASE_PATH =
   process.env.FORGE_WORKER_DATABASE_PATH ?? resolve(process.cwd(), 'dist', 'temporal-worker.sqlite');
 const WORKER_REPOSITORY_PATH = process.env.FORGE_WORKER_REPOSITORY_PATH ?? process.cwd();
+const WORKER_RUN_ID = process.env.FORGE_WORKER_RUN_ID ?? '';
 
 const codeReviewPolicy = {
   version: 1,
@@ -137,7 +138,12 @@ export async function createForgeWorkerComposition(
     ? await analyzeRepository(WORKER_REPOSITORY_PATH)
     : { graph: overrides.repositoryGraph };
   const persistence = overrides.persistence ?? new DrizzleSqliteOrchestrationPersistence(WORKER_DATABASE_PATH);
-  const writeGuard = new InMemoryWriteGuard();
+  const recoveredForHydration = WORKER_RUN_ID === '' ? undefined : await persistence.recoverRun(WORKER_RUN_ID);
+  const writeGuard = new InMemoryWriteGuard({
+    initialLeases: recoveredForHydration?.leases
+      .map(({ lease }) => lease)
+      .filter((lease) => lease.state === 'ACTIVE') ?? []
+  });
   const workspaceManager = new GitWorkspaceManager();
   const snapshots = new GitRepositorySnapshotProvider();
   const resources = new RepositoryResourceResolver(repository.graph);
@@ -420,17 +426,39 @@ export async function createForgeWorkerComposition(
     async admitRepair(input: AdmitRepairInput): Promise<AdmitRepairResult> {
       const review = await recoverReviewById(input.runId, input.taskId, input.reviewId);
       const context = await recoverTaskContext(input.runId, input.taskId, review.subject?.builderAttemptId);
-      if (context.binding === undefined || context.task === undefined || context.workspace === undefined || context.attempt === undefined || review.subject === undefined) {
+      if (
+        context.binding === undefined ||
+        context.task === undefined ||
+        context.workspace === undefined ||
+        context.attempt === undefined ||
+        review.subject === undefined
+      ) {
         throw new Error(`Missing durable repair admission authority: ${input.runId}/${input.taskId}`);
       }
+      const binding = context.binding;
+      const builderAttempt = context.attempt;
+      const reviewSubject = review.subject;
       const repair = await repairCoordinator.prepare({
         runId: input.runId,
         taskId: input.taskId,
-        agentId: context.binding.agentId,
+        agentId: binding.agentId,
         workspaceId: context.workspace.id,
         reviewIteration: review.iteration,
         review: review.review,
-        subject: review.subject
+        subject: reviewSubject,
+        createWorkItem: (attempt) => ({
+          runId: attempt.runId,
+          taskId: attempt.taskId,
+          repairAttemptId: attempt.id,
+          builderAttemptId: builderAttempt.id,
+          workspaceId: attempt.workspaceId,
+          leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
+          impactFingerprint: reviewSubject.impactFingerprint,
+          parentReviewIteration: attempt.parentReviewIteration,
+          reviewIteration: review.iteration + 1,
+          verificationPolicyFingerprint,
+          codeReviewPolicyFingerprint: reviewPolicyFingerprint
+        })
       });
       return {
         runId: input.runId,
@@ -485,11 +513,13 @@ export async function createForgeWorkerComposition(
         preCreatedRepairAttempt: admittedRepair
       });
       if (result.state !== 'completed') {
-        await progression.advance(input.runId, {
-          type: 'task-failed',
-          taskId: input.taskId,
-          state: 'FAILED'
-        });
+        if (result.state !== 'blocked') {
+          await progression.advance(input.runId, {
+            type: 'task-failed',
+            taskId: input.taskId,
+            state: 'FAILED'
+          });
+        }
         return {
           runId: input.runId,
           taskId: input.taskId,
@@ -577,6 +607,22 @@ export async function createForgeWorkerComposition(
       return { runId: input.runId, status };
     },
     async resumeBlockedRepair(input: ResumeBlockedRepairInput): Promise<ResumeBlockedRepairResult> {
+      const priorDispatches = await persistence.recoverRepairResumeDispatches(input.runId);
+      const priorDispatch = priorDispatches.find((dispatch) => dispatch.repairAttemptId === input.repairAttemptId);
+      if (priorDispatch !== undefined) {
+        const priorRepair = (await persistence.recoverRepairAttempts(input.runId)).find(
+          (record) => record.attempt.id === input.repairAttemptId
+        )?.attempt;
+        if (priorRepair === undefined) {
+          return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'not-found' };
+        }
+        return {
+          runId: input.runId,
+          repairAttemptId: priorRepair.id,
+          status: 'resumed',
+          taskId: priorRepair.taskId
+        };
+      }
       const repairAttempts = await persistence.recoverRepairAttempts(input.runId);
       const repairRecord = repairAttempts.find((record) => record.attempt.id === input.repairAttemptId);
       if (repairRecord === undefined) {
@@ -605,10 +651,26 @@ export async function createForgeWorkerComposition(
       ) {
         throw new Error(`Blocked repair continuation evidence mismatch: ${repair.id}`);
       }
-      const resumed = await repairCoordinator.tryResume(repair);
+      const dispatchId = `resume:${repair.id}:${repair.revision + 1}`;
+      const authorizedAt = new Date().toISOString();
+      const resumed = await repairCoordinator.tryResume(repair, {
+        dispatch: {
+          taskId: repair.taskId,
+          dispatchId,
+          authorizedAt
+        }
+      });
       if (resumed === undefined) {
         return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'resume-failed' };
       }
+      await persistence.persistRepairResumeDispatch({
+        runId: input.runId,
+        taskId: repair.taskId,
+        repairAttemptId: repair.id,
+        repairRevision: resumed.revision,
+        dispatchId,
+        authorizedAt
+      });
       return {
         runId: input.runId,
         repairAttemptId: resumed.id,

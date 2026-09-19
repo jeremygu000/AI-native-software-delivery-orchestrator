@@ -44,6 +44,7 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
   readonly repairAttempts: PersistedTaskRepairAttempt[] = [];
   readonly repairWorkItems: TaskRepairWorkItem[] = [];
   readonly leases: PersistedWriteLease[] = [];
+  readonly repairResumeDispatches: PersistedRepairResumeDispatch[] = [];
 
   async createRun(request: CreatePersistedRunRequest): Promise<void> {
     this.request = request;
@@ -167,9 +168,11 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
   async recoverIntegration(): Promise<undefined> {
     return undefined;
   }
-  async persistRepairResumeDispatch(): Promise<void> {}
-  async recoverRepairResumeDispatches(): Promise<readonly PersistedRepairResumeDispatch[]> {
-    return [];
+  async persistRepairResumeDispatch(dispatch: PersistedRepairResumeDispatch): Promise<void> {
+    this.repairResumeDispatches.push(dispatch);
+  }
+  async recoverRepairResumeDispatches(runId: string): Promise<readonly PersistedRepairResumeDispatch[]> {
+    return this.repairResumeDispatches.filter((dispatch) => dispatch.runId === runId);
   }
 
   async persistRepairAttempt(record: PersistedTaskRepairAttempt): Promise<void> {
@@ -200,6 +203,11 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
     runId: string;
     attemptId: string;
     expectedRevision: number;
+    dispatch?: {
+      taskId: string;
+      dispatchId: string;
+      authorizedAt: string;
+    };
   }): Promise<
     | { status: 'resumed'; attempt: TaskRepairAttempt }
     | { status: 'not-found' }
@@ -231,6 +239,16 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
       runId: request.runId,
       attempt: resumed
     };
+    if (request.dispatch !== undefined) {
+      this.repairResumeDispatches.push({
+        runId: request.runId,
+        taskId: request.dispatch.taskId,
+        repairAttemptId: request.attemptId,
+        repairRevision: resumed.revision,
+        dispatchId: request.dispatch.dispatchId,
+        authorizedAt: request.dispatch.authorizedAt
+      });
+    }
     return { status: 'resumed', attempt: resumed };
   }
 

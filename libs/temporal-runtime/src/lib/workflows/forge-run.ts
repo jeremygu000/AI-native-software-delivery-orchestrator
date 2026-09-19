@@ -46,9 +46,10 @@ export const repairWakeSignal = defineSignal<[RepairWakeSignal]>('repairWake');
 export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunResult> {
   const { runId } = ForgeRunInputSchema.parse(input);
 
-  let wakeSignal: RepairWakeSignal | undefined;
+  const pendingWakeRepairIds = new Set<string>();
   setHandler(repairWakeSignal, (signal: RepairWakeSignal) => {
-    wakeSignal = RepairWakeSignalSchema.parse(signal);
+    const parsed = RepairWakeSignalSchema.parse(signal);
+    pendingWakeRepairIds.add(parsed.repairAttemptId);
   });
 
   // Step 1: ask the scheduler which tasks are authorized to start
@@ -120,9 +121,8 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
 
       if (repairResult.state === 'blocked') {
         const blockedRepairAttemptId = repairResult.repairAttemptId;
-        await condition(
-          () => wakeSignal !== undefined && wakeSignal.repairAttemptId === blockedRepairAttemptId
-        );
+        await condition(() => pendingWakeRepairIds.has(blockedRepairAttemptId));
+        pendingWakeRepairIds.delete(blockedRepairAttemptId);
         const resumeResult = await resumeBlockedRepair({
           runId,
           repairAttemptId: blockedRepairAttemptId

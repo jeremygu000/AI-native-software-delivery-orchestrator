@@ -23,7 +23,8 @@ import {
   IntegrateAcceptedOutputResultSchema,
   type FinalizeRunStateInput,
   FinalizeRunStateResultSchema,
-  ForgeRunResultSchema
+  ForgeRunResultSchema,
+  repairWakeSignal
 } from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -495,6 +496,146 @@ describe('temporal-runtime Scenario A workflow', () => {
       const result = await handle.result();
       expect(result).toEqual({ runId, status: 'failed' });
       expect(calls).toEqual(['reevaluateRun', 'finalizeRunState']);
+    } finally {
+      worker.shutdown();
+      await workerPromise;
+      await environment.teardown();
+    }
+  });
+
+  it('waits for repairWake and resumes a blocked repair with the same repairAttemptId', async () => {
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const calls: string[] = [];
+    let repairAttempts = 0;
+
+    const activities: ForgeActivities = {
+      async reevaluateRun(_input: ReevaluateRunInput) {
+        calls.push('reevaluateRun');
+        return ReevaluateRunResultSchema.parse({
+          runId: 'run-blocked',
+          authorizedTasks: [{ taskId: 'task-blocked', attemptId: 'attempt-blocked' }]
+        });
+      },
+      async executeBuilder(input: ExecuteBuilderInput) {
+        calls.push(`executeBuilder:${input.taskId}`);
+        return ExecuteBuilderResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          workspaceId: 'workspace-blocked',
+          attemptId: 'builder-attempt-blocked',
+          impactId: 'impact-blocked'
+        });
+      },
+      async evaluateBuilderOutput(input: EvaluateBuilderOutputInput) {
+        calls.push(`evaluateBuilderOutput:${input.taskId}`);
+        return EvaluateBuilderOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          recommendation: 'repair',
+          verificationId: 'verification-blocked',
+          subjectRef: {
+            builderAttemptId: 'builder-attempt-blocked',
+            outputAttemptId: 'output-attempt-blocked',
+            workspaceId: 'workspace-blocked'
+          },
+          reviewId: 'review-blocked'
+        });
+      },
+      async admitRepair(input: AdmitRepairInput) {
+        calls.push(`admitRepair:${input.taskId}`);
+        return AdmitRepairResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          repairAttemptId: 'repair-attempt-blocked'
+        });
+      },
+      async executeRepair(input: ExecuteRepairInput) {
+        repairAttempts += 1;
+        calls.push(`executeRepair:${input.taskId}:${input.repairAttemptId}`);
+        if (repairAttempts === 1) {
+          return ExecuteRepairResultSchema.parse({
+            runId: input.runId,
+            taskId: input.taskId,
+            state: 'blocked',
+            repairAttemptId: input.repairAttemptId,
+            blockerLeaseId: 'lease-blocked-1'
+          });
+        }
+        return ExecuteRepairResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          state: 'completed',
+          repairAttemptId: input.repairAttemptId,
+          recommendation: 'accept',
+          verificationId: 'verification-blocked-2',
+          subjectRef: {
+            builderAttemptId: 'builder-attempt-blocked',
+            outputAttemptId: 'repair-output-blocked',
+            workspaceId: 'workspace-blocked'
+          },
+          reviewId: 'review-blocked-2'
+        });
+      },
+      async integrateAcceptedOutput(input: IntegrateAcceptedOutputInput) {
+        calls.push(`integrateAcceptedOutput:${input.taskId}`);
+        return IntegrateAcceptedOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          status: 'integrated'
+        });
+      },
+      async finalizeRunState(_input: FinalizeRunStateInput) {
+        calls.push('finalizeRunState');
+        return FinalizeRunStateResultSchema.parse({ runId: 'run-blocked', status: 'completed' });
+      },
+      async resumeBlockedRepair(input) {
+        calls.push(`resumeBlockedRepair:${input.repairAttemptId}`);
+        return {
+          runId: input.runId,
+          repairAttemptId: input.repairAttemptId,
+          status: 'resumed',
+          taskId: 'task-blocked'
+        };
+      }
+    };
+
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-runtime-test-scenario-b-blocked-repair',
+      workflowsPath: WORKFLOWS_PATH,
+      activities
+    });
+
+    const runId = `run-blocked-${Date.now()}`;
+    const client = new Client({ connection: environment.client.connection });
+
+    const workerPromise = worker.run();
+    try {
+      const handle = await client.workflow.start(forgeRunWorkflow, {
+        taskQueue: 'temporal-runtime-test-scenario-b-blocked-repair',
+        args: [{ runId }],
+        workflowId: `workflow-${runId}`
+      });
+
+      await environment.sleep(200);
+      await handle.signal(repairWakeSignal, { repairAttemptId: 'repair-attempt-blocked' });
+
+      const result = await handle.result();
+      expect(result).toEqual({ runId, status: 'completed' });
+      expect(calls).toEqual([
+        'reevaluateRun',
+        'executeBuilder:task-blocked',
+        'reevaluateRun',
+        'evaluateBuilderOutput:task-blocked',
+        'admitRepair:task-blocked',
+        'executeRepair:task-blocked:repair-attempt-blocked',
+        'resumeBlockedRepair:repair-attempt-blocked',
+        'executeRepair:task-blocked:repair-attempt-blocked',
+        'integrateAcceptedOutput:task-blocked',
+        'reevaluateRun',
+        'finalizeRunState'
+      ]);
+      expect(repairAttempts).toBe(2);
     } finally {
       worker.shutdown();
       await workerPromise;
