@@ -36,13 +36,18 @@ export {
   ForgeRepairExecutionService
 } from './lib/forge-repair-execution-service.js';
 export {
+  ForgeRunProgressionError,
+  ForgeRunProgressionService,
+  type ForgeRunAuthorization,
+  type ForgeRunProgressionContext
+} from './lib/forge-run-progression-service.js';
+export {
   ForgeRunFinalizationError,
   ForgeRunFinalizationService
 } from './lib/forge-run-finalization-service.js';
 export {
   ForgeRunReevaluationError,
-  ForgeRunReevaluationService,
-  type ForgeRunAuthorization
+  ForgeRunReevaluationService
 } from './lib/forge-run-reevaluation-service.js';
 export type { DurableExecutionScenarioService } from './lib/durable-execution-spike-contract.js';
 export {

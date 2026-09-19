@@ -6,10 +6,12 @@ import type {
   PersistedAgentExecutionAttempt,
   PersistedSchedulerDecision,
   RecoveredRun,
+  TaskCodeReviewStore
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { describe, expect, it } from 'vitest';
 
-import { ForgeRunReevaluationError, ForgeRunReevaluationService } from './forge-run-reevaluation-service.js';
+import { ForgeRunProgressionService } from './forge-run-progression-service.js';
+import { ForgeRunReevaluationService } from './forge-run-reevaluation-service.js';
 
 const createRun = (taskIds: readonly string[]): CreatePersistedRunRequest => ({
   run: {
@@ -65,7 +67,7 @@ const createRun = (taskIds: readonly string[]): CreatePersistedRunRequest => ({
   scheduleOptions: { maxConcurrency: 1 }
 });
 
-class MemoryPersistence implements OrchestrationPersistence {
+class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore {
   request: CreatePersistedRunRequest | undefined;
   readonly dispatches: PersistedDispatch[] = [];
   readonly reevaluations: PersistedReevaluation[] = [];
@@ -87,13 +89,13 @@ class MemoryPersistence implements OrchestrationPersistence {
       hardConflicts: this.request.hardConflicts,
       riskConflicts: this.request.riskConflicts,
       scheduleOptions: this.request.scheduleOptions,
-      events: [],
-      decisions: [],
+      events: this.dispatches.map((dispatch) => dispatch.reevaluation.event),
+      decisions: this.dispatches.map((dispatch) => dispatch.reevaluation.decision),
       attempts: this.attempts,
       workspaces: [],
       leases: [],
       impacts: [],
-      transitions: [],
+      transitions: this.dispatches.flatMap((dispatch) => dispatch.reevaluation.transitions),
       conflicts: []
     };
   }
@@ -150,60 +152,33 @@ class MemoryPersistence implements OrchestrationPersistence {
 
 describe('ForgeRunReevaluationService', () => {
   it('fails closed when the run cannot be recovered', async () => {
-    const service = new ForgeRunReevaluationService({ persistence: new MemoryPersistence() as unknown as OrchestrationPersistence });
+    const persistence = new MemoryPersistence() as unknown as OrchestrationPersistence & TaskCodeReviewStore;
+    const progression = new ForgeRunProgressionService({ persistence });
+    const service = new ForgeRunReevaluationService({ progression });
 
-    await expect(service.recoverAuthorizations('missing')).rejects.toThrow(ForgeRunReevaluationError);
+    await expect(service.recoverAuthorizations('missing')).rejects.toThrow(
+      'Missing durable progression authority: missing'
+    );
   });
 
-  it('replays persisted dispatch authorizations', async () => {
+  it('creates a fresh dispatch and PREPARING attempt for a fresh run', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRun(['task-a', 'task-b']));
-    await persistence.persistDispatch({
-      reevaluation: {
-        event: {
-          runId: 'run-1',
-          sequence: 1,
-          occurredAt: '2026-08-12T00:00:00.000Z',
-          event: { type: 'run-started' }
-        },
-        transitions: [],
-        decision: {
-          runId: 'run-1',
-          sequence: 1,
-          inputSnapshot: { taskStates: [], runtimeBlocks: [] },
-          decision: {
-            taskDecisions: [
-              {
-                taskId: 'task-a',
-                action: 'start',
-                fromState: 'READY',
-                toState: 'RUNNING',
-                reasons: [{ type: 'selected-by-priority', priority: 0, detail: 'test' }]
-              }
-            ]
-          }
-        }
-      },
-      attempts: [
-        {
-          runId: 'run-1',
-          attempt: {
-            id: 'attempt-a',
-            runId: 'run-1',
-            taskId: 'task-a',
-            agentId: 'agent-1',
-            workspaceId: 'workspace-task-a',
-            leasePlanFingerprint: 'lease-a',
-            state: 'PREPARING',
-            revision: 1
-          }
-        }
-      ]
-    });
+    const progression = new ForgeRunProgressionService({ persistence, createAttemptId: () => 'attempt-a' });
+    const service = new ForgeRunReevaluationService({ progression });
 
-    const service = new ForgeRunReevaluationService({ persistence });
     await expect(service.recoverAuthorizations('run-1')).resolves.toEqual([
       { taskId: 'task-a', attemptId: 'attempt-a' }
+    ]);
+    expect(persistence.dispatches).toHaveLength(1);
+    expect(persistence.attempts).toEqual([
+      expect.objectContaining({
+        attempt: expect.objectContaining({
+          id: 'attempt-a',
+          taskId: 'task-a',
+          state: 'PREPARING'
+        })
+      })
     ]);
   });
 });

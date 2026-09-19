@@ -237,7 +237,7 @@ export class RepairExecutionCoordinator {
       builderAttempt: request.builderAttempt,
       subject,
       repository: request.repository,
-      iteration: request.reviewIteration
+      iteration: request.reviewIteration + 1
     });
     return { attempt: completed, verification: evidence, reviewSubject: subject, review };
   }

@@ -1,16 +1,21 @@
 import type {
   CreatePersistedRunRequest,
   OrchestrationPersistence,
-  RecoveredRun,
   PersistedAgentExecutionAttempt,
+  PersistedDispatch,
+  RecoveredRun,
+  TaskCodeReviewStore
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { describe, expect, it } from 'vitest';
 
-import { ForgeRunFinalizationError, ForgeRunFinalizationService } from './forge-run-finalization-service.js';
+import { ForgeRunProgressionService } from './forge-run-progression-service.js';
+import {
+  ForgeRunFinalizationError,
+  ForgeRunFinalizationService
+} from './forge-run-finalization-service.js';
 
 const createRun = (
-  state: 'ACTIVE' | 'COMPLETED' | 'FAILED',
-  options?: { readonly attempts?: readonly PersistedAgentExecutionAttempt[] }
+  state: 'ACTIVE' | 'COMPLETED' | 'FAILED'
 ): CreatePersistedRunRequest => ({
   run: {
     id: 'run-1',
@@ -69,9 +74,10 @@ const createRun = (
   scheduleOptions: { maxConcurrency: 1 }
 });
 
-class MemoryPersistence implements OrchestrationPersistence {
+class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore {
   request: CreatePersistedRunRequest | undefined;
   attempts: readonly PersistedAgentExecutionAttempt[] = [];
+  dispatches: readonly PersistedDispatch[] = [];
   readonly states: Array<'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'> = [];
 
   async createRun(request: CreatePersistedRunRequest): Promise<void> {
@@ -89,13 +95,13 @@ class MemoryPersistence implements OrchestrationPersistence {
       hardConflicts: this.request.hardConflicts,
       riskConflicts: this.request.riskConflicts,
       scheduleOptions: this.request.scheduleOptions,
-      events: [],
-      decisions: [],
+      events: this.dispatches.map((dispatch) => dispatch.reevaluation.event),
+      decisions: this.dispatches.map((dispatch) => dispatch.reevaluation.decision),
       attempts: this.attempts,
       workspaces: [],
       leases: [],
       impacts: [],
-      transitions: [],
+      transitions: this.dispatches.flatMap((dispatch) => dispatch.reevaluation.transitions),
       conflicts: []
     };
   }
@@ -106,7 +112,7 @@ class MemoryPersistence implements OrchestrationPersistence {
 
   async recoverTaskBindings(): Promise<readonly []> { return []; }
   async recoverTaskBinding(): Promise<undefined> { return undefined; }
-  async recoverDispatches(): Promise<readonly []> { return []; }
+  async recoverDispatches(): Promise<readonly PersistedDispatch[]> { return this.dispatches; }
   async persistDispatch(): Promise<void> {}
   async persistReevaluation(): Promise<void> {}
   async persistAttempt(): Promise<void> {}
@@ -130,7 +136,10 @@ class MemoryPersistence implements OrchestrationPersistence {
 
 describe('ForgeRunFinalizationService', () => {
   it('fails closed when the run cannot be recovered', async () => {
-    const service = new ForgeRunFinalizationService({ persistence: new MemoryPersistence() as unknown as OrchestrationPersistence });
+    const progression = new ForgeRunProgressionService({
+      persistence: new MemoryPersistence() as unknown as OrchestrationPersistence & TaskCodeReviewStore
+    });
+    const service = new ForgeRunFinalizationService({ progression });
 
     await expect(service.finalize('missing')).rejects.toThrow(ForgeRunFinalizationError);
   });
@@ -139,7 +148,8 @@ describe('ForgeRunFinalizationService', () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRun('ACTIVE'));
 
-    const service = new ForgeRunFinalizationService({ persistence });
+    const progression = new ForgeRunProgressionService({ persistence });
+    const service = new ForgeRunFinalizationService({ progression });
     await expect(service.finalize('run-1')).rejects.toThrow(ForgeRunFinalizationError);
     expect(persistence.states).toHaveLength(0);
   });
@@ -147,25 +157,31 @@ describe('ForgeRunFinalizationService', () => {
   it('reports completed for fully completed runs', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRun('COMPLETED'));
-    persistence.attempts = [
+    persistence.dispatches = [
       {
-        runId: 'run-1',
-        attempt: {
-          id: 'attempt-a',
-          runId: 'run-1',
-          taskId: 'task-a',
-          agentId: 'agent-a',
-          workspaceId: 'workspace-a',
-          leasePlanFingerprint: 'lease-a',
-          state: 'COMPLETED',
-          revision: 1,
-          startedAt: new Date('2026-08-12T00:00:00.000Z'),
-          completedAt: new Date('2026-08-12T00:01:00.000Z')
-        }
-      } as PersistedAgentExecutionAttempt
+        reevaluation: {
+          event: {
+            runId: 'run-1',
+            sequence: 1,
+            occurredAt: '2026-08-12T00:00:00.000Z',
+            event: { type: 'run-started' }
+          },
+          transitions: [],
+          decision: {
+            runId: 'run-1',
+            sequence: 1,
+            inputSnapshot: { taskStates: [{ taskId: 'task-a', state: 'COMPLETED' }], runtimeBlocks: [] },
+            decision: {
+              taskDecisions: []
+            }
+          }
+        },
+        attempts: []
+      }
     ];
 
-    const service = new ForgeRunFinalizationService({ persistence });
+    const progression = new ForgeRunProgressionService({ persistence });
+    const service = new ForgeRunFinalizationService({ progression });
     await expect(service.finalize('run-1')).resolves.toBe('completed');
     expect(persistence.states.at(-1)).toBe('COMPLETED');
   });
@@ -173,25 +189,31 @@ describe('ForgeRunFinalizationService', () => {
   it('reports failed when any completed task failed', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRun('COMPLETED'));
-    persistence.attempts = [
+    persistence.dispatches = [
       {
-        runId: 'run-1',
-        attempt: {
-          id: 'attempt-a',
-          runId: 'run-1',
-          taskId: 'task-a',
-          agentId: 'agent-a',
-          workspaceId: 'workspace-a',
-          leasePlanFingerprint: 'lease-a',
-          state: 'FAILED',
-          revision: 1,
-          completedAt: new Date('2026-08-12T00:01:00.000Z'),
-          failure: { type: 'execution-failed', detail: 'boom' }
-        }
-      } as PersistedAgentExecutionAttempt
+        reevaluation: {
+          event: {
+            runId: 'run-1',
+            sequence: 1,
+            occurredAt: '2026-08-12T00:00:00.000Z',
+            event: { type: 'run-started' }
+          },
+          transitions: [],
+          decision: {
+            runId: 'run-1',
+            sequence: 1,
+            inputSnapshot: { taskStates: [{ taskId: 'task-a', state: 'FAILED' }], runtimeBlocks: [] },
+            decision: {
+              taskDecisions: []
+            }
+          }
+        },
+        attempts: []
+      }
     ];
 
-    const service = new ForgeRunFinalizationService({ persistence });
+    const progression = new ForgeRunProgressionService({ persistence });
+    const service = new ForgeRunFinalizationService({ progression });
     await expect(service.finalize('run-1')).resolves.toBe('failed');
     expect(persistence.states.at(-1)).toBe('FAILED');
   });

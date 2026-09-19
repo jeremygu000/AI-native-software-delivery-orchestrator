@@ -58,8 +58,11 @@ import type {
 import { SandboxedPackageScriptVerifier } from '../../../libs/run-preparation/src/lib/local-runtime-starter.js';
 import { agentCommandPolicyFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
 import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
-import { ForgeRunFinalizationService } from '../../../libs/orchestration-runtime/src/lib/forge-run-finalization-service.js';
-import { ForgeRunReevaluationService } from '../../../libs/orchestration-runtime/src/lib/forge-run-reevaluation-service.js';
+import {
+  ForgeRunFinalizationService,
+  ForgeRunProgressionService,
+  ForgeRunReevaluationService
+} from '../../../libs/orchestration-runtime/src/index.js';
 
 const WORKER_DATABASE_PATH =
   process.env.FORGE_WORKER_DATABASE_PATH ?? resolve(process.cwd(), 'dist', 'temporal-worker.sqlite');
@@ -149,8 +152,9 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
     graph: repository.graph
   });
 
-  const reevaluation = new ForgeRunReevaluationService({ persistence });
-  const finalization = new ForgeRunFinalizationService({ persistence });
+  const progression = new ForgeRunProgressionService({ persistence });
+  const reevaluation = new ForgeRunReevaluationService({ progression });
+  const finalization = new ForgeRunFinalizationService({ progression });
 
   const admission = new TaskOutputAdmissionCoordinator({
     snapshots,
@@ -453,14 +457,13 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           detail: result.state === 'unknown' ? result.detail : undefined
         };
       }
-      const persistedReview = await persistence.recoverReviews(input.runId);
-      const latestRepairReview = [...persistedReview]
-        .reverse()
-        .find((candidate) => candidate.taskId === input.taskId && candidate.iteration === review.iteration);
-      if (latestRepairReview === undefined) {
-        throw new Error(`Missing persisted repair review authority: ${input.runId}/${input.taskId}`);
-      }
-      const persistedRepairReviewId = `${input.taskId}:${latestRepairReview.iteration}`;
+      const persistedRepairReview = await progression.persistCompletedRepairReview({
+        runId: input.runId,
+        taskId: input.taskId,
+        parentReviewIteration: review.iteration,
+        subject: result.reviewSubject,
+        review: result.review
+      });
       return {
         runId: input.runId,
         taskId: input.taskId,
@@ -473,7 +476,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           outputAttemptId: result.reviewSubject.outputAttemptId,
           workspaceId: result.reviewSubject.workspaceId
         },
-        reviewId: persistedRepairReviewId
+        reviewId: `${input.taskId}:${persistedRepairReview.iteration}`
       };
     },
     async integrateAcceptedOutput(input: IntegrateAcceptedOutputInput): Promise<IntegrateAcceptedOutputResult> {
