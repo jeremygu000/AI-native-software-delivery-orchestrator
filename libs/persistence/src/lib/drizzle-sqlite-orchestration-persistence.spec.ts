@@ -1362,6 +1362,9 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
 
     await persistence.persistDispatch(dispatch);
     await expect(persistence.persistDispatch(dispatch)).resolves.toBeUndefined();
+    await expect(persistence.recoverDispatches('run-1')).resolves.toMatchObject([
+      { attempts: [{ attempt: { id: 'attempt-1', taskId: 'B' } }] }
+    ]);
     await expect(
       persistence.persistAttempt({
         runId: 'run-1',

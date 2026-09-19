@@ -10,6 +10,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import type {
   AgentExecutionAttempt,
+  PersistedWriteLease,
   TaskWorkspace,
   TaskVerificationEvidence,
 } from '@ai-native-software-delivery-orchestrator/domain';
@@ -128,6 +129,10 @@ export interface ForgeWorkerCompositionOverrides {
   readonly repairExecution?: Pick<ForgeRepairExecutionService, 'execute'>;
   readonly integration?: Pick<ForgeAcceptedOutputIntegrationService, 'integrate'>;
   readonly repositoryGraph?: Awaited<ReturnType<typeof analyzeRepository>>['graph'];
+  readonly onWriteGuardHydrated?: (
+    runId: string,
+    leases: readonly PersistedWriteLease['lease'][]
+  ) => void;
 }
 
 export async function createForgeWorkerComposition(
@@ -144,6 +149,21 @@ export async function createForgeWorkerComposition(
       return existing;
     }
     const guard = new InMemoryWriteGuard();
+    writeGuards.set(runId, guard);
+    return guard;
+  };
+  const writeGuardForRun = async (runId: string): Promise<InMemoryWriteGuard> => {
+    const existing = writeGuards.get(runId);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const recovered = await persistence.recoverRun(runId);
+    const initialLeases =
+      recovered?.leases
+        .map(({ lease }) => lease)
+        .filter((lease) => lease.state === 'ACTIVE') ?? [];
+    overrides.onWriteGuardHydrated?.(runId, initialLeases);
+    const guard = new InMemoryWriteGuard({ initialLeases });
     writeGuards.set(runId, guard);
     return guard;
   };
@@ -202,43 +222,12 @@ export async function createForgeWorkerComposition(
     createId: randomUUID
   });
 
-  const builderExecution = overrides.builderExecution ?? new ForgeBuilderExecutionService({
-    persistence,
-    workspaceManager,
-    writeGuard: writeGuardForRunSync('default'),
-    agentRunner: new PiAgentRunner({
-      gateway: new PiCodingAgentGateway(),
-      createTools: (request) =>
-        new AgentToolRuntime({
-          runId: request.runId,
-          taskId: request.taskId,
-          attemptId: request.attempt.id,
-          agentId: request.attempt.agentId,
-          workspacePath: request.workspace.workspacePath,
-          resolveResource: (path) => resources.resolve(path),
-          resolveFileId: (path) => resources.fileId(path),
-          persistence,
-          writeGuard: writeGuardForRunSync(request.runId)
-        })
-    }),
-    reconciler
-  });
-
-  const evaluation = overrides.evaluation ?? new ForgeBuilderOutputEvaluationService({
-    snapshots,
-    subjects,
-    reviews,
-    reviewStore: persistence,
-    verificationEvidence: persistence,
-    createVerificationEvidence,
-    createEvidenceId: randomUUID
-  });
-
-  const repairExecution = overrides.repairExecution ?? new ForgeRepairExecutionService({
-    repairCoordinator,
-    executionCoordinator: new RepairExecutionCoordinator({
-      repairs: repairCoordinator,
-      runner: new PiAgentRunner({
+  const createBuilderExecution = (runId: string) =>
+    new ForgeBuilderExecutionService({
+      persistence,
+      workspaceManager,
+      writeGuard: writeGuardForRunSync(runId),
+      agentRunner: new PiAgentRunner({
         gateway: new PiCodingAgentGateway(),
         createTools: (request) =>
           new AgentToolRuntime({
@@ -253,19 +242,60 @@ export async function createForgeWorkerComposition(
             writeGuard: writeGuardForRunSync(request.runId)
           })
       }),
-      reconciler,
-      verifier,
-      snapshots,
-      subjects,
-      reviews,
-      verificationEvidence: persistence,
-      writeGuard: writeGuardForRunSync('default'),
-      persistence,
-      feedback: { leaseBlocked: async () => undefined, scopeExpanded: async () => undefined },
-      createEvidenceId: randomUUID,
-      createVerificationEvidence
-    })
+      reconciler
+    });
+  const builderExecution = overrides.builderExecution ?? {
+    execute: (request: Parameters<ForgeBuilderExecutionService['execute']>[0]) =>
+      createBuilderExecution(request.runId).execute(request)
+  };
+
+  const evaluation = overrides.evaluation ?? new ForgeBuilderOutputEvaluationService({
+    snapshots,
+    subjects,
+    reviews,
+    reviewStore: persistence,
+    verificationEvidence: persistence,
+    createVerificationEvidence,
+    createEvidenceId: randomUUID
   });
+
+  const createRepairExecution = (runId: string) =>
+    new ForgeRepairExecutionService({
+      repairCoordinator,
+      executionCoordinator: new RepairExecutionCoordinator({
+        repairs: repairCoordinator,
+        runner: new PiAgentRunner({
+          gateway: new PiCodingAgentGateway(),
+          createTools: (request) =>
+            new AgentToolRuntime({
+              runId: request.runId,
+              taskId: request.taskId,
+              attemptId: request.attempt.id,
+              agentId: request.attempt.agentId,
+              workspacePath: request.workspace.workspacePath,
+              resolveResource: (path) => resources.resolve(path),
+              resolveFileId: (path) => resources.fileId(path),
+              persistence,
+              writeGuard: writeGuardForRunSync(request.runId)
+            })
+        }),
+        reconciler,
+        verifier,
+        snapshots,
+        subjects,
+        reviews,
+        verificationEvidence: persistence,
+        writeGuard: writeGuardForRunSync(runId),
+        persistence,
+        feedback: { leaseBlocked: async () => undefined, scopeExpanded: async () => undefined },
+        createEvidenceId: randomUUID,
+        createVerificationEvidence
+      })
+    });
+  const repairExecution = overrides.repairExecution ?? {
+    execute: (request: Parameters<ForgeRepairExecutionService['execute']>[0]) =>
+      createRepairExecution(request.runId).execute(request)
+  };
 
   const integration = overrides.integration ?? new ForgeAcceptedOutputIntegrationService({
     coordinator: admission,
@@ -359,6 +389,7 @@ export async function createForgeWorkerComposition(
         throw new Error(`Builder attempt authority mismatch: ${input.runId}/${input.taskId}/${input.attemptId}`);
       }
       assertBuilderTuple(context.binding, context.attempt);
+      await writeGuardForRun(input.runId);
       await builderExecution.execute({
         runId: input.runId,
         task: context.task,
@@ -395,6 +426,7 @@ export async function createForgeWorkerComposition(
       if (context.attempt.id !== input.builderAttemptId) {
         throw new Error(`Builder attempt mismatch: ${input.runId}/${input.taskId}/${input.builderAttemptId}`);
       }
+      await writeGuardForRun(input.runId);
       const result = await evaluation.evaluate({
         runId: input.runId,
         task: context.task,
@@ -495,6 +527,7 @@ export async function createForgeWorkerComposition(
       ) {
         throw new Error(`Repair attempt lineage mismatch: ${input.repairAttemptId}`);
       }
+      await writeGuardForRun(input.runId);
       const result = await repairExecution.execute({
         runId: input.runId,
         agentId: context.binding.agentId,
@@ -615,25 +648,22 @@ export async function createForgeWorkerComposition(
       if (repairRecord === undefined) {
         return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'not-found' };
       }
+      await writeGuardForRun(input.runId);
       const repair = repairRecord.attempt;
-      if (repair.state !== 'BLOCKED' || repair.blocker?.type !== 'lease') {
-        return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'not-blocked' };
-      }
       const priorDispatches = await persistence.recoverRepairResumeDispatches(input.runId);
       const priorDispatch = priorDispatches.find(
-        (dispatch) => dispatch.repairAttemptId === repair.id && dispatch.repairRevision === repair.revision + 1
+        (dispatch) => dispatch.repairAttemptId === repair.id && dispatch.repairRevision === repair.revision
       );
-      if (priorDispatch !== undefined) {
-        const resumedRepair = repairAttempts.find((record) => record.attempt.id === repair.id)?.attempt;
-        if (resumedRepair === undefined || resumedRepair.state !== 'PREPARING' || resumedRepair.revision !== repair.revision + 1) {
-          return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'stale-resume-dispatch' };
-        }
+      if (repair.state === 'PREPARING' && priorDispatch !== undefined) {
         return {
           runId: input.runId,
-          repairAttemptId: resumedRepair.id,
+          repairAttemptId: repair.id,
           status: 'resumed',
-          taskId: resumedRepair.taskId
+          taskId: repair.taskId
         };
+      }
+      if (repair.state !== 'BLOCKED' || repair.blocker?.type !== 'lease') {
+        return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'not-blocked' };
       }
       const workItems = await persistence.recoverRepairWorkItems(input.runId);
       const workItem = workItems.find((item) => item.repairAttemptId === repair.id);
@@ -655,15 +685,19 @@ export async function createForgeWorkerComposition(
         builderAttempt.workspaceId !== workItem.workspaceId ||
         builderAttempt.state !== 'COMPLETED' ||
         builderAttempt.id !== workItem.builderAttemptId ||
-        binding.workspace.id !== workItem.workspaceId ||
-        taskLeasePlanFingerprint(binding.leasePlan) !== workItem.leasePlanFingerprint ||
-        workItem.runId !== repair.runId ||
-        workItem.taskId !== repair.taskId ||
-        workItem.repairAttemptId !== repair.id ||
+         binding.workspace.id !== workItem.workspaceId ||
+         repair.agentId !== binding.agentId ||
+         repair.workspaceId !== workItem.workspaceId ||
+         taskLeasePlanFingerprint(binding.leasePlan) !== workItem.leasePlanFingerprint ||
+         workItem.runId !== repair.runId ||
+         workItem.taskId !== repair.taskId ||
+         workItem.repairAttemptId !== repair.id ||
         workItem.verificationPolicyFingerprint !== recoveredRun.run.authority.verificationPolicyFingerprint ||
-        workItem.codeReviewPolicyFingerprint !== recoveredRun.run.authority.codeReviewPolicyFingerprint ||
-        repair.parentReviewIteration !== workItem.parentReviewIteration ||
-        parentReview.review.recommendation !== 'repair' ||
+         workItem.codeReviewPolicyFingerprint !== recoveredRun.run.authority.codeReviewPolicyFingerprint ||
+         repair.parentReviewIteration !== workItem.parentReviewIteration ||
+         workItem.reviewIteration !== repair.parentReviewIteration + 1 ||
+         workItem.impactFingerprint !== parentReview.subject.impactFingerprint ||
+         parentReview.review.recommendation !== 'repair' ||
         parentReview.subject.builderAttemptId !== repair.parentReviewSubject.builderAttemptId ||
         parentReview.subject.outputAttemptId !== repair.parentReviewSubject.outputAttemptId ||
         parentReview.subject.workspaceId !== repair.parentReviewSubject.workspaceId ||
@@ -684,6 +718,20 @@ export async function createForgeWorkerComposition(
         }
       });
       if (resumed === undefined) {
+        const recoveredAttempts = await persistence.recoverRepairAttempts(input.runId);
+        const winner = recoveredAttempts.find((record) => record.attempt.id === repair.id)?.attempt;
+        const winnerDispatches = await persistence.recoverRepairResumeDispatches(input.runId);
+        const winnerDispatch = winnerDispatches.find(
+          (dispatch) => dispatch.repairAttemptId === repair.id && dispatch.repairRevision === winner?.revision
+        );
+        if (winner?.state === 'PREPARING' && winnerDispatch !== undefined) {
+          return {
+            runId: input.runId,
+            repairAttemptId: winner.id,
+            status: 'resumed',
+            taskId: winner.taskId
+          };
+        }
         return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'resume-failed' };
       }
       return {

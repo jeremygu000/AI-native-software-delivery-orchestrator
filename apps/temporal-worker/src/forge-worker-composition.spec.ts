@@ -24,7 +24,10 @@ import type {
   TaskVerificationEvidence
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
-import { rmSync } from 'node:fs';
+import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -448,7 +451,7 @@ describe('temporal worker production vertical slice', () => {
         taskId: 'task-z',
         resource: { type: 'project', projectId: 'project-a' },
         mode: 'exclusive',
-        version: 2,
+        version: 3,
         state: 'RELEASED',
         acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
         lastHeartbeatAt: new Date('2026-08-12T00:00:30.000Z'),
@@ -519,6 +522,20 @@ describe('temporal worker production vertical slice', () => {
     expect(resumed.repairAttemptId).toBe(blockedRepair.id);
     expect(resumed.taskId).toBe('task-a');
 
+    // Temporal may retry after the SQLite CAS commits but before its activity
+    // response is delivered. The persisted dispatch for the PREPARING
+    // revision must recover the same authorization without a second CAS.
+    const recoveredAfterLostResponse = await activities.resumeBlockedRepair({
+      runId: 'run-1',
+      repairAttemptId: blockedRepair.id
+    });
+    expect(recoveredAfterLostResponse).toMatchObject({
+      status: 'resumed',
+      repairAttemptId: blockedRepair.id,
+      taskId: 'task-a'
+    });
+    expect(persistence.repairResumeDispatches).toHaveLength(1);
+
     const repaired = await activities.executeRepair({
       runId: 'run-1',
       taskId: 'task-a',
@@ -531,6 +548,280 @@ describe('temporal worker production vertical slice', () => {
     expect(repaired.state).toBe('completed');
     expect(repaired.repairAttemptId).toBe(blockedRepair.id);
     expect(repaired.recommendation).toBe('accept');
+  }, 60000);
+
+  it('reopens SQLite, hydrates active leases, and recovers the same durable resume authorization', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'forge-worker-restart-'));
+    directories.push(directory);
+    const databasePath = join(directory, 'run.sqlite');
+    const writer = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    await writer.createRun(createRunRequest(['task-a']));
+
+    const leasePlanFingerprint = taskLeasePlanFingerprint({
+      taskId: 'task-a',
+      source: 'manual',
+      predictedResources: []
+    });
+    const workspace: TaskWorkspace = {
+      runId: 'run-1',
+      taskId: 'task-a',
+      id: 'workspace-task-a',
+      branchName: 'branch-task-a',
+      baseRef: 'main',
+      integrationRepositoryPath: '/repo/task-a',
+      workspacePath: '/workspace/task-a',
+      integrationRef: 'refs/heads/branch-task-a',
+      revision: 1,
+      phase: 'READY_TO_INTEGRATE'
+    };
+    const builderAttempt: AgentExecutionAttempt = {
+      id: 'builder-attempt-restart',
+      runId: 'run-1',
+      taskId: 'task-a',
+      agentId: 'agent-1',
+      workspaceId: workspace.id,
+      leasePlanFingerprint,
+      state: 'COMPLETED',
+      revision: 2,
+      startedAt: new Date('2026-08-12T00:00:00.000Z'),
+      completedAt: new Date('2026-08-12T00:01:00.000Z')
+    };
+    const parentSubject = {
+      builderAttemptId: builderAttempt.id,
+      outputAttemptId: builderAttempt.id,
+      workspaceId: workspace.id,
+      workspaceRevision: 1,
+      workspaceChangeFingerprint: 'sha256:'.concat('a'.repeat(64)),
+      impactFingerprint: 'sha256:'.concat('b'.repeat(64)),
+      verificationFingerprint: 'sha256:'.concat('c'.repeat(64))
+    };
+    const blockedRepair: TaskRepairAttempt = {
+      id: 'repair-attempt-restart',
+      runId: 'run-1',
+      taskId: 'task-a',
+      agentId: 'agent-1',
+      workspaceId: workspace.id,
+      parentReviewIteration: 1,
+      parentReviewSubject: parentSubject,
+      repairIteration: 1,
+      state: 'PREPARING',
+      revision: 2,
+      startedAt: new Date('2026-08-12T00:02:00.000Z'),
+      blocker: undefined
+    };
+    await writer.persistWorkspace({ runId: 'run-1', workspace });
+    await writer.persistAttempt({ runId: 'run-1', attempt: builderAttempt });
+    await writer.persistImpact({ runId: 'run-1', taskId: 'task-a', impact: impactFor('task-a') });
+    await writer.persistReview({
+      runId: 'run-1',
+      taskId: 'task-a',
+      iteration: 1,
+      subject: parentSubject,
+      review: {
+        recommendation: 'repair',
+        summary: 'needs repair',
+        findings: [
+          {
+            id: 'finding-restart',
+            severity: 'high',
+            fileIds: ['file:restart-fixture'],
+            symbolIds: [],
+            description: 'Repair required before integration.'
+          }
+        ]
+      }
+    });
+    await writer.persistRepairAttempt({ runId: 'run-1', attempt: blockedRepair });
+    await writer.persistRepairWorkItem({
+      runId: 'run-1',
+      taskId: 'task-a',
+      repairAttemptId: blockedRepair.id,
+      builderAttemptId: builderAttempt.id,
+      workspaceId: workspace.id,
+      leasePlanFingerprint,
+      impactFingerprint: parentSubject.impactFingerprint,
+      parentReviewIteration: 1,
+      reviewIteration: 2,
+      verificationPolicyFingerprint,
+      codeReviewPolicyFingerprint: reviewPolicyFingerprint
+    });
+    await writer.persistLease({
+      runId: 'run-1',
+      lease: {
+        id: 'lease-blocker-restart',
+        runId: 'run-1',
+        agentId: 'agent-blocker',
+        taskId: 'task-z',
+        resource: { type: 'project', projectId: 'project-a' },
+        mode: 'exclusive',
+        version: 2,
+        state: 'ACTIVE',
+        acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+        lastHeartbeatAt: new Date('2026-08-12T00:00:30.000Z')
+      }
+    });
+    await writer.persistLease({
+      runId: 'run-1',
+      lease: {
+        id: 'lease-active-restart',
+        runId: 'run-1',
+        agentId: 'agent-active',
+        taskId: 'task-z',
+        resource: { type: 'project', projectId: 'project-b' },
+        mode: 'exclusive',
+        version: 2,
+        state: 'ACTIVE',
+        acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+        lastHeartbeatAt: new Date('2026-08-12T00:00:30.000Z')
+      }
+    });
+    const compositionA = await createForgeWorkerComposition({
+      persistence: writer,
+      repositoryGraph: emptyRepositoryGraph,
+      builderExecution: { execute: async () => undefined } as never,
+      evaluation: { evaluate: async () => { throw new Error('not used'); } } as never,
+      integration: { integrate: async () => { throw new Error('not used'); } } as never,
+      repairExecution: {
+        async execute() {
+          const blocked = {
+            ...blockedRepair,
+            state: 'BLOCKED' as const,
+            revision: 3,
+            blocker: { type: 'lease' as const, leaseId: 'lease-blocker-restart' }
+          };
+          await writer.persistRepairAttempt({ runId: 'run-1', attempt: blocked });
+          return {
+            state: 'blocked' as const,
+            attempt: blocked,
+            blockerLeaseId: 'lease-blocker-restart'
+          };
+        }
+      } as never
+    });
+    await compositionA.forgeActivities.reevaluateRun({ runId: 'run-1' });
+    const blocked = await compositionA.forgeActivities.executeRepair({
+      runId: 'run-1',
+      taskId: 'task-a',
+      workspaceId: workspace.id,
+      builderAttemptId: builderAttempt.id,
+      impactId: builderAttempt.id,
+      reviewId: 'task-a:1',
+      repairAttemptId: blockedRepair.id
+    });
+    expect(blocked).toMatchObject({ state: 'blocked', repairAttemptId: blockedRepair.id });
+    await compositionA.close();
+
+    const releaser = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    await releaser.persistLease({
+      runId: 'run-1',
+      lease: {
+        id: 'lease-blocker-restart',
+        runId: 'run-1',
+        agentId: 'agent-blocker',
+        taskId: 'task-z',
+        resource: { type: 'project', projectId: 'project-a' },
+        mode: 'exclusive',
+        version: 3,
+        state: 'RELEASED',
+        acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+        lastHeartbeatAt: new Date('2026-08-12T00:00:30.000Z'),
+        releasedAt: new Date('2026-08-12T00:03:00.000Z')
+      }
+    });
+    await releaser.close();
+
+    const reader = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    const hydratedLeaseIds: string[] = [];
+    const compositionB = await createForgeWorkerComposition({
+      persistence: reader,
+      repositoryGraph: emptyRepositoryGraph,
+      onWriteGuardHydrated: (_runId, leases) => hydratedLeaseIds.push(...leases.map((lease) => lease.id)),
+      builderExecution: { execute: async () => undefined } as never,
+      evaluation: { evaluate: async () => { throw new Error('not used'); } } as never,
+      repairExecution: {
+        async execute(request: { runId: string; preCreatedRepairAttempt: TaskRepairAttempt }) {
+          const reviewSubject = {
+            builderAttemptId: builderAttempt.id,
+            outputAttemptId: request.preCreatedRepairAttempt.id,
+            workspaceId: workspace.id,
+            workspaceRevision: 2,
+            workspaceChangeFingerprint: 'sha256:'.concat('d'.repeat(64)),
+            impactFingerprint: parentSubject.impactFingerprint,
+            verificationFingerprint: 'sha256:'.concat('e'.repeat(64))
+          };
+          const review: TaskCodeReview = {
+            recommendation: 'accept',
+            summary: 'restart repair accepted',
+            findings: []
+          };
+          await reader.persistReview({
+            runId: request.runId,
+            taskId: 'task-a',
+            iteration: 2,
+            subject: reviewSubject,
+            review
+          });
+          return {
+            state: 'completed' as const,
+            attempt: {
+              ...request.preCreatedRepairAttempt,
+              state: 'COMPLETED' as const,
+              revision: request.preCreatedRepairAttempt.revision + 1,
+              completedAt: new Date('2026-08-12T00:04:00.000Z')
+            },
+            recommendation: 'accept' as const,
+            verification: { fingerprint: 'verification-restart-repair' },
+            reviewSubject,
+            review
+          };
+        }
+      } as never,
+      integration: {
+        async integrate(request: { workspace: TaskWorkspace }) {
+          return { status: 'integrated' as const, workspace: request.workspace };
+        }
+      } as never
+    });
+    const resumed = await compositionB.forgeActivities.resumeBlockedRepair({
+      runId: 'run-1',
+      repairAttemptId: blockedRepair.id
+    });
+    expect(resumed).toMatchObject({ status: 'resumed', repairAttemptId: blockedRepair.id, taskId: 'task-a' });
+    expect(hydratedLeaseIds).toEqual(['lease-active-restart']);
+
+    const recoveredAfterLostResponse = await compositionB.forgeActivities.resumeBlockedRepair({
+      runId: 'run-1',
+      repairAttemptId: blockedRepair.id
+    });
+    expect(recoveredAfterLostResponse).toMatchObject({ status: 'resumed', repairAttemptId: blockedRepair.id });
+    expect(await reader.recoverRepairResumeDispatches('run-1')).toHaveLength(1);
+
+    const repaired = await compositionB.forgeActivities.executeRepair({
+      runId: 'run-1',
+      taskId: 'task-a',
+      workspaceId: workspace.id,
+      builderAttemptId: builderAttempt.id,
+      impactId: builderAttempt.id,
+      reviewId: 'task-a:1',
+      repairAttemptId: blockedRepair.id
+    });
+    expect(repaired).toMatchObject({
+      state: 'completed',
+      repairAttemptId: blockedRepair.id,
+      recommendation: 'accept',
+      reviewId: 'task-a:2'
+    });
+    if (repaired.subjectRef === undefined) {
+      throw new Error('Expected persisted repair review subject');
+    }
+    const integrated = await compositionB.forgeActivities.integrateAcceptedOutput({
+      runId: 'run-1',
+      taskId: 'task-a',
+      workspaceId: workspace.id,
+      subjectRef: repaired.subjectRef
+    });
+    expect(integrated.status).toBe('integrated');
+    await compositionB.close();
   }, 60000);
 
   it('drives a dependent A→B run from fresh dispatch to completed finalization', async () => {

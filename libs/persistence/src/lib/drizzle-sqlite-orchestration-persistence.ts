@@ -1239,7 +1239,7 @@ export class DrizzleSqliteOrchestrationPersistence
     for (const decision of decisions) {
       const decisionObj = decode(
         decision.decisionJson,
-        (value): value is SchedulerDecision => schedulerTaskDecisionSchema.safeParse(value).success,
+        isSchedulerDecision,
         'scheduler decision'
       );
 
