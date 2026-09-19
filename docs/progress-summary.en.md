@@ -2529,12 +2529,43 @@ What was verified:
 
 Current limitation:
 
-- `apps/temporal-worker/src/main.ts` is still only placeholder wiring and does not yet build the real production service graph.
+- none for Scenario A. The stage is closed and frozen for the accepted scope.
 
 What this stage enables next:
 
 - the app-local worker composition root can now be wired against a stable workflow contract instead of a placeholder slice;
 - later stages can replace the temporary worker stub with actual Forge runtime services.
+
+## Stage M3.3 closure: durable authority and production wiring
+
+The original M3.3 slice proved the workflow contract, but review found that the worker still behaved like a synthetic harness. The stage was therefore extended until the worker boundary itself became durable and production-shaped.
+
+What was added after the first slice:
+
+- a real `createForgeWorkerComposition()` in `apps/temporal-worker/src/forge-worker-composition.ts` that wires the production services used by the worker;
+- a dedicated progression seam in `libs/orchestration-runtime/src/lib/forge-run-progression-service.ts` that owns scheduler reevaluation, dispatch persistence, and finalization;
+- exact PREPARING-attempt validation for builder and repair execution, so compact Temporal identifiers are resolved back to durable runtime authority before any service call;
+- repair lineage that now persists a fresh review at `parentIteration + 1` instead of reusing the builder review identity;
+- workflow-level progression that re-evaluates after integration so a minimal `A -> B` dependency chain can advance;
+- a worker-side progression test that proves a fresh run can create a new durable PREPARING attempt, recover it after integration, and finish with a completed run.
+
+Why this mattered:
+
+- the worker now recovers persisted bindings, attempts, reviews, and impacts from SQLite instead of inventing authority;
+- reevaluation, repair admission, integration, and finalization all use the same durable authority model;
+- Temporal retries can recover the same authorizations without minting new synthetic work.
+
+What was verified:
+
+- `libs/orchestration-runtime` and `apps/temporal-worker` both compile;
+- the new orchestration progression specs pass;
+- the Temporal runtime workflow spec passes;
+- the production worker vertical spec in `apps/temporal-worker/src/forge-worker-composition.spec.ts` passes.
+
+What remains outside this stage:
+
+- lease hydration from SQLite for restart safety is still deferred to M3.4;
+- broader hardening for repair continuation and blocked-integration resume behavior is also deferred.
 
 ## Stage M3.4: Temporal worker composition root
 

@@ -2221,12 +2221,43 @@ Stage 24 为 CLI 添加了运行操作和恢复控制命令。
 
 当前限制：
 
-- `apps/temporal-worker/src/main.ts` 目前仍是占位 wiring，还没有真正构建生产用的服务图。
+- 对 Scenario A 来说，这一阶段已经收口并冻结，没有剩余阻塞。
 
 这一阶段为下一步提供了什么：
 
 - app 内部的 worker composition root 现在可以基于稳定的 workflow 合同来接线，而不是围绕占位切片继续猜测；
 - 后续阶段可以把临时 worker stub 替换成真正的 Forge runtime services。
+
+## Stage M3.3 收口：持久化授权与生产化接线
+
+最早的 M3.3 只证明了 workflow 合同本身，但评审发现 worker 仍像合成 harness。因此这一阶段继续推进，直到 worker 边界本身也变成可持久恢复、可生产使用的形态。
+
+后续补齐的内容：
+
+- 在 `apps/temporal-worker/src/forge-worker-composition.ts` 中实现了真实的 `createForgeWorkerComposition()`，接入 worker 实际使用的生产服务；
+- 在 `libs/orchestration-runtime/src/lib/forge-run-progression-service.ts` 中新增 progression seam，统一负责 scheduler reevaluation、dispatch 持久化和 finalization；
+- builder 和 repair 执行都加入了对 PREPARING attempt 的严格校验，Temporal 传入的紧凑标识符会先还原成持久化运行时再授权；
+- repair 现在会把新的评审结果持久化为 `parentIteration + 1`，而不是继续沿用 builder review 的身份；
+- workflow 在集成后会再次 reevaluate，这样最小的 `A -> B` 依赖链才能真正向前推进；
+- worker 侧新增 progression 测试，验证 fresh run 能创建并持久化新的 PREPARING attempt，集成后还能恢复出同一个授权，最终把 run 推进到 completed。
+
+为什么这一步重要：
+
+- worker 现在从 SQLite 恢复绑定、attempt、评审和 impact，而不是自己编造授权；
+- reevaluation、repair admission、integration 和 finalization 都落在同一套持久化授权模型上；
+- Temporal 重试时可以恢复同一组授权，不会重复发明新的合成工作。
+
+验证了什么：
+
+- `libs/orchestration-runtime` 和 `apps/temporal-worker` 都能编译；
+- 新的 orchestration progression 测试通过；
+- Temporal runtime workflow 测试通过；
+- `apps/temporal-worker/src/forge-worker-composition.spec.ts` 的生产 worker 纵向测试通过。
+
+这一阶段之外仍未做的事：
+
+- 从 SQLite 重新水合 lease 以支持重启安全，仍然留给 M3.4；
+- repair continuation 和 blocked-integration resume 的更广泛 hardening 也留给后续阶段。
 
 ## Stage M3.4：Temporal worker composition root
 
