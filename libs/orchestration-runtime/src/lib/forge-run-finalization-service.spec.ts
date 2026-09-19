@@ -14,9 +14,7 @@ import {
   ForgeRunFinalizationService
 } from './forge-run-finalization-service.js';
 
-const createRun = (
-  state: 'ACTIVE' | 'COMPLETED' | 'FAILED'
-): CreatePersistedRunRequest => ({
+const createRun = (state: 'ACTIVE' | 'COMPLETED' | 'FAILED'): CreatePersistedRunRequest => ({
   run: {
     id: 'run-1',
     repositoryId: 'repo-1',
@@ -106,13 +104,22 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
     };
   }
 
-  async updateRunState(_runId: string, state: 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'): Promise<void> {
+  async updateRunState(
+    _runId: string,
+    state: 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  ): Promise<void> {
     this.states.push(state);
   }
 
-  async recoverTaskBindings(): Promise<readonly []> { return []; }
-  async recoverTaskBinding(): Promise<undefined> { return undefined; }
-  async recoverDispatches(): Promise<readonly PersistedDispatch[]> { return this.dispatches; }
+  async recoverTaskBindings(): Promise<readonly []> {
+    return [];
+  }
+  async recoverTaskBinding(): Promise<undefined> {
+    return undefined;
+  }
+  async recoverDispatches(): Promise<readonly PersistedDispatch[]> {
+    return this.dispatches;
+  }
   async persistDispatch(): Promise<void> {}
   async persistReevaluation(): Promise<void> {}
   async persistAttempt(): Promise<void> {}
@@ -120,24 +127,39 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
   async persistLease(): Promise<void> {}
   async persistImpact(): Promise<void> {}
   async persistReview(): Promise<void> {}
-  async recoverReviews(): Promise<readonly []> { return []; }
+  async recoverReviews(): Promise<readonly []> {
+    return [];
+  }
   async persistVerificationEvidence(): Promise<void> {}
-  async recoverVerificationEvidence(): Promise<readonly []> { return []; }
-  async recoverAttempts(): Promise<readonly []> { return []; }
-  async recoverLeases(): Promise<readonly []> { return []; }
+  async recoverVerificationEvidence(): Promise<readonly []> {
+    return [];
+  }
+  async recoverAttempts(): Promise<readonly []> {
+    return [];
+  }
+  async recoverLeases(): Promise<readonly []> {
+    return [];
+  }
   async persistConflict(): Promise<void> {}
   async persistIntegration(): Promise<void> {}
-  async recoverIntegration(): Promise<undefined> { return undefined; }
+  async recoverIntegration(): Promise<undefined> {
+    return undefined;
+  }
   async persistRepairResumeDispatch(): Promise<void> {}
-  async recoverRepairResumeDispatches(): Promise<readonly []> { return []; }
-  async replayRun(): Promise<readonly []> { return []; }
+  async recoverRepairResumeDispatches(): Promise<readonly []> {
+    return [];
+  }
+  async replayRun(): Promise<readonly []> {
+    return [];
+  }
   async close(): Promise<void> {}
 }
 
 describe('ForgeRunFinalizationService', () => {
   it('fails closed when the run cannot be recovered', async () => {
     const progression = new ForgeRunProgressionService({
-      persistence: new MemoryPersistence() as unknown as OrchestrationPersistence & TaskCodeReviewStore
+      persistence: new MemoryPersistence() as unknown as OrchestrationPersistence &
+        TaskCodeReviewStore
     });
     const service = new ForgeRunFinalizationService({ progression });
 
@@ -170,7 +192,10 @@ describe('ForgeRunFinalizationService', () => {
           decision: {
             runId: 'run-1',
             sequence: 1,
-            inputSnapshot: { taskStates: [{ taskId: 'task-a', state: 'COMPLETED' }], runtimeBlocks: [] },
+            inputSnapshot: {
+              taskStates: [{ taskId: 'task-a', state: 'COMPLETED' }],
+              runtimeBlocks: []
+            },
             decision: {
               taskDecisions: []
             }
@@ -202,7 +227,10 @@ describe('ForgeRunFinalizationService', () => {
           decision: {
             runId: 'run-1',
             sequence: 1,
-            inputSnapshot: { taskStates: [{ taskId: 'task-a', state: 'FAILED' }], runtimeBlocks: [] },
+            inputSnapshot: {
+              taskStates: [{ taskId: 'task-a', state: 'FAILED' }],
+              runtimeBlocks: []
+            },
             decision: {
               taskDecisions: []
             }

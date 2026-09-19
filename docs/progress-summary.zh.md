@@ -2254,27 +2254,41 @@ Stage 24 为 CLI 添加了运行操作和恢复控制命令。
 - Temporal runtime workflow 测试通过；
 - `apps/temporal-worker/src/forge-worker-composition.spec.ts` 的生产 worker 纵向测试通过。
 
-这一阶段之外仍未做的事：
-
-- 从 SQLite 重新水合 lease 以支持重启安全，仍然留给 M3.4；
-- repair continuation 和 blocked-integration resume 的更广泛 hardening 也留给后续阶段。
+这一阶段之外的 lease hydration、BLOCKED repair 续跑和重启恢复，已经在 M3.4 作为独立的 Scenario B 保证完成。
 
 ## Stage M3.4：BLOCKED repair 的重启与持久续跑
 
-这一阶段关注的是 Scenario B，而不是再重建一次 worker composition root。worker 边界已经在 M3.3 完成，M3.4 只需要在其上补齐重启安全的 BLOCKED repair 续跑能力。
+这一阶段完成了 Scenario B，同时没有重新打开已冻结的 M3.3 worker authority 模型。它为生产 worker 补齐了重启安全的 BLOCKED repair 续跑能力。
 
-这一阶段要覆盖的内容：
+完成的内容：
 
-- 重启后从 SQLite 重新加载 Forge authority；
-- 重新水合活跃 lease，保证 `InMemoryWriteGuard` 具备重启安全性；
-- 只有在确认 blocker 完全匹配后，才允许唤醒 BLOCKED repair；
-- 通过 CAS 把同一个 repair attempt 从 `BLOCKED` 恢复到 `PREPARING`；
-- 继续用同一个 `repairAttemptId` 执行 repair，并走后续的 re-review 和精确集成。
+- 持久化 repair work item admission，记录续跑所需的 builder、workspace、lease plan、review、impact 和 policy lineage；
+- 以 `repairAttemptId` 为范围的 repair wake signal，支持多次 BLOCKED -> wake -> resume，以及 early wake 处理；
+- 与 `BLOCKED` -> `PREPARING` CAS 原子写入的 revision-bound resume dispatch，使 Temporal 丢失响应和 CAS loser 都能恢复同一份授权，而不是创建新工作；
+- CAS 前对 repair attempt、work item、binding、已完成 builder attempt、parent repair review、精确 review subject 和 policy fingerprints 进行完整 continuation 校验；
+- 每个 run 独立的 write guard，从 SQLite 当前 ACTIVE leases 水合，并在每次 wake 和 repair 执行前刷新，防止已 RELEASED 的 durable lease 留在内存里变成 stale authority；
+- 真实 SQLite restart vertical test：process A 持久化 BLOCKED repair，process B 打开同一数据库，处理 early wake，观察外部 durable lease release，恢复同一个 repair attempt，产出 fresh review，并集成 accepted output。
 
 为什么它和 M3.3 分开：
 
 - M3.3 已经完成 Scenario A 的生产化接线；
 - M3.4 专注于 BLOCKED repair 的重启与持久续跑语义。
+
+验证了什么：
+
+- persistence、orchestration runtime、Temporal runtime 和 Temporal worker 的 TypeScript 构建；
+- 41 个 SQLite persistence 测试，包括 durable dispatch recovery；
+- worker composition 测试，覆盖 restart、early wake、lease release、同一 repair 的精确 resume、lost-response recovery、fresh review 和 integration；
+- Temporal workflow 测试，覆盖 Scenario A 与 Scenario B 的 wake/resume 行为；
+- orchestration runtime 的 progression、reevaluation 和 finalization 测试。
+
+阶段结果：
+
+- M3.4 的 Scenario B 已关闭并冻结。除非后续发现真实 contract regression，否则不能再修改它的 authority semantics。
+
+这一阶段为下一步提供了什么：
+
+- M3.5 可以在已经冻结的 Scenario A 与 Scenario B 运行时行为之上，增加 status、cancellation 和 operational control surface。
 
 ## 历史说明：早期 worker composition-root 表述
 

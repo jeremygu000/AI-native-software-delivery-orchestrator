@@ -1,4 +1,7 @@
-import { ForgeRunProgressionService, type ForgeRunAuthorization } from './forge-run-progression-service.js';
+import {
+  ForgeRunProgressionService,
+  type ForgeRunAuthorization
+} from './forge-run-progression-service.js';
 
 export type { ForgeRunAuthorization };
 

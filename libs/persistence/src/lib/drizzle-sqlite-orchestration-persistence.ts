@@ -1237,11 +1237,7 @@ export class DrizzleSqliteOrchestrationPersistence
     const dispatches: PersistedDispatch[] = [];
 
     for (const decision of decisions) {
-      const decisionObj = decode(
-        decision.decisionJson,
-        isSchedulerDecision,
-        'scheduler decision'
-      );
+      const decisionObj = decode(decision.decisionJson, isSchedulerDecision, 'scheduler decision');
 
       const startTaskIds = decisionObj.taskDecisions
         .filter((td) => td.action === 'start')

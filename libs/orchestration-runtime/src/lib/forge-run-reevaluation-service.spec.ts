@@ -120,7 +120,10 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
       : undefined;
   }
 
-  async updateRunState(runId: string, state: 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'): Promise<void> {
+  async updateRunState(
+    runId: string,
+    state: 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  ): Promise<void> {
     if (this.request?.run.id === runId) {
       this.runStates.push(state);
     }
@@ -132,16 +135,28 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
   async persistLease(): Promise<void> {}
   async persistImpact(): Promise<void> {}
   async persistReview(): Promise<void> {}
-  async recoverReviews(): Promise<readonly []> { return []; }
+  async recoverReviews(): Promise<readonly []> {
+    return [];
+  }
   async persistVerificationEvidence(): Promise<void> {}
-  async recoverVerificationEvidence(): Promise<readonly []> { return []; }
-  async recoverAttempts(): Promise<readonly PersistedAgentExecutionAttempt[]> { return this.attempts; }
-  async recoverLeases(): Promise<readonly []> { return []; }
+  async recoverVerificationEvidence(): Promise<readonly []> {
+    return [];
+  }
+  async recoverAttempts(): Promise<readonly PersistedAgentExecutionAttempt[]> {
+    return this.attempts;
+  }
+  async recoverLeases(): Promise<readonly []> {
+    return [];
+  }
   async persistConflict(): Promise<void> {}
   async persistIntegration(): Promise<void> {}
-  async recoverIntegration(): Promise<undefined> { return undefined; }
+  async recoverIntegration(): Promise<undefined> {
+    return undefined;
+  }
   async persistRepairResumeDispatch(): Promise<void> {}
-  async recoverRepairResumeDispatches(): Promise<readonly []> { return []; }
+  async recoverRepairResumeDispatches(): Promise<readonly []> {
+    return [];
+  }
   async replayRun(runId: string): Promise<readonly PersistedSchedulerDecision[]> {
     return this.dispatches
       .filter((dispatch) => dispatch.reevaluation.event.runId === runId)
@@ -152,7 +167,8 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
 
 describe('ForgeRunReevaluationService', () => {
   it('fails closed when the run cannot be recovered', async () => {
-    const persistence = new MemoryPersistence() as unknown as OrchestrationPersistence & TaskCodeReviewStore;
+    const persistence = new MemoryPersistence() as unknown as OrchestrationPersistence &
+      TaskCodeReviewStore;
     const progression = new ForgeRunProgressionService({ persistence });
     const service = new ForgeRunReevaluationService({ progression });
 
@@ -164,7 +180,10 @@ describe('ForgeRunReevaluationService', () => {
   it('creates a fresh dispatch and PREPARING attempt for a fresh run', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRun(['task-a', 'task-b']));
-    const progression = new ForgeRunProgressionService({ persistence, createAttemptId: () => 'attempt-a' });
+    const progression = new ForgeRunProgressionService({
+      persistence,
+      createAttemptId: () => 'attempt-a'
+    });
     const service = new ForgeRunReevaluationService({ progression });
 
     await expect(service.recoverAuthorizations('run-1')).resolves.toEqual([

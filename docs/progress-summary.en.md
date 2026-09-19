@@ -2562,27 +2562,41 @@ What was verified:
 - the Temporal runtime workflow spec passes;
 - the production worker vertical spec in `apps/temporal-worker/src/forge-worker-composition.spec.ts` passes.
 
-What remains outside this stage:
-
-- lease hydration from SQLite for restart safety is still deferred to M3.4;
-- broader hardening for repair continuation and blocked-integration resume behavior is also deferred.
+What remained outside this stage was completed in M3.4: lease hydration, blocked-repair continuation, and restart recovery are now separate Scenario B guarantees.
 
 ## Stage M3.4: BLOCKED repair restart and durable continuation
 
-This stage is about Scenario B, not about recreating the worker composition root. The worker boundary is already built in M3.3; M3.4 should extend it with restart-safe BLOCKED repair continuation.
+This stage completed Scenario B without reopening the frozen M3.3 worker authority model. It adds restart-safe BLOCKED repair continuation to the production worker.
 
-What this stage should cover:
+What was built:
 
-- reload Forge authority from SQLite after restart;
-- hydrate active leases so `InMemoryWriteGuard` is restart-safe;
-- wake a BLOCKED repair only after validating the exact blocker;
-- CAS the same repair attempt back from `BLOCKED` to `PREPARING`;
-- re-execute the same `repairAttemptId` and continue through re-review and exact integration.
+- durable repair work-item admission with the builder, workspace, lease-plan, review, impact, and policy lineage required for continuation;
+- a repair wake signal scoped to `repairAttemptId`, including repeated BLOCKED -> wake -> resume cycles and early-wake handling;
+- revision-bound resume dispatches written atomically with the `BLOCKED` -> `PREPARING` CAS, so lost Temporal responses and CAS losers recover the same authorization rather than minting new work;
+- full pre-CAS continuation validation across the repair attempt, work item, binding, completed builder attempt, parent repair review, exact review subject, and policy fingerprints;
+- run-scoped write guards hydrated from current SQLite ACTIVE leases, refreshed on each wake and before repair execution so released durable leases cannot remain stale in memory;
+- a real SQLite restart vertical test: process A persists a BLOCKED repair, process B reopens the same database, handles an early wake, observes an external durable lease release, resumes the same repair attempt, produces a fresh review, and integrates accepted output.
 
-Why this is separate from M3.3:
+Why this was separate from M3.3:
 
 - M3.3 closed Scenario A production wiring;
 - M3.4 is specifically about restart and durable continuation semantics for BLOCKED repairs.
+
+What was verified:
+
+- TypeScript builds for persistence, orchestration runtime, Temporal runtime, and the Temporal worker;
+- 41 SQLite persistence tests, including durable dispatch recovery;
+- worker composition tests covering restart, early wake, lease release, exact same-repair resume, lost-response recovery, fresh review, and integration;
+- Temporal workflow tests covering Scenario A and Scenario B wake/resume behavior;
+- progression, reevaluation, and finalization tests in the orchestration runtime.
+
+Stage outcome:
+
+- M3.4 is closed and frozen for Scenario B. Later work must not change its authority semantics unless it exposes a real contract regression.
+
+What this stage enables next:
+
+- M3.5 can add status, cancellation, and operational control surfaces over the now-frozen Scenario A and Scenario B runtime behavior.
 
 ## Historical note: earlier worker composition-root wording
 

@@ -174,7 +174,9 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
   async persistRepairResumeDispatch(dispatch: PersistedRepairResumeDispatch): Promise<void> {
     this.repairResumeDispatches.push(dispatch);
   }
-  async recoverRepairResumeDispatches(runId: string): Promise<readonly PersistedRepairResumeDispatch[]> {
+  async recoverRepairResumeDispatches(
+    runId: string
+  ): Promise<readonly PersistedRepairResumeDispatch[]> {
     return this.repairResumeDispatches.filter((dispatch) => dispatch.runId === runId);
   }
 
@@ -195,9 +197,7 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
     return this.repairAttempts;
   }
 
-  async admitRepairAttempt(request: {
-    attempt: TaskRepairAttempt;
-  }): Promise<TaskRepairAttempt> {
+  async admitRepairAttempt(request: { attempt: TaskRepairAttempt }): Promise<TaskRepairAttempt> {
     this.repairAttempts.push({ runId: request.attempt.runId, attempt: request.attempt });
     return request.attempt;
   }
@@ -218,7 +218,9 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
     | { status: 'version-conflict'; actualRevision: number }
     | { status: 'lease-not-released'; actualState: 'ACTIVE' | 'RELEASED' | 'STALE' }
   > {
-    const record = this.repairAttempts.find((entry) => entry.attempt.id === request.attemptId && entry.runId === request.runId);
+    const record = this.repairAttempts.find(
+      (entry) => entry.attempt.id === request.attemptId && entry.runId === request.runId
+    );
     if (record === undefined) {
       return { status: 'not-found' };
     }
@@ -228,8 +230,13 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
     if (record.attempt.state !== 'BLOCKED') {
       return { status: 'not-blocked', state: record.attempt.state };
     }
-    const lease = this.leases.find((entry) => entry.runId === request.runId && entry.lease.id === record.attempt.blocker?.leaseId);
-    if (lease === undefined || (lease.lease.state !== 'RELEASED' && lease.lease.state !== 'STALE')) {
+    const lease = this.leases.find(
+      (entry) => entry.runId === request.runId && entry.lease.id === record.attempt.blocker?.leaseId
+    );
+    if (
+      lease === undefined ||
+      (lease.lease.state !== 'RELEASED' && lease.lease.state !== 'STALE')
+    ) {
       return { status: 'lease-not-released', actualState: lease?.lease.state ?? 'ACTIVE' };
     }
     const resumed = {
@@ -238,7 +245,9 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
       revision: record.attempt.revision + 1,
       blocker: undefined
     };
-    this.repairAttempts[this.repairAttempts.findIndex((entry) => entry.attempt.id === request.attemptId)] = {
+    this.repairAttempts[
+      this.repairAttempts.findIndex((entry) => entry.attempt.id === request.attemptId)
+    ] = {
       runId: request.runId,
       attempt: resumed
     };
@@ -501,8 +510,16 @@ describe('temporal worker production vertical slice', () => {
     const composition = await createForgeWorkerComposition({
       persistence: persistence as never,
       builderExecution: { execute: async () => undefined } as never,
-      evaluation: { evaluate: async () => { throw new Error('not used'); } } as never,
-      integration: { integrate: async () => { throw new Error('not used'); } } as never,
+      evaluation: {
+        evaluate: async () => {
+          throw new Error('not used');
+        }
+      } as never,
+      integration: {
+        integrate: async () => {
+          throw new Error('not used');
+        }
+      } as never,
       repairExecution: repairExecution as never,
       repositoryGraph: emptyRepositoryGraph
     });
@@ -679,8 +696,16 @@ describe('temporal worker production vertical slice', () => {
       persistence: writer,
       repositoryGraph: emptyRepositoryGraph,
       builderExecution: { execute: async () => undefined } as never,
-      evaluation: { evaluate: async () => { throw new Error('not used'); } } as never,
-      integration: { integrate: async () => { throw new Error('not used'); } } as never,
+      evaluation: {
+        evaluate: async () => {
+          throw new Error('not used');
+        }
+      } as never,
+      integration: {
+        integrate: async () => {
+          throw new Error('not used');
+        }
+      } as never,
       repairExecution: {
         async execute() {
           const blocked = {
@@ -716,9 +741,14 @@ describe('temporal worker production vertical slice', () => {
     const compositionB = await createForgeWorkerComposition({
       persistence: reader,
       repositoryGraph: emptyRepositoryGraph,
-      onWriteGuardHydrated: (_runId, leases) => hydratedLeaseSnapshots.push(leases.map((lease) => lease.id).sort()),
+      onWriteGuardHydrated: (_runId, leases) =>
+        hydratedLeaseSnapshots.push(leases.map((lease) => lease.id).sort()),
       builderExecution: { execute: async () => undefined } as never,
-      evaluation: { evaluate: async () => { throw new Error('not used'); } } as never,
+      evaluation: {
+        evaluate: async () => {
+          throw new Error('not used');
+        }
+      } as never,
       repairExecution: {
         async execute(request: { runId: string; preCreatedRepairAttempt: TaskRepairAttempt }) {
           const reviewSubject = {
@@ -793,7 +823,11 @@ describe('temporal worker production vertical slice', () => {
       runId: 'run-1',
       repairAttemptId: blockedRepair.id
     });
-    expect(resumed).toMatchObject({ status: 'resumed', repairAttemptId: blockedRepair.id, taskId: 'task-a' });
+    expect(resumed).toMatchObject({
+      status: 'resumed',
+      repairAttemptId: blockedRepair.id,
+      taskId: 'task-a'
+    });
     expect(hydratedLeaseSnapshots).toEqual([
       ['lease-active-restart', 'lease-blocker-restart'],
       ['lease-active-restart']
@@ -803,7 +837,10 @@ describe('temporal worker production vertical slice', () => {
       runId: 'run-1',
       repairAttemptId: blockedRepair.id
     });
-    expect(recoveredAfterLostResponse).toMatchObject({ status: 'resumed', repairAttemptId: blockedRepair.id });
+    expect(recoveredAfterLostResponse).toMatchObject({
+      status: 'resumed',
+      repairAttemptId: blockedRepair.id
+    });
     expect(await reader.recoverRepairResumeDispatches('run-1')).toHaveLength(1);
 
     const repaired = await compositionB.forgeActivities.executeRepair({
@@ -934,7 +971,11 @@ describe('temporal worker production vertical slice', () => {
       builderExecution: builderExecution as never,
       evaluation: evaluation as never,
       integration: integration as never,
-      repairExecution: { execute: async () => { throw new Error('no repair in accept path'); } } as never,
+      repairExecution: {
+        execute: async () => {
+          throw new Error('no repair in accept path');
+        }
+      } as never,
       repositoryGraph: emptyRepositoryGraph
     });
     const activities = composition.forgeActivities;

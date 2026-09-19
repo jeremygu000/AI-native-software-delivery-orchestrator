@@ -118,7 +118,10 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
       : undefined;
   }
 
-  async updateRunState(runId: string, state: 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'): Promise<void> {
+  async updateRunState(
+    runId: string,
+    state: 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  ): Promise<void> {
     if (this.request?.run.id === runId) {
       this.runStates.push(state);
     }
@@ -138,14 +141,24 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
   async persistLease(): Promise<void> {}
   async persistImpact(): Promise<void> {}
   async persistVerificationEvidence(): Promise<void> {}
-  async recoverVerificationEvidence(): Promise<readonly []> { return []; }
-  async recoverAttempts(): Promise<readonly PersistedAgentExecutionAttempt[]> { return this.attempts; }
-  async recoverLeases(): Promise<readonly []> { return []; }
+  async recoverVerificationEvidence(): Promise<readonly []> {
+    return [];
+  }
+  async recoverAttempts(): Promise<readonly PersistedAgentExecutionAttempt[]> {
+    return this.attempts;
+  }
+  async recoverLeases(): Promise<readonly []> {
+    return [];
+  }
   async persistConflict(): Promise<void> {}
   async persistIntegration(): Promise<void> {}
-  async recoverIntegration(): Promise<undefined> { return undefined; }
+  async recoverIntegration(): Promise<undefined> {
+    return undefined;
+  }
   async persistRepairResumeDispatch(): Promise<void> {}
-  async recoverRepairResumeDispatches(): Promise<readonly []> { return []; }
+  async recoverRepairResumeDispatches(): Promise<readonly []> {
+    return [];
+  }
   async replayRun(): Promise<readonly PersistedSchedulerDecision[]> {
     return this.dispatches.map((dispatch) => dispatch.reevaluation.decision);
   }
@@ -180,8 +193,16 @@ describe('ForgeRunProgressionService', () => {
     });
 
     await progression.advance('run-1', { type: 'run-started' });
-    await progression.advance('run-1', { type: 'agent-completed', taskId: 'task-a', state: 'VERIFYING' });
-    await progression.advance('run-1', { type: 'verification-completed', taskId: 'task-a', state: 'INTEGRATING' });
+    await progression.advance('run-1', {
+      type: 'agent-completed',
+      taskId: 'task-a',
+      state: 'VERIFYING'
+    });
+    await progression.advance('run-1', {
+      type: 'verification-completed',
+      taskId: 'task-a',
+      state: 'INTEGRATING'
+    });
     const afterIntegration = await progression.advance('run-1', {
       type: 'workspace-integrated',
       taskId: 'task-a',
@@ -197,9 +218,21 @@ describe('ForgeRunProgressionService', () => {
     expect(reevaluated).toEqual([{ taskId: 'task-b', attemptId: 'attempt-2' }]);
     expect(persistence.dispatches).toHaveLength(4);
 
-    await progression.advance('run-1', { type: 'agent-completed', taskId: 'task-b', state: 'VERIFYING' });
-    await progression.advance('run-1', { type: 'verification-completed', taskId: 'task-b', state: 'INTEGRATING' });
-    await progression.advance('run-1', { type: 'workspace-integrated', taskId: 'task-b', state: 'COMPLETED' });
+    await progression.advance('run-1', {
+      type: 'agent-completed',
+      taskId: 'task-b',
+      state: 'VERIFYING'
+    });
+    await progression.advance('run-1', {
+      type: 'verification-completed',
+      taskId: 'task-b',
+      state: 'INTEGRATING'
+    });
+    await progression.advance('run-1', {
+      type: 'workspace-integrated',
+      taskId: 'task-b',
+      state: 'COMPLETED'
+    });
     const finalized = await progression.finalize('run-1');
     expect(finalized).toBe('completed');
     expect(persistence.runStates.at(-1)).toBe('COMPLETED');
@@ -208,12 +241,27 @@ describe('ForgeRunProgressionService', () => {
   it('finalizes to completed once every task is completed', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRun(['task-a']));
-    const progression = new ForgeRunProgressionService({ persistence, createAttemptId: () => 'attempt-1' });
+    const progression = new ForgeRunProgressionService({
+      persistence,
+      createAttemptId: () => 'attempt-1'
+    });
 
     await progression.advance('run-1', { type: 'run-started' });
-    await progression.advance('run-1', { type: 'agent-completed', taskId: 'task-a', state: 'VERIFYING' });
-    await progression.advance('run-1', { type: 'verification-completed', taskId: 'task-a', state: 'INTEGRATING' });
-    await progression.advance('run-1', { type: 'workspace-integrated', taskId: 'task-a', state: 'COMPLETED' });
+    await progression.advance('run-1', {
+      type: 'agent-completed',
+      taskId: 'task-a',
+      state: 'VERIFYING'
+    });
+    await progression.advance('run-1', {
+      type: 'verification-completed',
+      taskId: 'task-a',
+      state: 'INTEGRATING'
+    });
+    await progression.advance('run-1', {
+      type: 'workspace-integrated',
+      taskId: 'task-a',
+      state: 'COMPLETED'
+    });
 
     await expect(progression.finalize('run-1')).resolves.toBe('completed');
     expect(persistence.runStates.at(-1)).toBe('COMPLETED');

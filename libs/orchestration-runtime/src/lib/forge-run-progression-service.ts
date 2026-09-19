@@ -1,4 +1,3 @@
-
 import type {
   OrchestrationPersistence,
   PersistedAgentExecutionAttempt,
@@ -109,7 +108,10 @@ const applyEventBlockers = (
  * state transition before asking the scheduler to reevaluate. We therefore project the
  * current snapshot onto the event state before handing it to the scheduler.
  */
-const projectEventState = (snapshot: SchedulerSnapshot, event: SchedulerEvent): SchedulerSnapshot => {
+const projectEventState = (
+  snapshot: SchedulerSnapshot,
+  event: SchedulerEvent
+): SchedulerSnapshot => {
   if (!('taskId' in event) || !('state' in event)) {
     return snapshot;
   }
@@ -163,10 +165,7 @@ export class ForgeRunProgressionService {
    * creating a new sequence. Temporal activity retries after a lost response therefore
    * observe the same durable authorizations.
    */
-  async advance(
-    runId: string,
-    event: SchedulerEvent
-  ): Promise<readonly ForgeRunAuthorization[]> {
+  async advance(runId: string, event: SchedulerEvent): Promise<readonly ForgeRunAuthorization[]> {
     const recovered = await this.#requireRun(runId);
 
     const existing = await this.#findExistingDispatch(recovered, event);
@@ -310,7 +309,8 @@ export class ForgeRunProgressionService {
     const reviews = await this.#persistence.recoverReviews(request.runId);
     const expectedIteration = request.parentReviewIteration + 1;
     const record = reviews.find(
-      (candidate) => candidate.taskId === request.taskId && candidate.iteration === expectedIteration
+      (candidate) =>
+        candidate.taskId === request.taskId && candidate.iteration === expectedIteration
     );
     if (record === undefined) {
       throw new ForgeRunProgressionError(
@@ -343,7 +343,9 @@ export class ForgeRunProgressionService {
     if (latestDecision === undefined) {
       return initialSnapshot(run);
     }
-    const event = run.events.find((candidate) => candidate.sequence === latestDecision.sequence)?.event;
+    const event = run.events.find(
+      (candidate) => candidate.sequence === latestDecision.sequence
+    )?.event;
     if (event === undefined) {
       throw new ForgeRunProgressionError(
         `Missing runtime event for persisted decision: ${run.run.id}/${latestDecision.sequence}`
@@ -364,7 +366,9 @@ export class ForgeRunProgressionService {
     event: SchedulerEvent
   ): Promise<readonly ForgeRunAuthorization[] | undefined> {
     const dispatches = await this.#persistence.recoverDispatches(recovered.run.id);
-    const match = dispatches.find((dispatch) => sameEvent(dispatch.reevaluation.event.event, event));
+    const match = dispatches.find((dispatch) =>
+      sameEvent(dispatch.reevaluation.event.event, event)
+    );
     if (match === undefined) {
       return undefined;
     }
