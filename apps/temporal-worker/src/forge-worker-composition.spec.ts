@@ -711,31 +711,12 @@ describe('temporal worker production vertical slice', () => {
     expect(blocked).toMatchObject({ state: 'blocked', repairAttemptId: blockedRepair.id });
     await compositionA.close();
 
-    const releaser = new DrizzleSqliteOrchestrationPersistence(databasePath);
-    await releaser.persistLease({
-      runId: 'run-1',
-      lease: {
-        id: 'lease-blocker-restart',
-        runId: 'run-1',
-        agentId: 'agent-blocker',
-        taskId: 'task-z',
-        resource: { type: 'project', projectId: 'project-a' },
-        mode: 'exclusive',
-        version: 3,
-        state: 'RELEASED',
-        acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
-        lastHeartbeatAt: new Date('2026-08-12T00:00:30.000Z'),
-        releasedAt: new Date('2026-08-12T00:03:00.000Z')
-      }
-    });
-    await releaser.close();
-
     const reader = new DrizzleSqliteOrchestrationPersistence(databasePath);
-    const hydratedLeaseIds: string[] = [];
+    const hydratedLeaseSnapshots: string[][] = [];
     const compositionB = await createForgeWorkerComposition({
       persistence: reader,
       repositoryGraph: emptyRepositoryGraph,
-      onWriteGuardHydrated: (_runId, leases) => hydratedLeaseIds.push(...leases.map((lease) => lease.id)),
+      onWriteGuardHydrated: (_runId, leases) => hydratedLeaseSnapshots.push(leases.map((lease) => lease.id).sort()),
       builderExecution: { execute: async () => undefined } as never,
       evaluation: { evaluate: async () => { throw new Error('not used'); } } as never,
       repairExecution: {
@@ -782,12 +763,41 @@ describe('temporal worker production vertical slice', () => {
         }
       } as never
     });
+    const earlyWake = await compositionB.forgeActivities.resumeBlockedRepair({
+      runId: 'run-1',
+      repairAttemptId: blockedRepair.id
+    });
+    expect(earlyWake).toMatchObject({ status: 'ignored', repairAttemptId: blockedRepair.id });
+    expect(hydratedLeaseSnapshots).toEqual([['lease-active-restart', 'lease-blocker-restart']]);
+
+    const releaser = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    await releaser.persistLease({
+      runId: 'run-1',
+      lease: {
+        id: 'lease-blocker-restart',
+        runId: 'run-1',
+        agentId: 'agent-blocker',
+        taskId: 'task-z',
+        resource: { type: 'project', projectId: 'project-a' },
+        mode: 'exclusive',
+        version: 3,
+        state: 'RELEASED',
+        acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+        lastHeartbeatAt: new Date('2026-08-12T00:00:30.000Z'),
+        releasedAt: new Date('2026-08-12T00:03:00.000Z')
+      }
+    });
+    await releaser.close();
+
     const resumed = await compositionB.forgeActivities.resumeBlockedRepair({
       runId: 'run-1',
       repairAttemptId: blockedRepair.id
     });
     expect(resumed).toMatchObject({ status: 'resumed', repairAttemptId: blockedRepair.id, taskId: 'task-a' });
-    expect(hydratedLeaseIds).toEqual(['lease-active-restart']);
+    expect(hydratedLeaseSnapshots).toEqual([
+      ['lease-active-restart', 'lease-blocker-restart'],
+      ['lease-active-restart']
+    ]);
 
     const recoveredAfterLostResponse = await compositionB.forgeActivities.resumeBlockedRepair({
       runId: 'run-1',

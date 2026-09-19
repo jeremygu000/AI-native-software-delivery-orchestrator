@@ -152,9 +152,9 @@ export async function createForgeWorkerComposition(
     writeGuards.set(runId, guard);
     return guard;
   };
-  const writeGuardForRun = async (runId: string): Promise<InMemoryWriteGuard> => {
+  const writeGuardForRun = async (runId: string, refresh = false): Promise<InMemoryWriteGuard> => {
     const existing = writeGuards.get(runId);
-    if (existing !== undefined) {
+    if (existing !== undefined && !refresh) {
       return existing;
     }
     const recovered = await persistence.recoverRun(runId);
@@ -389,7 +389,7 @@ export async function createForgeWorkerComposition(
         throw new Error(`Builder attempt authority mismatch: ${input.runId}/${input.taskId}/${input.attemptId}`);
       }
       assertBuilderTuple(context.binding, context.attempt);
-      await writeGuardForRun(input.runId);
+      await writeGuardForRun(input.runId, true);
       await builderExecution.execute({
         runId: input.runId,
         task: context.task,
@@ -527,7 +527,10 @@ export async function createForgeWorkerComposition(
       ) {
         throw new Error(`Repair attempt lineage mismatch: ${input.repairAttemptId}`);
       }
-      await writeGuardForRun(input.runId);
+      // Lease state is durable and may have changed since a previous wake.
+      // Refresh before executing so an old ACTIVE lease cannot re-block a
+      // repair that SQLite has already authorized to resume.
+      await writeGuardForRun(input.runId, true);
       const result = await repairExecution.execute({
         runId: input.runId,
         agentId: context.binding.agentId,
@@ -648,7 +651,9 @@ export async function createForgeWorkerComposition(
       if (repairRecord === undefined) {
         return { runId: input.runId, repairAttemptId: input.repairAttemptId, status: 'ignored', detail: 'not-found' };
       }
-      await writeGuardForRun(input.runId);
+      // A wake is only a hint. Reconcile the cached guard with durable leases
+      // before testing or issuing continuation authority.
+      await writeGuardForRun(input.runId, true);
       const repair = repairRecord.attempt;
       const priorDispatches = await persistence.recoverRepairResumeDispatches(input.runId);
       const priorDispatch = priorDispatches.find(
