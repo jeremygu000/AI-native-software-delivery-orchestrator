@@ -385,7 +385,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           outputAttemptId: result.subject.outputAttemptId,
           workspaceId: result.subject.workspaceId
         },
-        reviewId: String(reviewRecord.iteration)
+        reviewId: `${input.taskId}:${reviewRecord.iteration}`
       };
     },
     async admitRepair(input: AdmitRepairInput): Promise<AdmitRepairResult> {
@@ -453,6 +453,13 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           detail: result.state === 'unknown' ? result.detail : undefined
         };
       }
+      const persistedReview = await persistence.recoverReviews(input.runId);
+      const latestRepairReview = [...persistedReview]
+        .reverse()
+        .find((candidate) => candidate.taskId === input.taskId && candidate.iteration === review.iteration);
+      if (latestRepairReview === undefined) {
+        throw new Error(`Missing persisted repair review authority: ${input.runId}/${input.taskId}`);
+      }
       return {
         runId: input.runId,
         taskId: input.taskId,
@@ -465,7 +472,7 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
           outputAttemptId: result.reviewSubject.outputAttemptId,
           workspaceId: result.reviewSubject.workspaceId
         },
-        reviewId: String(review.iteration)
+        reviewId: `${input.taskId}:${latestRepairReview.iteration}`
       };
     },
     async integrateAcceptedOutput(input: IntegrateAcceptedOutputInput): Promise<IntegrateAcceptedOutputResult> {
@@ -496,14 +503,14 @@ export async function createForgeWorkerComposition(): Promise<ForgeWorkerComposi
       ) {
         throw new Error(`Accepted subject mismatch for ${input.runId}/${input.taskId}`);
       }
-      await integration.integrate({
+      const result = await integration.integrate({
         runId: input.runId,
         taskId: input.taskId,
         workspace: context.workspace,
         subject: acceptedSubject,
         task: context.task
       });
-      return { runId: input.runId, taskId: input.taskId, status: 'integrated' };
+      return { runId: input.runId, taskId: input.taskId, status: result.status };
     },
     async finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult> {
       const status = await finalization.finalize(input.runId);

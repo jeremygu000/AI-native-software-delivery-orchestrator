@@ -71,6 +71,7 @@ const createRun = (
 
 class MemoryPersistence implements OrchestrationPersistence {
   request: CreatePersistedRunRequest | undefined;
+  attempts: readonly PersistedAgentExecutionAttempt[] = [];
   readonly states: Array<'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'> = [];
 
   async createRun(request: CreatePersistedRunRequest): Promise<void> {
@@ -90,7 +91,7 @@ class MemoryPersistence implements OrchestrationPersistence {
       scheduleOptions: this.request.scheduleOptions,
       events: [],
       decisions: [],
-      attempts: this.request.run.state === 'ACTIVE' ? [] : [],
+      attempts: this.attempts,
       workspaces: [],
       leases: [],
       impacts: [],
@@ -145,27 +146,24 @@ describe('ForgeRunFinalizationService', () => {
 
   it('reports completed for fully completed runs', async () => {
     const persistence = new MemoryPersistence();
-    await persistence.createRun(
-      createRun('COMPLETED', {
-        attempts: [
-          {
-            runId: 'run-1',
-            attempt: {
-              id: 'attempt-a',
-              runId: 'run-1',
-              taskId: 'task-a',
-              agentId: 'agent-a',
-              workspaceId: 'workspace-a',
-              leasePlanFingerprint: 'lease-a',
-              state: 'COMPLETED',
-              revision: 1,
-              startedAt: new Date('2026-08-12T00:00:00.000Z'),
-              completedAt: new Date('2026-08-12T00:01:00.000Z')
-            }
-          } as PersistedAgentExecutionAttempt
-        ]
-      })
-    );
+    await persistence.createRun(createRun('COMPLETED'));
+    persistence.attempts = [
+      {
+        runId: 'run-1',
+        attempt: {
+          id: 'attempt-a',
+          runId: 'run-1',
+          taskId: 'task-a',
+          agentId: 'agent-a',
+          workspaceId: 'workspace-a',
+          leasePlanFingerprint: 'lease-a',
+          state: 'COMPLETED',
+          revision: 1,
+          startedAt: new Date('2026-08-12T00:00:00.000Z'),
+          completedAt: new Date('2026-08-12T00:01:00.000Z')
+        }
+      } as PersistedAgentExecutionAttempt
+    ];
 
     const service = new ForgeRunFinalizationService({ persistence });
     await expect(service.finalize('run-1')).resolves.toBe('completed');

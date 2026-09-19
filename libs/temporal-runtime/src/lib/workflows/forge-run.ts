@@ -133,12 +133,25 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
     }
 
     // Step 7: integrate the accepted output
-    await integrateAcceptedOutput({
+    const integrationResult = await integrateAcceptedOutput({
       runId,
       taskId: task.taskId,
       workspaceId: builderResult.workspaceId,
       subjectRef: finalSubjectRef
     });
+
+    if (integrationResult.status === 'blocked') {
+      continue;
+    }
+
+    const postIntegrationReevaluation = await reevaluateRun({ runId });
+    for (const nextTask of postIntegrationReevaluation.authorizedTasks) {
+      if (seenTaskIds.has(nextTask.taskId)) {
+        continue;
+      }
+      seenTaskIds.add(nextTask.taskId);
+      authorizedTasks.push(nextTask);
+    }
   }
 
   // Step 8: finalize the run state

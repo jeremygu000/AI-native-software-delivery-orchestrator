@@ -26,19 +26,18 @@ export class ForgeRunFinalizationService {
     if (recovered === undefined) {
       throw new ForgeRunFinalizationError(`Missing durable finalization authority: ${runId}`);
     }
-    const taskStates = recovered.tasks.map((task) => {
-      const attempt = recovered.attempts.find((entry) => entry.attempt.taskId === task.id)?.attempt;
+    const authoritativeTaskStates = recovered.tasks.map((task) => {
+      const attempt = [...recovered.attempts].reverse().find((entry) => entry.attempt.taskId === task.id)?.attempt;
       return attempt?.state ?? 'PENDING';
     });
-    if (recovered.run.state === 'ACTIVE') {
-      throw new ForgeRunFinalizationError(`Run is not terminal: ${runId}`);
-    }
     const state: OrchestrationRunState =
-      taskStates.some((taskState) => taskState === 'FAILED')
+      authoritativeTaskStates.some((taskState) => taskState === 'FAILED')
         ? 'FAILED'
-        : taskStates.every((taskState) => taskState === 'COMPLETED' || taskState === 'CANCELLED')
+        : authoritativeTaskStates.every((taskState) => taskState === 'COMPLETED' || taskState === 'CANCELLED')
           ? 'COMPLETED'
-          : recovered.run.state;
+          : (() => {
+              throw new ForgeRunFinalizationError(`Run is not terminal: ${runId}`);
+            })();
     await this.#persistence.updateRunState(runId, state);
     return state === 'COMPLETED' ? 'completed' : 'failed';
   }

@@ -12,9 +12,6 @@ export class ForgeRunReevaluationError extends Error {
   }
 }
 
-/**
- * Replays persisted dispatch authority without inventing new scheduler state.
- */
 export class ForgeRunReevaluationService {
   readonly #persistence: OrchestrationPersistence;
 
@@ -32,14 +29,16 @@ export class ForgeRunReevaluationService {
     if (latestDispatch === undefined) {
       return [];
     }
-    return latestDispatch.reevaluation.decision.decision.taskDecisions
-      .filter((taskDecision) => taskDecision.action === 'start')
-      .flatMap((taskDecision) => {
-        const attempt = recoveredRun.attempts.find((entry) => entry.attempt.taskId === taskDecision.taskId)?.attempt;
-        if (attempt === undefined) {
-          return [];
-        }
-        return [{ taskId: taskDecision.taskId, attemptId: attempt.id }];
-      });
+    const currentTaskDecisions = latestDispatch.reevaluation.decision.decision.taskDecisions.filter((taskDecision) => taskDecision.action === 'start');
+    if (currentTaskDecisions.length === 0) {
+      return [];
+    }
+    return currentTaskDecisions.flatMap((taskDecision) => {
+      const attempt = [...recoveredRun.attempts].reverse().find((entry) => entry.attempt.taskId === taskDecision.taskId)?.attempt;
+      if (attempt === undefined || attempt.state !== 'PREPARING') {
+        throw new ForgeRunReevaluationError(`Missing durable PREPARING attempt authority: ${runId}/${taskDecision.taskId}`);
+      }
+      return [{ taskId: taskDecision.taskId, attemptId: attempt.id }];
+    });
   }
 }
