@@ -2832,7 +2832,9 @@ The CLI now prepares and validates the approved run as before, but it no longer 
 run, bindings, conflicts, schedule, and initial `run-started` authority decision in the configured
 SQLite store before asking Temporal to start `forgeRunWorkflow` with the compact run ID. Its initial
 dispatch uses immutable run-derived evidence, so a retry or concurrent launcher can only persist the
-same sequence-one `run-started` decision and PREPARING attempt IDs.
+same sequence-one `run-started` decision and PREPARING attempt IDs. Once sequence one is durably
+recorded, later launches do not reevaluate Forge scheduling even after that attempt has advanced;
+they only ask Temporal to reuse the workflow.
 
 The Temporal client uses the stable workflow identity `forge-run:<runId>` and the Temporal
 `USE_EXISTING` conflict policy. Repeating a matching launch reuses the same durable Forge request
@@ -2849,7 +2851,8 @@ operated process which reads the same configured SQLite authority store.
 Verification:
 
 - launch tests prove first initialization, crash recovery before initial dispatch, concurrent exact
-  retry evidence, stable workflow identity, and authority mismatch rejection;
+  retry evidence, authority-neutral relaunch after the initial attempt starts, stable workflow
+  identity, and authority mismatch rejection;
 - CLI command tests and Temporal client tests pass;
 - a launch acceptance test initializes authority through `TemporalRunLauncher`, starts a workflow
   through production `startForgeRun`, and completes it on an independently instantiated worker using

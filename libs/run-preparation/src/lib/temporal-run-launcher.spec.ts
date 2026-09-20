@@ -101,6 +101,30 @@ describe('TemporalRunLauncher', () => {
         firstLauncher.startOrResumeRun(request()),
         secondLauncher.startOrResumeRun(request())
       ]);
+      const beforeRelaunch = await firstPersistence.recoverRun('run-1');
+      const initialAttempt = beforeRelaunch?.attempts[0]?.attempt;
+      if (beforeRelaunch === undefined || initialAttempt === undefined) {
+        throw new Error('Initial launch did not persist an attempt');
+      }
+      await firstPersistence.persistAttempt({
+        runId: 'run-1',
+        attempt: {
+          ...initialAttempt,
+          state: 'STARTING',
+          revision: initialAttempt.revision + 1,
+          startedAt: new Date('2026-09-20T00:00:01.000Z')
+        }
+      });
+      await firstLauncher.startOrResumeRun(request());
+      const afterRelaunch = await firstPersistence.recoverRun('run-1');
+      expect(afterRelaunch?.decisions).toHaveLength(beforeRelaunch.decisions.length);
+      expect(
+        afterRelaunch?.events.filter(({ event }) => event.type === 'run-started')
+      ).toHaveLength(1);
+      expect(afterRelaunch?.attempts).toMatchObject([
+        { attempt: { state: 'STARTING', revision: 2 } }
+      ]);
+
       await Promise.all([
         firstLauncher.startOrResumeRun(initial),
         secondLauncher.startOrResumeRun(initial)
@@ -109,14 +133,14 @@ describe('TemporalRunLauncher', () => {
       await expect(firstPersistence.recoverRun('run-1')).resolves.toMatchObject({
         decisions: [expect.anything()],
         events: [{ event: { type: 'run-started' } }],
-        attempts: [{ attempt: { id: 'launch:run-1:1', state: 'PREPARING' } }]
+        attempts: [{ attempt: { id: 'launch:run-1:1', state: 'STARTING' } }]
       });
       await expect(firstPersistence.recoverRun('recovered-run')).resolves.toMatchObject({
         decisions: [expect.anything()],
         events: [{ event: { type: 'run-started' } }],
         attempts: [{ attempt: { id: 'launch:recovered-run:1', state: 'PREPARING' } }]
       });
-      expect(starts).toHaveLength(4);
+      expect(starts).toHaveLength(5);
     } finally {
       firstPersistence.close();
       secondPersistence.close();

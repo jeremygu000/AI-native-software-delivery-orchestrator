@@ -2511,6 +2511,8 @@ M3.10 开始已选定 Temporal 的 production cutover，但不把 Forge authorit
 SQLite store 中持久化 run、binding、conflict、schedule 和初始 `run-started` authority decision，然后才请求
 Temporal 以紧凑的 run ID 启动 `forgeRunWorkflow`。初始 dispatch 使用从不可变 run authority 派生的 evidence，
 因此 retry 或 concurrent launcher 只能持久化相同的 sequence-one `run-started` decision 和 PREPARING attempt ID。
+sequence one 已持久化后，即使该 attempt 已推进，后续 launch 也不会重新评估 Forge scheduling，只会请求 Temporal
+复用 workflow。
 
 Temporal client 使用稳定的 workflow identity `forge-run:<runId>` 和 Temporal `USE_EXISTING` conflict
 policy。相同 authority 的重复启动复用同一个 durable Forge request 和 workflow identity。若复用的 run ID
@@ -2523,8 +2525,8 @@ authority store。
 
 验证：
 
-- launch 测试证明首次初始化、初始 dispatch 之前崩溃后的恢复、concurrent launcher 的相同 retry evidence、稳定
-  workflow identity 和 authority mismatch rejection；
+- launch 测试证明首次初始化、初始 dispatch 之前崩溃后的恢复、concurrent launcher 的相同 retry evidence、初始
+  attempt 已开始后的 authority-neutral relaunch、稳定 workflow identity 和 authority mismatch rejection；
 - CLI command 测试和 Temporal client 测试通过；
 - launch acceptance 测试通过 `TemporalRunLauncher` 初始化 authority，经 production `startForgeRun` 启动 workflow，
   并由使用同一个临时 authority 文件的独立 SQLite connection 和 production Forge composition 的独立实例化 worker
