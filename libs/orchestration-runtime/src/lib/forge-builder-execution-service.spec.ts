@@ -2,7 +2,9 @@ import type {
   AgentExecutionAttempt,
   OrchestrationPersistence,
   TaskContract,
+  TaskImpactReconciler,
   TaskWorkspace,
+  WritableResource,
   WorkspaceManager,
   WriteGuard
 } from '@ai-native-software-delivery-orchestrator/domain';
@@ -77,10 +79,20 @@ const attempt: AgentExecutionAttempt = {
 };
 
 const createHarness = (
-  runner: ConstructorParameters<typeof ForgeBuilderExecutionService>[0]['agentRunner']
+  runner: ConstructorParameters<typeof ForgeBuilderExecutionService>[0]['agentRunner'],
+  options?: Pick<
+    ConstructorParameters<typeof ForgeBuilderExecutionService>[0],
+    'claimStart' | 'leaseReleased' | 'reconciler' | 'scopeExpanded'
+  >
 ) => {
   const attempts: AgentExecutionAttempt[] = [];
   const leases: any[] = [];
+  const sideEffects: string[] = [];
+  const scopeExpansionRequests: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly expandedResources: readonly WritableResource[];
+  }[] = [];
   const persistence: Pick<
     OrchestrationPersistence,
     'persistWorkspace' | 'persistLease' | 'persistAttempt' | 'persistImpact'
@@ -92,7 +104,9 @@ const createHarness = (
     persistAttempt: async ({ attempt: persisted }) => {
       attempts.push(persisted);
     },
-    persistImpact: async () => undefined
+    persistImpact: async () => {
+      sideEffects.push('persist-impact');
+    }
   };
   const guard: WriteGuard = {
     acquire: async (request) => ({
@@ -148,11 +162,21 @@ const createHarness = (
   return {
     attempts,
     leases,
+    sideEffects,
+    scopeExpansionRequests,
     service: new ForgeBuilderExecutionService({
       persistence,
       workspaceManager: manager,
       writeGuard: guard,
       agentRunner: runner,
+      reconciler: options?.reconciler,
+      claimStart: options?.claimStart,
+      leaseReleased: options?.leaseReleased,
+      scopeExpanded: async (request) => {
+        sideEffects.push('scope-expanded');
+        scopeExpansionRequests.push(request);
+        await options?.scopeExpanded?.(request);
+      },
       now: () => new Date('2026-08-17T00:00:00.000Z')
     })
   };
@@ -172,11 +196,120 @@ describe('ForgeBuilderExecutionService', () => {
       binding,
       attempt
     });
+    expect(result.status).toBe('completed');
+    if (result.status !== 'completed') {
+      throw new Error('Expected completed builder execution');
+    }
     expect(result.attempt).toMatchObject({ id: 'builder-1', state: 'COMPLETED' });
     expect(attempts).toMatchObject([
       { state: 'STARTING' },
       { state: 'RUNNING' },
       { state: 'COMPLETED' }
+    ]);
+    expect(leases.at(-1)).toMatchObject({ state: 'RELEASED' });
+  });
+
+  it('keeps the attempt PREPARING when an ordinary lease conflict blocks execution', async () => {
+    let runnerCalls = 0;
+    const { attempts, leases } = createHarness({
+      run: async () => {
+        runnerCalls += 1;
+        return { status: 'completed' };
+      }
+    });
+    const blockedGuard: WriteGuard = {
+      acquire: async () => ({ status: 'blocked', conflictingLeaseIds: ['lease-owner'] }),
+      heartbeat: async () => ({ status: 'not-found' }),
+      markStale: async () => ({ status: 'not-found' }),
+      release: async () => ({ status: 'not-found' })
+    };
+    const blockedService = new ForgeBuilderExecutionService({
+      persistence: {
+        persistWorkspace: async () => undefined,
+        persistLease: async ({ lease }) => {
+          leases.push(lease);
+        },
+        persistAttempt: async ({ attempt: persisted }) => {
+          attempts.push(persisted);
+        },
+        persistImpact: async () => undefined
+      },
+      workspaceManager: {
+        create: async () => workspace,
+        commit: async () => workspace,
+        integrate: async () => {
+          throw new Error('Not used');
+        },
+        resumeIntegration: async () => {
+          throw new Error('Not used');
+        },
+        abortIntegration: async () => {
+          throw new Error('Not used');
+        },
+        dispose: async () => {
+          throw new Error('Not used');
+        }
+      },
+      writeGuard: blockedGuard,
+      agentRunner: {
+        run: async () => {
+          runnerCalls += 1;
+          return { status: 'completed' };
+        }
+      }
+    });
+
+    await expect(
+      blockedService.execute({ runId: 'run-1', task, binding, attempt })
+    ).resolves.toEqual({
+      status: 'blocked',
+      blockerLeaseId: 'lease-owner'
+    });
+    expect(runnerCalls).toBe(0);
+    expect(attempts).toEqual([]);
+    expect(leases).toEqual([]);
+  });
+
+  it('persists expanded impact before reporting scope expansion and releasing leases', async () => {
+    const expandedResources = [
+      { type: 'file' as const, projectId: 'core', fileId: 'core:expanded.txt' }
+    ];
+    const reconciler: TaskImpactReconciler = {
+      reconcile: async () => ({
+        observed: {
+          taskId: task.id,
+          filesRead: new Set(),
+          filesCreated: new Set(['core:expanded.txt']),
+          filesWritten: new Set(['core:expanded.txt']),
+          filesDeleted: new Set(),
+          symbolsWritten: new Set(),
+          dependencyRequests: new Set(),
+          manifestFilesChanged: new Set(),
+          generatedFilesChanged: new Set()
+        },
+        reconciliation: {
+          status: 'runtime-scope-expanded',
+          expandedFileIds: new Set(['core:expanded.txt']),
+          unleasedFileIds: new Set()
+        },
+        expandedResources
+      })
+    };
+    const { service, leases, scopeExpansionRequests, sideEffects } = createHarness(
+      {
+        run: async (request) => {
+          await request.onStarted({ sessionRef: { backend: 'fake', value: 'builder' } });
+          return { status: 'completed' };
+        }
+      },
+      { reconciler }
+    );
+
+    await service.execute({ runId: 'run-1', task, binding, attempt });
+
+    expect(sideEffects).toEqual(['persist-impact', 'scope-expanded']);
+    expect(scopeExpansionRequests).toEqual([
+      { runId: 'run-1', taskId: 'task-1', expandedResources }
     ]);
     expect(leases.at(-1)).toMatchObject({ state: 'RELEASED' });
   });

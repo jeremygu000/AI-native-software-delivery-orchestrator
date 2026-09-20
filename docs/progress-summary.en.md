@@ -2724,3 +2724,85 @@ Scope and remaining work:
 - `RestateTestEnvironment` bundles the Restate server and service endpoint. Its successful wait/wake test is not evidence that an independently replaced executor resumes a pending workflow;
 - a later production parity stage must use the shared composition, isolated authority stores, normalized durable outcomes, and a split server/service-process restart fixture before making those stronger claims;
 - M3.3 through M3.7 remain frozen. M3.8 is additive and changes no established Forge authority semantics.
+
+## Stage M3.9: Full Stage 22/22R authority differential parity
+
+M3.9 completes the production-facing legacy-versus-Temporal V2 authority comparison. The tests run
+the real legacy `OrchestrationRuntime` and the real Temporal workflow plus production Forge
+composition against isolated SQLite databases, run IDs, workspaces, and repository targets. Git,
+agent, review-model, verifier, snapshot, and reconciliation effects are deterministic adapter seams;
+they do not replace the production builder, evaluation, repair, integration, progression, or
+persistence services.
+
+What was built:
+
+- runtime scope expansion is now a provider-neutral conflict calculation. A builder or repair that
+  observes a write outside its predicted lease scope persists a hard conflict in the same durable
+  scheduler reevaluation that activates it. The conflict affects replay and all later scheduling;
+- a two-task scope scenario proves that a project-level predicted lease conflicts with an observed
+  `core:expanded.ts` write. Task B is not authorized until task A is durably completed;
+- the suite proves two repair iterations from immutable review recommendations `repair`, `repair`,
+  `accept`, including final evidence, accepted review, and integration identity bound to repair two;
+- repair-budget exhaustion preserves two completed repairs and the third review/evidence, rejects
+  further admission without integration, and is non-retryable in Temporal because it is a durable
+  validation decision rather than transient work;
+- post-session builder and repair failures persist `UNKNOWN` with session evidence and fail closed.
+  Temporal executes those agent activities at most once, retains unresolved authority, and matches
+  the legacy run-state boundaries instead of retrying an unsafe, state-invalid activity;
+- blocked accepted-output integration is an additive provider-neutral continuation. Its exact
+  identity is the run, task, workspace, and accepted output subject. A continuation revalidates
+  reviewed workspace content, fences Git work through the existing integration claim, calls only
+  `resumeIntegration`, and never reruns builder, repair, verification, review, or commit;
+- Temporal has a separate exact integration wake signal. Wakes are hints only: wrong and stale
+  targets are ignored, repeated blocks remain waiting, and a fresh worker can resume the existing
+  workflow against the same authority database. Legacy performs the equivalent retry only through
+  explicit `recoverAndResumeRun` recovery;
+- dependency progression is compared through canonical scheduler start authority: task B is
+  authorized only after task A has a durable integrated completion in the input snapshot;
+- a scheduler authorization snapshot now starts independent builders concurrently in stable order.
+  Ordinary same-run lease contention leaves the original builder attempt `PREPARING`, rolls back
+  partial leases, persists `lease-blocked`, and does not start an agent. Exact lease release
+  reauthorizes the same attempt ID, after which it can complete;
+- the compact builder result is a completed-or-blocked union. It prevents a blocked builder from
+  entering evaluation, repair, or integration. Scheduler dispatch reuses a matching existing
+  `PREPARING` attempt rather than creating a duplicate after unblock;
+- write-guard hydration retains released lease history as well as active leases. Released leases do
+  not block work, but their retained identifiers and versions prevent a rebuilt activity from
+  reusing an older lease ID and failing SQLite version checks;
+- the run-level integration summary now updates its latest status. Per-task authority remains in
+  integration claims, workspace records, accepted review subjects, attempts, leases, and scheduler
+  history.
+
+What was verified:
+
+- real legacy and Temporal differential scenarios cover normal repair/integration, blocked repair
+  restart and exact lease resume, runtime scope expansion, repeated repairs, budget exhaustion,
+  builder and repair `UNKNOWN`, blocked integration including wrong wake, repeat block, and worker
+  restart, dependency progression, and same-run concurrent competing builders;
+- scope conflicts have equal durable task-pair, constraint, resource, severity, effective sequence,
+  and replay behavior. The comparison deliberately ignores framework-specific event names;
+- concurrent builder waves start all tasks in the durable authorization snapshot before either
+  completes. A lease-blocked builder has no STARTING lifecycle claim or agent session, bypasses all
+  downstream work, and later runs under its original attempt identity after the exact blocker
+  releases;
+- blocked integration restart proves worker A reaches `STOPPED` before worker B recreates the
+  composition on the same SQLite database and task queue. The matching legacy scenario recreates
+  its runtime and persistence before recovery;
+- `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build` pass. The full suite reports 71 test
+  files, 701 passing tests, and 1 skipped test. Expected Temporal test-server warnings and intentional
+  failure-path activity logs do not indicate failed tests.
+
+Scope and remaining work:
+
+- M3.9 closes the requested Stage 22/22R parity for isolated, same-run Forge authority scenarios:
+  runtime conflict, multi-task dependency progression, repeated repair and budget, fail-closed
+  UNKNOWN, blocked integration recovery, and concurrent competing lease behavior;
+- same-run is an intentional boundary. The current SQLite-backed write guard is reconstructed from
+  one run's leases and has no repository-wide active-lease recovery query. Therefore this stage does
+  not claim cross-run competing-lease or horizontally distributed SQLite-worker parity;
+- this stage does not use real Git/model-provider side effects, alter ADR-028's Temporal selection,
+  or change frozen M3.3 through M3.8 authority semantics. Cross-run locking or distributed-worker
+  support requires a later provider-neutral global lease authority design, not a workflow shortcut;
+- M3.9 is closed and frozen for the verified same-run Stage 22/22R boundary. Later work can proceed
+  to the selected Temporal production cutover, observability/read models, production end-to-end
+  hardening, API/UI, advisory memory, and PostgreSQL only when scaling requires it.

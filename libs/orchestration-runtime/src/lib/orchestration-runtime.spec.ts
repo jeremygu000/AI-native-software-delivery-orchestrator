@@ -313,8 +313,27 @@ class MemoryWorkspaceManager implements WorkspaceManager {
     };
   }
 
-  async resumeIntegration(): Promise<never> {
-    throw new Error('Not used by the local runtime.');
+  async resumeIntegration(workspace: TaskWorkspace) {
+    if (this.integrationBlocks.has(workspace.taskId)) {
+      return {
+        status: 'blocked' as const,
+        workspace: {
+          ...workspace,
+          revision: workspace.revision + 1,
+          phase: 'INTEGRATION_BLOCKED' as const,
+          blocker: { type: 'fast-forward-failed' as const, detail: 'Blocked.', conflictPaths: [] }
+        }
+      };
+    }
+    return {
+      status: 'integrated' as const,
+      workspace: {
+        ...workspace,
+        revision: workspace.revision + 1,
+        phase: 'INTEGRATED' as const,
+        integrationCommit: `commit-${workspace.taskId}`
+      }
+    };
   }
 
   async abortIntegration(): Promise<never> {

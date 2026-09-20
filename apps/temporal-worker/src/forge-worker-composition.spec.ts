@@ -206,7 +206,9 @@ class MemoryPersistence
       existing.workspaceId !== request.workspaceId ||
       existing.outputAttemptId !== request.outputAttemptId
     ) {
-      throw new Error(`Integration mutation claim authority mismatch: ${request.runId}/${request.taskId}`);
+      throw new Error(
+        `Integration mutation claim authority mismatch: ${request.runId}/${request.taskId}`
+      );
     }
   }
 
@@ -224,7 +226,9 @@ class MemoryPersistence
         claim.outputAttemptId === request.outputAttemptId
     );
     if (index < 0) {
-      throw new Error(`Integration mutation claim is missing or mismatched: ${request.runId}/${request.taskId}`);
+      throw new Error(
+        `Integration mutation claim is missing or mismatched: ${request.runId}/${request.taskId}`
+      );
     }
     this.integrationClaims.splice(index, 1);
   }
@@ -293,7 +297,7 @@ class MemoryPersistence
       transitions: this.reevaluations.flatMap(({ transitions }) => transitions),
       decisions: this.reevaluations.map(({ decision }) => decision),
       impacts: this.impacts,
-      conflicts: [],
+      conflicts: this.reevaluations.flatMap(({ runtimeConflicts }) => runtimeConflicts ?? []),
       leases: this.leases.filter((lease) => lease.runId === runId),
       workspaces: this.workspaces,
       attempts: this.attempts
@@ -824,7 +828,10 @@ describe('temporal worker production vertical slice', () => {
             phase: 'INTEGRATED',
             integrationCommit: 'commit-task-a'
           };
-          await persistence.persistWorkspace({ runId: integrationRequest.runId, workspace: integrated });
+          await persistence.persistWorkspace({
+            runId: integrationRequest.runId,
+            workspace: integrated
+          });
           return { status: 'integrated', workspace: integrated };
         }
       } satisfies IntegrationOverride,
@@ -853,7 +860,11 @@ describe('temporal worker production vertical slice', () => {
     expect(persistence.state).toBe('CANCEL_REQUESTED');
 
     settleIntegration();
-    await expect(integration).resolves.toEqual({ runId: 'run-1', taskId: 'task-a', status: 'integrated' });
+    await expect(integration).resolves.toEqual({
+      runId: 'run-1',
+      taskId: 'task-a',
+      status: 'integrated'
+    });
     await expect(
       composition.forgeActivities.finalizeRunCancellation?.({ runId: 'run-1' })
     ).resolves.toEqual({ runId: 'run-1', status: 'cancelled' });
@@ -864,7 +875,20 @@ describe('temporal worker production vertical slice', () => {
 
   it('resumes a blocked repair through exact blocker validation and reuses the same repairAttemptId', async () => {
     const persistence = new MemoryPersistence();
-    await persistence.createRun(createRunRequest(['task-a']));
+    const runRequest = createRunRequest(['task-a', 'task-b']);
+    await persistence.createRun({
+      ...runRequest,
+      taskBindings: runRequest.taskBindings.map((binding) => ({
+        ...binding,
+        leasePlan: {
+          ...binding.leasePlan,
+          predictedResources:
+            binding.taskId === 'task-b'
+              ? [{ type: 'project' as const, projectId: 'project-a' }]
+              : []
+        }
+      }))
+    });
 
     const builderLeasePlanFingerprint = taskLeasePlanFingerprint({
       taskId: 'task-a',
@@ -965,66 +989,68 @@ describe('temporal worker production vertical slice', () => {
       }
     });
 
-    const repairExecution = {
-      async execute(request: RepairExecutionRequest) {
-        if (request.preCreatedRepairAttempt === undefined) {
-          throw new Error('Expected a pre-created repair attempt');
-        }
-        const reviewSubject = {
-          builderAttemptId: builderAttempt.id,
-          outputAttemptId: blockedRepair.id,
-          workspaceId: workspace.id,
-          workspaceRevision: 2,
-          workspaceChangeFingerprint: 'sha256:'.concat('e'.repeat(64)),
-          impactFingerprint: 'sha256:'.concat('b'.repeat(64)),
-          verificationFingerprint: 'sha256:'.concat('f'.repeat(64))
-        };
-        const review: TaskCodeReview = {
-          recommendation: 'accept',
-          summary: 'repair accepted',
-          findings: []
-        };
-        await persistence.persistReview({
-          runId: request.runId,
-          taskId: 'task-a',
-          iteration: 2,
-          subject: reviewSubject,
-          review
-        });
-        return {
-          state: 'completed' as const,
-          attempt: {
-            ...request.preCreatedRepairAttempt,
-            state: 'COMPLETED' as const,
-            revision: request.preCreatedRepairAttempt.revision + 1,
-            completedAt: new Date('2026-08-12T00:04:00.000Z')
-          },
-          recommendation: 'accept' as const,
-          verification: {
-            id: 'verification-repair-1',
-            runId: request.runId,
-            taskId: request.preCreatedRepairAttempt.taskId,
-            attemptId: request.preCreatedRepairAttempt.id,
-            workspaceId: request.workspace.id,
-            workspaceRevision: request.workspace.revision,
-            workspaceChangeFingerprint: reviewSubject.workspaceChangeFingerprint,
-            verificationPolicyFingerprint: 'fp',
-            status: 'passed' as const,
-            verifiedAt: new Date('2026-08-12T00:04:00.000Z').toISOString(),
-            fingerprint: 'verification-repair-1'
-          },
-          reviewSubject,
-          review
-        };
-      }
-    } satisfies RepairExecutionOverride;
-
     const composition = await createForgeWorkerComposition({
       persistence,
       builderExecution: unusedBuilderExecution(),
       evaluation: unusedEvaluation(),
       integration: unusedIntegration(),
-      repairExecution,
+      repairRunner: {
+        async run(request) {
+          await request.onStarted({
+            sessionRef: { backend: 'repair-resume-fixture', value: 'repair-session' }
+          });
+          return {
+            status: 'completed',
+            sessionRef: { backend: 'repair-resume-fixture', value: 'repair-session' }
+          };
+        }
+      },
+      verifier: {
+        async verify() {
+          return { status: 'passed' };
+        }
+      },
+      snapshots: {
+        async capture({ repositoryPath }) {
+          return {
+            repositoryId: 'repo-1',
+            repositoryRoot: repositoryPath,
+            baseCommit: 'a'.repeat(40),
+            workingTreeFingerprint: 'sha256:'.concat('e'.repeat(64)),
+            dirty: true
+          };
+        }
+      },
+      reviewer: {
+        async review() {
+          return { recommendation: 'accept', summary: 'repair accepted', findings: [] };
+        }
+      },
+      reconciler: {
+        async reconcile({ taskId }) {
+          return {
+            observed: {
+              taskId,
+              filesRead: new Set(),
+              filesCreated: new Set(['project-a:expanded.ts']),
+              filesWritten: new Set(['project-a:expanded.ts']),
+              filesDeleted: new Set(),
+              symbolsWritten: new Set(),
+              dependencyRequests: new Set(),
+              manifestFilesChanged: new Set(),
+              generatedFilesChanged: new Set()
+            },
+            reconciliation: {
+              status: 'runtime-scope-expanded',
+              expandedFileIds: new Set(['project-a:expanded.ts']),
+              unleasedFileIds: new Set()
+            },
+            expandedResources: [
+              { type: 'file', projectId: 'project-a', fileId: 'project-a:expanded.ts' }
+            ]
+          };
+        }
+      },
       repositoryGraph: emptyRepositoryGraph
     });
     const activities = composition.forgeActivities;
@@ -1069,6 +1095,19 @@ describe('temporal worker production vertical slice', () => {
     expect(repaired.state).toBe('completed');
     expect(repaired.repairAttemptId).toBe(blockedRepair.id);
     expect(repaired.recommendation).toBe('accept');
+    expect(
+      persistence.reevaluations.find(({ event }) => event.event.type === 'runtime-scope-expanded')
+    ).toMatchObject({
+      runtimeConflicts: [
+        {
+          taskA: 'task-a',
+          taskB: 'task-b',
+          conflict: {
+            constraints: [expect.objectContaining({ type: 'runtime-scope-expansion' })]
+          }
+        }
+      ]
+    });
   }, 60000);
 
   it('reopens SQLite, hydrates active leases, and recovers the same durable resume authorization', async () => {
@@ -1340,7 +1379,7 @@ describe('temporal worker production vertical slice', () => {
     });
     expect(hydratedLeaseSnapshots).toEqual([
       ['lease-active-restart', 'lease-blocker-restart'],
-      ['lease-active-restart']
+      ['lease-active-restart', 'lease-blocker-restart']
     ]);
 
     const recoveredAfterLostResponse = await compositionB.forgeActivities.resumeBlockedRepair({
@@ -1381,6 +1420,380 @@ describe('temporal worker production vertical slice', () => {
     await compositionB.close();
   }, 60000);
 
+  it('persists builder scope expansion before later scheduling can authorize a conflicting task', async () => {
+    const persistence = new MemoryPersistence();
+    const request = createRunRequest(['task-a', 'task-b']);
+    await persistence.createRun({
+      ...request,
+      tasks: request.tasks.map((task) => ({ ...task, dependencies: [] })),
+      taskBindings: request.taskBindings.map((binding) => ({
+        ...binding,
+        leasePlan: {
+          ...binding.leasePlan,
+          predictedResources:
+            binding.taskId === 'task-b' ? [{ type: 'project' as const, projectId: 'core' }] : []
+        }
+      }))
+    });
+
+    const composition = await createForgeWorkerComposition({
+      persistence,
+      repositoryGraph: emptyRepositoryGraph,
+      workspaceManager: {
+        async create(workspace) {
+          return { ...workspace, revision: 1, phase: 'READY_TO_INTEGRATE' };
+        },
+        commit: unexpectedExecution('workspace commit'),
+        integrate: unexpectedExecution('workspace integration'),
+        resumeIntegration: unexpectedExecution('workspace integration resume'),
+        abortIntegration: unexpectedExecution('workspace integration abort'),
+        dispose: unexpectedExecution('workspace disposal')
+      },
+      builderAgentRunner: {
+        async run(runRequest) {
+          await runRequest.onStarted({
+            sessionRef: { backend: 'scope-expansion-fixture', value: 'builder-session' }
+          });
+          return {
+            status: 'completed' as const,
+            sessionRef: { backend: 'scope-expansion-fixture', value: 'builder-session' }
+          };
+        }
+      },
+      reconciler: {
+        async reconcile({ taskId }) {
+          return {
+            observed: {
+              taskId,
+              filesRead: new Set(),
+              filesCreated: new Set(['core:expanded.ts']),
+              filesWritten: new Set(['core:expanded.ts']),
+              filesDeleted: new Set(),
+              symbolsWritten: new Set(),
+              dependencyRequests: new Set(),
+              manifestFilesChanged: new Set(),
+              generatedFilesChanged: new Set()
+            },
+            reconciliation: {
+              status: 'runtime-scope-expanded' as const,
+              expandedFileIds: new Set(['core:expanded.ts']),
+              unleasedFileIds: new Set()
+            },
+            expandedResources: [
+              { type: 'file' as const, projectId: 'core', fileId: 'core:expanded.ts' }
+            ]
+          };
+        }
+      }
+    });
+
+    const initial = await composition.forgeActivities.reevaluateRun({ runId: 'run-1' });
+    expect(initial.authorizedTasks).toEqual([expect.objectContaining({ taskId: 'task-a' })]);
+
+    await composition.forgeActivities.executeBuilder({
+      runId: 'run-1',
+      taskId: 'task-a',
+      attemptId: initial.authorizedTasks[0].attemptId
+    });
+
+    const expansion = persistence.reevaluations.find(
+      ({ event }) => event.event.type === 'runtime-scope-expanded'
+    );
+    expect(expansion).toMatchObject({
+      event: {
+        sequence: 2,
+        event: {
+          type: 'runtime-scope-expanded',
+          taskId: 'task-a',
+          conflictId: 'runtime-scope:task-a:task-b'
+        }
+      },
+      runtimeConflicts: [
+        {
+          taskA: 'task-a',
+          taskB: 'task-b',
+          effectiveFromSequence: 2,
+          conflict: {
+            constraints: [
+              expect.objectContaining({
+                type: 'runtime-scope-expansion',
+                resourceIds: ['core:expanded.ts']
+              })
+            ]
+          }
+        }
+      ]
+    });
+    expect((await persistence.recoverRun('run-1'))?.conflicts).toEqual(expansion?.runtimeConflicts);
+
+    const completed = persistence.reevaluations.find(
+      ({ event }) => event.event.type === 'agent-completed' && event.event.taskId === 'task-a'
+    );
+    expect(completed?.decision.decision.taskDecisions).toContainEqual(
+      expect.objectContaining({
+        taskId: 'task-b',
+        action: 'defer',
+        reasons: [
+          expect.objectContaining({
+            type: 'hard-conflict',
+            conflictingTaskIds: ['task-a'],
+            constraintTypes: ['runtime-scope-expansion']
+          })
+        ]
+      })
+    );
+    await expect(composition.forgeActivities.reevaluateRun({ runId: 'run-1' })).resolves.toEqual({
+      runId: 'run-1',
+      authorizedTasks: []
+    });
+    await composition.close();
+  });
+
+  it('preserves released lease history when rebuilding a guard for a new builder activity', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'forge-worker-lease-history-'));
+    directories.push(directory);
+    const databasePath = join(directory, 'authority.sqlite');
+    const writer = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    const request = createRunRequest(['task-a']);
+    await writer.createRun({
+      ...request,
+      taskBindings: request.taskBindings.map((binding) => ({
+        ...binding,
+        leasePlan: {
+          ...binding.leasePlan,
+          predictedResources: [{ type: 'project' as const, projectId: 'core' }]
+        }
+      }))
+    });
+    await writer.persistLease({
+      runId: 'run-1',
+      lease: {
+        id: 'lease-1',
+        runId: 'run-1',
+        agentId: 'prior-agent',
+        taskId: 'prior-task',
+        resource: { type: 'project', projectId: 'previous' },
+        mode: 'exclusive',
+        version: 2,
+        state: 'RELEASED',
+        acquiredAt: new Date('2026-08-12T00:00:00.000Z'),
+        lastHeartbeatAt: new Date('2026-08-12T00:00:30.000Z'),
+        releasedAt: new Date('2026-08-12T00:01:00.000Z')
+      }
+    });
+    writer.close();
+
+    const reader = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    const hydratedLeaseIds: string[][] = [];
+    const composition = await createForgeWorkerComposition({
+      persistence: reader,
+      repositoryGraph: emptyRepositoryGraph,
+      onWriteGuardHydrated: (_runId, leases) =>
+        hydratedLeaseIds.push(leases.map((lease) => lease.id).toSorted()),
+      workspaceManager: {
+        async create(workspace) {
+          return { ...workspace, revision: 1, phase: 'READY_TO_INTEGRATE' };
+        },
+        commit: unexpectedExecution('workspace commit'),
+        integrate: unexpectedExecution('workspace integration'),
+        resumeIntegration: unexpectedExecution('workspace integration resume'),
+        abortIntegration: unexpectedExecution('workspace integration abort'),
+        dispose: unexpectedExecution('workspace disposal')
+      },
+      builderAgentRunner: {
+        async run(runRequest) {
+          await runRequest.onStarted({
+            sessionRef: { backend: 'lease-history-fixture', value: 'builder-session' }
+          });
+          return {
+            status: 'completed' as const,
+            sessionRef: { backend: 'lease-history-fixture', value: 'builder-session' }
+          };
+        }
+      },
+      reconciler: {
+        async reconcile({ taskId }) {
+          return {
+            observed: {
+              taskId,
+              filesRead: new Set(),
+              filesCreated: new Set(),
+              filesWritten: new Set(),
+              filesDeleted: new Set(),
+              symbolsWritten: new Set(),
+              dependencyRequests: new Set(),
+              manifestFilesChanged: new Set(),
+              generatedFilesChanged: new Set()
+            },
+            reconciliation: {
+              status: 'within-predicted-scope' as const,
+              expandedFileIds: new Set(),
+              unleasedFileIds: new Set()
+            }
+          };
+        }
+      }
+    });
+
+    const initial = await composition.forgeActivities.reevaluateRun({ runId: 'run-1' });
+    await composition.forgeActivities.executeBuilder({
+      runId: 'run-1',
+      taskId: 'task-a',
+      attemptId: initial.authorizedTasks[0].attemptId
+    });
+
+    expect(hydratedLeaseIds).toEqual([['lease-1']]);
+    expect(await reader.recoverLeases('run-1')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ lease: expect.objectContaining({ id: 'lease-1', version: 2 }) }),
+        expect.objectContaining({ lease: expect.objectContaining({ id: 'lease-2', version: 2 }) })
+      ])
+    );
+    await composition.close();
+  });
+
+  it('blocks a competing builder before its start claim and reuses its preparing attempt after release', async () => {
+    const persistence = new MemoryPersistence();
+    const request = createRunRequest(['task-a', 'task-b']);
+    await persistence.createRun({
+      ...request,
+      tasks: request.tasks.map((task) => ({ ...task, dependencies: [] })),
+      taskBindings: request.taskBindings.map((binding) => ({
+        ...binding,
+        leasePlan: {
+          ...binding.leasePlan,
+          predictedResources: [{ type: 'project' as const, projectId: 'core' }]
+        }
+      })),
+      scheduleOptions: { maxConcurrency: 2 }
+    });
+
+    let releaseTaskA: (() => void) | undefined;
+    const taskAReleased = new Promise<void>((resolve) => {
+      releaseTaskA = resolve;
+    });
+    let taskAStarted: (() => void) | undefined;
+    const taskAStartedPromise = new Promise<void>((resolve) => {
+      taskAStarted = resolve;
+    });
+    const startedTasks: string[] = [];
+    const composition = await createForgeWorkerComposition({
+      persistence,
+      repositoryGraph: emptyRepositoryGraph,
+      workspaceManager: {
+        async create(workspace) {
+          return { ...workspace, revision: 1, phase: 'READY_TO_INTEGRATE' };
+        },
+        commit: unexpectedExecution('workspace commit'),
+        integrate: unexpectedExecution('workspace integration'),
+        resumeIntegration: unexpectedExecution('workspace integration resume'),
+        abortIntegration: unexpectedExecution('workspace integration abort'),
+        dispose: unexpectedExecution('workspace disposal')
+      },
+      builderAgentRunner: {
+        async run(runRequest) {
+          startedTasks.push(runRequest.taskId);
+          await runRequest.onStarted({
+            sessionRef: { backend: 'competing-lease-fixture', value: runRequest.taskId }
+          });
+          if (runRequest.taskId === 'task-a') {
+            taskAStarted?.();
+            await taskAReleased;
+          }
+          return {
+            status: 'completed' as const,
+            sessionRef: { backend: 'competing-lease-fixture', value: runRequest.taskId }
+          };
+        }
+      },
+      reconciler: {
+        async reconcile({ taskId }) {
+          return {
+            observed: {
+              taskId,
+              filesRead: new Set(),
+              filesCreated: new Set(),
+              filesWritten: new Set(),
+              filesDeleted: new Set(),
+              symbolsWritten: new Set(),
+              dependencyRequests: new Set(),
+              manifestFilesChanged: new Set(),
+              generatedFilesChanged: new Set()
+            },
+            reconciliation: {
+              status: 'within-predicted-scope' as const,
+              expandedFileIds: new Set(),
+              unleasedFileIds: new Set()
+            }
+          };
+        }
+      }
+    });
+    const activities = composition.forgeActivities;
+
+    const initial = await activities.reevaluateRun({ runId: 'run-1' });
+    expect(initial.authorizedTasks.map(({ taskId }) => taskId)).toEqual(['task-a', 'task-b']);
+    const authorizationA = initial.authorizedTasks[0];
+    const authorizationB = initial.authorizedTasks[1];
+    const builderA = activities.executeBuilder({
+      runId: 'run-1',
+      taskId: authorizationA.taskId,
+      attemptId: authorizationA.attemptId
+    });
+    await taskAStartedPromise;
+
+    const blocked = await activities.executeBuilder({
+      runId: 'run-1',
+      taskId: authorizationB.taskId,
+      attemptId: authorizationB.attemptId
+    });
+    expect(blocked).toEqual({
+      status: 'blocked',
+      runId: 'run-1',
+      taskId: 'task-b',
+      attemptId: authorizationB.attemptId,
+      blockerLeaseId: expect.any(String)
+    });
+    expect(startedTasks).toEqual(['task-a']);
+    expect(
+      persistence.attempts.filter(({ attempt }) => attempt.id === authorizationB.attemptId)
+    ).toEqual([
+      expect.objectContaining({ attempt: expect.objectContaining({ state: 'PREPARING' }) })
+    ]);
+
+    releaseTaskA?.();
+    await expect(builderA).resolves.toMatchObject({ status: 'completed', taskId: 'task-a' });
+
+    const reauthorized = await activities.reevaluateRun({ runId: 'run-1' });
+    expect(reauthorized.authorizedTasks).toEqual([
+      { taskId: 'task-b', attemptId: authorizationB.attemptId }
+    ]);
+    expect(persistence.reevaluations.map(({ event }) => event.event.type)).toContain(
+      'lease-blocked'
+    );
+    expect(persistence.reevaluations.map(({ event }) => event.event.type)).toContain(
+      'lease-released'
+    );
+
+    await expect(
+      activities.executeBuilder({
+        runId: 'run-1',
+        taskId: 'task-b',
+        attemptId: authorizationB.attemptId
+      })
+    ).resolves.toMatchObject({ status: 'completed', taskId: 'task-b' });
+    expect(startedTasks).toEqual(['task-a', 'task-b']);
+    expect(persistence.attempts).toContainEqual(
+      expect.objectContaining({
+        attempt: expect.objectContaining({
+          id: authorizationB.attemptId,
+          state: 'COMPLETED'
+        })
+      })
+    );
+    await composition.close();
+  });
+
   it('drives a dependent A→B run from fresh dispatch to completed finalization', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRunRequest(['task-a', 'task-b']));
@@ -1417,7 +1830,7 @@ describe('temporal worker production vertical slice', () => {
           runId: request.runId,
           attempt
         });
-        return { workspace, attempt, impact };
+        return { status: 'completed' as const, workspace, attempt, impact };
       }
     } satisfies BuilderExecutionOverride;
 
@@ -1508,6 +1921,10 @@ describe('temporal worker production vertical slice', () => {
       taskId: 'task-a',
       attemptId: attemptA
     });
+    expect(builderA.status).toBe('completed');
+    if (builderA.status !== 'completed') {
+      throw new Error('Expected task A builder completion');
+    }
     expect(builderA.attemptId).toBe(attemptA);
 
     const midChain = await activities.reevaluateRun({ runId: 'run-1' });
@@ -1542,6 +1959,10 @@ describe('temporal worker production vertical slice', () => {
       taskId: 'task-b',
       attemptId: attemptB
     });
+    expect(builderB.status).toBe('completed');
+    if (builderB.status !== 'completed') {
+      throw new Error('Expected task B builder completion');
+    }
     const evaluatedB = await activities.evaluateBuilderOutput({
       runId: 'run-1',
       taskId: 'task-b',

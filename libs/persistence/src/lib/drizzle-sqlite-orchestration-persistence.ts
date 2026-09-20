@@ -1111,7 +1111,9 @@ export class DrizzleSqliteOrchestrationPersistence
   }): Promise<void> {
     this.#assertIntegrationClaim(request);
     if (request.detail.trim().length === 0) {
-      throw new PersistenceInputError('Integration cancellation settlement detail must not be empty');
+      throw new PersistenceInputError(
+        'Integration cancellation settlement detail must not be empty'
+      );
     }
     this.#sqlite.transaction(() => {
       this.#assertRunIsCancellationRequested(request.runId);
@@ -1186,7 +1188,11 @@ export class DrizzleSqliteOrchestrationPersistence
         .where(and(eq(runs.id, runId), eq(runs.state, 'ACTIVE')))
         .run();
       if (result.changes !== 1) {
-        const current = this.#db.select({ state: runs.state }).from(runs).where(eq(runs.id, runId)).get();
+        const current = this.#db
+          .select({ state: runs.state })
+          .from(runs)
+          .where(eq(runs.id, runId))
+          .get();
         if (current === undefined) {
           throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
         }
@@ -1208,7 +1214,11 @@ export class DrizzleSqliteOrchestrationPersistence
       if (requested.changes === 1) {
         return { status: 'requested', state: 'CANCEL_REQUESTED' };
       }
-      const current = this.#db.select({ state: runs.state }).from(runs).where(eq(runs.id, runId)).get();
+      const current = this.#db
+        .select({ state: runs.state })
+        .from(runs)
+        .where(eq(runs.id, runId))
+        .get();
       if (current === undefined) {
         throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
       }
@@ -1222,7 +1232,9 @@ export class DrizzleSqliteOrchestrationPersistence
       ) {
         return { status: 'terminal', state: current.state };
       }
-      throw new PersistenceInputError(`Invalid cancellation request state: ${runId}/${current.state}`);
+      throw new PersistenceInputError(
+        `Invalid cancellation request state: ${runId}/${current.state}`
+      );
     })();
   }
 
@@ -1237,7 +1249,11 @@ export class DrizzleSqliteOrchestrationPersistence
       if (finalized.changes === 1) {
         return { status: 'cancelled', state: 'CANCELLED' };
       }
-      const current = this.#db.select({ state: runs.state }).from(runs).where(eq(runs.id, runId)).get();
+      const current = this.#db
+        .select({ state: runs.state })
+        .from(runs)
+        .where(eq(runs.id, runId))
+        .get();
       if (current === undefined) {
         throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
       }
@@ -1249,7 +1265,9 @@ export class DrizzleSqliteOrchestrationPersistence
       ) {
         return { status: 'not-requested', state: current.state };
       }
-      throw new PersistenceInputError(`Invalid cancellation finalization state: ${runId}/${current.state}`);
+      throw new PersistenceInputError(
+        `Invalid cancellation finalization state: ${runId}/${current.state}`
+      );
     })();
   }
 
@@ -1544,6 +1562,10 @@ export class DrizzleSqliteOrchestrationPersistence
       this.#db
         .insert(integrations)
         .values({ runId, status, outputAttemptId: outputAttemptId ?? null })
+        .onConflictDoUpdate({
+          target: integrations.runId,
+          set: { status, outputAttemptId: outputAttemptId ?? null }
+        })
         .run();
     })();
   }
@@ -2201,7 +2223,12 @@ export class DrizzleSqliteOrchestrationPersistence
     const record = this.#db
       .select({ attemptJson: agentExecutionAttempts.attemptJson })
       .from(agentExecutionAttempts)
-      .where(and(eq(agentExecutionAttempts.runId, runId), eq(agentExecutionAttempts.attemptId, attemptId)))
+      .where(
+        and(
+          eq(agentExecutionAttempts.runId, runId),
+          eq(agentExecutionAttempts.attemptId, attemptId)
+        )
+      )
       .get();
     if (record === undefined) {
       throw new PersistenceInputError(`Unknown builder attempt: ${attemptId}`);
@@ -2291,11 +2318,12 @@ export class DrizzleSqliteOrchestrationPersistence
     if (existing === undefined) {
       throw new PersistenceInputError(`Missing PREPARING builder attempt: ${record.attempt.id}`);
     }
-    const preparing = decode(existing.attemptJson, isAgentExecutionAttempt, 'agent execution attempt');
-    if (
-      preparing.state !== 'PREPARING' ||
-      record.attempt.revision !== preparing.revision + 1
-    ) {
+    const preparing = decode(
+      existing.attemptJson,
+      isAgentExecutionAttempt,
+      'agent execution attempt'
+    );
+    if (preparing.state !== 'PREPARING' || record.attempt.revision !== preparing.revision + 1) {
       throw new PersistenceInputError(`Builder mutation claim is stale: ${record.attempt.id}`);
     }
   }
@@ -2315,10 +2343,7 @@ export class DrizzleSqliteOrchestrationPersistence
       throw new PersistenceInputError(`Missing PREPARING repair attempt: ${record.attempt.id}`);
     }
     const preparing = decode(existing.attemptJson, isTaskRepairAttempt, 'task repair attempt');
-    if (
-      preparing.state !== 'PREPARING' ||
-      record.attempt.revision !== preparing.revision + 1
-    ) {
+    if (preparing.state !== 'PREPARING' || record.attempt.revision !== preparing.revision + 1) {
       throw new PersistenceInputError(`Repair mutation claim is stale: ${record.attempt.id}`);
     }
   }

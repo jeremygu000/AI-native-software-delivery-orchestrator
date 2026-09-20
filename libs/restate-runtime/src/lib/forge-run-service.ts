@@ -58,6 +58,9 @@ export const createRestateForgeRunService = (activities: ForgeActivities) =>
               attemptId: task.attemptId
             })
           );
+          if (builderResult.status !== 'completed') {
+            throw new Error(`Restate builder lease blocked: ${builderResult.blockerLeaseId}`);
+          }
 
           const reevaluation = await ctx.run('reevaluateRunAfterBuilder', () =>
             activities.reevaluateRun({ runId })

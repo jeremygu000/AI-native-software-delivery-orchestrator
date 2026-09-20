@@ -78,4 +78,37 @@ export class ForgeAcceptedOutputIntegrationService {
       workspace: integration.workspace
     };
   }
+
+  async resume(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspace: TaskWorkspace;
+    readonly subject: TaskCodeReviewSubject;
+  }): Promise<ForgeAcceptedOutputIntegrationResult> {
+    if (request.workspace.phase === 'INTEGRATED') {
+      return { status: 'integrated', workspace: request.workspace };
+    }
+    if (request.workspace.phase !== 'INTEGRATION_BLOCKED') {
+      throw new ForgeAcceptedOutputIntegrationError(
+        `Workspace is not blocked for integration: ${request.workspace.id}`
+      );
+    }
+    await this.#coordinator.assertBlockedIntegrationContinuationAdmission({
+      runId: request.runId,
+      taskId: request.taskId,
+      workspace: request.workspace,
+      subject: request.subject
+    });
+    const integration = await this.#workspaceManager.resumeIntegration(request.workspace);
+    await this.#persistence.persistWorkspace({
+      runId: request.runId,
+      workspace: integration.workspace
+    });
+    await this.#persistence.persistIntegration(
+      request.runId,
+      integration.status,
+      integration.status === 'integrated' ? request.subject.outputAttemptId : undefined
+    );
+    return { status: integration.status, workspace: integration.workspace };
+  }
 }

@@ -16,7 +16,9 @@ import type {
   FinalizeRunCancellationInput,
   FinalizeRunCancellationResult,
   ResumeBlockedRepairInput,
-  ResumeBlockedRepairResult
+  ResumeBlockedRepairResult,
+  ResumeBlockedIntegrationInput,
+  ResumeBlockedIntegrationResult
 } from './contracts.js';
 
 /**
@@ -41,4 +43,11 @@ export type ForgeActivities = {
     input: FinalizeRunCancellationInput
   ): Promise<FinalizeRunCancellationResult>;
   resumeBlockedRepair(input: ResumeBlockedRepairInput): Promise<ResumeBlockedRepairResult>;
+};
+
+/** Additive continuation port so existing provider adapters remain compatible. */
+export type BlockedIntegrationContinuationActivities = {
+  resumeBlockedIntegration(
+    input: ResumeBlockedIntegrationInput
+  ): Promise<ResumeBlockedIntegrationResult>;
 };

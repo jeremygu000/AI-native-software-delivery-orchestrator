@@ -140,6 +140,30 @@ export class TaskOutputAdmissionCoordinator {
     });
   }
 
+  async assertBlockedIntegrationContinuationAdmission(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspace: TaskWorkspace;
+    readonly subject: Parameters<typeof assertTaskReviewIntegrationAdmission>[0]['subject'];
+  }): Promise<void> {
+    const snapshot = await this.#snapshots.capture({
+      repositoryPath: request.workspace.workspacePath
+    });
+    if (
+      request.workspace.id !== request.subject.workspaceId ||
+      snapshot.workingTreeFingerprint !== request.subject.workspaceChangeFingerprint
+    ) {
+      throw new TaskOutputAdmissionError(
+        `Blocked integration output changed after review: ${request.taskId}`
+      );
+    }
+    assertTaskReviewIntegrationAdmission({
+      taskId: request.taskId,
+      subject: request.subject,
+      reviews: await this.#reviewStore.recoverReviews(request.runId)
+    });
+  }
+
   async assertRepairAdmission(request: {
     readonly runId: string;
     readonly taskId: string;

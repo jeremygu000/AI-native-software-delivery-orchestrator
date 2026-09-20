@@ -67,6 +67,9 @@ export class ForgeScenarioAServiceRunner {
       },
       attempt: request.attempt
     });
+    if (builderResult.status === 'blocked') {
+      throw new Error(`Builder lease blocked: ${builderResult.blockerLeaseId}`);
+    }
 
     const evaluationResult = await this.#services.evaluateBuilderOutput.evaluate({
       runId: request.runId,

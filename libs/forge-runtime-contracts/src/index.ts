@@ -1,2 +1,5 @@
 export * from './contracts.js';
-export type { ForgeActivities } from './forge-activities.js';
+export type {
+  BlockedIntegrationContinuationActivities,
+  ForgeActivities
+} from './forge-activities.js';

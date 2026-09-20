@@ -272,6 +272,9 @@ export const createRestateSpikeScenarioService = (
           },
           attempt
         });
+        if (result.status === 'blocked') {
+          throw new Error(`Builder lease blocked: ${result.blockerLeaseId}`);
+        }
 
         return {
           builderAttemptId: result.attempt.id,

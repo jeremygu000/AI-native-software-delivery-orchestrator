@@ -73,12 +73,15 @@ import type {
   FinalizeRunStateInput,
   FinalizeRunStateResult,
   ForgeActivities,
+  BlockedIntegrationContinuationActivities,
   IntegrateAcceptedOutputInput,
   IntegrateAcceptedOutputResult,
   ReevaluateRunInput,
   ReevaluateRunResult,
   ResumeBlockedRepairInput,
-  ResumeBlockedRepairResult
+  ResumeBlockedRepairResult,
+  ResumeBlockedIntegrationInput,
+  ResumeBlockedIntegrationResult
 } from '@ai-native-software-delivery-orchestrator/forge-runtime-contracts';
 import { SandboxedPackageScriptVerifier } from '@ai-native-software-delivery-orchestrator/run-preparation';
 import { agentCommandPolicyFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
@@ -156,7 +159,7 @@ const createVerificationEvidence = (request: {
 }): TaskVerificationEvidence => new TaskVerificationEvidenceFactory().create(request);
 
 export interface ForgeRuntimeComposition {
-  readonly forgeActivities: ForgeActivities;
+  readonly forgeActivities: ForgeActivities & BlockedIntegrationContinuationActivities;
   close(): Promise<void>;
 }
 
@@ -234,10 +237,11 @@ export async function createForgeRuntimeComposition(
       return existing;
     }
     const recovered = await persistence.recoverRun(runId);
-    const initialLeases =
-      recovered?.leases.map(({ lease }) => lease).filter((lease) => lease.state === 'ACTIVE') ?? [];
-    overrides.onWriteGuardHydrated?.(runId, initialLeases);
-    const guard = new InMemoryWriteGuard({ initialLeases });
+    // Released and stale leases do not block acquisition, but their IDs and versions
+    // must survive activity reconstruction so a new lease cannot regress persisted history.
+    const recoveredLeases = recovered?.leases.map(({ lease }) => lease) ?? [];
+    overrides.onWriteGuardHydrated?.(runId, recoveredLeases);
+    const guard = new InMemoryWriteGuard({ initialLeases: recoveredLeases });
     writeGuards.set(runId, guard);
     return guard;
   };
@@ -324,7 +328,18 @@ export async function createForgeRuntimeComposition(
               writeGuard: writeGuardForRunSync(request.runId)
             })
         }),
-      reconciler
+      reconciler,
+      claimStart: async (attempt) => persistence.claimBuilderStart({ runId, attempt }),
+      leaseReleased: async ({ taskId, lease }) => {
+        await progression.advance(runId, {
+          type: 'lease-released',
+          taskId,
+          leaseId: lease.id
+        });
+      },
+      scopeExpanded: async (request) => {
+        await progression.recordRuntimeScopeExpansion(request);
+      }
     });
   const builderExecution = overrides.builderExecution ?? {
     execute: (request: Parameters<ForgeBuilderExecutionService['execute']>[0]) =>
@@ -373,7 +388,12 @@ export async function createForgeRuntimeComposition(
         verificationEvidence: persistence,
         writeGuard: writeGuardForRunSync(runId),
         persistence,
-        feedback: { leaseBlocked: async () => undefined, scopeExpanded: async () => undefined },
+        feedback: {
+          leaseBlocked: async () => undefined,
+          scopeExpanded: async (request) => {
+            await progression.recordRuntimeScopeExpansion(request);
+          }
+        },
         createEvidenceId: randomUUID,
         createVerificationEvidence
       })
@@ -383,13 +403,12 @@ export async function createForgeRuntimeComposition(
       createRepairExecution(request.runId).execute(request)
   };
 
-  const integration =
-    overrides.integration ??
-    new ForgeAcceptedOutputIntegrationService({
-      coordinator: admission,
-      workspaceManager,
-      persistence
-    });
+  const acceptedOutputIntegration = new ForgeAcceptedOutputIntegrationService({
+    coordinator: admission,
+    workspaceManager,
+    persistence
+  });
+  const integration = overrides.integration ?? acceptedOutputIntegration;
 
   const recoverTaskContext = async (runId: string, taskId: string, attemptId?: string) => {
     const binding = await persistence.recoverTaskBinding(runId, taskId);
@@ -449,7 +468,7 @@ export async function createForgeRuntimeComposition(
     }
   };
 
-  const forgeActivities: ForgeActivities = {
+  const forgeActivities: ForgeActivities & BlockedIntegrationContinuationActivities = {
     async reevaluateRun(input: ReevaluateRunInput): Promise<ReevaluateRunResult> {
       const recovered = await persistence.recoverRun(input.runId);
       if (recovered?.run.state === 'CANCEL_REQUESTED') {
@@ -482,22 +501,40 @@ export async function createForgeRuntimeComposition(
       }
       assertBuilderTuple(context.binding, context.attempt);
       await writeGuardForRun(input.runId, true);
-      const claimedAttempt = await persistence.claimBuilderStart({
-        runId: input.runId,
-        attempt: {
-          ...context.attempt,
-          state: 'STARTING',
-          revision: context.attempt.revision + 1,
-          startedAt: new Date()
+      let outcome: Awaited<ReturnType<typeof builderExecution.execute>>;
+      try {
+        outcome = await builderExecution.execute({
+          runId: input.runId,
+          task: context.task,
+          binding: context.binding,
+          attempt: context.attempt,
+          cancellationSignal: currentActivityCancellationSignal()
+        });
+      } catch (error) {
+        const attempt = (await persistence.recoverAttempts(input.runId)).find(
+          (entry) => entry.attempt.id === input.attemptId
+        )?.attempt;
+        if (attempt?.state === 'UNKNOWN') {
+          // Match legacy: unresolved external work retains its task/lease but
+          // closes the run to additional mutation authority.
+          await persistence.updateRunState(input.runId, 'FAILED');
         }
-      });
-      await builderExecution.execute({
-        runId: input.runId,
-        task: context.task,
-        binding: context.binding,
-        attempt: claimedAttempt,
-        cancellationSignal: currentActivityCancellationSignal()
-      });
+        throw error;
+      }
+      if (outcome.status === 'blocked') {
+        await progression.advance(input.runId, {
+          type: 'lease-blocked',
+          taskId: input.taskId,
+          leaseId: outcome.blockerLeaseId
+        });
+        return {
+          status: 'blocked',
+          runId: input.runId,
+          taskId: input.taskId,
+          attemptId: input.attemptId,
+          blockerLeaseId: outcome.blockerLeaseId
+        };
+      }
       await progression.advance(input.runId, {
         type: 'agent-completed',
         taskId: input.taskId,
@@ -515,6 +552,7 @@ export async function createForgeRuntimeComposition(
         throw new Error(`Missing persisted builder outputs: ${input.runId}/${input.taskId}`);
       }
       return {
+        status: 'completed',
         runId: input.runId,
         taskId: input.taskId,
         workspaceId: workspace.id,
@@ -699,7 +737,7 @@ export async function createForgeRuntimeComposition(
         cancellationSignal: currentActivityCancellationSignal()
       });
       if (result.state !== 'completed') {
-        if (result.state !== 'blocked') {
+        if (result.state !== 'blocked' && result.state !== 'unknown') {
           await progression.advance(input.runId, {
             type: 'task-failed',
             taskId: input.taskId,
@@ -784,12 +822,12 @@ export async function createForgeRuntimeComposition(
         task: context.task
       });
       await persistence.releaseIntegrationClaim(integrationClaim);
+      await progression.advance(input.runId, {
+        type: 'verification-completed',
+        taskId: input.taskId,
+        state: 'INTEGRATING'
+      });
       if (result.status === 'integrated') {
-        await progression.advance(input.runId, {
-          type: 'verification-completed',
-          taskId: input.taskId,
-          state: 'INTEGRATING'
-        });
         await progression.advance(input.runId, {
           type: 'workspace-integrated',
           taskId: input.taskId,
@@ -798,6 +836,71 @@ export async function createForgeRuntimeComposition(
       }
       // A blocked integration is recoverable/non-terminal: the workspace stays in
       // INTEGRATION_BLOCKED and the task is not marked FAILED.
+      return { runId: input.runId, taskId: input.taskId, status: result.status };
+    },
+    async resumeBlockedIntegration(
+      input: ResumeBlockedIntegrationInput
+    ): Promise<ResumeBlockedIntegrationResult> {
+      await assertRunAcceptsMutations(input.runId);
+      const context = await recoverTaskContext(input.runId, input.taskId);
+      if (
+        context.task === undefined ||
+        context.workspace === undefined ||
+        context.workspace.id !== input.workspaceId
+      ) {
+        return { runId: input.runId, taskId: input.taskId, status: 'ignored', detail: 'not-found' };
+      }
+      const recoveredReviews = await persistence.recoverReviews(input.runId);
+      const acceptedReview = recoveredReviews.find(
+        (candidate) =>
+          candidate.taskId === input.taskId &&
+          candidate.review.recommendation === 'accept' &&
+          candidate.subject !== undefined &&
+          candidate.subject.builderAttemptId === input.subjectRef.builderAttemptId &&
+          candidate.subject.outputAttemptId === input.subjectRef.outputAttemptId &&
+          candidate.subject.workspaceId === input.subjectRef.workspaceId
+      );
+      if (acceptedReview?.subject === undefined) {
+        return {
+          runId: input.runId,
+          taskId: input.taskId,
+          status: 'ignored',
+          detail: 'admission-invalid'
+        };
+      }
+      const subject = acceptedReview.subject;
+      const integrationClaim = {
+        runId: input.runId,
+        taskId: input.taskId,
+        workspaceId: subject.workspaceId,
+        outputAttemptId: subject.outputAttemptId
+      };
+      if (context.workspace.phase === 'INTEGRATED') {
+        return { runId: input.runId, taskId: input.taskId, status: 'integrated' };
+      }
+      if (context.workspace.phase !== 'INTEGRATION_BLOCKED') {
+        return {
+          runId: input.runId,
+          taskId: input.taskId,
+          status: 'ignored',
+          detail: 'not-blocked'
+        };
+      }
+      await persistence.claimIntegrationStart(integrationClaim);
+      const result = await acceptedOutputIntegration.resume({
+        runId: input.runId,
+        taskId: input.taskId,
+        workspace: context.workspace,
+        subject
+      });
+      await persistence.releaseIntegrationClaim(integrationClaim);
+      if (result.status === 'integrated') {
+        await progression.advance(input.runId, {
+          type: 'workspace-integrated',
+          taskId: input.taskId,
+          state: 'COMPLETED'
+        });
+      }
       return { runId: input.runId, taskId: input.taskId, status: result.status };
     },
     async finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult> {

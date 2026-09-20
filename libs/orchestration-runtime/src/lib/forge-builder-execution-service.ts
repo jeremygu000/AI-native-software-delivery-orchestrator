@@ -20,6 +20,18 @@ type BuilderPersistence = Pick<
   'persistWorkspace' | 'persistLease' | 'persistAttempt' | 'persistImpact'
 >;
 
+type ScopeExpansionFeedback = (request: {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly expandedResources: readonly import('@ai-native-software-delivery-orchestrator/domain').WritableResource[];
+}) => Promise<void>;
+
+type LeaseReleasedFeedback = (request: {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly lease: WriteLease;
+}) => Promise<void>;
+
 export class ForgeBuilderExecutionError extends Error {
   constructor(message: string) {
     super(message);
@@ -28,10 +40,20 @@ export class ForgeBuilderExecutionError extends Error {
 }
 
 export interface ForgeBuilderExecutionResult {
+  readonly status: 'completed';
   readonly workspace: TaskWorkspace;
   readonly attempt: AgentExecutionAttempt;
   readonly impact: TaskImpact;
 }
+
+export interface ForgeBuilderLeaseBlockedResult {
+  readonly status: 'blocked';
+  readonly blockerLeaseId: string;
+}
+
+export type ForgeBuilderExecutionOutcome =
+  | ForgeBuilderExecutionResult
+  | ForgeBuilderLeaseBlockedResult;
 
 /** Executes one authorized builder attempt through its first durable continuation boundary. */
 export class ForgeBuilderExecutionService {
@@ -40,6 +62,11 @@ export class ForgeBuilderExecutionService {
   readonly #writeGuard: WriteGuard;
   readonly #agentRunner: AgentRunner;
   readonly #reconciler: TaskImpactReconciler | undefined;
+  readonly #scopeExpanded: ScopeExpansionFeedback | undefined;
+  readonly #leaseReleased: LeaseReleasedFeedback | undefined;
+  readonly #claimStart:
+    | ((attempt: AgentExecutionAttempt) => Promise<AgentExecutionAttempt>)
+    | undefined;
   readonly #now: () => Date;
 
   constructor(options: {
@@ -48,6 +75,9 @@ export class ForgeBuilderExecutionService {
     readonly writeGuard: WriteGuard;
     readonly agentRunner: AgentRunner;
     readonly reconciler?: TaskImpactReconciler;
+    readonly scopeExpanded?: ScopeExpansionFeedback;
+    readonly leaseReleased?: LeaseReleasedFeedback;
+    readonly claimStart?: (attempt: AgentExecutionAttempt) => Promise<AgentExecutionAttempt>;
     readonly now?: () => Date;
   }) {
     this.#persistence = options.persistence;
@@ -55,6 +85,9 @@ export class ForgeBuilderExecutionService {
     this.#writeGuard = options.writeGuard;
     this.#agentRunner = options.agentRunner;
     this.#reconciler = options.reconciler;
+    this.#scopeExpanded = options.scopeExpanded;
+    this.#leaseReleased = options.leaseReleased;
+    this.#claimStart = options.claimStart;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -64,14 +97,20 @@ export class ForgeBuilderExecutionService {
     readonly binding: RuntimeTaskBinding;
     readonly attempt: AgentExecutionAttempt;
     readonly cancellationSignal?: CancellationSignal;
-  }): Promise<ForgeBuilderExecutionResult> {
+  }): Promise<ForgeBuilderExecutionOutcome> {
     if (request.attempt.state !== 'PREPARING' && request.attempt.state !== 'STARTING') {
-      throw new ForgeBuilderExecutionError('Builder execution requires a PREPARING or STARTING attempt');
+      throw new ForgeBuilderExecutionError(
+        'Builder execution requires a PREPARING or STARTING attempt'
+      );
     }
     const workspace = await this.#workspaceManager.create(request.binding.workspace);
     await this.#persistence.persistWorkspace({ runId: request.runId, workspace });
-    const leases = await this.#acquire(request.runId, request.binding);
-    const starting: AgentExecutionAttempt =
+    const acquisition = await this.#acquire(request.runId, request.binding);
+    if (acquisition.status === 'blocked') {
+      return acquisition;
+    }
+    const leases = acquisition.leases;
+    const startingCandidate: AgentExecutionAttempt =
       request.attempt.state === 'STARTING'
         ? request.attempt
         : {
@@ -80,8 +119,16 @@ export class ForgeBuilderExecutionService {
             revision: request.attempt.revision + 1,
             startedAt: this.#now()
           };
+    let starting = startingCandidate;
     if (request.attempt.state === 'PREPARING') {
-      await this.#persistence.persistAttempt({ runId: request.runId, attempt: starting });
+      if (this.#claimStart === undefined) {
+        await this.#persistence.persistAttempt({
+          runId: request.runId,
+          attempt: startingCandidate
+        });
+      } else {
+        starting = await this.#claimStart(startingCandidate);
+      }
     }
     let running: AgentExecutionAttempt = starting;
     let established = false;
@@ -184,11 +231,27 @@ export class ForgeBuilderExecutionService {
       await this.#release([...leases, ...(result.additionalLeases ?? [])]);
       throw new ForgeBuilderExecutionError('Builder changed a file without an active write lease');
     }
+    if (
+      reconciliation.reconciliation.status === 'runtime-scope-expanded' &&
+      reconciliation.expandedResources !== undefined
+    ) {
+      await this.#scopeExpanded?.({
+        runId: request.runId,
+        taskId: request.task.id,
+        expandedResources: reconciliation.expandedResources
+      });
+    }
     await this.#release([...leases, ...(result.additionalLeases ?? [])]);
-    return { workspace, attempt: completed, impact: effectiveImpact };
+    return { status: 'completed', workspace, attempt: completed, impact: effectiveImpact };
   }
 
-  async #acquire(runId: string, binding: RuntimeTaskBinding): Promise<WriteLease[]> {
+  async #acquire(
+    runId: string,
+    binding: RuntimeTaskBinding
+  ): Promise<
+    | { readonly status: 'granted'; readonly leases: readonly WriteLease[] }
+    | ForgeBuilderLeaseBlockedResult
+  > {
     const leases: WriteLease[] = [];
     for (const resource of canonicalTaskLeaseResources(binding.leasePlan.predictedResources)) {
       const acquired = await this.#writeGuard.acquire({
@@ -200,14 +263,16 @@ export class ForgeBuilderExecutionService {
       });
       if (acquired.status !== 'granted') {
         await this.#release(leases);
-        throw new ForgeBuilderExecutionError(
-          `Builder lease blocked: ${acquired.conflictingLeaseIds[0] ?? 'unknown'}`
-        );
+        const blockerLeaseId = acquired.conflictingLeaseIds[0];
+        if (blockerLeaseId === undefined) {
+          throw new ForgeBuilderExecutionError('Builder lease block is missing an owner');
+        }
+        return { status: 'blocked', blockerLeaseId };
       }
       leases.push(acquired.lease);
       await this.#persistence.persistLease({ runId, lease: acquired.lease });
     }
-    return leases;
+    return { status: 'granted', leases };
   }
 
   async #release(leases: readonly WriteLease[]): Promise<void> {
@@ -225,6 +290,11 @@ export class ForgeBuilderExecutionService {
         throw new ForgeBuilderExecutionError(`Lease release failed: ${activeLease.id}`);
       }
       await this.#persistence.persistLease({ runId: activeLease.runId, lease: released.lease });
+      await this.#leaseReleased?.({
+        runId: activeLease.runId,
+        taskId: activeLease.taskId,
+        lease: released.lease
+      });
     }
   }
 

@@ -95,7 +95,7 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
       leases: [],
       impacts: [],
       transitions: this.dispatches.flatMap((dispatch) => dispatch.reevaluation.transitions),
-      conflicts: []
+      conflicts: this.dispatches.flatMap((dispatch) => dispatch.reevaluation.runtimeConflicts ?? [])
     };
   }
 
@@ -105,7 +105,11 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
 
   async persistDispatch(dispatch: PersistedDispatch): Promise<void> {
     this.dispatches.push(dispatch);
-    this.attempts.push(...dispatch.attempts);
+    for (const record of dispatch.attempts) {
+      if (!this.attempts.some(({ attempt }) => attempt.id === record.attempt.id)) {
+        this.attempts.push(record);
+      }
+    }
   }
 
   async recoverTaskBindings(runId: string) {
@@ -183,6 +187,93 @@ describe('ForgeRunProgressionService', () => {
     expect(persistence.dispatches).toHaveLength(1);
   });
 
+  it('atomically records an expanded running scope for the same decision and replay', async () => {
+    const persistence = new MemoryPersistence();
+    const request = createRun(['task-a', 'task-b']);
+    await persistence.createRun({
+      ...request,
+      tasks: request.tasks.map((task) => ({ ...task, dependencies: [] })),
+      taskBindings: request.taskBindings.map((binding) => ({
+        ...binding,
+        leasePlan: {
+          ...binding.leasePlan,
+          predictedResources:
+            binding.taskId === 'task-b' ? [{ type: 'project' as const, projectId: 'core' }] : []
+        }
+      })),
+      scheduleOptions: { maxConcurrency: 1 }
+    });
+    let counter = 0;
+    const progression = new ForgeRunProgressionService({
+      persistence,
+      createAttemptId: () => `attempt-${++counter}`
+    });
+
+    expect(await progression.advance('run-1', { type: 'run-started' })).toEqual([
+      { taskId: 'task-a', attemptId: 'attempt-1' }
+    ]);
+
+    expect(
+      await progression.recordRuntimeScopeExpansion({
+        runId: 'run-1',
+        taskId: 'task-a',
+        expandedResources: [{ type: 'file', projectId: 'core', fileId: 'expanded.ts' }]
+      })
+    ).toEqual([]);
+
+    const runtimeDispatch = persistence.dispatches.at(-1);
+    expect(runtimeDispatch?.reevaluation).toMatchObject({
+      event: {
+        event: {
+          type: 'runtime-scope-expanded',
+          taskId: 'task-a',
+          conflictId: 'runtime-scope:task-a:task-b'
+        },
+        sequence: 2
+      },
+      runtimeConflicts: [
+        {
+          taskA: 'task-a',
+          taskB: 'task-b',
+          effectiveFromSequence: 2,
+          conflict: {
+            constraints: [{ type: 'runtime-scope-expansion' }]
+          }
+        }
+      ],
+      decision: { decision: {} }
+    });
+    expect((await persistence.recoverRun('run-1'))?.conflicts).toHaveLength(1);
+
+    await progression.advance('run-1', {
+      type: 'agent-completed',
+      taskId: 'task-a',
+      state: 'VERIFYING'
+    });
+    expect(
+      persistence.dispatches.at(-1)?.reevaluation.decision.decision.taskDecisions
+    ).toContainEqual(
+      expect.objectContaining({
+        taskId: 'task-b',
+        action: 'defer',
+        reasons: [
+          expect.objectContaining({
+            type: 'hard-conflict',
+            conflictingTaskIds: ['task-a'],
+            constraintTypes: ['runtime-scope-expansion']
+          })
+        ]
+      })
+    );
+
+    await progression.recordRuntimeScopeExpansion({
+      runId: 'run-1',
+      taskId: 'task-a',
+      expandedResources: [{ type: 'file', projectId: 'core', fileId: 'expanded.ts' }]
+    });
+    expect(persistence.dispatches).toHaveLength(3);
+  });
+
   it('advances a dependent chain from A completion to B authorization', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRun(['task-a', 'task-b']));
@@ -236,6 +327,33 @@ describe('ForgeRunProgressionService', () => {
     const finalized = await progression.finalize('run-1');
     expect(finalized).toBe('completed');
     expect(persistence.runStates.at(-1)).toBe('COMPLETED');
+  });
+
+  it('reuses the original PREPARING attempt when an exact released lease reauthorizes a task', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(createRun(['task-a']));
+    const progression = new ForgeRunProgressionService({
+      persistence,
+      createAttemptId: () => 'unexpected-attempt'
+    });
+
+    const [initial] = await progression.advance('run-1', { type: 'run-started' });
+    expect(initial).toEqual({ taskId: 'task-a', attemptId: 'unexpected-attempt' });
+
+    await progression.advance('run-1', {
+      type: 'lease-blocked',
+      taskId: 'task-a',
+      leaseId: 'lease-owner'
+    });
+    const reauthorized = await progression.advance('run-1', {
+      type: 'lease-released',
+      taskId: 'task-a',
+      leaseId: 'lease-owner'
+    });
+
+    expect(reauthorized).toEqual(initial === undefined ? [] : [initial]);
+    expect(persistence.attempts).toHaveLength(1);
+    expect(await progression.reevaluate('run-1')).toEqual([initial]);
   });
 
   it('finalizes to completed once every task is completed', async () => {

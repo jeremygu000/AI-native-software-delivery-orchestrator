@@ -3,7 +3,6 @@ import {
   agentCommandPolicyFingerprint,
   defaultAgentCommandTrustedPath,
   canonicalTaskLeaseResources,
-  areWritableResourcesConflicting,
   taskDecisionsWithTransitions,
   taskLeasePlanFingerprint,
   taskLeasePlanSchema
@@ -24,6 +23,7 @@ import type {
   TaskImpact,
   TaskImpactReconciler,
   TaskCodeReviewSubject,
+  TaskCodeReviewStore,
   TaskRepairAttemptStore,
   TaskRepairWorkItemStore,
   TaskVerifier,
@@ -36,10 +36,16 @@ import type {
 import { RepairExecutionCoordinator } from './repair-execution-coordinator.js';
 import { TaskRepairCoordinator } from './task-repair-coordinator.js';
 import { TaskOutputAdmissionCoordinator } from './task-output-admission-coordinator.js';
+import { runtimeScopeExpansionConflicts } from './runtime-scope-conflicts.js';
 
 const compareIds = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const sameRuntimeEvidence = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
+
+const isTaskCodeReviewStore = (
+  persistence: OrchestrationPersistence
+): persistence is OrchestrationPersistence & TaskCodeReviewStore =>
+  'recoverReviews' in persistence && typeof persistence.recoverReviews === 'function';
 
 const lifecycleTails = new Map<string, Promise<void>>();
 
@@ -395,12 +401,71 @@ export class OrchestrationRuntime {
       lifecycle: Promise.resolve()
     };
     await this.#recordEvent(state, { type: 'runtime-reconciliation-recovered' });
+    await this.#resumeBlockedIntegrations(state, evidence);
     await this.#enqueueEligibleBlockedRepairs(
       state,
       evidence.leases.map(({ lease }) => lease)
     );
     await this.#drain(state);
     return this.#recoveredState(state.snapshot, request.run.id);
+  }
+
+  async #resumeBlockedIntegrations(state: RuntimeState, evidence: RecoveredRun): Promise<void> {
+    if (this.#outputReview === undefined) {
+      return;
+    }
+    if (!isTaskCodeReviewStore(this.#persistence)) {
+      throw new OrchestrationRuntimeInputError(
+        `Blocked integration recovery requires persisted review evidence: ${state.request.run.id}`
+      );
+    }
+    const reviews = await this.#persistence.recoverReviews(state.request.run.id);
+    for (const task of state.request.tasks) {
+      if (this.#stateFor(state.snapshot, task.id) !== 'INTEGRATING') {
+        continue;
+      }
+      const binding = state.bindings.get(task.id);
+      const workspace = evidence.workspaces.find(
+        (record) => record.workspace.id === binding?.workspace.id
+      )?.workspace;
+      const subject = reviews.find(
+        (record) =>
+          record.taskId === task.id &&
+          record.review.recommendation === 'accept' &&
+          record.subject?.workspaceId === workspace?.id
+      )?.subject;
+      if (
+        binding === undefined ||
+        workspace?.phase !== 'INTEGRATION_BLOCKED' ||
+        subject === undefined
+      ) {
+        continue;
+      }
+      await this.#outputReview.admission.assertBlockedIntegrationContinuationAdmission({
+        runId: state.request.run.id,
+        taskId: task.id,
+        workspace,
+        subject
+      });
+      const integration = await this.#workspaceManager.resumeIntegration(workspace);
+      await this.#persistence.persistIntegration(
+        state.request.run.id,
+        integration.status,
+        integration.status === 'integrated' ? subject.outputAttemptId : undefined
+      );
+      await this.#persistence.persistWorkspace({
+        runId: state.request.run.id,
+        workspace: integration.workspace
+      });
+      if (integration.status === 'integrated') {
+        this.#setState(state, task.id, 'COMPLETED');
+        await this.#recordEvent(state, {
+          type: 'workspace-integrated',
+          taskId: task.id,
+          state: 'COMPLETED'
+        });
+      }
+    }
   }
 
   #bindingsByTask(request: StartRuntimeRunRequest): ReadonlyMap<string, RuntimeTaskBinding> {
@@ -1153,6 +1218,23 @@ export class OrchestrationRuntime {
         if (binding === undefined) {
           throw new OrchestrationRuntimeInputError(`Missing task binding: ${taskDecision.taskId}`);
         }
+        const preparing = state.attemptsByTask.get(taskDecision.taskId);
+        if (preparing?.state === 'PREPARING') {
+          if (
+            preparing.agentId !== binding.agentId ||
+            preparing.workspaceId !== binding.workspace.id ||
+            preparing.leasePlanFingerprint !== taskLeasePlanFingerprint(binding.leasePlan) ||
+            preparing.commandPolicyFingerprint !==
+              agentCommandPolicyFingerprint(binding.commandPolicy) ||
+            preparing.trustedCommandPath !==
+              (binding.trustedCommandPath ?? defaultAgentCommandTrustedPath)
+          ) {
+            throw new OrchestrationRuntimeInputError(
+              `PREPARING builder attempt authority mismatch: ${taskDecision.taskId}`
+            );
+          }
+          return { runId: state.request.run.id, attempt: preparing };
+        }
         const attempt: AgentExecutionAttempt = {
           id: this.#createAttemptId(),
           runId: state.request.run.id,
@@ -1487,66 +1569,12 @@ export class OrchestrationRuntime {
     taskId: string,
     expandedResources: readonly WritableResource[]
   ): readonly import('@ai-native-software-delivery-orchestrator/domain').HardTaskConflict[] {
-    const conflicts: import('@ai-native-software-delivery-orchestrator/domain').HardTaskConflict[] =
-      [];
-    for (const otherTaskId of [...state.tasksById.keys()]
-      .filter((id) => id !== taskId)
-      .toSorted(compareIds)) {
-      const otherResources = state.bindings.get(otherTaskId)?.leasePlan.predictedResources;
-      if (otherResources === undefined) {
-        continue;
-      }
-      const conflictingResources = expandedResources.filter((resource) =>
-        otherResources.some((otherResource) =>
-          areWritableResourcesConflicting(resource, otherResource)
-        )
-      );
-      if (conflictingResources.length === 0) {
-        continue;
-      }
-      const resourceIds = conflictingResources
-        .map((resource) =>
-          resource.type === 'shared-resource'
-            ? resource.resourceId
-            : resource.type === 'project'
-              ? resource.projectId
-              : resource.fileId
-        )
-        .toSorted(compareIds);
-      if (
-        state.hardConflicts.some(
-          (conflict) =>
-            conflict.taskA === (taskId < otherTaskId ? taskId : otherTaskId) &&
-            conflict.taskB === (taskId < otherTaskId ? otherTaskId : taskId) &&
-            conflict.constraints.some((constraint) => constraint.type === 'runtime-scope-expansion')
-        )
-      ) {
-        continue;
-      }
-      conflicts.push({
-        taskA: taskId < otherTaskId ? taskId : otherTaskId,
-        taskB: taskId < otherTaskId ? otherTaskId : taskId,
-        score: 100,
-        severity: 'hard',
-        reasons: [
-          {
-            type: 'same-file',
-            score: 100,
-            detail: 'Observed runtime scope conflicts with another task lease-plan resource.',
-            resourceIds
-          }
-        ],
-        constraints: [
-          {
-            type: 'runtime-scope-expansion',
-            detail: 'Observed runtime scope expansion must be reconciled before future dispatch.',
-            resourceIds
-          }
-        ],
-        recommendedAction: 'serialize'
-      });
-    }
-    return conflicts;
+    return runtimeScopeExpansionConflicts({
+      taskId,
+      expandedResources,
+      bindings: [...state.bindings.values()],
+      existingHardConflicts: state.hardConflicts
+    });
   }
 
   async #withLifecycle<T>(state: RuntimeState, operation: () => Promise<T>): Promise<T> {

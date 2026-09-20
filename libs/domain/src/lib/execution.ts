@@ -37,6 +37,10 @@ const taskEventSchema = z.object({ taskId: taskIdSchema });
 export const schedulerEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('run-started') }),
   z.object({ type: z.literal('runtime-reconciliation-recovered') }),
+  taskEventSchema.extend({
+    type: z.literal('runtime-scope-expanded'),
+    conflictId: taskIdSchema
+  }),
   taskEventSchema.extend({ type: z.literal('agent-completed'), state: z.literal('VERIFYING') }),
   taskEventSchema.extend({ type: z.literal('task-completed'), state: z.literal('COMPLETED') }),
   taskEventSchema.extend({ type: z.literal('task-failed'), state: z.literal('FAILED') }),
@@ -242,7 +246,11 @@ export interface AgentRunRequest {
 /** Minimal abort boundary so domain contracts do not depend on DOM globals. */
 export interface CancellationSignal {
   readonly aborted: boolean;
-  addEventListener(type: 'abort', listener: () => void, options?: { readonly once?: boolean }): void;
+  addEventListener(
+    type: 'abort',
+    listener: () => void,
+    options?: { readonly once?: boolean }
+  ): void;
   removeEventListener(type: 'abort', listener: () => void): void;
 }
 

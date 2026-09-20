@@ -59,13 +59,23 @@ export const ExecuteBuilderInputSchema = z.object({
 });
 export type ExecuteBuilderInput = z.infer<typeof ExecuteBuilderInputSchema>;
 
-export const ExecuteBuilderResultSchema = z.object({
-  runId: RunIdSchema,
-  taskId: z.string().min(1),
-  workspaceId: z.string().min(1),
-  attemptId: z.string().min(1),
-  impactId: z.string().min(1)
-});
+export const ExecuteBuilderResultSchema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('completed'),
+    runId: RunIdSchema,
+    taskId: z.string().min(1),
+    workspaceId: z.string().min(1),
+    attemptId: z.string().min(1),
+    impactId: z.string().min(1)
+  }),
+  z.object({
+    status: z.literal('blocked'),
+    runId: RunIdSchema,
+    taskId: z.string().min(1),
+    attemptId: z.string().min(1),
+    blockerLeaseId: z.string().min(1)
+  })
+]);
 export type ExecuteBuilderResult = z.infer<typeof ExecuteBuilderResultSchema>;
 
 // ─── Scenario A: SubjectRef ───────────────────────────────────────────────────
@@ -158,6 +168,31 @@ export const IntegrateAcceptedOutputResultSchema = z.object({
   status: z.enum(['integrated', 'blocked'])
 });
 export type IntegrateAcceptedOutputResult = z.infer<typeof IntegrateAcceptedOutputResultSchema>;
+
+// ─── Blocked integration continuation ───────────────────────────────────────
+
+export const ResumeBlockedIntegrationInputSchema = z.object({
+  runId: RunIdSchema,
+  taskId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  subjectRef: SubjectRefSchema
+});
+export type ResumeBlockedIntegrationInput = z.infer<typeof ResumeBlockedIntegrationInputSchema>;
+
+export const ResumeBlockedIntegrationResultSchema = z.object({
+  runId: RunIdSchema,
+  taskId: z.string().min(1),
+  status: z.enum(['integrated', 'blocked', 'ignored']),
+  detail: z.string().optional()
+});
+export type ResumeBlockedIntegrationResult = z.infer<typeof ResumeBlockedIntegrationResultSchema>;
+
+export const IntegrationWakeSignalSchema = z.object({
+  taskId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  subjectRef: SubjectRefSchema
+});
+export type IntegrationWakeSignal = z.infer<typeof IntegrationWakeSignalSchema>;
 
 // ─── Scenario A: finalizeRunState ─────────────────────────────────────────────
 

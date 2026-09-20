@@ -1413,6 +1413,20 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     persistence.close();
   });
 
+  it('updates the run-level integration summary for sequential task integrations', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    await persistence.createRun(createRunRequest());
+
+    await persistence.persistIntegration('run-1', 'integrated', 'attempt-A');
+    await persistence.persistIntegration('run-1', 'integrated', 'attempt-B');
+
+    await expect(persistence.recoverIntegration('run-1')).resolves.toEqual({
+      status: 'integrated',
+      outputAttemptId: 'attempt-B'
+    });
+    persistence.close();
+  });
+
   it('rejects workspace revision regression and conflicting same-revision evidence', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     const newest = {

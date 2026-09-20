@@ -1,4 +1,5 @@
 import type {
+  HardTaskConflict,
   OrchestrationPersistence,
   PersistedAgentExecutionAttempt,
   PersistedDispatch,
@@ -15,12 +16,15 @@ import type {
   TaskCodeReviewSubject,
   TaskState
 } from '@ai-native-software-delivery-orchestrator/domain';
+import type { WritableResource } from '@ai-native-software-delivery-orchestrator/domain';
 import {
   agentCommandPolicyFingerprint,
   defaultAgentCommandTrustedPath,
   taskLeasePlanFingerprint
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
+
+import { runtimeScopeExpansionConflicts } from './runtime-scope-conflicts.js';
 
 export type ForgeRunProgressionPersistence = OrchestrationPersistence & TaskCodeReviewStore;
 
@@ -166,6 +170,47 @@ export class ForgeRunProgressionService {
    * observe the same durable authorizations.
    */
   async advance(runId: string, event: SchedulerEvent): Promise<readonly ForgeRunAuthorization[]> {
+    return this.#advance(runId, event, []);
+  }
+
+  /**
+   * Records observed write-scope expansion in the same durable scheduler decision that
+   * first applies it. This makes the conflict immediately authoritative and replay-safe.
+   */
+  async recordRuntimeScopeExpansion(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly expandedResources: readonly WritableResource[];
+  }): Promise<readonly ForgeRunAuthorization[]> {
+    const recovered = await this.#requireRun(request.runId);
+    const runtimeConflicts = runtimeScopeExpansionConflicts({
+      taskId: request.taskId,
+      expandedResources: request.expandedResources,
+      bindings: recovered.taskBindings,
+      existingHardConflicts: this.#hardConflicts(recovered)
+    });
+    if (runtimeConflicts.length === 0) {
+      return [];
+    }
+    const conflictId = runtimeConflicts
+      .map((conflict) => `${conflict.taskA}:${conflict.taskB}`)
+      .join(',');
+    return this.#advance(
+      request.runId,
+      {
+        type: 'runtime-scope-expanded',
+        taskId: request.taskId,
+        conflictId: `runtime-scope:${conflictId}`
+      },
+      runtimeConflicts
+    );
+  }
+
+  async #advance(
+    runId: string,
+    event: SchedulerEvent,
+    runtimeConflicts: readonly HardTaskConflict[]
+  ): Promise<readonly ForgeRunAuthorization[]> {
     const recovered = await this.#requireRun(runId);
 
     const existing = await this.#findExistingDispatch(recovered, event);
@@ -182,7 +227,7 @@ export class ForgeRunProgressionService {
       event,
       inputSnapshot,
       recovered.tasks,
-      this.#hardConflicts(recovered),
+      [...this.#hardConflicts(recovered), ...runtimeConflicts],
       this.#riskConflicts(recovered),
       recovered.scheduleOptions
     );
@@ -212,7 +257,18 @@ export class ForgeRunProgressionService {
         sequence,
         inputSnapshot,
         decision
-      }
+      },
+      ...(runtimeConflicts.length === 0
+        ? {}
+        : {
+            runtimeConflicts: runtimeConflicts.map((conflict) => ({
+              runId,
+              taskA: conflict.taskA,
+              taskB: conflict.taskB,
+              conflict,
+              effectiveFromSequence: sequence
+            }))
+          })
     };
     const attempts = decision.taskDecisions
       .filter((taskDecision) => taskDecision.action === 'start')
@@ -224,6 +280,33 @@ export class ForgeRunProgressionService {
           throw new ForgeRunProgressionError(
             `Missing task binding for authorized task: ${runId}/${taskDecision.taskId}`
           );
+        }
+        const preparingAttempts = recovered.attempts
+          .map((entry) => entry.attempt)
+          .filter(
+            (attempt) => attempt.taskId === taskDecision.taskId && attempt.state === 'PREPARING'
+          );
+        if (preparingAttempts.length > 1) {
+          throw new ForgeRunProgressionError(
+            `Multiple PREPARING builder attempts for authorized task: ${runId}/${taskDecision.taskId}`
+          );
+        }
+        const existingAttempt = preparingAttempts[0];
+        if (existingAttempt !== undefined) {
+          if (
+            existingAttempt.agentId !== binding.agentId ||
+            existingAttempt.workspaceId !== binding.workspace.id ||
+            existingAttempt.leasePlanFingerprint !== taskLeasePlanFingerprint(binding.leasePlan) ||
+            existingAttempt.commandPolicyFingerprint !==
+              agentCommandPolicyFingerprint(binding.commandPolicy) ||
+            existingAttempt.trustedCommandPath !==
+              (binding.trustedCommandPath ?? defaultAgentCommandTrustedPath)
+          ) {
+            throw new ForgeRunProgressionError(
+              `PREPARING builder attempt authority mismatch: ${runId}/${taskDecision.taskId}`
+            );
+          }
+          return { runId, attempt: existingAttempt } satisfies PersistedAgentExecutionAttempt;
         }
         return {
           runId,

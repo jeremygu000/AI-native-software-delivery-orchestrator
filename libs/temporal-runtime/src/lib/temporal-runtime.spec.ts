@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import {
   forgeRunWorkflow,
   ForgeRunInputSchema,
+  integrationWakeSignal,
+  type BlockedIntegrationContinuationActivities,
   type ForgeActivities,
   type ReevaluateRunInput,
   ReevaluateRunResultSchema,
@@ -98,7 +100,10 @@ describe('temporal-runtime Scenario A workflow', () => {
       await reevaluationStarted.promise;
       await handle.cancel();
 
-      await expect(handle.result()).resolves.toEqual({ runId: 'run-cancelled', status: 'cancelled' });
+      await expect(handle.result()).resolves.toEqual({
+        runId: 'run-cancelled',
+        status: 'cancelled'
+      });
       expect(calls).toEqual(['reevaluateRun', 'finalizeRunCancellation']);
     } finally {
       worker.shutdown();
@@ -167,7 +172,10 @@ describe('temporal-runtime Scenario A workflow', () => {
       await pendingFinalizerCalled.promise;
       await environment.sleep(5_000);
 
-      await expect(handle.result()).resolves.toEqual({ runId: 'run-cancelled', status: 'cancelled' });
+      await expect(handle.result()).resolves.toEqual({
+        runId: 'run-cancelled',
+        status: 'cancelled'
+      });
       expect(calls).toEqual(['finalizeRunCancellation', 'finalizeRunCancellation']);
     } finally {
       worker.shutdown();
@@ -258,6 +266,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       async executeBuilder(input: ExecuteBuilderInput) {
         calls.push(`executeBuilder:${input.taskId}`);
         return ExecuteBuilderResultSchema.parse({
+          status: 'completed',
           runId: input.runId,
           taskId: input.taskId,
           workspaceId: 'workspace-1',
@@ -338,6 +347,230 @@ describe('temporal-runtime Scenario A workflow', () => {
     }
   });
 
+  it('starts an independent authorized builder wave before either builder completes', async () => {
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const calls: string[] = [];
+    const bothBuildersStarted = createDeferred();
+    const releaseBuilders = createDeferred();
+    let builderStarts = 0;
+
+    const activities: ForgeActivities = {
+      async reevaluateRun(input: ReevaluateRunInput) {
+        calls.push('reevaluateRun');
+        return ReevaluateRunResultSchema.parse({
+          runId: input.runId,
+          authorizedTasks:
+            calls.filter((call) => call === 'reevaluateRun').length === 1
+              ? [
+                  { taskId: 'task-a', attemptId: 'attempt-a' },
+                  { taskId: 'task-b', attemptId: 'attempt-b' }
+                ]
+              : []
+        });
+      },
+      async executeBuilder(input: ExecuteBuilderInput) {
+        calls.push(`executeBuilder:${input.taskId}`);
+        builderStarts += 1;
+        if (builderStarts === 2) {
+          bothBuildersStarted.resolve();
+        }
+        await releaseBuilders.promise;
+        return ExecuteBuilderResultSchema.parse({
+          status: 'completed',
+          runId: input.runId,
+          taskId: input.taskId,
+          workspaceId: `workspace-${input.taskId}`,
+          attemptId: input.attemptId,
+          impactId: `impact-${input.taskId}`
+        });
+      },
+      async evaluateBuilderOutput(input: EvaluateBuilderOutputInput) {
+        calls.push(`evaluateBuilderOutput:${input.taskId}`);
+        return EvaluateBuilderOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          recommendation: 'accept',
+          verificationId: `verification-${input.taskId}`,
+          subjectRef: {
+            builderAttemptId: input.builderAttemptId,
+            outputAttemptId: `output-${input.taskId}`,
+            workspaceId: input.workspaceId
+          },
+          reviewId: `review-${input.taskId}`
+        });
+      },
+      async admitRepair() {
+        throw new Error('admitRepair should not be called');
+      },
+      async executeRepair() {
+        throw new Error('executeRepair should not be called');
+      },
+      async integrateAcceptedOutput(input: IntegrateAcceptedOutputInput) {
+        calls.push(`integrateAcceptedOutput:${input.taskId}`);
+        return IntegrateAcceptedOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          status: 'integrated'
+        });
+      },
+      async finalizeRunState(input: FinalizeRunStateInput) {
+        calls.push('finalizeRunState');
+        return FinalizeRunStateResultSchema.parse({ runId: input.runId, status: 'completed' });
+      }
+    };
+
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-runtime-test-concurrent-builder-wave',
+      workflowsPath: WORKFLOWS_PATH,
+      activities
+    });
+    const runId = `run-concurrent-${Date.now()}`;
+    const client = new Client({ connection: environment.client.connection });
+    const workerPromise = worker.run();
+    try {
+      const handle = await client.workflow.start(forgeRunWorkflow, {
+        taskQueue: 'temporal-runtime-test-concurrent-builder-wave',
+        args: [{ runId }],
+        workflowId: `workflow-${runId}`
+      });
+
+      await bothBuildersStarted.promise;
+      expect(calls).toEqual([
+        'reevaluateRun',
+        expect.stringMatching(/^executeBuilder:task-[ab]$/),
+        expect.stringMatching(/^executeBuilder:task-[ab]$/)
+      ]);
+      expect(new Set(calls.slice(1))).toEqual(
+        new Set(['executeBuilder:task-a', 'executeBuilder:task-b'])
+      );
+
+      releaseBuilders.resolve();
+      await expect(handle.result()).resolves.toEqual({ runId, status: 'completed' });
+      expect(calls.filter((call) => call.startsWith('evaluateBuilderOutput:'))).toHaveLength(2);
+      expect(calls.filter((call) => call.startsWith('integrateAcceptedOutput:'))).toHaveLength(2);
+      expect(calls).toContain('finalizeRunState');
+    } finally {
+      worker.shutdown();
+      await workerPromise;
+      await environment.teardown();
+    }
+  });
+
+  it('retries a blocked builder authorization only after reevaluation returns the same attempt', async () => {
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const calls: string[] = [];
+    const builderInputs: ExecuteBuilderInput[] = [];
+    let builderAttempts = 0;
+    let reevaluationCount = 0;
+
+    const activities: ForgeActivities = {
+      async reevaluateRun(input: ReevaluateRunInput) {
+        reevaluationCount += 1;
+        calls.push(`reevaluateRun:${reevaluationCount}`);
+        return ReevaluateRunResultSchema.parse({
+          runId: input.runId,
+          authorizedTasks:
+            reevaluationCount <= 2 ? [{ taskId: 'task-blocked', attemptId: 'attempt-blocked' }] : []
+        });
+      },
+      async executeBuilder(input: ExecuteBuilderInput) {
+        builderInputs.push(input);
+        builderAttempts += 1;
+        calls.push(`executeBuilder:${builderAttempts}`);
+        if (builderAttempts === 1) {
+          return ExecuteBuilderResultSchema.parse({
+            status: 'blocked',
+            runId: input.runId,
+            taskId: input.taskId,
+            attemptId: input.attemptId,
+            blockerLeaseId: 'lease-blocked'
+          });
+        }
+        return ExecuteBuilderResultSchema.parse({
+          status: 'completed',
+          runId: input.runId,
+          taskId: input.taskId,
+          workspaceId: 'workspace-blocked',
+          attemptId: input.attemptId,
+          impactId: 'impact-blocked'
+        });
+      },
+      async evaluateBuilderOutput(input: EvaluateBuilderOutputInput) {
+        calls.push('evaluateBuilderOutput');
+        return EvaluateBuilderOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          recommendation: 'accept',
+          verificationId: 'verification-blocked',
+          subjectRef: {
+            builderAttemptId: input.builderAttemptId,
+            outputAttemptId: 'output-blocked',
+            workspaceId: input.workspaceId
+          },
+          reviewId: 'review-blocked'
+        });
+      },
+      async admitRepair() {
+        calls.push('admitRepair');
+        throw new Error('admitRepair should not be called');
+      },
+      async executeRepair() {
+        throw new Error('executeRepair should not be called');
+      },
+      async integrateAcceptedOutput(input: IntegrateAcceptedOutputInput) {
+        calls.push('integrateAcceptedOutput');
+        return IntegrateAcceptedOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          status: 'integrated'
+        });
+      },
+      async finalizeRunState(input: FinalizeRunStateInput) {
+        calls.push('finalizeRunState');
+        return FinalizeRunStateResultSchema.parse({ runId: input.runId, status: 'completed' });
+      }
+    };
+
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-runtime-test-blocked-builder',
+      workflowsPath: WORKFLOWS_PATH,
+      activities
+    });
+    const runId = `run-blocked-builder-${Date.now()}`;
+    const client = new Client({ connection: environment.client.connection });
+    const workerPromise = worker.run();
+    try {
+      const handle = await client.workflow.start(forgeRunWorkflow, {
+        taskQueue: 'temporal-runtime-test-blocked-builder',
+        args: [{ runId }],
+        workflowId: `workflow-${runId}`
+      });
+
+      await expect(handle.result()).resolves.toEqual({ runId, status: 'completed' });
+      expect(calls).toEqual([
+        'reevaluateRun:1',
+        'executeBuilder:1',
+        'reevaluateRun:2',
+        'executeBuilder:2',
+        'reevaluateRun:3',
+        'evaluateBuilderOutput',
+        'integrateAcceptedOutput',
+        'reevaluateRun:4',
+        'finalizeRunState'
+      ]);
+      expect(builderInputs).toEqual([
+        { runId, taskId: 'task-blocked', attemptId: 'attempt-blocked' },
+        { runId, taskId: 'task-blocked', attemptId: 'attempt-blocked' }
+      ]);
+    } finally {
+      worker.shutdown();
+      await workerPromise;
+      await environment.teardown();
+    }
+  });
+
   it('repairs and integrates repaired output when the evaluation requests repair', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     const calls: string[] = [];
@@ -353,6 +586,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       async executeBuilder(input: ExecuteBuilderInput) {
         calls.push(`executeBuilder:${input.taskId}`);
         return ExecuteBuilderResultSchema.parse({
+          status: 'completed',
           runId: input.runId,
           taskId: input.taskId,
           workspaceId: 'workspace-2',
@@ -470,6 +704,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       async executeBuilder(input: ExecuteBuilderInput) {
         calls.push(`executeBuilder:${input.taskId}`);
         return ExecuteBuilderResultSchema.parse({
+          status: 'completed',
           runId: input.runId,
           taskId: input.taskId,
           workspaceId: 'workspace-5',
@@ -660,6 +895,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       async executeBuilder(input: ExecuteBuilderInput) {
         calls.push(`executeBuilder:${input.taskId}`);
         return ExecuteBuilderResultSchema.parse({
+          status: 'completed',
           runId: input.runId,
           taskId: input.taskId,
           workspaceId: 'workspace-blocked',
@@ -784,6 +1020,117 @@ describe('temporal-runtime Scenario A workflow', () => {
     }
   });
 
+  it('waits for an exact integration wake and resumes the blocked accepted output', async () => {
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const calls: string[] = [];
+    const activities: ForgeActivities & BlockedIntegrationContinuationActivities = {
+      async reevaluateRun(input) {
+        calls.push('reevaluateRun');
+        return ReevaluateRunResultSchema.parse({
+          runId: input.runId,
+          authorizedTasks:
+            calls.filter((call) => call === 'reevaluateRun').length === 1
+              ? [{ taskId: 'task-integration', attemptId: 'attempt-integration' }]
+              : []
+        });
+      },
+      async executeBuilder(input) {
+        calls.push(`executeBuilder:${input.taskId}`);
+        return ExecuteBuilderResultSchema.parse({
+          status: 'completed',
+          runId: input.runId,
+          taskId: input.taskId,
+          workspaceId: 'workspace-integration',
+          attemptId: input.attemptId,
+          impactId: 'impact-integration'
+        });
+      },
+      async evaluateBuilderOutput(input) {
+        calls.push(`evaluateBuilderOutput:${input.taskId}`);
+        return EvaluateBuilderOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          recommendation: 'accept',
+          verificationId: 'verification-integration',
+          subjectRef: {
+            builderAttemptId: input.builderAttemptId,
+            outputAttemptId: input.builderAttemptId,
+            workspaceId: input.workspaceId
+          },
+          reviewId: 'review-integration'
+        });
+      },
+      async admitRepair() {
+        throw new Error('admitRepair should not be called');
+      },
+      async executeRepair() {
+        throw new Error('executeRepair should not be called');
+      },
+      async integrateAcceptedOutput(input) {
+        calls.push(`integrateAcceptedOutput:${input.taskId}`);
+        return IntegrateAcceptedOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          status: 'blocked'
+        });
+      },
+      async resumeBlockedIntegration(input) {
+        calls.push(`resumeBlockedIntegration:${input.taskId}:${input.workspaceId}`);
+        return { runId: input.runId, taskId: input.taskId, status: 'integrated' as const };
+      },
+      async finalizeRunState(input) {
+        calls.push('finalizeRunState');
+        return FinalizeRunStateResultSchema.parse({ runId: input.runId, status: 'completed' });
+      },
+      async resumeBlockedRepair() {
+        throw new Error('resumeBlockedRepair should not be called');
+      }
+    };
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-runtime-test-blocked-integration',
+      workflowsPath: WORKFLOWS_PATH,
+      activities
+    });
+    const runId = `run-integration-${Date.now()}`;
+    const client = new Client({ connection: environment.client.connection });
+    const workerPromise = worker.run();
+    try {
+      const handle = await client.workflow.start(forgeRunWorkflow, {
+        taskQueue: 'temporal-runtime-test-blocked-integration',
+        args: [{ runId }],
+        workflowId: `workflow-${runId}`
+      });
+      await environment.sleep(200);
+      expect(calls).toContain('integrateAcceptedOutput:task-integration');
+      expect(calls).not.toContain('finalizeRunState');
+      await handle.signal(integrationWakeSignal, {
+        taskId: 'task-integration',
+        workspaceId: 'workspace-integration',
+        subjectRef: {
+          builderAttemptId: 'attempt-integration',
+          outputAttemptId: 'attempt-integration',
+          workspaceId: 'workspace-integration'
+        }
+      });
+      await expect(handle.result()).resolves.toEqual({ runId, status: 'completed' });
+      expect(calls).toEqual([
+        'reevaluateRun',
+        'executeBuilder:task-integration',
+        'reevaluateRun',
+        'evaluateBuilderOutput:task-integration',
+        'integrateAcceptedOutput:task-integration',
+        'resumeBlockedIntegration:task-integration:workspace-integration',
+        'reevaluateRun',
+        'finalizeRunState'
+      ]);
+    } finally {
+      worker.shutdown();
+      await workerPromise;
+      await environment.teardown();
+    }
+  });
+
   it('reevaluates after builder execution and discovers dependent tasks', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     const calls: string[] = [];
@@ -807,6 +1154,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       async executeBuilder(input: ExecuteBuilderInput) {
         calls.push(`executeBuilder:${input.taskId}`);
         return ExecuteBuilderResultSchema.parse({
+          status: 'completed',
           runId: input.runId,
           taskId: input.taskId,
           workspaceId: `workspace-${input.taskId}`,

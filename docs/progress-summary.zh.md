@@ -2416,3 +2416,76 @@ M3.8 新增了一个隔离的 Restate runtime adapter，它消费 M3.7 的 provi
 - `RestateTestEnvironment` 会打包 Restate server 与 service endpoint。成功的 wait/wake test 不是独立替换 executor 后仍能恢复 pending workflow 的证据；
 - 后续 production parity stage 必须使用 shared composition、隔离的 authority store、归一化 durable outcome，以及 split server/service-process restart fixture，之后才可作出更强的结论；
 - M3.3 至 M3.7 仍然冻结。M3.8 是 additive，不改变既有 Forge authority semantics。
+
+## 阶段 M3.9：完整 Stage 22/22R authority differential parity
+
+M3.9 完成面向生产的 legacy 与 Temporal V2 authority 对比。测试让真实 legacy
+`OrchestrationRuntime` 与真实 Temporal workflow 加 production Forge composition 分别使用隔离的
+SQLite database、run ID、workspace 和 repository target。Git、agent、review-model、verifier、snapshot
+与 reconciliation effect 使用确定性 adapter seam；它们不会替换 production builder、evaluation、repair、
+integration、progression 或 persistence service。
+
+本阶段完成：
+
+- runtime scope expansion 现为 provider-neutral conflict calculation。builder 或 repair 发现超出预测
+  lease scope 的写入时，会在激活它的同一个 durable scheduler reevaluation 中持久化 hard conflict；该
+  conflict 会影响 replay 和之后的所有 scheduling；
+- 两任务 scope 场景证明 project-level predicted lease 与观察到的 `core:expanded.ts` 写入冲突。任务 B
+  只能在任务 A durable completed 后获得 authorization；
+- 套件通过不可变的 review recommendation `repair`、`repair`、`accept` 证明两次 repair，并验证最终
+  evidence、accepted review 与 integration identity 都绑定 repair two；
+- repair-budget exhaustion 保留两次 completed repair 和第三次 review/evidence、拒绝继续 admission 且
+  不 integration。Temporal 将其视为 durable validation decision 而非 transient work，因此不可重试；
+- post-session builder 和 repair failure 会持久化带 session evidence 的 `UNKNOWN` 并 fail closed。
+  Temporal 对这些 agent activity 最多执行一次，保留未决 authority，并与 legacy run-state boundary 一致，
+  而不重试不安全且 state-invalid 的 activity；
+- blocked accepted-output integration 现在是 additive provider-neutral continuation。其精确身份为 run、
+  task、workspace 和 accepted output subject。continuation 会重新验证 reviewed workspace content，通过
+  已有 integration claim fence Git work，只调用 `resumeIntegration`，绝不重跑 builder、repair、
+  verification、review 或 commit；
+- Temporal 具有独立的精确 integration wake signal。wake 只是 hint：错误或过期 target 会被忽略，重复
+  block 会继续等待；新的 worker 可在同一个 authority database 上恢复现有 workflow。Legacy 只在显式
+  `recoverAndResumeRun` recovery 中进行等价 retry；
+- dependency progression 通过 canonical scheduler start authority 比较：任务 B 只会在任务 A 已于 input
+  snapshot 中 durable integrated completed 后被授权；
+- 一个 scheduler authorization snapshot 现在会以稳定顺序并发启动独立 builder。同一 run 的普通 lease
+  contention 保留原 builder attempt 的 `PREPARING` 状态、回滚 partial lease、持久化 `lease-blocked`，且
+  不启动 agent。精确 lease release 会重新授权同一个 attempt ID，使其随后完成；
+- compact builder result 现为 completed-or-blocked union。blocked builder 不会进入 evaluation、repair 或
+  integration。scheduler dispatch 在 unblock 后会复用匹配的 `PREPARING` attempt，而非创建重复 attempt；
+- write-guard hydration 现在保留 released lease history 以及 active lease。released lease 不会阻塞工作，
+  但其 ID 与 version 会阻止重建 activity 复用旧 lease ID 并触发 SQLite version check failure；
+- run-level integration summary 现更新 latest status。逐任务 authority 仍由 integration claim、workspace
+  record、accepted review subject、attempt、lease 和 scheduler history 保存。
+
+已验证：
+
+- 真实 legacy 与 Temporal 差分场景覆盖 normal repair/integration、blocked repair restart 与 exact lease
+  resume、runtime scope expansion、repeated repair、budget exhaustion、builder/repair `UNKNOWN`、blocked
+  integration（包括错误 wake、repeat block 和 worker restart）、dependency progression 以及同一 run 的
+  concurrent competing builder；
+- scope conflict 在两侧具有相同 durable task-pair、constraint、resource、severity、effective sequence 与
+  replay behavior。比较特意忽略 framework-specific event 名称；
+- concurrent builder wave 会在任一 builder complete 前启动 durable authorization snapshot 中全部任务。
+  lease-blocked builder 没有 STARTING lifecycle claim 或 agent session、会跳过所有 downstream work，并在
+  exact blocker release 后以原 attempt identity 运行；
+- blocked integration restart 证明 worker A 在 worker B 使用同一 SQLite database 与 task queue 重建
+  composition 之前已经到达 `STOPPED`。匹配的 legacy 场景也会在 recovery 前重建 runtime 与 persistence；
+- `pnpm lint`、`pnpm typecheck`、`pnpm test` 与 `pnpm build` 都通过。全量 suite 报告 71 个 test file、
+  701 个 passing test 和 1 个 skipped test。预期的 Temporal test-server warning 与 intentional
+  failure-path activity log 不代表测试失败。
+
+范围与剩余工作：
+
+- M3.9 已关闭所验证的 isolated、same-run Forge authority 场景的 Stage 22/22R parity：runtime conflict、
+  multi-task dependency progression、repeated repair 与 budget、fail-closed UNKNOWN、blocked integration
+  recovery，以及 concurrent competing lease behavior；
+- same-run 是明确边界。当前 SQLite-backed write guard 从单个 run 的 lease 重建，并没有 repository-wide
+  active-lease recovery query。因此本阶段不声称 cross-run competing-lease 或 horizontally distributed
+  SQLite-worker parity；
+- 本阶段不使用真实 Git/model-provider side effect，不改变 ADR-028 的 Temporal selection，也不修改已冻结的
+  M3.3 至 M3.8 authority semantics。cross-run locking 或 distributed-worker support 需要后续设计
+  provider-neutral global lease authority，不能通过 workflow shortcut 实现；
+- M3.9 对已验证的 same-run Stage 22/22R boundary 已关闭并冻结。后续工作可进入选定 Temporal 的
+  production cutover、observability/read model、production end-to-end hardening、API/UI、advisory memory，
+  并仅在 scaling 需要时引入 PostgreSQL。

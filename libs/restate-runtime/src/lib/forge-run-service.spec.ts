@@ -35,7 +35,14 @@ describe('Restate Forge run service', () => {
     },
     executeBuilder: async ({ runId, taskId, attemptId }) => {
       calls.push('builder');
-      return { runId, taskId, workspaceId: 'workspace-1', attemptId, impactId: 'impact-1' };
+      return {
+        status: 'completed',
+        runId,
+        taskId,
+        workspaceId: 'workspace-1',
+        attemptId,
+        impactId: 'impact-1'
+      };
     },
     evaluateBuilderOutput: async ({ runId, taskId, workspaceId, builderAttemptId }) => {
       calls.push('evaluate');
