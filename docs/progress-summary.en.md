@@ -2876,3 +2876,6 @@ Scope and remaining work:
   repair, or integration authority semantics;
 - this test environment proves the launch/worker authority boundary, not a separately deployed
   worker process, real external provider effects, or operational production readiness.
+
+M3.10 is **PASS / CLOSED / FROZEN** following independent review. Changes to this launch authority
+boundary now require a demonstrated contract regression or a new, separately designed stage.

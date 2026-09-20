@@ -2547,3 +2547,6 @@ authority store。
   authority semantics；
 - 此测试环境证明 launch/worker authority boundary，但不证明独立部署的 worker process、真实 external provider
   effects 或 operational production readiness。
+
+独立 review 后，M3.10 已 **PASS / CLOSED / FROZEN**。除非证明存在 contract regression，或另行设计新的阶段，
+不得修改这个 launch authority boundary。
