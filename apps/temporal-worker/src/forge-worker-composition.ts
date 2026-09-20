@@ -51,6 +51,8 @@ import type {
   ExecuteRepairResult,
   EvaluateBuilderOutputInput,
   EvaluateBuilderOutputResult,
+  FinalizeRunCancellationInput,
+  FinalizeRunCancellationResult,
   FinalizeRunStateInput,
   FinalizeRunStateResult,
   ForgeActivities,
@@ -382,6 +384,10 @@ export async function createForgeWorkerComposition(
 
   const forgeActivities: ForgeActivities = {
     async reevaluateRun(input: ReevaluateRunInput): Promise<ReevaluateRunResult> {
+      const recovered = await persistence.recoverRun(input.runId);
+      if (recovered?.run.state === 'CANCEL_REQUESTED') {
+        return { runId: input.runId, authorizedTasks: [] };
+      }
       const authorizations: readonly { taskId: string; attemptId: string }[] =
         await reevaluation.recoverAuthorizations(input.runId);
       return {
@@ -697,6 +703,27 @@ export async function createForgeWorkerComposition(
     async finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult> {
       const status = await finalization.finalize(input.runId);
       return { runId: input.runId, status };
+    },
+    async finalizeRunCancellation(
+      input: FinalizeRunCancellationInput
+    ): Promise<FinalizeRunCancellationResult> {
+      const recovered = await persistence.recoverRun(input.runId);
+      if (recovered === undefined) {
+        throw new Error(`Run not found: ${input.runId}`);
+      }
+      if (recovered.run.state !== 'CANCEL_REQUESTED') {
+        throw new Error(
+          `Cancellation was not requested for run: ${input.runId} (${recovered.run.state})`
+        );
+      }
+      if (recovered.leases.some(({ lease }) => lease.state === 'ACTIVE')) {
+        throw new Error(`Cancellation still has active leases: ${input.runId}`);
+      }
+      if (recovered.attempts.some(({ attempt }) => attempt.state === 'UNKNOWN')) {
+        throw new Error(`Cancellation still has unknown attempts: ${input.runId}`);
+      }
+      await persistence.updateRunState(input.runId, 'CANCELLED');
+      return { runId: input.runId, status: 'cancelled' };
     },
     async resumeBlockedRepair(input: ResumeBlockedRepairInput): Promise<ResumeBlockedRepairResult> {
       const repairAttempts = await persistence.recoverRepairAttempts(input.runId);

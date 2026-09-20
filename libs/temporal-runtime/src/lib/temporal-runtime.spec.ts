@@ -1,4 +1,5 @@
 import { Client } from '@temporalio/client';
+import { Context } from '@temporalio/activity';
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { Worker } from '@temporalio/worker';
 import { describe, expect, it } from 'vitest';
@@ -35,6 +36,138 @@ const WORKFLOWS_PATH = resolve(
 );
 
 describe('temporal-runtime Scenario A workflow', () => {
+  it('reconciles external cancellation through the non-cancellable finalizer', async () => {
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const calls: string[] = [];
+    let markReevaluationStarted = () => {};
+    const reevaluationStarted = new Promise<void>((resolve) => {
+      markReevaluationStarted = resolve;
+    });
+
+    const activities: ForgeActivities = {
+      async reevaluateRun(_input: ReevaluateRunInput) {
+        calls.push('reevaluateRun');
+        markReevaluationStarted();
+        Context.current().heartbeat();
+        await Context.current().cancelled;
+        throw new Error('activity cancellation should interrupt the workflow');
+      },
+      async executeBuilder(_input: ExecuteBuilderInput) {
+        throw new Error('executeBuilder should not be called');
+      },
+      async evaluateBuilderOutput(_input: EvaluateBuilderOutputInput) {
+        throw new Error('evaluateBuilderOutput should not be called');
+      },
+      async admitRepair(_input: AdmitRepairInput) {
+        throw new Error('admitRepair should not be called');
+      },
+      async executeRepair(_input: ExecuteRepairInput) {
+        throw new Error('executeRepair should not be called');
+      },
+      async integrateAcceptedOutput(_input: IntegrateAcceptedOutputInput) {
+        throw new Error('integrateAcceptedOutput should not be called');
+      },
+      async finalizeRunState(_input: FinalizeRunStateInput) {
+        calls.push('finalizeRunState');
+        throw new Error('finalizeRunState should not be called');
+      },
+      async finalizeRunCancellation() {
+        calls.push('finalizeRunCancellation');
+        return { runId: 'run-cancelled', status: 'cancelled' };
+      }
+    };
+
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-runtime-test-cancellation',
+      workflowsPath: WORKFLOWS_PATH,
+      activities
+    });
+    const client = new Client({ connection: environment.client.connection });
+    const workerPromise = worker.run();
+    try {
+      const handle = await client.workflow.start(forgeRunWorkflow, {
+        taskQueue: 'temporal-runtime-test-cancellation',
+        args: [{ runId: 'run-cancelled' }],
+        workflowId: 'forge-run:run-cancelled'
+      });
+      await reevaluationStarted;
+      await handle.cancel();
+
+      await expect(handle.result()).resolves.toEqual({ runId: 'run-cancelled', status: 'cancelled' });
+      expect(calls).toEqual(['reevaluateRun', 'finalizeRunCancellation']);
+    } finally {
+      worker.shutdown();
+      await workerPromise;
+      await environment.teardown();
+    }
+  });
+
+  it('does not report cancelled when cancellation reconciliation rejects', async () => {
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const calls: string[] = [];
+    let markReevaluationStarted = () => {};
+    const reevaluationStarted = new Promise<void>((resolve) => {
+      markReevaluationStarted = resolve;
+    });
+
+    const activities: ForgeActivities = {
+      async reevaluateRun(_input: ReevaluateRunInput) {
+        markReevaluationStarted();
+        Context.current().heartbeat();
+        await Context.current().cancelled;
+        throw new Error('activity cancellation should interrupt the workflow');
+      },
+      async executeBuilder(_input: ExecuteBuilderInput) {
+        throw new Error('executeBuilder should not be called');
+      },
+      async evaluateBuilderOutput(_input: EvaluateBuilderOutputInput) {
+        throw new Error('evaluateBuilderOutput should not be called');
+      },
+      async admitRepair(_input: AdmitRepairInput) {
+        throw new Error('admitRepair should not be called');
+      },
+      async executeRepair(_input: ExecuteRepairInput) {
+        throw new Error('executeRepair should not be called');
+      },
+      async integrateAcceptedOutput(_input: IntegrateAcceptedOutputInput) {
+        throw new Error('integrateAcceptedOutput should not be called');
+      },
+      async finalizeRunState(_input: FinalizeRunStateInput) {
+        throw new Error('finalizeRunState should not be called');
+      },
+      async finalizeRunCancellation() {
+        calls.push('finalizeRunCancellation');
+        throw new Error('Cancellation still has unknown attempts: run-cancelled');
+      }
+    };
+
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-runtime-test-cancellation-rejected',
+      workflowsPath: WORKFLOWS_PATH,
+      activities
+    });
+    const client = new Client({ connection: environment.client.connection });
+    const workerPromise = worker.run();
+    try {
+      const handle = await client.workflow.start(forgeRunWorkflow, {
+        taskQueue: 'temporal-runtime-test-cancellation-rejected',
+        args: [{ runId: 'run-cancelled' }],
+        workflowId: 'forge-run:run-cancellation-rejected'
+      });
+      await reevaluationStarted;
+      await handle.cancel();
+
+      await expect(handle.result()).rejects.toThrow('Workflow execution failed');
+      expect(calls).toEqual(['finalizeRunCancellation']);
+    } finally {
+      worker.shutdown();
+      await workerPromise;
+      await environment.teardown();
+    }
+  });
+
   it('returns completed when no tasks are ready', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     const calls: string[] = [];

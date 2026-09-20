@@ -37,6 +37,9 @@
       "path": "../../libs/task-impact/tsconfig.lib.json"
     },
     {
+      "path": "../../libs/temporal-runtime/tsconfig.lib.json"
+    },
+    {
       "path": "../../libs/workspace-git/tsconfig.lib.json"
     }
   ]

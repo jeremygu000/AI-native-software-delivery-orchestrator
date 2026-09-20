@@ -1,4 +1,11 @@
-import { condition, defineSignal, proxyActivities, setHandler } from '@temporalio/workflow';
+import {
+  CancellationScope,
+  condition,
+  defineSignal,
+  isCancellation,
+  proxyActivities,
+  setHandler
+} from '@temporalio/workflow';
 import type { ForgeActivities } from '../activities/forge-activities.js';
 import {
   ForgeRunInputSchema,
@@ -20,6 +27,13 @@ const {
   resumeBlockedRepair
 } = proxyActivities<ForgeActivities>({
   startToCloseTimeout: '5 minutes'
+});
+
+const { finalizeRunCancellation } = proxyActivities<
+  Required<Pick<ForgeActivities, 'finalizeRunCancellation'>>
+>({
+  startToCloseTimeout: '5 minutes',
+  retry: { maximumAttempts: 1 }
 });
 
 export const repairWakeSignal = defineSignal<[RepairWakeSignal]>('repairWake');
@@ -52,6 +66,23 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
     pendingWakeRepairIds.add(parsed.repairAttemptId);
   });
 
+  try {
+    return await executeForgeRun(runId, pendingWakeRepairIds);
+  } catch (error) {
+    if (!isCancellation(error)) {
+      throw error;
+    }
+    return new CancellationScope({ cancellable: false }).run(async () => {
+      const result = await finalizeRunCancellation({ runId });
+      return ForgeRunResultSchema.parse(result);
+    });
+  }
+}
+
+async function executeForgeRun(
+  runId: string,
+  pendingWakeRepairIds: Set<string>
+): Promise<ForgeRunResult> {
   // Step 1: ask the scheduler which tasks are authorized to start
   const initialReevaluation = await reevaluateRun({ runId });
   const authorizedTasks = [...initialReevaluation.authorizedTasks];

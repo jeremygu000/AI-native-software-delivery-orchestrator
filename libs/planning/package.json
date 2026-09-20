@@ -18,7 +18,7 @@
     "@ai-native-software-delivery-orchestrator/dag": "workspace:*",
     "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
     "@ai-native-software-delivery-orchestrator/task-impact": "workspace:*",
-    "zod": "4.4.3"
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@ai-native-software-delivery-orchestrator/conflict-engine": "workspace:*",

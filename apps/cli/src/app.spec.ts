@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -14,6 +14,8 @@ import {
   analyzeRepository,
   ProjectGraphError
 } from '@ai-native-software-delivery-orchestrator/repository-analysis';
+import type { CreatePersistedRunRequest } from '@ai-native-software-delivery-orchestrator/domain';
+import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 
 import { createForgeProgram, loadSharedResourceRegistry } from './app.js';
 
@@ -22,6 +24,68 @@ const sharedResourceFixturePath = resolve(
   import.meta.dirname,
   '../../../fixtures/shared-resources.json'
 );
+
+const cancellationRun = (id: string): CreatePersistedRunRequest => ({
+  run: {
+    id,
+    repositoryId: 'repository-cancel',
+    state: 'ACTIVE',
+    createdAt: '2026-09-20T00:00:00.000Z',
+    authority: {
+      artifactId: 'plan-cancel',
+      artifactRevision: 1,
+      approvalId: 'approval-cancel',
+      planFingerprint: `sha256:${'1'.repeat(64)}`,
+      approvalFingerprint: `sha256:${'2'.repeat(64)}`,
+      claimFingerprint: `sha256:${'3'.repeat(64)}`,
+      executionFingerprint: `sha256:${'4'.repeat(64)}`,
+      repositoryRoot: '/repository',
+      baseCommit: '4'.repeat(40),
+      workingTreeFingerprint: `sha256:${'5'.repeat(64)}`,
+      repositoryFactsFingerprint: `sha256:${'6'.repeat(64)}`,
+      sharedResourcePolicyFingerprint: `sha256:${'7'.repeat(64)}`,
+      verificationPolicyFingerprint: `sha256:${'8'.repeat(64)}`,
+      codeReviewPolicyFingerprint: `sha256:${'9'.repeat(64)}`
+    }
+  },
+  tasks: [
+    {
+      id: 'task-cancel',
+      title: 'task-cancel',
+      goal: 'Cancel this task',
+      dependencies: [],
+      expectedReads: [],
+      expectedWrites: [],
+      sharedResources: [],
+      verification: []
+    }
+  ],
+  taskBindings: [
+    {
+      runId: id,
+      taskId: 'task-cancel',
+      agentId: 'agent-cancel',
+      leasePlan: {
+        taskId: 'task-cancel',
+        predictedResources: [{ type: 'project', projectId: 'project-cancel' }],
+        source: 'manual'
+      },
+      workspace: {
+        id: 'workspace-cancel',
+        runId: id,
+        taskId: 'task-cancel',
+        integrationRepositoryPath: '/integration',
+        workspacePath: '/workspace-cancel',
+        branchName: `orchestrator/${id}/task-cancel`,
+        baseRef: 'main',
+        integrationRef: 'main'
+      }
+    }
+  ],
+  hardConflicts: [],
+  riskConflicts: [],
+  scheduleOptions: { maxConcurrency: 1 }
+});
 
 describe('forge analyze', () => {
   it('analyzes a real pnpm workspace and prints a stable project graph', async () => {
@@ -846,10 +910,49 @@ describe('forge status', () => {
 });
 
 describe('forge cancel', () => {
-  it('cancels an active run and returns CANCELLED state', async () => {
+  it('persists CANCEL_REQUESTED before requesting Temporal cancellation', async () => {
+    const runDirectory = await mkdtemp(join(tmpdir(), 'forge-cli-cancel-'));
+    const runId = 'run-cancel';
+    const runPath = join(runDirectory, runId);
+    await mkdir(runPath);
+    const persistence = new DrizzleSqliteOrchestrationPersistence(join(runPath, 'run.sqlite'));
+    await persistence.createRun(cancellationRun(runId));
+    let requestedRunId: string | undefined;
     let output = '';
     const program = createForgeProgram({
-      cancelRun: async () => ({ runId: 'run-1', state: 'CANCELLED' }),
+      requestWorkflowCancellation: async (requested) => {
+        requestedRunId = requested;
+        expect((await persistence.recoverRun(runId))?.run.state).toBe('CANCEL_REQUESTED');
+      },
+      writeOutput: (value) => {
+        output += value;
+      }
+    });
+
+    try {
+      await program.parseAsync([
+        'node',
+        'forge',
+        'cancel',
+        '--run-id',
+        runId,
+        '--run-directory',
+        runDirectory
+      ]);
+
+      expect(requestedRunId).toBe(runId);
+      expect(JSON.parse(output)).toEqual({ runId, state: 'CANCEL_REQUESTED' });
+      expect((await persistence.recoverRun(runId))?.run.state).toBe('CANCEL_REQUESTED');
+    } finally {
+      await persistence.close();
+      await rm(runDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('requests cancellation and returns CANCEL_REQUESTED state', async () => {
+    let output = '';
+    const program = createForgeProgram({
+      cancelRun: async () => ({ runId: 'run-1', state: 'CANCEL_REQUESTED' }),
       writeOutput: (value) => {
         output += value;
       }
@@ -858,7 +961,7 @@ describe('forge cancel', () => {
     await program.parseAsync(['node', 'forge', 'cancel', '--run-id', 'run-1']);
 
     const result: unknown = JSON.parse(output);
-    expect(result).toEqual({ runId: 'run-1', state: 'CANCELLED' });
+    expect(result).toEqual({ runId: 'run-1', state: 'CANCEL_REQUESTED' });
   });
 
   it('accepts custom run-directory', async () => {
@@ -866,7 +969,7 @@ describe('forge cancel', () => {
     const program = createForgeProgram({
       cancelRun: async (request) => {
         capturedRequest = request;
-        return { runId: request.runId, state: 'CANCELLED' };
+        return { runId: request.runId, state: 'CANCEL_REQUESTED' };
       },
       writeOutput: () => {}
     });

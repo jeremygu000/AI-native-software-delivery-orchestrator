@@ -52,6 +52,10 @@ import {
   GitIntegrationCheckoutProvisioner,
   GitRepositorySnapshotProvider
 } from '@ai-native-software-delivery-orchestrator/workspace-git';
+import {
+  requestForgeRunCancellation,
+  resolveTemporalConfig
+} from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 import { Command } from 'commander';
 
 export interface ForgeProgramDependencies {
@@ -107,6 +111,7 @@ export interface ForgeProgramDependencies {
     readonly runId: string;
     readonly runDirectory: string;
   }) => Promise<{ readonly runId: string; readonly state: string }>;
+  readonly requestWorkflowCancellation?: (runId: string) => Promise<void>;
   readonly writeOutput?: (output: string) => void;
 }
 
@@ -290,25 +295,31 @@ export interface RunStatusResult {
   }[];
 }
 
-const cancelRun = async (request: {
-  readonly runId: string;
-  readonly runDirectory: string;
-}): Promise<{ readonly runId: string; readonly state: string }> => {
-  const databasePath = join(request.runDirectory, request.runId, 'run.sqlite');
-  const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
-  const recovered = await persistence.recoverRun(request.runId);
-  if (recovered === undefined) {
-    throw new Error(`Run not found: ${request.runId}`);
-  }
-  if (recovered.run.state === 'CANCELLED') {
-    throw new Error(`Run ${request.runId} is already cancelled`);
-  }
-  if (recovered.run.state === 'COMPLETED' || recovered.run.state === 'FAILED') {
-    throw new Error(`Cannot cancel run ${request.runId} in state ${recovered.run.state}`);
-  }
-  await persistence.updateRunState(request.runId, 'CANCELLED');
-  return { runId: request.runId, state: 'CANCELLED' };
-};
+const cancelRun =
+  (requestWorkflowCancellation: (runId: string) => Promise<void>) =>
+  async (request: {
+    readonly runId: string;
+    readonly runDirectory: string;
+  }): Promise<{ readonly runId: string; readonly state: string }> => {
+    const databasePath = join(request.runDirectory, request.runId, 'run.sqlite');
+    const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    const recovered = await persistence.recoverRun(request.runId);
+    if (recovered === undefined) {
+      throw new Error(`Run not found: ${request.runId}`);
+    }
+    if (recovered.run.state === 'CANCEL_REQUESTED') {
+      throw new Error(`Cancellation is already requested for run ${request.runId}`);
+    }
+    if (recovered.run.state === 'CANCELLED') {
+      throw new Error(`Run ${request.runId} is already cancelled`);
+    }
+    if (recovered.run.state === 'COMPLETED' || recovered.run.state === 'FAILED') {
+      throw new Error(`Cannot cancel run ${request.runId} in state ${recovered.run.state}`);
+    }
+    await persistence.updateRunState(request.runId, 'CANCEL_REQUESTED');
+    await requestWorkflowCancellation(request.runId);
+    return { runId: request.runId, state: 'CANCEL_REQUESTED' };
+  };
 
 const statusRun = async (request: {
   readonly runId: string;
@@ -559,7 +570,17 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
   const bindPlan = dependencies.bindPlan ?? bindRepositoryPlan;
   const runPlan = dependencies.runPlan ?? runRepositoryPlan;
   const statusRunFn = dependencies.statusRun ?? statusRun;
-  const cancelRunFn = dependencies.cancelRun ?? cancelRun;
+  const requestWorkflowCancellation =
+    dependencies.requestWorkflowCancellation ??
+    ((runId: string) =>
+      requestForgeRunCancellation(
+        resolveTemporalConfig({
+          serverUrl: process.env.TEMPORAL_SERVER_URL,
+          namespace: process.env.TEMPORAL_NAMESPACE
+        }),
+        runId
+      ));
+  const cancelRunFn = dependencies.cancelRun ?? cancelRun(requestWorkflowCancellation);
   const writeOutput =
     dependencies.writeOutput ?? ((output: string) => process.stdout.write(output));
 
@@ -836,7 +857,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
 
   program
     .command('cancel')
-    .description('Cancel an active run, marking it as CANCELLED')
+    .description('Request cancellation of an active run')
     .requiredOption('--run-id <id>', 'run identity to cancel')
     .option(
       '--run-directory <path>',

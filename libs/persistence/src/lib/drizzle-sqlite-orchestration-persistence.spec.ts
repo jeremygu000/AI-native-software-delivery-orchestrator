@@ -354,6 +354,16 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     persistence.close();
   });
 
+  it('recovers a durable cancellation request', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    await persistence.createRun(createRunRequestWithBindings());
+    await persistence.updateRunState('run-1', 'CANCEL_REQUESTED');
+
+    await expect(persistence.recoverRun('run-1')).resolves.toMatchObject({
+      run: { state: 'CANCEL_REQUESTED' }
+    });
+  });
+
   it('persists task code review evidence idempotently by task iteration', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     const review = {

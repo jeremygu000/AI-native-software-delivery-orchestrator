@@ -1,5 +1,13 @@
-export { createTemporalClient } from './lib/client.js';
-export type { TemporalClientHandle } from './lib/client.js';
+export {
+  createTemporalClient,
+  forgeRunWorkflowId,
+  requestForgeRunCancellation
+} from './lib/client.js';
+export type {
+  TemporalCancellationClientFactory,
+  TemporalCancellationClientHandle,
+  TemporalClientHandle
+} from './lib/client.js';
 export { TemporalConfigSchema, resolveTemporalConfig } from './lib/config.js';
 export type { TemporalConfig } from './lib/config.js';
 export { createTemporalWorker, getWorkflowsPath } from './lib/worker-factory.js';
@@ -26,6 +34,8 @@ export {
   IntegrateAcceptedOutputResultSchema,
   FinalizeRunStateInputSchema,
   FinalizeRunStateResultSchema,
+  FinalizeRunCancellationInputSchema,
+  FinalizeRunCancellationResultSchema,
   ResumeBlockedRepairInputSchema,
   ResumeBlockedRepairResultSchema,
   RepairWakeSignalSchema
@@ -52,6 +62,8 @@ export type {
   IntegrateAcceptedOutputResult,
   FinalizeRunStateInput,
   FinalizeRunStateResult,
+  FinalizeRunCancellationInput,
+  FinalizeRunCancellationResult,
   ResumeBlockedRepairInput,
   ResumeBlockedRepairResult,
   RepairWakeSignal

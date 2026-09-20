@@ -16,10 +16,10 @@
   },
   "dependencies": {
     "@ai-native-software-delivery-orchestrator/orchestration-runtime": "workspace:*",
-    "@restatedev/restate-sdk": "^1.17.0",
-    "@restatedev/restate-sdk-clients": "^1.17.0"
+    "@restatedev/restate-sdk": "^1.17.1",
+    "@restatedev/restate-sdk-clients": "^1.17.1"
   },
   "devDependencies": {
-    "@restatedev/restate-sdk-testcontainers": "^1.16.9"
+    "@restatedev/restate-sdk-testcontainers": "^1.17.1"
   }
 }

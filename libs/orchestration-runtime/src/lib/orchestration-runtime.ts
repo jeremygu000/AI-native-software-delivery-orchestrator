@@ -1001,7 +1001,10 @@ export class OrchestrationRuntime {
         leases: [],
         verificationPolicyFingerprint: workItem.verificationPolicyFingerprint,
         repository: this.#outputReview!.repository,
-        reviewIteration: workItem.reviewIteration,
+        // The executor persists at request.reviewIteration + 1. Its input
+        // must therefore be the parent review iteration, while the work item
+        // stores the fresh review iteration expected after execution.
+        reviewIteration: repair.parentReviewIteration,
         feedback: {
           leaseBlocked: async () => {
             const current = (await this.#recoverRepairAttempts(state.request.run.id)).find(
@@ -1033,6 +1036,8 @@ export class OrchestrationRuntime {
         binding,
         workspace,
         builderAttempt,
+        // The work item records the fresh review iteration emitted by the
+        // repair execution; that persisted review is the next parent authority.
         workItem.reviewIteration,
         result.review,
         result.reviewSubject

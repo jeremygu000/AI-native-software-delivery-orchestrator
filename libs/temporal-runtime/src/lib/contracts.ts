@@ -27,7 +27,7 @@ export type ForgeRunInput = z.infer<typeof ForgeRunInputSchema>;
 
 export const ForgeRunResultSchema = z.object({
   runId: RunIdSchema,
-  status: z.enum(['completed', 'failed'])
+  status: z.enum(['completed', 'failed', 'cancelled'])
 });
 export type ForgeRunResult = z.infer<typeof ForgeRunResultSchema>;
 
@@ -171,6 +171,21 @@ export const FinalizeRunStateResultSchema = z.object({
   status: z.enum(['completed', 'failed'])
 });
 export type FinalizeRunStateResult = z.infer<typeof FinalizeRunStateResultSchema>;
+
+// ─── Operational control: cancellation reconciliation ───────────────────────
+
+export const FinalizeRunCancellationInputSchema = z.object({
+  runId: RunIdSchema
+});
+export type FinalizeRunCancellationInput = z.infer<typeof FinalizeRunCancellationInputSchema>;
+
+export const FinalizeRunCancellationResultSchema = z.object({
+  runId: RunIdSchema,
+  status: z.literal('cancelled')
+});
+export type FinalizeRunCancellationResult = z.infer<
+  typeof FinalizeRunCancellationResultSchema
+>;
 
 // ─── Scenario B: BLOCKED repair wake / resume ─────────────────────────────────
 

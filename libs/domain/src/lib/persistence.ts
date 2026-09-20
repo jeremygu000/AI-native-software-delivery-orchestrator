@@ -27,7 +27,12 @@ import { agentCommandPolicySchema } from './command-policy.js';
 import { taskImpactSchema } from './conflict.js';
 import { taskLeasePlanSchema, type TaskLeasePlan } from './write-lease.js';
 
-export type OrchestrationRunState = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+export type OrchestrationRunState =
+  | 'ACTIVE'
+  | 'CANCEL_REQUESTED'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED';
 
 const digestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const recordIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);

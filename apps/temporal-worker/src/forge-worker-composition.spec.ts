@@ -117,7 +117,14 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
   async recoverConflicts(): Promise<readonly PersistedTaskConflict[]> {
     return [];
   }
-  async persistLease(): Promise<void> {}
+  async persistLease(record: PersistedWriteLease): Promise<void> {
+    const index = this.leases.findIndex((entry) => entry.lease.id === record.lease.id);
+    if (index >= 0) {
+      this.leases[index] = record;
+      return;
+    }
+    this.leases.push(record);
+  }
 
   async persistWorkspace(record: PersistedTaskWorkspace): Promise<void> {
     const index = this.workspaces.findIndex((entry) => entry.workspace.id === record.workspace.id);
@@ -157,7 +164,7 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
       decisions: this.reevaluations.map(({ decision }) => decision),
       impacts: this.impacts,
       conflicts: [],
-      leases: [],
+      leases: this.leases.filter((lease) => lease.runId === runId),
       workspaces: this.workspaces,
       attempts: this.attempts
     };
@@ -365,6 +372,139 @@ afterEach(() => {
 });
 
 describe('temporal worker production vertical slice', () => {
+  it('does not issue new authorizations after cancellation is requested', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(createRunRequest(['task-a']));
+    await persistence.updateRunState('run-1', 'CANCEL_REQUESTED');
+
+    const composition = await createForgeWorkerComposition({
+      persistence: persistence as never,
+      builderExecution: { execute: async () => undefined } as never,
+      evaluation: { evaluate: async () => undefined } as never,
+      integration: { integrate: async () => undefined } as never,
+      repairExecution: { execute: async () => undefined } as never,
+      repositoryGraph: emptyRepositoryGraph
+    });
+
+    await expect(composition.forgeActivities.reevaluateRun({ runId: 'run-1' })).resolves.toEqual({
+      runId: 'run-1',
+      authorizedTasks: []
+    });
+
+    await composition.close();
+  });
+
+  it('finalizes a durable cancellation request only through the cancellation activity', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(createRunRequest(['task-a']));
+    await persistence.updateRunState('run-1', 'CANCEL_REQUESTED');
+
+    const composition = await createForgeWorkerComposition({
+      persistence: persistence as never,
+      builderExecution: { execute: async () => undefined } as never,
+      evaluation: {
+        evaluate: async () => {
+          throw new Error('not used');
+        }
+      } as never,
+      integration: {
+        integrate: async () => {
+          throw new Error('not used');
+        }
+      } as never,
+      repairExecution: {
+        execute: async () => {
+          throw new Error('not used');
+        }
+      } as never,
+      repositoryGraph: emptyRepositoryGraph
+    });
+
+    await expect(
+      composition.forgeActivities.finalizeRunCancellation?.({ runId: 'run-1' })
+    ).resolves.toEqual({ runId: 'run-1', status: 'cancelled' });
+    expect(persistence.state).toBe('CANCELLED');
+
+    await composition.close();
+  });
+
+  it('keeps a cancellation request pending until unknown attempts are reconciled', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(createRunRequest(['task-a']));
+    await persistence.updateRunState('run-1', 'CANCEL_REQUESTED');
+    await persistence.persistAttempt({
+      runId: 'run-1',
+      attempt: {
+        id: 'unknown-builder-attempt',
+        runId: 'run-1',
+        taskId: 'task-a',
+        agentId: 'agent-1',
+        workspaceId: 'workspace-task-a',
+        leasePlanFingerprint: taskLeasePlanFingerprint({
+          taskId: 'task-a',
+          source: 'manual',
+          predictedResources: []
+        }),
+        state: 'UNKNOWN',
+        revision: 1,
+        failure: { type: 'unknown-outcome', detail: 'activity cancellation raced with execution' }
+      }
+    });
+
+    const composition = await createForgeWorkerComposition({
+      persistence: persistence as never,
+      builderExecution: { execute: async () => undefined } as never,
+      evaluation: { evaluate: async () => undefined } as never,
+      integration: { integrate: async () => undefined } as never,
+      repairExecution: { execute: async () => undefined } as never,
+      repositoryGraph: emptyRepositoryGraph
+    });
+
+    await expect(
+      composition.forgeActivities.finalizeRunCancellation?.({ runId: 'run-1' })
+    ).rejects.toThrow('Cancellation still has unknown attempts: run-1');
+    expect(persistence.state).toBe('CANCEL_REQUESTED');
+
+    await composition.close();
+  });
+
+  it('keeps a cancellation request pending until active leases are released', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(createRunRequest(['task-a']));
+    await persistence.updateRunState('run-1', 'CANCEL_REQUESTED');
+    await persistence.persistLease({
+      runId: 'run-1',
+      lease: {
+        id: 'active-cancellation-lease',
+        runId: 'run-1',
+        agentId: 'agent-1',
+        taskId: 'task-a',
+        resource: { type: 'project', projectId: 'project-a' },
+        mode: 'exclusive',
+        version: 1,
+        state: 'ACTIVE',
+        acquiredAt: new Date('2026-09-20T00:00:00.000Z'),
+        lastHeartbeatAt: new Date('2026-09-20T00:00:00.000Z')
+      }
+    });
+
+    const composition = await createForgeWorkerComposition({
+      persistence: persistence as never,
+      builderExecution: { execute: async () => undefined } as never,
+      evaluation: { evaluate: async () => undefined } as never,
+      integration: { integrate: async () => undefined } as never,
+      repairExecution: { execute: async () => undefined } as never,
+      repositoryGraph: emptyRepositoryGraph
+    });
+
+    await expect(
+      composition.forgeActivities.finalizeRunCancellation?.({ runId: 'run-1' })
+    ).rejects.toThrow('Cancellation still has active leases: run-1');
+    expect(persistence.state).toBe('CANCEL_REQUESTED');
+
+    await composition.close();
+  });
+
   it('resumes a blocked repair through exact blocker validation and reuses the same repairAttemptId', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRunRequest(['task-a']));

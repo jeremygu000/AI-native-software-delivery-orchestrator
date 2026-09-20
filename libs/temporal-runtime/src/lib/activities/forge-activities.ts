@@ -13,6 +13,8 @@ import type {
   IntegrateAcceptedOutputResult,
   FinalizeRunStateInput,
   FinalizeRunStateResult,
+  FinalizeRunCancellationInput,
+  FinalizeRunCancellationResult,
   ResumeBlockedRepairInput,
   ResumeBlockedRepairResult
 } from '../contracts.js';
@@ -37,5 +39,8 @@ export type ForgeActivities = {
     input: IntegrateAcceptedOutputInput
   ): Promise<IntegrateAcceptedOutputResult>;
   finalizeRunState(input: FinalizeRunStateInput): Promise<FinalizeRunStateResult>;
+  finalizeRunCancellation?(
+    input: FinalizeRunCancellationInput
+  ): Promise<FinalizeRunCancellationResult>;
   resumeBlockedRepair(input: ResumeBlockedRepairInput): Promise<ResumeBlockedRepairResult>;
 };

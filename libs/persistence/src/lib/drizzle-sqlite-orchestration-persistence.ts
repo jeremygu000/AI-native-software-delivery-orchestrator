@@ -224,7 +224,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isRunState = (value: unknown): value is OrchestrationRunState =>
-  value === 'ACTIVE' || value === 'COMPLETED' || value === 'FAILED' || value === 'CANCELLED';
+  value === 'ACTIVE' ||
+  value === 'CANCEL_REQUESTED' ||
+  value === 'COMPLETED' ||
+  value === 'FAILED' ||
+  value === 'CANCELLED';
 
 const isTaskContracts = (value: unknown): value is RecoveredRun['tasks'] =>
   Array.isArray(value) && value.every((task) => taskContractSchema.safeParse(task).success);

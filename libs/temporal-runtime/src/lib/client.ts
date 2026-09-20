@@ -7,6 +7,34 @@ export interface TemporalClientHandle {
   close(): Promise<void>;
 }
 
+export const forgeRunWorkflowId = (runId: string): string => `forge-run:${runId}`;
+
+export interface TemporalCancellationClientHandle {
+  readonly client: {
+    readonly workflow: {
+      getHandle(workflowId: string): { cancel(): Promise<unknown> };
+    };
+  };
+  close(): Promise<void>;
+}
+
+export type TemporalCancellationClientFactory = (
+  config: TemporalConfig
+) => Promise<TemporalCancellationClientHandle>;
+
+export async function requestForgeRunCancellation(
+  config: TemporalConfig,
+  runId: string,
+  createClient: TemporalCancellationClientFactory = createTemporalClient
+): Promise<void> {
+  const handle = await createClient(config);
+  try {
+    await handle.client.workflow.getHandle(forgeRunWorkflowId(runId)).cancel();
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function createTemporalClient(config: TemporalConfig): Promise<TemporalClientHandle> {
   const connection = await Connection.connect({
     address: new URL(config.serverUrl).host,
