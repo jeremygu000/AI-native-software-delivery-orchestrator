@@ -2509,25 +2509,28 @@ integration、progression 或 persistence service。
 M3.10 开始已选定 Temporal 的 production cutover，但不把 Forge authority 移入 Temporal。CLI 仍会准备并
 验证已批准的 run，但不再构造 `LocalRuntimeStarter` 在进程内执行。`TemporalRunLauncher` 会先在已配置的
 SQLite store 中持久化 run、binding、conflict、schedule 和初始 `run-started` authority decision，然后才请求
-Temporal 以紧凑的 run ID 启动 `forgeRunWorkflow`。
+Temporal 以紧凑的 run ID 启动 `forgeRunWorkflow`。初始 dispatch 使用从不可变 run authority 派生的 evidence，
+因此 retry 或 concurrent launcher 只能持久化相同的 sequence-one `run-started` decision 和 PREPARING attempt ID。
 
 Temporal client 使用稳定的 workflow identity `forge-run:<runId>` 和 Temporal `USE_EXISTING` conflict
 policy。相同 authority 的重复启动复用同一个 durable Forge request 和 workflow identity。若复用的 run ID
 具有不同 authority、binding、task、conflict 或 schedule，会在联系 Temporal 前 fail closed。
 
 第一版 deployment boundary 有意只支持一个显式配置的 authority scope。`forge run` 和独立 worker 都要求
-`FORGE_WORKER_DATABASE_PATH` 与 `FORGE_WORKER_REPOSITORY_PATH`；CLI 还会拒绝 worker scope 外的 repository
-path。CLI 只是 Temporal client，不启动 worker；worker 仍是独立运行的进程，并读取同一个已配置 SQLite
+非空的绝对路径 `FORGE_WORKER_DATABASE_PATH` 与 `FORGE_WORKER_REPOSITORY_PATH`；CLI 还会拒绝 worker scope 外的
+repository path。CLI 只是 Temporal client，不启动 worker；worker 仍是独立运行的进程，并读取同一个已配置 SQLite
 authority store。
 
 验证：
 
-- launch 测试证明首次初始化、完全相同的重试、稳定 workflow identity 和 authority mismatch rejection；
+- launch 测试证明首次初始化、初始 dispatch 之前崩溃后的恢复、concurrent launcher 的相同 retry evidence、稳定
+  workflow identity 和 authority mismatch rejection；
 - CLI command 测试和 Temporal client 测试通过；
-- launch acceptance 测试通过 `TemporalRunLauncher` 初始化 authority，经独立 client boundary 启动 workflow，并由
-  使用同一 SQLite authority store 和 production Forge composition 的独立实例化 worker 完成；
-- `pnpm lint`、`pnpm typecheck`、`pnpm test` 和 `pnpm build` 通过。全套测试为 72 个 test file、706 个通过、
-  707 个通过、1 个跳过。
+- launch acceptance 测试通过 `TemporalRunLauncher` 初始化 authority，经 production `startForgeRun` 启动 workflow，
+  并由使用同一个临时 authority 文件的独立 SQLite connection 和 production Forge composition 的独立实例化 worker
+  完成；
+- `pnpm lint`、`pnpm typecheck`、`pnpm test` 和 `pnpm build` 通过。全套测试为 72 个 test file、707 个通过、
+  1 个跳过。
 
 范围和剩余工作：
 

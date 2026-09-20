@@ -43,6 +43,8 @@ const requestFingerprint = (request: StartRuntimeRunRequest): string =>
     scheduleOptions: request.scheduleOptions
   });
 
+const initialAttemptId = (runId: string, ordinal: number): string => `launch:${runId}:${ordinal}`;
+
 /**
  * Initializes Forge authority before asking Temporal to coordinate a run. The
  * workflow receives only the durable run ID; SQLite remains the authority.
@@ -62,7 +64,6 @@ export class TemporalRunLauncher {
   async startOrResumeRun(request: StartRuntimeRunRequest): Promise<TemporalRunLaunchResult> {
     let existing = await this.#persistence.recoverRun(request.run.id);
     if (existing === undefined) {
-      let created = false;
       try {
         await this.#persistence.createRun({
           run: request.run,
@@ -72,18 +73,11 @@ export class TemporalRunLauncher {
           riskConflicts: request.riskConflicts,
           scheduleOptions: request.scheduleOptions
         });
-        created = true;
       } catch (error) {
         existing = await this.#persistence.recoverRun(request.run.id);
         if (existing === undefined) {
           throw error;
         }
-      }
-      if (created) {
-        await new ForgeRunProgressionService({ persistence: this.#persistence }).advance(
-          request.run.id,
-          { type: 'run-started' }
-        );
       }
     }
     if (existing !== undefined) {
@@ -100,6 +94,16 @@ export class TemporalRunLauncher {
         throw new Error(`Temporal launch authority mismatch: ${request.run.id}`);
       }
     }
+    // A launcher retry must reproduce exactly the initial authority evidence.
+    // This lets persistence reject or accept concurrent sequence-one writes safely.
+    await new ForgeRunProgressionService({
+      persistence: this.#persistence,
+      now: () => new Date(request.run.createdAt),
+      createAttemptId: (() => {
+        let ordinal = 0;
+        return () => initialAttemptId(request.run.id, ++ordinal);
+      })()
+    }).advance(request.run.id, { type: 'run-started' });
     const workflow = await this.#workflow.start(request.run.id);
     return { runId: request.run.id, ...workflow };
   }

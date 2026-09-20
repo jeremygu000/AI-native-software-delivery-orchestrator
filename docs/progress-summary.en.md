@@ -2830,7 +2830,9 @@ M3.10 begins the selected Temporal production cutover without moving Forge autho
 The CLI now prepares and validates the approved run as before, but it no longer constructs a
 `LocalRuntimeStarter` to execute the run in-process. Instead, `TemporalRunLauncher` persists the
 run, bindings, conflicts, schedule, and initial `run-started` authority decision in the configured
-SQLite store before asking Temporal to start `forgeRunWorkflow` with the compact run ID.
+SQLite store before asking Temporal to start `forgeRunWorkflow` with the compact run ID. Its initial
+dispatch uses immutable run-derived evidence, so a retry or concurrent launcher can only persist the
+same sequence-one `run-started` decision and PREPARING attempt IDs.
 
 The Temporal client uses the stable workflow identity `forge-run:<runId>` and the Temporal
 `USE_EXISTING` conflict policy. Repeating a matching launch reuses the same durable Forge request
@@ -2838,19 +2840,20 @@ and workflow identity. A reused run ID with changed authority, bindings, tasks, 
 schedule fails closed before Temporal is contacted.
 
 This first deployment boundary intentionally supports one explicitly configured authority scope.
-Both `forge run` and the independent worker require `FORGE_WORKER_DATABASE_PATH` and
-`FORGE_WORKER_REPOSITORY_PATH`; the CLI also rejects a repository path outside the worker scope.
+Both `forge run` and the independent worker require nonempty absolute
+`FORGE_WORKER_DATABASE_PATH` and `FORGE_WORKER_REPOSITORY_PATH`; the CLI also rejects a repository
+path outside the worker scope.
 The CLI is a Temporal client only and does not start a worker. The worker remains an independently
 operated process which reads the same configured SQLite authority store.
 
 Verification:
 
-- launch tests prove first initialization, exact retry, stable workflow identity, and authority
-  mismatch rejection;
+- launch tests prove first initialization, crash recovery before initial dispatch, concurrent exact
+  retry evidence, stable workflow identity, and authority mismatch rejection;
 - CLI command tests and Temporal client tests pass;
 - a launch acceptance test initializes authority through `TemporalRunLauncher`, starts a workflow
-  through a separate client boundary, and completes it on an independently instantiated worker
-  using the same SQLite authority store and production Forge composition;
+  through production `startForgeRun`, and completes it on an independently instantiated worker using
+  a separate SQLite connection to the same temporary authority file and production Forge composition;
 - `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build` pass. The full suite reports 72 test
   files, 707 passing tests, and 1 skipped test.
 

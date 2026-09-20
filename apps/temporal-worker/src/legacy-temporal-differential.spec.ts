@@ -31,9 +31,11 @@ import {
 } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 import { collectDurableExecutionOutcomeFromSqlite } from '@ai-native-software-delivery-orchestrator/runtime-v2-spike-harness';
 import {
+  forgeRunWorkflowId,
   forgeRunWorkflow,
   integrationWakeSignal,
-  repairWakeSignal
+  repairWakeSignal,
+  startForgeRun
 } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 
 import {
@@ -968,9 +970,12 @@ describe('M3.9 legacy and Temporal differential acceptance', () => {
   it('launches initialized authority through an independent Temporal worker', async () => {
     const runId = `m310-launch-${crypto.randomUUID()}`;
     const taskId = 'task-launch';
-    const persistence = new DrizzleSqliteOrchestrationPersistence(':memory:');
+    const directory = mkdtempSync(join(tmpdir(), 'forge-m310-launch-'));
+    const databasePath = join(directory, 'run.sqlite');
+    const launcherPersistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    const workerPersistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
     const composition = await createForgeWorkerComposition(
-      adapterOverrides(persistence, { blockNextRepair: false })
+      adapterOverrides(workerPersistence, { blockNextRepair: false })
     );
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     const worker = await Worker.create({
@@ -981,24 +986,21 @@ describe('M3.9 legacy and Temporal differential acceptance', () => {
     });
     const client = new Client({ connection: environment.client.connection });
     const workerRun = worker.run();
-    let handle:
-      | Awaited<ReturnType<typeof client.workflow.start<typeof forgeRunWorkflow>>>
-      | undefined;
     const launcher = new TemporalRunLauncher({
-      persistence,
+      persistence: launcherPersistence,
       workflow: {
-        async start(launchedRunId) {
-          handle = await client.workflow.start(forgeRunWorkflow, {
-            taskQueue: worker.options.taskQueue,
-            workflowId: `forge-run:${launchedRunId}`,
-            args: [{ runId: launchedRunId }],
-            workflowIdConflictPolicy: 'USE_EXISTING'
-          });
-          return {
-            workflowId: handle.workflowId,
-            workflowRunId: handle.firstExecutionRunId
-          };
-        }
+        start: (launchedRunId) =>
+          startForgeRun(
+            {
+              serverUrl: 'http://temporal.test',
+              namespace: 'default',
+              taskQueue: worker.options.taskQueue,
+              connectTimeoutMs: 10_000,
+              workerShutdownTimeoutMs: 30_000
+            },
+            launchedRunId,
+            async () => ({ client, async close() {} })
+          )
       }
     });
 
@@ -1008,18 +1010,22 @@ describe('M3.9 legacy and Temporal differential acceptance', () => {
         workflowId: `forge-run:${runId}`,
         workflowRunId: expect.any(String)
       });
-      if (handle === undefined) {
-        throw new Error('Temporal launch did not return a workflow handle');
-      }
-      await expect(handle.result()).resolves.toEqual({ runId, status: 'completed' });
-      const outcome = await collectDurableExecutionOutcomeFromSqlite(runId, { persistence });
+      await expect(client.workflow.getHandle(forgeRunWorkflowId(runId)).result()).resolves.toEqual({
+        runId,
+        status: 'completed'
+      });
+      const outcome = await collectDurableExecutionOutcomeFromSqlite(runId, {
+        persistence: launcherPersistence
+      });
       assertDurableExecutionSpikeOutcome({ outcome, scenario: 'build-review-repair-integrate' });
     } finally {
       worker.shutdown();
       await workerRun;
       await composition.close();
-      persistence.close();
+      launcherPersistence.close();
+      workerPersistence.close();
       await environment.teardown();
+      rmSync(directory, { recursive: true, force: true });
     }
   }, 30_000);
 
@@ -1859,175 +1865,175 @@ describe('M3.9 legacy and Temporal differential acceptance', () => {
     'matches same-run competing lease blocking and original-attempt reauthorization',
     { timeout: 60_000 },
     async () => {
-      const runId = `m39-competing-lease-${crypto.randomUUID()}`;
-      const temporalPersistence = new DrizzleSqliteOrchestrationPersistence(':memory:');
-      await temporalPersistence.createRun(createCompetingLeaseRun(runId));
-      let releaseTemporalBuilderA: (() => void) | undefined;
-      const temporalBuilderARelease = new Promise<void>((resolve) => {
-        releaseTemporalBuilderA = resolve;
-      });
-      let temporalBuilderAStarted: (() => void) | undefined;
-      const temporalBuilderAStart = new Promise<void>((resolve) => {
-        temporalBuilderAStarted = resolve;
-      });
-      const temporalStarts: string[] = [];
-      const temporalScript: ScenarioScript = {
-        blockNextRepair: false,
-        builderStarts: temporalStarts,
-        onBuilderStarted: (taskId) => {
-          if (taskId === 'task-a') {
-            temporalBuilderAStarted?.();
-          }
-        },
-        waitForBuilderCompletion: async (taskId) => {
-          if (taskId === 'task-a') {
-            await temporalBuilderARelease;
-          }
+    const runId = `m39-competing-lease-${crypto.randomUUID()}`;
+    const temporalPersistence = new DrizzleSqliteOrchestrationPersistence(':memory:');
+    await temporalPersistence.createRun(createCompetingLeaseRun(runId));
+    let releaseTemporalBuilderA: (() => void) | undefined;
+    const temporalBuilderARelease = new Promise<void>((resolve) => {
+      releaseTemporalBuilderA = resolve;
+    });
+    let temporalBuilderAStarted: (() => void) | undefined;
+    const temporalBuilderAStart = new Promise<void>((resolve) => {
+      temporalBuilderAStarted = resolve;
+    });
+    const temporalStarts: string[] = [];
+    const temporalScript: ScenarioScript = {
+      blockNextRepair: false,
+      builderStarts: temporalStarts,
+      onBuilderStarted: (taskId) => {
+        if (taskId === 'task-a') {
+          temporalBuilderAStarted?.();
         }
-      };
-      const composition = await createForgeWorkerComposition(
-        adapterOverrides(temporalPersistence, temporalScript)
-      );
-      const environment = await TestWorkflowEnvironment.createTimeSkipping();
-      const worker = await Worker.create({
-        connection: environment.nativeConnection,
-        taskQueue: `m39-${runId}`,
-        workflowsPath: workflowPath,
-        activities: composition.forgeActivities
+      },
+      waitForBuilderCompletion: async (taskId) => {
+        if (taskId === 'task-a') {
+          await temporalBuilderARelease;
+        }
+      }
+    };
+    const composition = await createForgeWorkerComposition(
+      adapterOverrides(temporalPersistence, temporalScript)
+    );
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: `m39-${runId}`,
+      workflowsPath: workflowPath,
+      activities: composition.forgeActivities
+    });
+    const workerRun = worker.run();
+    try {
+      const client = new Client({ connection: environment.client.connection });
+      const handle = await client.workflow.start(forgeRunWorkflow, {
+        taskQueue: worker.options.taskQueue,
+        workflowId: `forge-run:${runId}`,
+        args: [{ runId }]
       });
-      const workerRun = worker.run();
+      await temporalBuilderAStart;
+      await expect
+        .poll(async () => {
+          const recovered = await temporalPersistence.recoverRun(runId);
+          return recovered?.events.some(
+            ({ event }) => event.type === 'lease-blocked' && event.taskId === 'task-b'
+          );
+        })
+        .toBe(true);
+      const temporalBlocked = await temporalPersistence.recoverRun(runId);
+      const temporalAttemptB = temporalBlocked?.attempts.find(
+        ({ attempt }) => attempt.taskId === 'task-b'
+      )?.attempt;
+      expect(temporalAttemptB).toMatchObject({ state: 'PREPARING' });
+      expect(temporalStarts).toEqual(['task-a']);
+
+      if (releaseTemporalBuilderA === undefined) {
+        throw new Error('Temporal builder A release was not initialized');
+      }
+      releaseTemporalBuilderA();
+      await expect.poll(() => temporalStarts, { timeout: 5_000 }).toEqual(['task-a', 'task-b']);
+      await expect(handle.result()).resolves.toEqual({ runId, status: 'completed' });
+      const temporalCompleted = await temporalPersistence.recoverRun(runId);
+      expect(temporalCompleted?.attempts).toContainEqual(
+        expect.objectContaining({
+          attempt: expect.objectContaining({
+            id: temporalAttemptB?.id,
+            taskId: 'task-b',
+            state: 'COMPLETED'
+          })
+        })
+      );
+      expect(temporalStarts).toEqual(['task-a', 'task-b']);
+
+      const legacyRunId = `${runId}-legacy`;
+      const legacyPersistence = new DrizzleSqliteOrchestrationPersistence(':memory:');
       try {
-        const client = new Client({ connection: environment.client.connection });
-        const handle = await client.workflow.start(forgeRunWorkflow, {
-          taskQueue: worker.options.taskQueue,
-          workflowId: `forge-run:${runId}`,
-          args: [{ runId }]
+        let releaseLegacyBuilderA: (() => void) | undefined;
+        const legacyBuilderARelease = new Promise<void>((resolve) => {
+          releaseLegacyBuilderA = resolve;
         });
-        await temporalBuilderAStart;
+        let legacyBuilderAStarted: (() => void) | undefined;
+        const legacyBuilderAStart = new Promise<void>((resolve) => {
+          legacyBuilderAStarted = resolve;
+        });
+        const legacyStarts: string[] = [];
+        const legacyScript: ScenarioScript = {
+          blockNextRepair: false,
+          builderStarts: legacyStarts,
+          onBuilderStarted: (taskId) => {
+            if (taskId === 'task-a') {
+              legacyBuilderAStarted?.();
+            }
+          },
+          waitForBuilderCompletion: async (taskId) => {
+            if (taskId === 'task-a') {
+              await legacyBuilderARelease;
+            }
+          }
+        };
+        const legacyRuntime = createLegacyRuntime(legacyPersistence, legacyScript);
+        const legacyRun = legacyRuntime.startRun(createCompetingLeaseRun(legacyRunId));
+        await legacyBuilderAStart;
         await expect
           .poll(async () => {
-            const recovered = await temporalPersistence.recoverRun(runId);
+            const recovered = await legacyPersistence.recoverRun(legacyRunId);
             return recovered?.events.some(
               ({ event }) => event.type === 'lease-blocked' && event.taskId === 'task-b'
             );
           })
           .toBe(true);
-        const temporalBlocked = await temporalPersistence.recoverRun(runId);
-        const temporalAttemptB = temporalBlocked?.attempts.find(
+        const legacyBlocked = await legacyPersistence.recoverRun(legacyRunId);
+        const legacyAttemptB = legacyBlocked?.attempts.find(
           ({ attempt }) => attempt.taskId === 'task-b'
         )?.attempt;
-        expect(temporalAttemptB).toMatchObject({ state: 'PREPARING' });
-        expect(temporalStarts).toEqual(['task-a']);
+        expect(legacyAttemptB).toMatchObject({ state: 'PREPARING' });
+        expect(legacyStarts).toEqual(['task-a']);
 
-        if (releaseTemporalBuilderA === undefined) {
-          throw new Error('Temporal builder A release was not initialized');
+        if (releaseLegacyBuilderA === undefined) {
+          throw new Error('Legacy builder A release was not initialized');
         }
-        releaseTemporalBuilderA();
-        await expect.poll(() => temporalStarts, { timeout: 5_000 }).toEqual(['task-a', 'task-b']);
-        await expect(handle.result()).resolves.toEqual({ runId, status: 'completed' });
-        const temporalCompleted = await temporalPersistence.recoverRun(runId);
-        expect(temporalCompleted?.attempts).toContainEqual(
+        releaseLegacyBuilderA();
+        await expect.poll(() => legacyStarts, { timeout: 5_000 }).toEqual(['task-a', 'task-b']);
+        await expect(legacyRun).resolves.toMatchObject({
+          snapshot: {
+            taskStates: [
+              { taskId: 'task-a', state: 'COMPLETED' },
+              { taskId: 'task-b', state: 'COMPLETED' }
+            ]
+          }
+        });
+        const legacyCompleted = await legacyPersistence.recoverRun(legacyRunId);
+        expect(legacyCompleted?.attempts).toContainEqual(
           expect.objectContaining({
             attempt: expect.objectContaining({
-              id: temporalAttemptB?.id,
+              id: legacyAttemptB?.id,
               taskId: 'task-b',
               state: 'COMPLETED'
             })
           })
         );
-        expect(temporalStarts).toEqual(['task-a', 'task-b']);
-
-        const legacyRunId = `${runId}-legacy`;
-        const legacyPersistence = new DrizzleSqliteOrchestrationPersistence(':memory:');
-        try {
-          let releaseLegacyBuilderA: (() => void) | undefined;
-          const legacyBuilderARelease = new Promise<void>((resolve) => {
-            releaseLegacyBuilderA = resolve;
-          });
-          let legacyBuilderAStarted: (() => void) | undefined;
-          const legacyBuilderAStart = new Promise<void>((resolve) => {
-            legacyBuilderAStarted = resolve;
-          });
-          const legacyStarts: string[] = [];
-          const legacyScript: ScenarioScript = {
-            blockNextRepair: false,
-            builderStarts: legacyStarts,
-            onBuilderStarted: (taskId) => {
-              if (taskId === 'task-a') {
-                legacyBuilderAStarted?.();
-              }
-            },
-            waitForBuilderCompletion: async (taskId) => {
-              if (taskId === 'task-a') {
-                await legacyBuilderARelease;
-              }
-            }
-          };
-          const legacyRuntime = createLegacyRuntime(legacyPersistence, legacyScript);
-          const legacyRun = legacyRuntime.startRun(createCompetingLeaseRun(legacyRunId));
-          await legacyBuilderAStart;
-          await expect
-            .poll(async () => {
-              const recovered = await legacyPersistence.recoverRun(legacyRunId);
-              return recovered?.events.some(
-                ({ event }) => event.type === 'lease-blocked' && event.taskId === 'task-b'
-              );
-            })
-            .toBe(true);
-          const legacyBlocked = await legacyPersistence.recoverRun(legacyRunId);
-          const legacyAttemptB = legacyBlocked?.attempts.find(
-            ({ attempt }) => attempt.taskId === 'task-b'
-          )?.attempt;
-          expect(legacyAttemptB).toMatchObject({ state: 'PREPARING' });
-          expect(legacyStarts).toEqual(['task-a']);
-
-          if (releaseLegacyBuilderA === undefined) {
-            throw new Error('Legacy builder A release was not initialized');
-          }
-          releaseLegacyBuilderA();
-          await expect.poll(() => legacyStarts, { timeout: 5_000 }).toEqual(['task-a', 'task-b']);
-          await expect(legacyRun).resolves.toMatchObject({
-            snapshot: {
-              taskStates: [
-                { taskId: 'task-a', state: 'COMPLETED' },
-                { taskId: 'task-b', state: 'COMPLETED' }
-              ]
-            }
-          });
-          const legacyCompleted = await legacyPersistence.recoverRun(legacyRunId);
-          expect(legacyCompleted?.attempts).toContainEqual(
-            expect.objectContaining({
-              attempt: expect.objectContaining({
-                id: legacyAttemptB?.id,
-                taskId: 'task-b',
-                state: 'COMPLETED'
-              })
-            })
-          );
-          expect(legacyStarts).toEqual(['task-a', 'task-b']);
-          expect(
-            temporalCompleted?.events
-              .filter(
-                ({ event }) => event.type === 'lease-blocked' || event.type === 'lease-released'
-              )
-              .map(({ event }) => event.type)
-          ).toEqual(
-            legacyCompleted?.events
-              .filter(
-                ({ event }) => event.type === 'lease-blocked' || event.type === 'lease-released'
-              )
-              .map(({ event }) => event.type)
-          );
-        } finally {
-          legacyPersistence.close();
-        }
+        expect(legacyStarts).toEqual(['task-a', 'task-b']);
+        expect(
+          temporalCompleted?.events
+            .filter(
+              ({ event }) => event.type === 'lease-blocked' || event.type === 'lease-released'
+            )
+            .map(({ event }) => event.type)
+        ).toEqual(
+          legacyCompleted?.events
+            .filter(
+              ({ event }) => event.type === 'lease-blocked' || event.type === 'lease-released'
+            )
+            .map(({ event }) => event.type)
+        );
       } finally {
-        worker.shutdown();
-        await workerRun;
-        await composition.close();
-        temporalPersistence.close();
-        await environment.teardown();
+        legacyPersistence.close();
       }
+    } finally {
+      worker.shutdown();
+      await workerRun;
+      await composition.close();
+      temporalPersistence.close();
+      await environment.teardown();
+    }
     }
   );
 });

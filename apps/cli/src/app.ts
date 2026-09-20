@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import {
   PiPlanningAgent,
@@ -515,12 +515,19 @@ const runRepositoryPlan = async (request: {
 }): Promise<unknown> => {
   const authorityDatabasePath = process.env.FORGE_WORKER_DATABASE_PATH;
   const workerRepositoryPath = process.env.FORGE_WORKER_REPOSITORY_PATH;
-  if (authorityDatabasePath === undefined || workerRepositoryPath === undefined) {
+  if (
+    authorityDatabasePath === undefined ||
+    workerRepositoryPath === undefined ||
+    authorityDatabasePath.trim().length === 0 ||
+    workerRepositoryPath.trim().length === 0 ||
+    !isAbsolute(authorityDatabasePath) ||
+    !isAbsolute(workerRepositoryPath)
+  ) {
     throw new Error(
-      'Temporal launch requires FORGE_WORKER_DATABASE_PATH and FORGE_WORKER_REPOSITORY_PATH'
+      'Temporal launch requires nonempty absolute FORGE_WORKER_DATABASE_PATH and FORGE_WORKER_REPOSITORY_PATH'
     );
   }
-  if (resolve(workerRepositoryPath) !== resolve(request.repositoryPath)) {
+  if (workerRepositoryPath !== resolve(request.repositoryPath)) {
     throw new Error('Temporal worker repository scope does not match the requested repository');
   }
   const [stores, registry] = await Promise.all([
