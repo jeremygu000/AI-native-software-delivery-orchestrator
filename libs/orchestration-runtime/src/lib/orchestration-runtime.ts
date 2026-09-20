@@ -816,6 +816,13 @@ export class OrchestrationRuntime {
         state: 'INTEGRATING'
       });
       const integration = await this.#workspaceManager.integrate(workspace);
+      if (reviewSubject !== undefined) {
+        await this.#persistence.persistIntegration(
+          state.request.run.id,
+          integration.status,
+          integration.status === 'integrated' ? reviewSubject.outputAttemptId : undefined
+        );
+      }
       await this.#persistence.persistWorkspace({
         runId: state.request.run.id,
         workspace: integration.workspace
@@ -1078,6 +1085,11 @@ export class OrchestrationRuntime {
       state: 'INTEGRATING'
     });
     const integration = await this.#workspaceManager.integrate(workspace);
+    await this.#persistence.persistIntegration(
+      state.request.run.id,
+      integration.status,
+      integration.status === 'integrated' ? subject.outputAttemptId : undefined
+    );
     await this.#persistence.persistWorkspace({
       runId: state.request.run.id,
       workspace: integration.workspace

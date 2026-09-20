@@ -2644,13 +2644,14 @@ Stage outcome:
 
 M3.6 proves that the legacy `OrchestrationRuntime` and the production Temporal Runtime V2 workflow reach the same durable Forge authority outcome for the migration scenarios in ADR-027. The acceptance suite runs each runtime against its own SQLite authority database, run ID, workspace identity, and repository target. It compares normalized persisted Forge evidence, never framework-specific event history or workflow implementation details.
 
-The suite uses the real legacy runtime, the real Temporal workflow, the production Temporal worker composition, and Drizzle SQLite persistence. Deterministic test seams replace only external Git, agent, verifier, and model effects. This keeps the test reproducible while still exercising the runtime authority boundaries, persistence, review lineage, repair admission, integration admission, and recovery behavior that the migration must preserve.
+The suite uses the real legacy runtime, the real Temporal workflow, the production Temporal worker composition, and Drizzle SQLite persistence. Deterministic test seams replace only external Git, agent, verifier, model, snapshot, and reconciliation effects. Both sides use the production `SnapshotTaskCodeReviewSubjectProvider` and `TaskVerificationEvidenceFactory`, so canonical impact fingerprints and exact review, repair, and integration authority evidence remain under production construction. This keeps the test reproducible while still exercising the runtime authority boundaries, persistence, review lineage, repair admission, integration admission, and recovery behavior that the migration must preserve.
 
 What was built:
 
 - a differential normal-path fixture runs build, verification, review requesting repair, one repair, repair verification, accepted review, and exact accepted-output integration through both runtimes;
 - a differential blocked-repair fixture persists a `BLOCKED` repair, releases its exact blocker lease, resumes the same repair ID, increments its durable revision, persists one authorization dispatch, completes the repair, and integrates the accepted output through both runtimes;
 - legacy recovery now passes its resume authorization into the existing atomic repair-resume persistence operation. The durable repair-state transition and its one resume-dispatch record are committed together, so recovery retries cannot authorize an additional execution of the same blocked snapshot;
+- legacy runtime integration now persists its outcome from the exact admitted review subject after workspace integration. A `WorkspaceManager` remains a Git-only adapter and cannot invent or infer the accepted output attempt;
 - the SQLite outcome collector orders verification evidence by durable verification timestamp, then attempt and evidence identity, before selecting final evidence. This avoids incidental database row order even when timestamps tie.
 
 What was verified:
@@ -2659,7 +2660,7 @@ What was verified:
 - normalized legacy and Temporal outcomes are equal. Normalization replaces runtime-generated IDs, derived verification fingerprints, timestamps, and runtime-local absolute revision values. It preserves authority structure, while each runtime independently proves the blocked-to-resumed revision relationship;
 - the blocked scenario proves the exact blocker release, same repair attempt ID, blocked-to-resumed relationship, one dispatch, final accepted review, and exact integration output binding for both runtimes;
 - the Temporal side uses a real test Temporal server, worker, production workflow, production worker composition, and production builder/evaluation/repair/integration services. Only external adapters are deterministic seams. The legacy side uses the real production `OrchestrationRuntime` topology and coordination services;
-- the blocked scenario crosses a real restart boundary for both runtimes. Each phase closes its SQLite connection and reconstructs the runtime-specific worker or runtime against the same authority database before the released blocker resumes the repair.
+- the blocked scenario crosses a real restart boundary for both runtimes. Each phase closes its SQLite connection and reconstructs the runtime-specific worker or runtime against the same authority database before the released blocker resumes the repair. On Temporal, worker A is awaited through `STOPPED` before composition B and worker B are created on the same task queue.
 
 Scope and remaining work:
 

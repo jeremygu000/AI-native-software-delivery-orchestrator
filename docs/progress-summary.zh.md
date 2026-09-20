@@ -2336,13 +2336,14 @@ M3.5 在不重新打开已冻结的 M3.3 Scenario A 和 M3.4 Scenario B 授权�
 
 M3.6 证明 legacy `OrchestrationRuntime` 与生产 Temporal Runtime V2 workflow 在 ADR-027 定义的迁移场景中会得到相同的持久 Forge authority outcome。验收 suite 为每个 runtime 使用独立的 SQLite authority database、run ID、workspace identity 和 repository target。它比较归一化后的持久 Forge evidence，而不比较框架特有的 event history 或 workflow 实现细节。
 
-该 suite 使用真实 legacy runtime、真实 Temporal workflow、生产 Temporal worker composition 以及 Drizzle SQLite persistence。确定性的测试 seam 只替代外部 Git、agent、verifier 和 model 副作用。这样既能使测试可重复，又仍然会执行迁移必须保留的 runtime authority boundary、persistence、review lineage、repair admission、integration admission 和 recovery behavior。
+该 suite 使用真实 legacy runtime、真实 Temporal workflow、生产 Temporal worker composition 以及 Drizzle SQLite persistence。确定性的测试 seam 只替代外部 Git、agent、verifier、model、snapshot 和 reconciliation 副作用。两侧都使用生产 `SnapshotTaskCodeReviewSubjectProvider` 与 `TaskVerificationEvidenceFactory`，因此 canonical impact fingerprint 以及精确 review、repair 和 integration authority evidence 仍由生产代码构造。这样既能使测试可重复，又仍然会执行迁移必须保留的 runtime authority boundary、persistence、review lineage、repair admission、integration admission 和 recovery behavior。
 
 已构建：
 
 - normal-path fixture 会在两个 runtime 中执行 build、verification、请求 repair 的 review、一次 repair、repair verification、accepted review，以及精确 accepted-output integration；
 - blocked-repair fixture 会持久化 `BLOCKED` repair，释放它精确的 blocker lease，恢复同一个 repair ID，递增持久 revision，写入一个 authorization dispatch，完成 repair，并在两个 runtime 中集成 accepted output；
 - legacy recovery 现在会将 resume authorization 传入已有的原子 repair-resume persistence operation。持久 repair-state transition 与唯一 resume-dispatch record 会一起提交，因此 recovery retry 不会为同一个 blocked snapshot 授权额外执行；
+- legacy runtime integration 现在会在 workspace integration 后，从精确 admitted review subject 持久化 outcome。`WorkspaceManager` 仍然只是 Git adapter，不能编造或猜测 accepted output attempt；
 - SQLite outcome collector 会先按持久 verification timestamp、再按 attempt 与 evidence identity 排序 verification evidence，再选择最终 evidence。即使 timestamp 相同，也不会依赖偶然的数据库行顺序。
 
 已验证：
@@ -2351,7 +2352,7 @@ M3.6 证明 legacy `OrchestrationRuntime` 与生产 Temporal Runtime V2 workflow
 - 归一化后的 legacy 与 Temporal outcome 相等。归一化会替换 runtime 生成的 ID、由其派生的 verification fingerprint、timestamp 以及 runtime-local absolute revision value。它保留 authority structure，同时每个 runtime 都独立证明 blocked-to-resumed revision relationship；
 - blocked 场景为两个 runtime 都证明了精确 blocker release、相同 repair attempt ID、blocked-to-resumed relationship、一个 dispatch、最终 accepted review 和精确 integration output binding；
 - Temporal 侧使用真实 test Temporal server、worker、生产 workflow、生产 worker composition，以及生产 builder/evaluation/repair/integration service。只有外部 adapter 是确定性的 seam。Legacy 侧使用真实生产 `OrchestrationRuntime` topology 与 coordination service；
-- blocked 场景会在两个 runtime 中跨越真实 restart boundary。每个 phase 都关闭 SQLite connection，并针对同一个 authority database 重建对应 runtime 的 worker 或 runtime，然后才通过已释放 blocker 恢复 repair。
+- blocked 场景会在两个 runtime 中跨越真实 restart boundary。每个 phase 都关闭 SQLite connection，并针对同一个 authority database 重建对应 runtime 的 worker 或 runtime，然后才通过已释放 blocker 恢复 repair。Temporal 侧会先 await worker A 到达 `STOPPED`，之后才会在同一个 task queue 上创建 composition B 和 worker B。
 
 范围与剩余工作：
 

@@ -20,7 +20,6 @@ import type {
   PersistedWriteLease,
   TaskCodeReviewStore,
   TaskCodeReviewer,
-  TaskCodeReviewSubjectProvider,
   RepositorySnapshotProvider,
   TaskImpactReconciler,
   TaskRepairRunner,
@@ -194,7 +193,6 @@ export interface ForgeWorkerCompositionOverrides {
   readonly persistence?: ForgeWorkerPersistence;
   readonly workspaceManager?: WorkspaceManager;
   readonly snapshots?: RepositorySnapshotProvider;
-  readonly subjects?: TaskCodeReviewSubjectProvider;
   readonly reviewer?: TaskCodeReviewer;
   readonly verifier?: TaskVerifier;
   readonly builderAgentRunner?: AgentRunner;
@@ -252,7 +250,7 @@ export async function createForgeWorkerComposition(
       changes: new GitWorkspaceChangeInspector(),
       resources
     });
-  const subjects = overrides.subjects ?? new SnapshotTaskCodeReviewSubjectProvider();
+  const subjects = new SnapshotTaskCodeReviewSubjectProvider();
 
   const reviewCollector = new TaskCodeReviewCollector({
     reviewer:

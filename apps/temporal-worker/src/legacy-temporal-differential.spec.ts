@@ -7,14 +7,16 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  taskVerificationEvidenceFingerprint,
   type AgentRunner,
   type RepositoryGraph,
-  type TaskWorkspace,
   type WorkspaceManager
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
+import {
+  SnapshotTaskCodeReviewSubjectProvider,
+  TaskVerificationEvidenceFactory
+} from '@ai-native-software-delivery-orchestrator/run-preparation';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
 import {
   assertDurableExecutionSpikeOutcome,
@@ -60,13 +62,6 @@ const workflowPath = new URL(
   '../../../libs/temporal-runtime/dist/lib/workflows/forge-run.js',
   import.meta.url
 ).pathname;
-const verification = (
-  input: Omit<Parameters<typeof taskVerificationEvidenceFingerprint>[0], 'fingerprint'>
-) => ({
-  ...input,
-  fingerprint: taskVerificationEvidenceFingerprint(input)
-});
-
 const normalizeRevisions = (value: unknown): unknown => {
   if (Array.isArray(value)) {
     return value.map(normalizeRevisions);
@@ -101,10 +96,6 @@ const createLegacyRuntime = (
       return request.workspace;
     },
     async integrate(workspace) {
-      const outputAttemptId = (await persistence.recoverRepairAttempts(workspace.runId))
-        .toReversed()
-        .find(({ attempt }) => attempt.state === 'COMPLETED')?.attempt.id;
-      await persistence.persistIntegration(workspace.runId, 'integrated', outputAttemptId);
       return {
         status: 'integrated' as const,
         workspace: {
@@ -136,53 +127,8 @@ const createLegacyRuntime = (
       };
     }
   };
-  const subjects = {
-    createSubject({
-      builderAttempt,
-      outputAttemptId,
-      workspace,
-      verificationFingerprint
-    }: {
-      readonly builderAttempt: { readonly id: string };
-      readonly outputAttemptId: string;
-      readonly workspace: TaskWorkspace;
-      readonly verificationFingerprint: string;
-    }) {
-      return {
-        builderAttemptId: builderAttempt.id,
-        outputAttemptId,
-        workspaceId: workspace.id,
-        workspaceRevision: workspace.revision,
-        workspaceChangeFingerprint: fingerprint,
-        impactFingerprint: fingerprint,
-        verificationFingerprint
-      };
-    }
-  };
-  const createEvidence = ({
-    id,
-    attempt,
-    workspace,
-    verificationPolicyFingerprint: policyFingerprint
-  }: {
-    readonly id: string;
-    readonly attempt: { readonly id: string; readonly runId: string; readonly taskId: string };
-    readonly workspace: TaskWorkspace;
-    readonly verificationPolicyFingerprint: string;
-  }) =>
-    verification({
-      id,
-      runId: attempt.runId,
-      taskId: attempt.taskId,
-      attemptId: attempt.id,
-      workspaceId: workspace.id,
-      workspaceRevision: workspace.revision,
-      workspaceChangeFingerprint: fingerprint,
-      verificationPolicyFingerprint: policyFingerprint,
-      status: 'passed',
-      verifiedAt:
-        attempt.id === 'attempt-1' ? '2026-09-20T00:01:00.000Z' : '2026-09-20T00:02:00.000Z'
-    });
+  const subjects = new SnapshotTaskCodeReviewSubjectProvider();
+  const evidenceFactory = new TaskVerificationEvidenceFactory();
   const reviews = new TaskCodeReviewCollector({
     reviewer: {
       async review(request) {
@@ -215,7 +161,7 @@ const createLegacyRuntime = (
       let next = 1;
       return () => `legacy-verification-${next++}`;
     })(),
-    createVerificationEvidence: createEvidence
+    createVerificationEvidence: (evidence) => evidenceFactory.create(evidence)
   });
   const repairs = new TaskRepairCoordinator({
     store: persistence,
@@ -279,7 +225,7 @@ const createLegacyRuntime = (
       let next = 1;
       return () => `legacy-repair-verification-${next++}`;
     })(),
-    createVerificationEvidence: createEvidence
+    createVerificationEvidence: (evidence) => evidenceFactory.create(evidence)
   });
   const agentRunner: AgentRunner = {
     async run(request) {
@@ -456,19 +402,6 @@ const adapterOverrides = (
           baseCommit: 'a'.repeat(40),
           workingTreeFingerprint: fingerprint,
           dirty: true
-        };
-      }
-    },
-    subjects: {
-      createSubject({ builderAttempt, outputAttemptId, workspace, verificationFingerprint }) {
-        return {
-          builderAttemptId: builderAttempt.id,
-          outputAttemptId,
-          workspaceId: workspace.id,
-          workspaceRevision: workspace.revision,
-          workspaceChangeFingerprint: fingerprint,
-          impactFingerprint: fingerprint,
-          verificationFingerprint
         };
       }
     },
@@ -673,6 +606,8 @@ describe('M3.6 legacy and Temporal differential acceptance', () => {
       });
       const blocked = await waitForBlockedRepair(persistenceA, runId);
       workerA.shutdown();
+      await workerRunA;
+      expect(workerA.getState()).toBe('STOPPED');
       await compositionA.close();
       persistenceA.close();
 
@@ -790,8 +725,8 @@ describe('M3.6 legacy and Temporal differential acceptance', () => {
     } finally {
       if (workerA.getState() !== 'STOPPED') {
         workerA.shutdown();
+        await workerRunA;
       }
-      void workerRunA.catch(() => {});
       await compositionA.close();
       persistenceA.close();
       await environment.teardown();

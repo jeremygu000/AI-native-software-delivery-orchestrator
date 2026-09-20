@@ -106,6 +106,11 @@ class MemoryPersistence implements OrchestrationPersistence {
   readonly conflicts: PersistedTaskConflict[] = [];
   readonly reviews: PersistedTaskCodeReview[] = [];
   readonly verificationEvidence: TaskVerificationEvidence[] = [];
+  readonly integrations: Array<{
+    readonly runId: string;
+    readonly status: 'integrated' | 'blocked';
+    readonly outputAttemptId?: string;
+  }> = [];
 
   async createRun(request: CreatePersistedRunRequest): Promise<void> {
     this.request = request;
@@ -246,10 +251,12 @@ class MemoryPersistence implements OrchestrationPersistence {
   }
 
   async persistIntegration(
-    _runId: string,
-    _status: 'integrated' | 'blocked',
-    _outputAttemptId?: string
-  ): Promise<void> {}
+    runId: string,
+    status: 'integrated' | 'blocked',
+    outputAttemptId?: string
+  ): Promise<void> {
+    this.integrations.push({ runId, status, outputAttemptId });
+  }
   async recoverIntegration(
     _runId: string
   ): Promise<
@@ -600,11 +607,14 @@ describe('OrchestrationRuntime', () => {
     ];
     let resumeCalls = 0;
     let loseResume = false;
-    const resumeDispatches: Array<{
-      readonly taskId: string;
-      readonly dispatchId: string;
-      readonly authorizedAt: string;
-    } | undefined> = [];
+    const resumeDispatches: Array<
+      | {
+          readonly taskId: string;
+          readonly dispatchId: string;
+          readonly authorizedAt: string;
+        }
+      | undefined
+    > = [];
     const workItems: any[] = [];
     let nextRepairId = 2;
     const repairStore: any = {
@@ -911,6 +921,11 @@ describe('OrchestrationRuntime', () => {
       { iteration: 2, review: { recommendation: 'repair' } },
       { iteration: 3, review: { recommendation: 'accept' } }
     ]);
+    expect(persistence.integrations).toContainEqual({
+      runId: 'run-1',
+      status: 'integrated',
+      outputAttemptId: 'repair-2'
+    });
 
     repairRecords[0] = {
       runId: 'run-1',
