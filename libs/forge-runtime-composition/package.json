@@ -1,30 +1,29 @@
 {
-  "name": "@ai-native-software-delivery-orchestrator/temporal-worker",
+  "name": "@ai-native-software-delivery-orchestrator/forge-runtime-composition",
   "version": "0.0.1",
   "private": true,
-  "bin": {
-    "forge-worker": "./dist/main.js"
-  },
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
   "dependencies": {
     "@ai-native-software-delivery-orchestrator/agent-runtime": "workspace:*",
     "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/forge-runtime-composition": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/forge-runtime-contracts": "workspace:*",
     "@ai-native-software-delivery-orchestrator/orchestration-runtime": "workspace:*",
     "@ai-native-software-delivery-orchestrator/persistence": "workspace:*",
     "@ai-native-software-delivery-orchestrator/planning": "workspace:*",
     "@ai-native-software-delivery-orchestrator/repository-analysis": "workspace:*",
     "@ai-native-software-delivery-orchestrator/run-preparation": "workspace:*",
     "@ai-native-software-delivery-orchestrator/runtime-guard": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/temporal-runtime": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/workspace-git": "workspace:*",
-    "@temporalio/activity": "^1.24.0"
-  },
-  "devDependencies": {
-    "@ai-native-software-delivery-orchestrator/runtime-v2-spike-harness": "workspace:*",
-    "@temporalio/client": "^1.24.0",
-    "@temporalio/testing": "^1.24.0",
-    "@temporalio/worker": "^1.24.0"
+    "@ai-native-software-delivery-orchestrator/workspace-git": "workspace:*"
   }
 }

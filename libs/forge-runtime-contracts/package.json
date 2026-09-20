@@ -1,5 +1,5 @@
 {
-  "name": "@ai-native-software-delivery-orchestrator/temporal-runtime",
+  "name": "@ai-native-software-delivery-orchestrator/forge-runtime-contracts",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -15,13 +15,6 @@
     }
   },
   "dependencies": {
-    "@ai-native-software-delivery-orchestrator/forge-runtime-contracts": "workspace:*",
-    "@temporalio/activity": "^1.24.0",
-    "@temporalio/client": "^1.24.0",
-    "@temporalio/worker": "^1.24.0",
-    "@temporalio/workflow": "^1.24.0"
-  },
-  "devDependencies": {
-    "@temporalio/testing": "^1.24.0"
+    "zod": "4.6.5"
   }
 }

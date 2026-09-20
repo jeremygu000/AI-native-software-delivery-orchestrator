@@ -15,7 +15,7 @@ import {
   type ForgeRunInput,
   type ForgeRunResult,
   type RepairWakeSignal
-} from '../contracts.js';
+} from '@ai-native-software-delivery-orchestrator/forge-runtime-contracts';
 
 const {
   reevaluateRun,

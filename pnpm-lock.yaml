@@ -102,6 +102,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../../libs/domain
+      '@ai-native-software-delivery-orchestrator/forge-runtime-composition':
+        specifier: workspace:*
+        version: link:../../libs/forge-runtime-composition
       '@ai-native-software-delivery-orchestrator/orchestration-runtime':
         specifier: workspace:*
         version: link:../../libs/orchestration-runtime
@@ -194,6 +197,45 @@ importers:
       tslib:
         specifier: ^2.8.1
         version: 2.8.1
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
+
+  libs/forge-runtime-composition:
+    dependencies:
+      '@ai-native-software-delivery-orchestrator/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
+      '@ai-native-software-delivery-orchestrator/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@ai-native-software-delivery-orchestrator/forge-runtime-contracts':
+        specifier: workspace:*
+        version: link:../forge-runtime-contracts
+      '@ai-native-software-delivery-orchestrator/orchestration-runtime':
+        specifier: workspace:*
+        version: link:../orchestration-runtime
+      '@ai-native-software-delivery-orchestrator/persistence':
+        specifier: workspace:*
+        version: link:../persistence
+      '@ai-native-software-delivery-orchestrator/planning':
+        specifier: workspace:*
+        version: link:../planning
+      '@ai-native-software-delivery-orchestrator/repository-analysis':
+        specifier: workspace:*
+        version: link:../repository-analysis
+      '@ai-native-software-delivery-orchestrator/run-preparation':
+        specifier: workspace:*
+        version: link:../run-preparation
+      '@ai-native-software-delivery-orchestrator/runtime-guard':
+        specifier: workspace:*
+        version: link:../runtime-guard
+      '@ai-native-software-delivery-orchestrator/workspace-git':
+        specifier: workspace:*
+        version: link:../workspace-git
+
+  libs/forge-runtime-contracts:
+    dependencies:
       zod:
         specifier: 4.6.5
         version: 4.6.5
@@ -397,6 +439,9 @@ importers:
 
   libs/temporal-runtime:
     dependencies:
+      '@ai-native-software-delivery-orchestrator/forge-runtime-contracts':
+        specifier: workspace:*
+        version: link:../forge-runtime-contracts
       '@temporalio/activity':
         specifier: ^1.24.0
         version: 1.24.0
@@ -3935,9 +3980,6 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
-  zod@4.4.3:
-    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
-
   zod@4.6.5:
     resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
 
@@ -4796,8 +4838,8 @@ snapshots:
     dependencies:
       '@opentelemetry/semantic-conventions': 1.43.0
       ws: 8.21.3
-      zod: 4.4.3
-      zod-to-json-schema: 3.25.2(zod@4.4.3)
+      zod: 4.6.5
+      zod-to-json-schema: 3.25.2(zod@4.6.5)
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
@@ -7123,14 +7165,8 @@ snapshots:
       compress-commons: 6.0.2
       readable-stream: 4.7.0
 
-  zod-to-json-schema@3.25.2(zod@4.4.3):
-    dependencies:
-      zod: 4.4.3
-
   zod-to-json-schema@3.25.2(zod@4.6.5):
     dependencies:
       zod: 4.6.5
-
-  zod@4.4.3: {}
 
   zod@4.6.5: {}

@@ -55,6 +55,12 @@
       "path": "./libs/runtime-v2-spike-harness"
     },
     {
+      "path": "./libs/forge-runtime-contracts"
+    },
+    {
+      "path": "./libs/forge-runtime-composition"
+    },
+    {
       "path": "./libs/temporal-runtime"
     },
     {

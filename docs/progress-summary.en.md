@@ -2667,3 +2667,30 @@ Scope and remaining work:
 - this stage deliberately excludes runtime-conflict parity. ADR-027 defers cross-runtime conflict behavior to the later Stage 22/22R suite;
 - deterministic seams do not claim to replace real Git, external agent session, or model-provider integration coverage. Those side effects remain covered by their dedicated integration tests;
 - M3.6 is closed and frozen for the two ADR-027 migration scenarios. M3.3 through M3.6 authority semantics must change only when a real contract regression is found.
+
+## Stage M3.7: Provider-neutral Forge runtime composition
+
+M3.7 extracts the production Forge activity composition from the Temporal worker application without changing the selected durable runtime or any Forge authority rule. ADR-028 still selects Temporal. The purpose of this stage is to make the SQLite-backed Forge service stack reusable by a future provider adapter, rather than duplicating it inside another worker or treating the older Restate spike as production evidence.
+
+What was built:
+
+- `forge-runtime-contracts` now owns the compact Forge run, activity, repair-wake, and activity-port contracts. These contracts contain only serializable identifiers and results; they do not expose Temporal, Restate, persistence-provider, compiler, or domain implementation objects;
+- `forge-runtime-composition` now owns the former production Temporal worker composition: SQLite recovery, write-guard hydration, ACTIVE-only claims, builder/evaluation/repair/integration services, cancellation reconciliation, exact blocked-repair continuation, and run progression/finalization;
+- the shared composition has no Temporal SDK import. A provider may optionally supply an activity execution context containing a cancellation signal. Absence of that signal does not create authority or bypass any durable validation;
+- the Temporal worker is now a small compatibility adapter. It supplies `Context.current().cancellationSignal` when an activity runs under Temporal and safely supplies no signal to direct composition tests;
+- existing Temporal contract exports remain available through the Temporal package as a deliberate compatibility boundary, while their implementation is provided by the neutral contracts library;
+- `SandboxedPackageScriptVerifier` is exported from the existing `run-preparation` public boundary so the extracted composition does not reach into another package's source tree.
+
+What was verified:
+
+- the extracted composition type-checks together with the contracts library, Temporal runtime, and Temporal worker;
+- the existing production composition tests still pass, including durable recovery, cancellation, integration-claim, and blocked-repair authority coverage;
+- the real Temporal workflow topology tests still pass, proving the workflow bundle can consume the relocated compact contracts;
+- the new composition library has no dependency on `@temporalio/*` or the Temporal runtime package.
+
+Scope and remaining work:
+
+- this is an extraction only. It does not add a Restate production runtime, Restate worker, or Restate parity claim;
+- the synthetic `restate-spike` and its authority fixture remain historical candidate evidence, not a production Forge execution path;
+- a future provider adapter must reuse the neutral contracts and composition, then independently prove production-stack parity and any required split service/executor restart behavior;
+- M3.3 through M3.6 remain frozen. M3.7 preserves their durable authority semantics and changes only code ownership and provider boundaries.

@@ -9,6 +9,7 @@
   "include": ["src/**/*.ts"],
   "exclude": [],
   "references": [
+    { "path": "../../libs/forge-runtime-composition/tsconfig.lib.json" },
     { "path": "../../libs/agent-runtime/tsconfig.lib.json" },
     { "path": "../../libs/domain/tsconfig.lib.json" },
     { "path": "../../libs/orchestration-runtime/tsconfig.lib.json" },

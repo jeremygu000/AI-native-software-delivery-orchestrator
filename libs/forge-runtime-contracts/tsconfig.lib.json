@@ -9,6 +9,6 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../forge-runtime-contracts/tsconfig.lib.json" }],
+  "references": [],
   "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"]
 }

@@ -2359,3 +2359,30 @@ M3.6 证明 legacy `OrchestrationRuntime` 与生产 Temporal Runtime V2 workflow
 - 本阶段刻意不包含 runtime-conflict parity。ADR-027 将跨 runtime 的 conflict behavior 延后到 Stage 22/22R suite；
 - 确定性 seam 并不声称替代真实 Git、外部 agent session 或 model-provider integration coverage。这些外部副作用仍由专门的 integration test 覆盖；
 - M3.6 在这两个 ADR-027 迁移场景范围内已经关闭并冻结。除非发现真实的 contract regression，否则不能修改 M3.3 至 M3.6 的 authority semantics。
+
+## Stage M3.7：Provider-neutral Forge runtime composition
+
+M3.7 将生产 Forge activity composition 从 Temporal worker application 中提取出来，但不改变选定的 durable runtime，也不改变任何 Forge authority rule。ADR-028 仍然选择 Temporal。本阶段的目的是让未来 provider adapter 能复用 SQLite-backed Forge service stack，而不是在另一个 worker 中复制它，或把较早的 Restate spike 当成生产证据。
+
+已构建：
+
+- `forge-runtime-contracts` 现在拥有紧凑的 Forge run、activity、repair-wake 与 activity-port contract。这些 contract 只包含可序列化的 identifier 和 result；不会暴露 Temporal、Restate、persistence-provider、compiler 或 domain implementation object；
+- `forge-runtime-composition` 现在拥有原生产 Temporal worker composition：SQLite recovery、write-guard hydration、ACTIVE-only claim、builder/evaluation/repair/integration service、cancellation reconciliation、精确 blocked-repair continuation，以及 run progression/finalization；
+- 共享 composition 不导入 Temporal SDK。provider 可以选择提供一个包含 cancellation signal 的 activity execution context。没有该 signal 不会产生 authority，也不会绕过任何 durable validation；
+- Temporal worker 现在是很小的 compatibility adapter。activity 在 Temporal 下运行时它提供 `Context.current().cancellationSignal`；direct composition test 则安全地不提供 signal；
+- 现有 Temporal contract export 作为刻意的 compatibility boundary 仍可从 Temporal package 获取，但实现由 neutral contracts library 提供；
+- `SandboxedPackageScriptVerifier` 已从已有的 `run-preparation` public boundary 导出，因此提取后的 composition 不再进入其他 package 的 source tree。
+
+已验证：
+
+- 提取后的 composition 会与 contracts library、Temporal runtime 和 Temporal worker 一起通过 type-check；
+- 既有 production composition test 仍然通过，其中包含 durable recovery、cancellation、integration-claim 和 blocked-repair authority coverage；
+- 真实 Temporal workflow topology test 仍然通过，证明 workflow bundle 能消费已迁移的 compact contract；
+- 新 composition library 不依赖 `@temporalio/*` 或 Temporal runtime package。
+
+范围与剩余工作：
+
+- 这只是 extraction。不新增 Restate production runtime、Restate worker 或 Restate parity claim；
+- synthetic `restate-spike` 与其 authority fixture 仍是历史 candidate evidence，不是生产 Forge execution path；
+- 未来 provider adapter 必须复用 neutral contracts 与 composition，然后独立证明 production-stack parity 以及所需的 split service/executor restart behavior；
+- M3.3 至 M3.6 仍然冻结。M3.7 保留其 durable authority semantics，只改变代码所有权和 provider boundary。
