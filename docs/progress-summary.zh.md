@@ -2293,3 +2293,40 @@ Stage 24 为 CLI 添加了运行操作和恢复控制命令。
 ## 历史说明：早期 worker composition-root 表述
 
 早前的草稿把 worker composition root 单独写成一个阶段；这部分工作已经并入 M3.3，不应再当作独立的 M3.4 交付物。
+
+## Stage M3.5：持久化取消授权与运维控制
+
+M3.5 在不重新打开已冻结的 M3.3 Scenario A 和 M3.4 Scenario B 授权合同的前提下，补齐运维控制能力。它的目标是让取消操作可持久化、可观察，并且不会在可能修改 workspace 的工作旁产生错误授权。
+
+完成的内容：
+
+- 取消采用两阶段的持久化状态变化：ACTIVE run 先进入 CANCEL_REQUESTED，只有已经取得授权的 mutation 工作全部完成后，才进入 CANCELLED；
+- builder 和 repair 执行开始前会原子地取得 ACTIVE run 授权。取消请求发出后，任何新的 mutation 都不能再取得这份授权；
+- 对于无法确认外部执行是否已经停止的 attempt，系统会记录为 UNKNOWN，而不是直接当作已取消。operator 必须在独立确认外部工作已经停止后，显式进行 settlement；
+- accepted-output integration 也有独立的持久化 in-flight claim。worker 会在 run 仍为 ACTIVE 时、调用面向 Git 的 integration 前取得它；取消 finalization 会一直保持 pending，直到该 claim 被释放。因此终态 CANCELLED 不会与仍可能修改 workspace 的 integration 并发发生；
+- Pi agent 的取消现在区分“发出请求”和“已经确认”。只有 provider session 成功确认 `abort()` 后，runner 才会报告 cancelled。abort 失败或含义不明确的错误会向上传播，已有的 builder 和 repair 路径会保留 active lease 并持久化 UNKNOWN，而不是错误地释放授权；
+- CLI 提供 `forge status`、`forge cancel` 和 `forge settle-cancellation`，让 operator 可以查看 run、请求取消，并显式处理此前为 UNKNOWN 的取消 attempt。
+
+为什么这很重要：
+
+- 发出取消请求不等于外部进程、agent 或 Git 操作已经停止；
+- 持久化 claim 会把“是否允许 mutation”的判断与 run 状态做成原子操作，覆盖 integration read gate 与外部 Git effect 之间极窄但关键的时间窗口；
+- 对不确定的工作保持 UNKNOWN，可以避免后续执行误以为 workspace 已安全，而此前的进程实际上仍可能修改它。
+
+验证了什么：
+
+- worker 和 SQLite persistence 的聚焦回归套件通过，其中包括 accepted-output integration 被暂停时取消必须保持 pending，直到 integration 完成的场景；
+- Pi gateway 和 Pi runner 的聚焦套件通过，其中包括 provider `abort()` 失败必须向上传播、不能被误判为取消确认的场景；
+- `pnpm typecheck` 通过；
+- `pnpm lint` 通过；
+- `pnpm test` 通过：674 passed，1 skipped；
+- `pnpm build` 通过，包括 TypeScript project-reference build 和 CLI bundle。
+
+当前限制：
+
+- 取消并不是对任意外部工具的强制终止保证。对 UNKNOWN attempt 使用 `forge settle-cancellation` 前，operator 必须独立确认外部进程已经停止，并且不再可能修改 workspace；
+- 本阶段没有引入通用的跨进程 fencing protocol、外部发布流程或远程触发控制面。
+
+阶段结果：
+
+- M3.5 的持久化取消授权与运维控制范围已经关闭并冻结。除非发现真实的 contract regression，否则不能修改 M3.3、M3.4 和 M3.5 的 authority semantics。

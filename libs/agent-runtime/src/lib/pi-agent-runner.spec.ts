@@ -179,6 +179,20 @@ class PostStartFailingPiGateway implements PiSessionGateway {
   }
 }
 
+class AbortFailingPiGateway implements PiSessionGateway {
+  readonly #controller: AbortController;
+
+  constructor(controller: AbortController) {
+    this.#controller = controller;
+  }
+
+  async start(options: Parameters<PiSessionGateway['start']>[0]): Promise<{ readonly sessionId: string }> {
+    await options.onStarted('pi-session-1');
+    this.#controller.abort();
+    throw new Error('Pi abort failed.');
+  }
+}
+
 class DeniedPiGateway implements PiSessionGateway {
   async start(options: {
     readonly cwd: string;
@@ -1264,6 +1278,52 @@ describe('PiAgentRunner', () => {
     await expect(runner.run(request(workspacePath, async () => {}))).rejects.toThrow(
       'Pi connection lost.'
     );
+  });
+
+  it('throws a provider abort failure after cancellation rather than reporting cancelled', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'pi-runner-'));
+    directories.push(workspacePath);
+    const controller = new AbortController();
+    const runner = new PiAgentRunner({
+      gateway: new AbortFailingPiGateway(controller),
+      createTools: (agentRequest) =>
+        new AgentToolRuntime({
+          runId: agentRequest.runId,
+          taskId: agentRequest.taskId,
+          attemptId: agentRequest.attempt.id,
+          agentId: agentRequest.attempt.agentId,
+          workspacePath: agentRequest.workspace.workspacePath,
+          resolveResource: (path) => ({ type: 'file', projectId: 'core', fileId: `core:${path}` }),
+          resolveFileId: (path) => `core:${path}`,
+          writeGuard: new InMemoryWriteGuard(),
+          persistence: {
+            createRun: async () => {},
+            persistReevaluation: async () => {},
+            persistDispatch: async () => {},
+            persistImpact: async () => {},
+            persistConflict: async () => {},
+            persistLease: async () => {},
+            persistWorkspace: async () => {},
+            persistAttempt: async () => {},
+            updateRunState: async () => {},
+            recoverRun: async () => undefined,
+            recoverTaskBindings: async () => [],
+            recoverTaskBinding: async () => undefined,
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
+          }
+        })
+    });
+
+    await expect(
+      runner.run({ ...request(workspacePath, async () => {}), cancellationSignal: controller.signal })
+    ).rejects.toThrow('Pi abort failed.');
   });
 
   it('returns completed after a denied non-mutating Pi tool request', async () => {

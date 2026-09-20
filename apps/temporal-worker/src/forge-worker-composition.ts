@@ -11,6 +11,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import type {
   ActiveMutationClaimPersistence,
+  IntegrationMutationClaimPersistence,
   AgentExecutionAttempt,
   CancellationPersistence,
   OrchestrationPersistence,
@@ -167,6 +168,7 @@ type ForgeWorkerPersistence =
   & OrchestrationPersistence
   & CancellationPersistence
   & ActiveMutationClaimPersistence
+  & IntegrationMutationClaimPersistence
   & TaskCodeReviewStore
   & TaskVerificationEvidenceStore
   & TaskRepairAdmissionStore
@@ -744,6 +746,13 @@ export async function createForgeWorkerComposition(
       ) {
         throw new Error(`Accepted subject mismatch for ${input.runId}/${input.taskId}`);
       }
+      const integrationClaim = {
+        runId: input.runId,
+        taskId: input.taskId,
+        workspaceId: acceptedSubject.workspaceId,
+        outputAttemptId: acceptedSubject.outputAttemptId
+      };
+      await persistence.claimIntegrationStart(integrationClaim);
       const result = await integration.integrate({
         runId: input.runId,
         taskId: input.taskId,
@@ -751,6 +760,7 @@ export async function createForgeWorkerComposition(
         subject: acceptedSubject,
         task: context.task
       });
+      await persistence.releaseIntegrationClaim(integrationClaim);
       if (result.status === 'integrated') {
         await progression.advance(input.runId, {
           type: 'verification-completed',
@@ -784,6 +794,9 @@ export async function createForgeWorkerComposition(
         );
       }
       if (recovered.leases.some(({ lease }) => lease.state === 'ACTIVE')) {
+        return { runId: input.runId, status: 'pending' };
+      }
+      if (await persistence.hasActiveIntegrationClaim(input.runId)) {
         return { runId: input.runId, status: 'pending' };
       }
       const repairAttempts = await persistence.recoverRepairAttempts(input.runId);

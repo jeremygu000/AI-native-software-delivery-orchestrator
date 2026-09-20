@@ -4,6 +4,14 @@ import { Type } from 'typebox';
 
 type PiSdkSessionOptions = Parameters<typeof createAgentSession>[0];
 
+/** Thrown only after the provider acknowledged that its session has stopped. */
+export class PiSessionCancellationConfirmedError extends Error {
+  constructor() {
+    super('Pi session cancellation was confirmed');
+    this.name = 'PiSessionCancellationConfirmedError';
+  }
+}
+
 interface PiSessionFacade {
   readonly sessionId: string;
   setActiveToolsByName(toolNames: string[]): void;
@@ -149,19 +157,38 @@ export class PiCodingAgentGateway implements PiSessionGateway {
     session.setActiveToolsByName([...options.tools]);
     await options.onStarted(session.sessionId);
     const cancellationSignal = options.cancellationSignal;
-    const abort = () => void session.abort();
-    cancellationSignal?.addEventListener('abort', abort, { once: true });
+    let abortPromise: Promise<void> | undefined;
+    let rejectCancellation: (error: unknown) => void;
+    const cancellationOutcome = new Promise<never>((_resolve, reject) => {
+      rejectCancellation = reject;
+    });
+    const abort = () => {
+      abortPromise ??= session.abort().then(
+        () => {
+          rejectCancellation(new PiSessionCancellationConfirmedError());
+        },
+        (error: unknown) => {
+          rejectCancellation(error);
+        }
+      );
+      return abortPromise;
+    };
+    const abortOnCancellation = () => {
+      void abort();
+    };
+    cancellationSignal?.addEventListener('abort', abortOnCancellation, { once: true });
     try {
       if (cancellationSignal?.aborted) {
         await session.abort();
-        throw new Error('Pi session cancelled before prompt');
+        throw new PiSessionCancellationConfirmedError();
       }
-      await session.prompt(options.prompt);
+      await Promise.race([session.prompt(options.prompt), cancellationOutcome]);
       if (cancellationSignal?.aborted) {
-        throw new Error('Pi session cancelled during prompt');
+        await abort();
+        throw new PiSessionCancellationConfirmedError();
       }
     } finally {
-      cancellationSignal?.removeEventListener('abort', abort);
+      cancellationSignal?.removeEventListener('abort', abortOnCancellation);
     }
     return { sessionId: session.sessionId };
   }

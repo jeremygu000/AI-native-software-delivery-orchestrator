@@ -2601,3 +2601,40 @@ What this stage enables next:
 ## Historical note: earlier worker composition-root wording
 
 Earlier drafts described the worker composition root as a separate stage. That work is now absorbed into M3.3 and should not be treated as a separate upcoming M3.4 deliverable.
+
+## Stage M3.5: Durable cancellation authority and operator control
+
+M3.5 adds operational control without reopening the frozen M3.3 Scenario A or M3.4 Scenario B authority contracts. Its purpose is to make cancellation durable, observable, and safe around work that can mutate a workspace.
+
+What was built:
+
+- cancellation is a two-phase durable state change: an ACTIVE run first becomes CANCEL_REQUESTED, and becomes CANCELLED only after its already-authorized mutation work has settled;
+- builder and repair execution claim ACTIVE-run authority atomically before starting. Once cancellation is requested, no new mutation can acquire that authority;
+- an attempt whose external execution cannot be confirmed stopped is recorded as UNKNOWN rather than being treated as cancelled. An operator must explicitly settle that attempt after independently confirming it is no longer running;
+- accepted-output integration has its own durable in-flight claim. The worker acquires it while the run is ACTIVE before calling Git-facing integration, and cancellation finalization remains pending until the claim is released. A terminal CANCELLED state therefore cannot race an integration that is still able to mutate a workspace;
+- Pi agent cancellation now distinguishes a request from confirmation. The runner reports cancelled only after the provider session confirms `abort()` succeeded. Abort failures or ambiguous errors propagate, so the existing builder and repair paths retain their active leases and persist UNKNOWN instead of falsely releasing authority;
+- the CLI exposes `forge status`, `forge cancel`, and `forge settle-cancellation` so operators can inspect a run, request cancellation, and explicitly settle a previously UNKNOWN cancellation attempt.
+
+Why this matters:
+
+- a cancellation request is not proof that an external process, agent, or Git operation has stopped;
+- durable claims make the decision about whether a mutation is allowed atomic with the run state, including the narrow period between an integration read gate and its external Git effects;
+- keeping uncertain work UNKNOWN prevents a later execution from assuming the workspace is safe while an earlier process may still mutate it.
+
+What was verified:
+
+- focused worker and SQLite persistence regression suites passed, including a paused accepted-output integration where cancellation remains pending until integration settles;
+- focused Pi gateway and Pi runner suites passed, including a provider `abort()` failure that propagates instead of becoming a false cancellation confirmation;
+- `pnpm typecheck` passed;
+- `pnpm lint` passed;
+- `pnpm test` passed with 674 passed and 1 skipped tests;
+- `pnpm build` passed, including TypeScript project-reference builds and the CLI bundle.
+
+Current limitations:
+
+- cancellation is not a kill guarantee for arbitrary external tools. Before using `forge settle-cancellation` on an UNKNOWN attempt, an operator must independently verify that the external process has stopped and can no longer mutate the workspace;
+- this stage does not introduce a general cross-process fencing protocol, external publication workflow, or remote trigger control plane.
+
+Stage outcome:
+
+- M3.5 is closed and frozen for durable cancellation authority and operator control. M3.3, M3.4, and M3.5 authority semantics must change only when a real contract regression is found.

@@ -310,6 +310,26 @@ export interface ActiveMutationClaimPersistence {
 }
 
 /**
+ * Tracks Git integration after it atomically acquired ACTIVE-run authority.
+ * Cancellation must not finalize while this external mutation remains in flight.
+ */
+export interface IntegrationMutationClaimPersistence {
+  claimIntegrationStart(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly outputAttemptId: string;
+  }): Promise<void>;
+  releaseIntegrationClaim(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly outputAttemptId: string;
+  }): Promise<void>;
+  hasActiveIntegrationClaim(runId: string): Promise<boolean>;
+}
+
+/**
  * Operator-only settlement of an UNKNOWN external agent during cancellation.
  * The caller must have independently confirmed the external process stopped.
  */

@@ -5,7 +5,12 @@ import {
 
 import { AgentCommandRuntime, SandboxedAgentCommandExecutor } from './agent-command-runtime.js';
 import { AgentToolDeniedError, AgentToolRuntime } from './agent-tool-runtime.js';
-import type { PiSessionGateway, PiToolCall, PiToolResult } from './pi-gateway.js';
+import {
+  PiSessionCancellationConfirmedError,
+  type PiSessionGateway,
+  type PiToolCall,
+  type PiToolResult
+} from './pi-gateway.js';
 
 export class PiAgentRunner implements AgentRunner {
   readonly #gateway: PiSessionGateway;
@@ -95,10 +100,10 @@ export class PiAgentRunner implements AgentRunner {
         additionalLeases: tools.leases()
       };
     } catch (error) {
-      if (request.cancellationSignal?.aborted === true) {
+      if (error instanceof PiSessionCancellationConfirmedError) {
         return {
           status: 'cancelled' as const,
-          detail: 'Pi agent session was cancelled'
+          detail: 'Pi agent session cancellation was confirmed'
         };
       }
       if (sessionEstablished) {

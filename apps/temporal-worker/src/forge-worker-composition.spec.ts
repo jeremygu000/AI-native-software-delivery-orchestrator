@@ -3,6 +3,7 @@ import type {
   AgentExecutionAttempt,
   CancellationPersistence,
   CreatePersistedRunRequest,
+  IntegrationMutationClaimPersistence,
   OrchestrationPersistence,
   PersistedAgentExecutionAttempt,
   PersistedDispatch,
@@ -48,6 +49,7 @@ class MemoryPersistence
     OrchestrationPersistence,
     CancellationPersistence,
     ActiveMutationClaimPersistence,
+    IntegrationMutationClaimPersistence,
     TaskCodeReviewStore,
     TaskVerificationEvidenceStore,
     TaskRepairAdmissionStore,
@@ -65,6 +67,12 @@ class MemoryPersistence
   readonly repairWorkItems: TaskRepairWorkItem[] = [];
   readonly leases: PersistedWriteLease[] = [];
   readonly repairResumeDispatches: PersistedRepairResumeDispatch[] = [];
+  readonly integrationClaims: {
+    runId: string;
+    taskId: string;
+    workspaceId: string;
+    outputAttemptId: string;
+  }[] = [];
 
   async createRun(request: CreatePersistedRunRequest): Promise<void> {
     this.request = request;
@@ -176,6 +184,53 @@ class MemoryPersistence
     }
     this.attempts[index] = record;
     return record.attempt;
+  }
+
+  async claimIntegrationStart(request: {
+    runId: string;
+    taskId: string;
+    workspaceId: string;
+    outputAttemptId: string;
+  }): Promise<void> {
+    if (this.state !== 'ACTIVE') {
+      throw new Error(`Run is not active: ${request.runId}`);
+    }
+    const existing = this.integrationClaims.find(
+      (claim) => claim.runId === request.runId && claim.taskId === request.taskId
+    );
+    if (existing === undefined) {
+      this.integrationClaims.push(request);
+      return;
+    }
+    if (
+      existing.workspaceId !== request.workspaceId ||
+      existing.outputAttemptId !== request.outputAttemptId
+    ) {
+      throw new Error(`Integration mutation claim authority mismatch: ${request.runId}/${request.taskId}`);
+    }
+  }
+
+  async releaseIntegrationClaim(request: {
+    runId: string;
+    taskId: string;
+    workspaceId: string;
+    outputAttemptId: string;
+  }): Promise<void> {
+    const index = this.integrationClaims.findIndex(
+      (claim) =>
+        claim.runId === request.runId &&
+        claim.taskId === request.taskId &&
+        claim.workspaceId === request.workspaceId &&
+        claim.outputAttemptId === request.outputAttemptId
+    );
+    if (index < 0) {
+      throw new Error(`Integration mutation claim is missing or mismatched: ${request.runId}/${request.taskId}`);
+    }
+    this.integrationClaims.splice(index, 1);
+  }
+
+  async hasActiveIntegrationClaim(runId: string): Promise<boolean> {
+    return this.integrationClaims.some((claim) => claim.runId === runId);
   }
 
   async updateRunState(_runId: string, state: RecoveredRun['run']['state']): Promise<void> {
@@ -700,6 +755,93 @@ describe('temporal worker production vertical slice', () => {
       composition.forgeActivities.finalizeRunCancellation?.({ runId: 'run-1' })
     ).resolves.toEqual({ runId: 'run-1', status: 'pending' });
     expect(persistence.state).toBe('CANCEL_REQUESTED');
+
+    await composition.close();
+  });
+
+  it('keeps cancellation pending while accepted-output integration is in flight', async () => {
+    const persistence = new MemoryPersistence();
+    const request = createRunRequest(['task-a']);
+    await persistence.createRun(request);
+    const [binding] = request.taskBindings;
+    const workspace: TaskWorkspace = {
+      ...binding.workspace,
+      revision: 1,
+      phase: 'READY_TO_INTEGRATE'
+    };
+    const subject = {
+      builderAttemptId: 'builder-attempt-1',
+      outputAttemptId: 'output-attempt-1',
+      workspaceId: workspace.id,
+      workspaceRevision: workspace.revision,
+      workspaceChangeFingerprint: 'sha256:'.concat('a'.repeat(64)),
+      impactFingerprint: 'sha256:'.concat('b'.repeat(64)),
+      verificationFingerprint: 'sha256:'.concat('c'.repeat(64))
+    };
+    await persistence.persistWorkspace({ runId: 'run-1', workspace });
+    await persistence.persistReview({
+      runId: 'run-1',
+      taskId: 'task-a',
+      iteration: 1,
+      subject,
+      review: { recommendation: 'accept', summary: 'accepted', findings: [] }
+    });
+    let integrationEntered!: () => void;
+    const integrationStarted = new Promise<void>((resolve) => {
+      integrationEntered = resolve;
+    });
+    let settleIntegration!: () => void;
+    const integrationSettled = new Promise<void>((resolve) => {
+      settleIntegration = resolve;
+    });
+    const composition = await createForgeWorkerComposition({
+      persistence,
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
+      integration: {
+        async integrate(integrationRequest) {
+          integrationEntered();
+          await integrationSettled;
+          const integrated: TaskWorkspace = {
+            ...integrationRequest.workspace,
+            revision: integrationRequest.workspace.revision + 1,
+            phase: 'INTEGRATED',
+            integrationCommit: 'commit-task-a'
+          };
+          await persistence.persistWorkspace({ runId: integrationRequest.runId, workspace: integrated });
+          return { status: 'integrated', workspace: integrated };
+        }
+      } satisfies IntegrationOverride,
+      repairExecution: unusedRepairExecution(),
+      repositoryGraph: emptyRepositoryGraph
+    });
+
+    const integration = composition.forgeActivities.integrateAcceptedOutput({
+      runId: 'run-1',
+      taskId: 'task-a',
+      workspaceId: workspace.id,
+      subjectRef: {
+        builderAttemptId: subject.builderAttemptId,
+        outputAttemptId: subject.outputAttemptId,
+        workspaceId: subject.workspaceId
+      }
+    });
+    await integrationStarted;
+    await expect(persistence.requestCancellation()).resolves.toEqual({
+      status: 'requested',
+      state: 'CANCEL_REQUESTED'
+    });
+    await expect(
+      composition.forgeActivities.finalizeRunCancellation?.({ runId: 'run-1' })
+    ).resolves.toEqual({ runId: 'run-1', status: 'pending' });
+    expect(persistence.state).toBe('CANCEL_REQUESTED');
+
+    settleIntegration();
+    await expect(integration).resolves.toEqual({ runId: 'run-1', taskId: 'task-a', status: 'integrated' });
+    await expect(
+      composition.forgeActivities.finalizeRunCancellation?.({ runId: 'run-1' })
+    ).resolves.toEqual({ runId: 'run-1', status: 'cancelled' });
+    expect(persistence.state).toBe('CANCELLED');
 
     await composition.close();
   });

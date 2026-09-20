@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createControlledPiTools,
   PiCodingAgentGateway,
+  PiSessionCancellationConfirmedError,
   type PiSessionFactory
 } from './pi-gateway.js';
 
@@ -195,9 +196,41 @@ describe('PiCodingAgentGateway', () => {
         },
         cancellationSignal: controller.signal
       })
-    ).rejects.toThrow('Pi session cancelled before prompt');
+    ).rejects.toBeInstanceOf(PiSessionCancellationConfirmedError);
 
     expect(abort).toHaveBeenCalledOnce();
     expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('propagates a provider abort failure instead of confirming cancellation', async () => {
+    const controller = new AbortController();
+    const abort = vi.fn(async () => {
+      throw new Error('Pi abort failed.');
+    });
+    const prompt = vi.fn(async () => {
+      controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      throw new Error('Pi prompt interrupted.');
+    });
+    const gateway = new PiCodingAgentGateway(async () => ({
+      session: {
+        sessionId: 'pi-session-1',
+        setActiveToolsByName: vi.fn(),
+        prompt,
+        abort
+      }
+    }));
+
+    await expect(
+      gateway.start({
+        cwd: '/workspace',
+        prompt: 'Change value',
+        tools: ['forge_read'],
+        executeTool: async () => ({ content: 'unused' }),
+        onStarted: async () => {},
+        cancellationSignal: controller.signal
+      })
+    ).rejects.toThrow('Pi abort failed.');
+    expect(abort).toHaveBeenCalledOnce();
   });
 });

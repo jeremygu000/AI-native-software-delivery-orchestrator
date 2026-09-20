@@ -1547,6 +1547,35 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     persistence.close();
   });
 
+  it('keeps integration claims visible through cancellation until the exact mutation settles', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    await persistence.createRun(createRunRequest());
+    const claim = {
+      runId: 'run-1',
+      taskId: 'B',
+      workspaceId: 'workspace-B',
+      outputAttemptId: 'output-attempt-1'
+    };
+
+    await expect(persistence.claimIntegrationStart(claim)).resolves.toBeUndefined();
+    await expect(persistence.claimIntegrationStart(claim)).resolves.toBeUndefined();
+    await expect(
+      persistence.claimIntegrationStart({ ...claim, outputAttemptId: 'output-attempt-2' })
+    ).rejects.toThrow('Integration mutation claim authority mismatch: run-1/B');
+    await expect(persistence.hasActiveIntegrationClaim('run-1')).resolves.toBe(true);
+    await expect(persistence.requestCancellation('run-1')).resolves.toEqual({
+      status: 'requested',
+      state: 'CANCEL_REQUESTED'
+    });
+    await expect(persistence.hasActiveIntegrationClaim('run-1')).resolves.toBe(true);
+    await expect(
+      persistence.claimIntegrationStart({ ...claim, taskId: 'C', workspaceId: 'workspace-C' })
+    ).rejects.toThrow('Mutation claim requires ACTIVE run: run-1/CANCEL_REQUESTED');
+    await expect(persistence.releaseIntegrationClaim(claim)).resolves.toBeUndefined();
+    await expect(persistence.hasActiveIntegrationClaim('run-1')).resolves.toBe(false);
+    persistence.close();
+  });
+
   it('serializes concurrently requested consecutive reevaluations', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     await persistence.createRun(createRunRequest());

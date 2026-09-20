@@ -5,6 +5,7 @@ import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import type {
   CreatePersistedRunRequest,
   ActiveMutationClaimPersistence,
+  IntegrationMutationClaimPersistence,
   CancellationSettlementPersistence,
   CancellationSettlementResult,
   CancellationFinalizationResult,
@@ -177,6 +178,13 @@ const integrations = sqliteTable('task_integrations', {
   runId: text('run_id').primaryKey(),
   status: text('status').notNull(),
   outputAttemptId: text('output_attempt_id')
+});
+
+const integrationClaims = sqliteTable('task_integration_claims', {
+  runId: text('run_id').notNull(),
+  taskId: text('task_id').notNull(),
+  workspaceId: text('workspace_id').notNull(),
+  outputAttemptId: text('output_attempt_id').notNull()
 });
 
 const repairResumeDispatches = sqliteTable('repair_resume_dispatches', {
@@ -401,6 +409,7 @@ export class DrizzleSqliteOrchestrationPersistence
   implements
     OrchestrationPersistence,
     ActiveMutationClaimPersistence,
+    IntegrationMutationClaimPersistence,
     CancellationSettlementPersistence,
     TaskCodeReviewStore,
     TaskRepairAttemptStore,
@@ -528,6 +537,13 @@ export class DrizzleSqliteOrchestrationPersistence
         run_id TEXT NOT NULL PRIMARY KEY,
         status TEXT NOT NULL,
         output_attempt_id TEXT
+      );
+      CREATE TABLE IF NOT EXISTS task_integration_claims (
+        run_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        output_attempt_id TEXT NOT NULL,
+        PRIMARY KEY (run_id, task_id)
       );
       CREATE TABLE IF NOT EXISTS repair_resume_dispatches (
         run_id TEXT NOT NULL,
@@ -1023,6 +1039,78 @@ export class DrizzleSqliteOrchestrationPersistence
       this.#persistAttemptInTransaction(record);
       return record.attempt;
     })();
+  }
+
+  async claimIntegrationStart(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly outputAttemptId: string;
+  }): Promise<void> {
+    this.#assertIntegrationClaim(request);
+    this.#sqlite.transaction(() => {
+      this.#assertRunIsActive(request.runId);
+      const existing = this.#db
+        .select()
+        .from(integrationClaims)
+        .where(
+          and(
+            eq(integrationClaims.runId, request.runId),
+            eq(integrationClaims.taskId, request.taskId)
+          )
+        )
+        .get();
+      if (existing === undefined) {
+        this.#db.insert(integrationClaims).values(request).run();
+        return;
+      }
+      if (
+        existing.workspaceId !== request.workspaceId ||
+        existing.outputAttemptId !== request.outputAttemptId
+      ) {
+        throw new PersistenceInputError(
+          `Integration mutation claim authority mismatch: ${request.runId}/${request.taskId}`
+        );
+      }
+    })();
+  }
+
+  async releaseIntegrationClaim(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly outputAttemptId: string;
+  }): Promise<void> {
+    this.#assertIntegrationClaim(request);
+    this.#sqlite.transaction(() => {
+      const result = this.#db
+        .delete(integrationClaims)
+        .where(
+          and(
+            eq(integrationClaims.runId, request.runId),
+            eq(integrationClaims.taskId, request.taskId),
+            eq(integrationClaims.workspaceId, request.workspaceId),
+            eq(integrationClaims.outputAttemptId, request.outputAttemptId)
+          )
+        )
+        .run();
+      if (result.changes !== 1) {
+        throw new PersistenceInputError(
+          `Integration mutation claim is missing or mismatched: ${request.runId}/${request.taskId}`
+        );
+      }
+    })();
+  }
+
+  async hasActiveIntegrationClaim(runId: string): Promise<boolean> {
+    this.#assertRunId(runId);
+    return (
+      this.#db
+        .select({ taskId: integrationClaims.taskId })
+        .from(integrationClaims)
+        .where(eq(integrationClaims.runId, runId))
+        .get() !== undefined
+    );
   }
 
   async settleUnknownBuilderCancellation(request: {
@@ -2024,6 +2112,24 @@ export class DrizzleSqliteOrchestrationPersistence
   #assertRunExists(runId: string): void {
     if (this.#db.select().from(runs).where(eq(runs.id, runId)).get() === undefined) {
       throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
+    }
+  }
+
+  #assertIntegrationClaim(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly outputAttemptId: string;
+  }): void {
+    this.#assertRunId(request.runId);
+    for (const [name, value] of Object.entries({
+      taskId: request.taskId,
+      workspaceId: request.workspaceId,
+      outputAttemptId: request.outputAttemptId
+    })) {
+      if (value.trim().length === 0) {
+        throw new PersistenceInputError(`Integration mutation claim ${name} must not be empty`);
+      }
     }
   }
 
