@@ -97,6 +97,74 @@ describe('TemporalRunLauncher', () => {
 
       const firstLauncher = new TemporalRunLauncher({ persistence: firstPersistence, workflow });
       const secondLauncher = new TemporalRunLauncher({ persistence: secondPersistence, workflow });
+      const staleInitial = request('stale-run');
+      await firstPersistence.createRun({
+        run: staleInitial.run,
+        tasks: staleInitial.tasks,
+        taskBindings: staleInitial.taskBindings.map((binding) => ({
+          ...binding,
+          runId: staleInitial.run.id
+        })),
+        hardConflicts: [],
+        riskConflicts: [],
+        scheduleOptions: { maxConcurrency: 1 }
+      });
+      let staleDispatchReady!: () => void;
+      const staleDispatchRead = new Promise<void>((resolve) => {
+        staleDispatchReady = resolve;
+      });
+      let releaseStaleLauncher!: () => void;
+      const releaseStaleLauncherRead = new Promise<void>((resolve) => {
+        releaseStaleLauncher = resolve;
+      });
+      let blockStaleLauncher = true;
+      const stalePersistence = new Proxy(secondPersistence, {
+        get(target, property) {
+          if (property === 'recoverDispatches') {
+            return async (runId: string) => {
+              const dispatches = await target.recoverDispatches(runId);
+              if (runId === staleInitial.run.id && blockStaleLauncher) {
+                blockStaleLauncher = false;
+                staleDispatchReady();
+                await releaseStaleLauncherRead;
+              }
+              return dispatches;
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        }
+      });
+      const staleLauncher = new TemporalRunLauncher({ persistence: stalePersistence, workflow });
+      const staleLaunch = staleLauncher.startOrResumeRun(staleInitial);
+      await staleDispatchRead;
+      await firstLauncher.startOrResumeRun(staleInitial);
+      const staleRecovered = await firstPersistence.recoverRun(staleInitial.run.id);
+      const staleAttempt = staleRecovered?.attempts[0]?.attempt;
+      if (staleRecovered === undefined || staleAttempt === undefined) {
+        throw new Error('Initial stale launch did not persist an attempt');
+      }
+      await firstPersistence.persistAttempt({
+        runId: staleInitial.run.id,
+        attempt: {
+          ...staleAttempt,
+          state: 'STARTING',
+          revision: staleAttempt.revision + 1,
+          startedAt: new Date('2026-09-20T00:00:01.000Z')
+        }
+      });
+      releaseStaleLauncher();
+      await staleLaunch;
+      const afterStaleLaunch = await firstPersistence.recoverRun(staleInitial.run.id);
+      expect(afterStaleLaunch?.decisions).toHaveLength(1);
+      expect(afterStaleLaunch?.events).toHaveLength(1);
+      expect(afterStaleLaunch?.events[0]?.event).toEqual({ type: 'run-started' });
+      expect(afterStaleLaunch?.attempts).toHaveLength(1);
+      expect(afterStaleLaunch?.attempts[0]?.attempt).toMatchObject({
+        id: 'launch:stale-run:1',
+        state: 'STARTING',
+        revision: 2
+      });
       await Promise.all([
         firstLauncher.startOrResumeRun(request()),
         secondLauncher.startOrResumeRun(request())
@@ -140,7 +208,7 @@ describe('TemporalRunLauncher', () => {
         events: [{ event: { type: 'run-started' } }],
         attempts: [{ attempt: { id: 'launch:recovered-run:1', state: 'PREPARING' } }]
       });
-      expect(starts).toHaveLength(5);
+      expect(starts).toHaveLength(7);
     } finally {
       firstPersistence.close();
       secondPersistence.close();

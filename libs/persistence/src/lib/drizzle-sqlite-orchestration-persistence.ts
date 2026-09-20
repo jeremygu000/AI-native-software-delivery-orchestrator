@@ -716,7 +716,13 @@ export class DrizzleSqliteOrchestrationPersistence
     }
     await this.#exclusiveReevaluation(() =>
       this.#sqlite.transaction(() => {
+        const existing = this.#hasRecordedReevaluation(reevaluation);
         this.#persistReevaluationInTransaction(reevaluation);
+        // A matching scheduler decision is immutable authority. Its attempts may
+        // already have advanced, so a stale concurrent dispatch must not overwrite them.
+        if (existing) {
+          return;
+        }
         for (const attempt of attempts) {
           this.#persistAttemptInTransaction(attempt);
         }
@@ -2489,6 +2495,21 @@ export class DrizzleSqliteOrchestrationPersistence
         `Scheduler event sequence ${reevaluation.event.sequence} already recorded with different evidence`
       );
     }
+  }
+
+  #hasRecordedReevaluation(reevaluation: PersistedReevaluation): boolean {
+    return (
+      this.#db
+        .select({ sequence: schedulerEvents.sequence })
+        .from(schedulerEvents)
+        .where(
+          and(
+            eq(schedulerEvents.runId, reevaluation.event.runId),
+            eq(schedulerEvents.sequence, reevaluation.event.sequence)
+          )
+        )
+        .get() !== undefined
+    );
   }
 
   #decodeRunState(value: string): OrchestrationRunState {

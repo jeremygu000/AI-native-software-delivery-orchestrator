@@ -128,6 +128,33 @@ const projectEventState = (
 const sameEvent = (left: SchedulerEvent, right: SchedulerEvent): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
 
+const hasInitialRunStarted = (recovered: RecoveredRun): boolean => {
+  const initialEvent = recovered.events.find((event) => event.sequence === 1);
+  if (initialEvent === undefined) {
+    if (
+      recovered.events.length === 0 &&
+      recovered.decisions.length === 0 &&
+      recovered.attempts.length === 0
+    ) {
+      return false;
+    }
+    throw new ForgeRunProgressionError(
+      `Initial scheduler authority is missing sequence-one run-started: ${recovered.run.id}`
+    );
+  }
+  if (initialEvent.event.type !== 'run-started') {
+    throw new ForgeRunProgressionError(
+      `Initial scheduler authority must begin with run-started: ${recovered.run.id}`
+    );
+  }
+  if (!recovered.decisions.some((decision) => decision.sequence === 1)) {
+    throw new ForgeRunProgressionError(
+      `Initial scheduler authority is missing sequence-one decision: ${recovered.run.id}`
+    );
+  }
+  return true;
+};
+
 export class ForgeRunProgressionService {
   readonly #persistence: ForgeRunProgressionPersistence;
   readonly #scheduler: Scheduler;
@@ -170,7 +197,15 @@ export class ForgeRunProgressionService {
    * observe the same durable authorizations.
    */
   async advance(runId: string, event: SchedulerEvent): Promise<readonly ForgeRunAuthorization[]> {
-    return this.#advance(runId, event, []);
+    return this.#advance(runId, event, [], false);
+  }
+
+  /**
+   * Establishes sequence-one launch authority without replaying scheduling when
+   * another launcher has already committed it.
+   */
+  async ensureInitialRunStarted(runId: string): Promise<void> {
+    await this.#advance(runId, { type: 'run-started' }, [], true);
   }
 
   /**
@@ -202,16 +237,24 @@ export class ForgeRunProgressionService {
         taskId: request.taskId,
         conflictId: `runtime-scope:${conflictId}`
       },
-      runtimeConflicts
+      runtimeConflicts,
+      false
     );
   }
 
   async #advance(
     runId: string,
     event: SchedulerEvent,
-    runtimeConflicts: readonly HardTaskConflict[]
+    runtimeConflicts: readonly HardTaskConflict[],
+    stopAtInitialAuthority: boolean
   ): Promise<readonly ForgeRunAuthorization[]> {
     const recovered = await this.#requireRun(runId);
+
+    // Sequence one is immutable launch authority. This fresh recovery closes
+    // stale launcher snapshots after the initial PREPARING attempt has advanced.
+    if (stopAtInitialAuthority && event.type === 'run-started' && hasInitialRunStarted(recovered)) {
+      return [];
+    }
 
     const existing = await this.#findExistingDispatch(recovered, event);
     if (existing !== undefined) {
