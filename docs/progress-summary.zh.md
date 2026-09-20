@@ -2397,14 +2397,15 @@ M3.8 新增了一个隔离的 Restate runtime adapter，它消费 M3.7 的 provi
 - `restate-runtime` 拥有这个 adapter 的全部 Restate SDK import，并导出 `createRestateForgeRunService`；
 - 它的 Forge run workflow 镜像已选 provider 的 compact control flow：scheduler reevaluation、builder execution、output evaluation、repair admission/execution、accepted-output integration，以及 final run state；
 - blocked repair 通过精确 repair attempt ID 关联。wake 会先到达 `resumeBlockedRepair`；只有 durable `resumed` result 才能再次执行该 repair；
-- Restate durable promise 是 one-shot，因此 adapter 会保存当前 blocked repair，并在每个被忽略的 early/stale wake 后递增 durable wake generation。这让同一 repair 能继续等待后续有效 wake，而不会把 wake 本身当作 authority；
+- Restate durable promise 是 one-shot，因此 adapter 会在 execution 可能报告 `BLOCKED` 前 arm durable wake generation，并在每次 resume authorization 前 arm successor。这样可保留在 activity response 或 ignored authorization decision 期间到达的一次匹配 wake，而不会把 wake 本身当作 authority；
 - 新 runtime 不导入历史 `restate-spike` 或其 synthetic scenario service。
 
 已验证：
 
 - 一个 live `RestateTestEnvironment` test 使用 scripted compact activity port 运行新 service；
 - 错误 repair ID 不会产生 resume attempt；
-- 与 repair 匹配、但被 Forge 返回为 `ignored` 的 wake 不会执行 repair，workflow 会继续等待下一次匹配 wake；
+- Forge 已到达 `BLOCKED`、但 activity response 尚未返回时收到的一次匹配 wake 会被 buffer 并重新授权；
+- Forge 正在判定前一次 resume 为 `ignored` 时收到的一次后续 wake 会为已 arm 的 successor generation 保留；
 - 后续匹配 wake 返回 `resumed` 时会执行同一 repair ID、集成它的 accepted output、reevaluate 并 finalize run；
 - adapter 能通过 type-check、lint、format，并参与 workspace build 与 test configuration。
 

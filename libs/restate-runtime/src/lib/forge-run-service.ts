@@ -18,6 +18,16 @@ const wakeKey = (repairAttemptId: string, generation: number): string =>
 const currentRepairStateKey = 'forge.currentBlockedRepairAttemptId';
 const wakeGenerationStateKey = 'forge.repairWakeGeneration';
 
+const armRepairWake = async (
+  ctx: restate.WorkflowContext,
+  repairAttemptId: string
+): Promise<number> => {
+  const generation = ((await ctx.get<number>(wakeGenerationStateKey)) ?? 0) + 1;
+  ctx.set(currentRepairStateKey, repairAttemptId);
+  ctx.set(wakeGenerationStateKey, generation);
+  return generation;
+};
+
 /**
  * Creates the Restate adapter for the provider-neutral Forge activity port.
  * Restate journals coordination only; every durable authority decision remains
@@ -78,6 +88,10 @@ export const createRestateForgeRunService = (activities: ForgeActivities) =>
             const admittedRepair = await ctx.run('admitRepair', () =>
               activities.admitRepair({ runId, taskId: task.taskId, reviewId, subjectRef })
             );
+            // Arm before Forge can durably report BLOCKED. A wake received
+            // between that durable transition and this activity response is
+            // still only a hint, but must remain available to reauthorize.
+            let wakeGeneration = await armRepairWake(ctx, admittedRepair.repairAttemptId);
             let repairResult = await ctx.run('executeRepair', () =>
               activities.executeRepair({
                 runId,
@@ -92,10 +106,12 @@ export const createRestateForgeRunService = (activities: ForgeActivities) =>
 
             while (repairResult.state === 'blocked') {
               const repairAttemptId = repairResult.repairAttemptId;
-              const generation = ((await ctx.get<number>(wakeGenerationStateKey)) ?? 0) + 1;
-              ctx.set(currentRepairStateKey, repairAttemptId);
-              ctx.set(wakeGenerationStateKey, generation);
-              await ctx.promise<RepairWakeSignal>(wakeKey(repairAttemptId, generation)).get();
+              await ctx.promise<RepairWakeSignal>(wakeKey(repairAttemptId, wakeGeneration)).get();
+
+              // Arm the successor before reauthorization. If the current
+              // blocker releases while Forge returns `ignored`, its one wake
+              // is buffered for the next validation attempt.
+              wakeGeneration = await armRepairWake(ctx, repairAttemptId);
 
               const resumeResult = await ctx.run('resumeBlockedRepair', () =>
                 activities.resumeBlockedRepair({ runId, repairAttemptId })
@@ -120,6 +136,8 @@ export const createRestateForgeRunService = (activities: ForgeActivities) =>
                 })
               );
             }
+            ctx.clear(currentRepairStateKey);
+            ctx.clear(wakeGenerationStateKey);
 
             if (
               repairFailed ||

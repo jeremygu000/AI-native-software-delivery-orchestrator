@@ -2705,14 +2705,15 @@ What was built:
 - `restate-runtime` owns every Restate SDK import for this adapter and exports `createRestateForgeRunService`;
 - its Forge run workflow mirrors the selected provider's compact control flow: scheduler reevaluation, builder execution, output evaluation, repair admission and execution, accepted-output integration, and final run state;
 - a blocked repair is correlated by its exact repair attempt ID. A wake first reaches `resumeBlockedRepair`; only a durable `resumed` result can execute that repair again;
-- Restate durable promises are one-shot, so the adapter stores the currently blocked repair and increments a durable wake generation after each ignored early or stale wake. This lets the same repair keep waiting for a later valid wake without treating the wake itself as authority;
+- Restate durable promises are one-shot, so the adapter arms a durable wake generation before execution can report `BLOCKED` and arms its successor before each resume authorization. This preserves a single matching wake that arrives during the activity response or during an ignored authorization decision, without treating the wake itself as authority;
 - the new runtime does not import the historical `restate-spike` or its synthetic scenario services.
 
 What was verified:
 
 - a live `RestateTestEnvironment` test runs the new service against a scripted compact activity port;
 - a wrong repair ID produces no resume attempt;
-- a matching wake that Forge returns as `ignored` does not execute the repair and the workflow waits for another matching wake;
+- a single matching wake received after Forge reaches `BLOCKED` but before the activity response returns is buffered and reauthorized;
+- a single next wake received while Forge is deciding that the preceding resume is `ignored` is buffered for the armed successor generation;
 - a later matching wake with a `resumed` result executes the same repair ID, integrates its accepted output, reevaluates, and finalizes the run;
 - the adapter type-checks, lints, formats, and participates in the workspace build and test configuration.
 

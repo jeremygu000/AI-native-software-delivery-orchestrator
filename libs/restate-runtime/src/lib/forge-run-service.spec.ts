@@ -15,6 +15,10 @@ describe('Restate Forge run service', () => {
   const calls: string[] = [];
   let repairExecutions = 0;
   let resumeAttempts = 0;
+  let firstRepairEntered = false;
+  let ignoredResumeEntered = false;
+  let releaseFirstRepair: (() => void) | undefined;
+  let releaseIgnoredResume: (() => void) | undefined;
 
   const activities: ForgeActivities = {
     reevaluateRun: async ({ runId }) => {
@@ -54,6 +58,10 @@ describe('Restate Forge run service', () => {
       repairExecutions += 1;
       calls.push(`repair:${repairAttemptId}`);
       if (repairExecutions === 1) {
+        firstRepairEntered = true;
+        await new Promise<void>((resolve) => {
+          releaseFirstRepair = resolve;
+        });
         return {
           runId,
           taskId,
@@ -80,6 +88,12 @@ describe('Restate Forge run service', () => {
     resumeBlockedRepair: async ({ runId, repairAttemptId }) => {
       resumeAttempts += 1;
       calls.push(`resume:${repairAttemptId}`);
+      if (resumeAttempts === 1) {
+        ignoredResumeEntered = true;
+        await new Promise<void>((resolve) => {
+          releaseIgnoredResume = resolve;
+        });
+      }
       return {
         runId,
         repairAttemptId,
@@ -110,29 +124,32 @@ describe('Restate Forge run service', () => {
     await environment.stop();
   });
 
-  it('uses exact wake hints and reauthorizes a blocked repair before integration', async () => {
+  it('buffers single matching wakes across blocked and ignored authority responses', async () => {
     calls.length = 0;
     repairExecutions = 0;
     resumeAttempts = 0;
+    firstRepairEntered = false;
+    ignoredResumeEntered = false;
+    releaseFirstRepair = undefined;
+    releaseIgnoredResume = undefined;
     const client = ingress.workflowClient(service, 'forge-run-service-test');
     const handle = await client.workflowSubmit({ runId: 'run-1' });
 
-    await expect.poll(() => calls.includes('repair:repair-1')).toBe(true);
+    await expect.poll(() => firstRepairEntered).toBe(true);
     await client.sendRepairWake({ repairAttemptId: 'other-repair' });
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(resumeAttempts).toBe(0);
 
+    // This is the only matching wake while Forge has already reached its
+    // BLOCKED transition but executeRepair has not returned to Restate.
     await client.sendRepairWake({ repairAttemptId: 'repair-1' });
-    await expect.poll(() => resumeAttempts).toBe(1);
+    releaseFirstRepair?.();
+    await expect.poll(() => ignoredResumeEntered).toBe(true);
 
-    // The first matching wake is deliberately ignored by Forge authority. The
-    // adapter must wait for a later wake rather than executing the repair.
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      await client.sendRepairWake({ repairAttemptId: 'repair-1' });
-    }
-
-    await expect.poll(() => resumeAttempts).toBeGreaterThanOrEqual(2);
+    // This is the only next wake. It arrives while Forge is still deciding
+    // that the first resume is ignored, so it must be held for generation 2.
+    await client.sendRepairWake({ repairAttemptId: 'repair-1' });
+    releaseIgnoredResume?.();
 
     const result = await ingress.result(handle);
     expect(result).toEqual({ runId: 'run-1', status: 'completed' });
