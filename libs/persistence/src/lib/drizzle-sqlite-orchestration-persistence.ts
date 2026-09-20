@@ -734,6 +734,7 @@ export class DrizzleSqliteOrchestrationPersistence
         // Initial authority is immutable: a stale launcher must not rewrite an
         // attempt that another worker has already advanced.
         if (existing) {
+          this.#assertRecordedInitialAttempts(attempts);
           return;
         }
         for (const attempt of attempts) {
@@ -808,6 +809,41 @@ export class DrizzleSqliteOrchestrationPersistence
       throw new PersistenceInputError(
         'Dispatch attempts must exactly match scheduler starts as revision 1 PREPARING evidence'
       );
+    }
+  }
+
+  #assertRecordedInitialAttempts(
+    expectedAttempts: readonly PersistedAgentExecutionAttempt[]
+  ): void {
+    if (expectedAttempts.length === 0) {
+      return;
+    }
+    const recorded = this.#db
+      .select({ attemptJson: agentExecutionAttempts.attemptJson })
+      .from(agentExecutionAttempts)
+      .where(eq(agentExecutionAttempts.runId, expectedAttempts[0].runId))
+      .all()
+      .map((entry) =>
+        decode(entry.attemptJson, isAgentExecutionAttempt, 'agent execution attempt')
+      );
+    for (const expected of expectedAttempts) {
+      if (
+        !recorded.some(
+          (attempt) =>
+            attempt.id === expected.attempt.id &&
+            attempt.runId === expected.attempt.runId &&
+            attempt.taskId === expected.attempt.taskId &&
+            attempt.agentId === expected.attempt.agentId &&
+            attempt.workspaceId === expected.attempt.workspaceId &&
+            attempt.leasePlanFingerprint === expected.attempt.leasePlanFingerprint &&
+            attempt.commandPolicyFingerprint === expected.attempt.commandPolicyFingerprint &&
+            attempt.trustedCommandPath === expected.attempt.trustedCommandPath
+        )
+      ) {
+        throw new PersistenceInputError(
+          `Initial dispatch attempt authority is missing: ${expected.attempt.id}`
+        );
+      }
     }
   }
 

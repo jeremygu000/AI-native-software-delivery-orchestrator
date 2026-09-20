@@ -128,6 +128,17 @@ const projectEventState = (
 const sameEvent = (left: SchedulerEvent, right: SchedulerEvent): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
 
+const matchesBindingAuthority = (
+  attempt: PersistedAgentExecutionAttempt['attempt'],
+  binding: PersistedTaskExecutionBinding
+): boolean =>
+  attempt.taskId === binding.taskId &&
+  attempt.agentId === binding.agentId &&
+  attempt.workspaceId === binding.workspace.id &&
+  attempt.leasePlanFingerprint === taskLeasePlanFingerprint(binding.leasePlan) &&
+  attempt.commandPolicyFingerprint === agentCommandPolicyFingerprint(binding.commandPolicy) &&
+  attempt.trustedCommandPath === (binding.trustedCommandPath ?? defaultAgentCommandTrustedPath);
+
 const hasInitialRunStarted = (recovered: RecoveredRun): boolean => {
   const initialEvent = recovered.events.find((event) => event.sequence === 1);
   if (initialEvent === undefined) {
@@ -157,12 +168,16 @@ const hasInitialRunStarted = (recovered: RecoveredRun): boolean => {
     .filter((decision) => decision.action === 'start')
     .map((decision) => decision.taskId);
   if (
-    initialStartTaskIds.some(
-      (taskId) => !recovered.attempts.some(({ attempt }) => attempt.taskId === taskId)
-    )
+    initialStartTaskIds.some((taskId) => {
+      const binding = recovered.taskBindings.find((candidate) => candidate.taskId === taskId);
+      return (
+        binding === undefined ||
+        !recovered.attempts.some(({ attempt }) => matchesBindingAuthority(attempt, binding))
+      );
+    })
   ) {
     throw new ForgeRunProgressionError(
-      `Initial scheduler authority is missing sequence-one dispatch attempts: ${recovered.run.id}`
+      `Initial scheduler authority is missing valid sequence-one dispatch attempts: ${recovered.run.id}`
     );
   }
   return true;

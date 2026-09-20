@@ -2839,7 +2839,10 @@ from fresh authority, and the dispatch write boundary makes a stale sequence-one
 a launcher holding an empty snapshot cannot create sequence two after another launcher initializes
 the run. That no-op is limited to the dedicated initial-dispatch persistence boundary; generic
 progression dispatches still persist every returned authorization. Initial history is also rejected
-unless every sequence-one `start` decision has durable attempt evidence.
+unless every sequence-one `start` decision has durable attempt evidence whose immutable agent,
+workspace, lease, command-policy, and trusted-path authority matches its task binding. The initial
+dispatch transaction performs the same evidence check before treating an equivalent existing
+sequence one as a no-op.
 
 The Temporal client uses the stable workflow identity `forge-run:<runId>` and the Temporal
 `USE_EXISTING` conflict policy. Repeating a matching launch reuses the same durable Forge request

@@ -168,6 +168,70 @@ describe('TemporalRunLauncher', () => {
         state: 'STARTING',
         revision: 2
       });
+      const partialStaleInitial = request('partial-stale-run');
+      await firstPersistence.createRun({
+        run: partialStaleInitial.run,
+        tasks: partialStaleInitial.tasks,
+        taskBindings: partialStaleInitial.taskBindings.map((binding) => ({
+          ...binding,
+          runId: partialStaleInitial.run.id
+        })),
+        hardConflicts: [],
+        riskConflicts: [],
+        scheduleOptions: { maxConcurrency: 1 }
+      });
+      let partialDispatchReady!: () => void;
+      const partialDispatchRead = new Promise<void>((resolve) => {
+        partialDispatchReady = resolve;
+      });
+      let releasePartialLauncher!: () => void;
+      const releasePartialLauncherRead = new Promise<void>((resolve) => {
+        releasePartialLauncher = resolve;
+      });
+      let blockPartialLauncher = true;
+      const partialStalePersistence = new Proxy(secondPersistence, {
+        get(target, property) {
+          if (property === 'recoverDispatches') {
+            return async (runId: string) => {
+              const dispatches = await target.recoverDispatches(runId);
+              if (runId === partialStaleInitial.run.id && blockPartialLauncher) {
+                blockPartialLauncher = false;
+                partialDispatchReady();
+                await releasePartialLauncherRead;
+              }
+              return dispatches;
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        }
+      });
+      const partialStaleLauncher = new TemporalRunLauncher({
+        persistence: partialStalePersistence,
+        workflow
+      });
+      const partialStaleLaunch = partialStaleLauncher.startOrResumeRun(partialStaleInitial);
+      await partialDispatchRead;
+      const reevaluationOnlyPersistence = new Proxy(firstPersistence, {
+        get(target, property) {
+          if (property === 'persistDispatch') {
+            return async (dispatch: Parameters<typeof target.persistDispatch>[0]) =>
+              target.persistReevaluation(dispatch.reevaluation);
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        }
+      });
+      await new ForgeRunProgressionService({
+        persistence: reevaluationOnlyPersistence,
+        now: () => new Date(partialStaleInitial.run.createdAt),
+        createAttemptId: () => 'partial-stale-attempt'
+      }).advance(partialStaleInitial.run.id, { type: 'run-started' });
+      releasePartialLauncher();
+      await expect(partialStaleLaunch).rejects.toThrow(
+        'Initial dispatch attempt authority is missing: launch:partial-stale-run:1'
+      );
+      expect(starts).toEqual(['stale-run', 'stale-run']);
       await Promise.all([
         firstLauncher.startOrResumeRun(request()),
         secondLauncher.startOrResumeRun(request())
@@ -266,9 +330,29 @@ describe('TemporalRunLauncher', () => {
       createAttemptId: () => 'partial-attempt'
     }).advance(partial.run.id, { type: 'run-started' });
     await expect(launcher.startOrResumeRun(partial)).rejects.toThrow(
-      'Temporal launch authority history is missing sequence-one dispatch attempts'
+      'Initial scheduler authority is missing valid sequence-one dispatch attempts'
     );
-    expect(starts).toEqual(['run-1']);
+    const wrongAuthority = request('wrong-authority-run');
+    await launcher.startOrResumeRun(wrongAuthority);
+    const wrongRecovered = await persistence.recoverRun(wrongAuthority.run.id);
+    const wrongAttempt = wrongRecovered?.attempts[0]?.attempt;
+    if (wrongAttempt === undefined) {
+      throw new Error('Initial launch did not persist wrong-authority fixture attempt');
+    }
+    await persistence.persistAttempt({
+      runId: wrongAuthority.run.id,
+      attempt: {
+        ...wrongAttempt,
+        agentId: 'wrong-agent',
+        revision: wrongAttempt.revision + 1,
+        state: 'STARTING',
+        startedAt: new Date('2026-09-20T00:00:01.000Z')
+      }
+    });
+    await expect(launcher.startOrResumeRun(wrongAuthority)).rejects.toThrow(
+      'Initial scheduler authority is missing valid sequence-one dispatch attempts'
+    );
+    expect(starts).toEqual(['run-1', 'wrong-authority-run']);
     persistence.close();
   });
 });

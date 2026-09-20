@@ -1,7 +1,6 @@
 import type {
   OrchestrationPersistence,
   PersistedTaskExecutionBinding,
-  RecoveredRun,
   TaskCodeReviewStore
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
@@ -48,38 +47,6 @@ const requestFingerprint = (request: StartRuntimeRunRequest): string =>
   });
 
 const initialAttemptId = (runId: string, ordinal: number): string => `launch:${runId}:${ordinal}`;
-
-const hasInitialRunStarted = (recovered: RecoveredRun): boolean => {
-  const initialEvent = recovered.events.find((event) => event.sequence === 1);
-  if (initialEvent === undefined) {
-    if (
-      recovered.events.length === 0 &&
-      recovered.decisions.length === 0 &&
-      recovered.attempts.length === 0
-    ) {
-      return false;
-    }
-    throw new Error('Temporal launch authority history is missing sequence-one run-started');
-  }
-  if (initialEvent.event.type !== 'run-started') {
-    throw new Error('Temporal launch authority history must begin with run-started');
-  }
-  const initialDecision = recovered.decisions.find((decision) => decision.sequence === 1);
-  if (initialDecision === undefined) {
-    throw new Error('Temporal launch authority history is missing sequence-one decision');
-  }
-  const initialStartTaskIds = initialDecision.decision.taskDecisions
-    .filter((decision) => decision.action === 'start')
-    .map((decision) => decision.taskId);
-  if (
-    initialStartTaskIds.some(
-      (taskId) => !recovered.attempts.some(({ attempt }) => attempt.taskId === taskId)
-    )
-  ) {
-    throw new Error('Temporal launch authority history is missing sequence-one dispatch attempts');
-  }
-  return true;
-};
 
 /**
  * Initializes Forge authority before asking Temporal to coordinate a run. The
@@ -134,17 +101,15 @@ export class TemporalRunLauncher {
         throw new Error(`Temporal launch authority mismatch: ${request.run.id}`);
       }
     }
-    if (!hasInitialRunStarted(recovered)) {
-      // Concurrent sequence-one writes have deterministic authority evidence.
-      await new ForgeRunProgressionService({
-        persistence: this.#persistence,
-        now: () => new Date(request.run.createdAt),
-        createAttemptId: (() => {
-          let ordinal = 0;
-          return () => initialAttemptId(request.run.id, ++ordinal);
-        })()
-      }).ensureInitialRunStarted(request.run.id);
-    }
+    // This fresh authority check also rejects malformed initial evidence.
+    await new ForgeRunProgressionService({
+      persistence: this.#persistence,
+      now: () => new Date(request.run.createdAt),
+      createAttemptId: (() => {
+        let ordinal = 0;
+        return () => initialAttemptId(request.run.id, ++ordinal);
+      })()
+    }).ensureInitialRunStarted(request.run.id);
     const workflow = await this.#workflow.start(request.run.id);
     return { runId: request.run.id, ...workflow };
   }
