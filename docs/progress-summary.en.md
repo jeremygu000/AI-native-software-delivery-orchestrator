@@ -2695,3 +2695,30 @@ Scope and remaining work:
 - the synthetic `restate-spike` and its authority fixture remain historical candidate evidence, not a production Forge execution path;
 - a future provider adapter must reuse the neutral contracts and composition, then independently prove production-stack parity and any required split service/executor restart behavior;
 - M3.3 through M3.6 remain frozen. M3.7 preserves their durable authority semantics and changes only code ownership and provider boundaries.
+
+## Stage M3.8: Restate provider coordination adapter
+
+M3.8 adds an isolated Restate runtime adapter that consumes the provider-neutral `ForgeActivities` port from M3.7. It does not change ADR-028: Temporal remains the selected durable-execution substrate. The new adapter proves that a second provider can journal Forge coordination while keeping authority decisions inside the compact activity port and its eventual SQLite-backed composition.
+
+What was built:
+
+- `restate-runtime` owns every Restate SDK import for this adapter and exports `createRestateForgeRunService`;
+- its Forge run workflow mirrors the selected provider's compact control flow: scheduler reevaluation, builder execution, output evaluation, repair admission and execution, accepted-output integration, and final run state;
+- a blocked repair is correlated by its exact repair attempt ID. A wake first reaches `resumeBlockedRepair`; only a durable `resumed` result can execute that repair again;
+- Restate durable promises are one-shot, so the adapter stores the currently blocked repair and increments a durable wake generation after each ignored early or stale wake. This lets the same repair keep waiting for a later valid wake without treating the wake itself as authority;
+- the new runtime does not import the historical `restate-spike` or its synthetic scenario services.
+
+What was verified:
+
+- a live `RestateTestEnvironment` test runs the new service against a scripted compact activity port;
+- a wrong repair ID produces no resume attempt;
+- a matching wake that Forge returns as `ignored` does not execute the repair and the workflow waits for another matching wake;
+- a later matching wake with a `resumed` result executes the same repair ID, integrates its accepted output, reevaluates, and finalizes the run;
+- the adapter type-checks, lints, formats, and participates in the workspace build and test configuration.
+
+Scope and remaining work:
+
+- M3.8 proves provider coordination only. It does not add a Restate worker application, wire the real Forge runtime composition to Restate, or claim production SQLite authority parity with Temporal or legacy execution;
+- `RestateTestEnvironment` bundles the Restate server and service endpoint. Its successful wait/wake test is not evidence that an independently replaced executor resumes a pending workflow;
+- a later production parity stage must use the shared composition, isolated authority stores, normalized durable outcomes, and a split server/service-process restart fixture before making those stronger claims;
+- M3.3 through M3.7 remain frozen. M3.8 is additive and changes no established Forge authority semantics.

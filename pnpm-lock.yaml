@@ -336,6 +336,22 @@ importers:
         specifier: 2.9.1
         version: 2.9.1
 
+  libs/restate-runtime:
+    dependencies:
+      '@ai-native-software-delivery-orchestrator/forge-runtime-contracts':
+        specifier: workspace:*
+        version: link:../forge-runtime-contracts
+      '@restatedev/restate-sdk':
+        specifier: ^1.17.1
+        version: 1.17.1
+    devDependencies:
+      '@restatedev/restate-sdk-clients':
+        specifier: ^1.17.1
+        version: 1.17.1
+      '@restatedev/restate-sdk-testcontainers':
+        specifier: ^1.17.1
+        version: 1.17.1
+
   libs/restate-spike:
     dependencies:
       '@ai-native-software-delivery-orchestrator/orchestration-runtime':
@@ -5305,13 +5321,13 @@ snapshots:
 
   '@types/docker-modem@3.0.6':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.6.2
       '@types/ssh2': 1.15.6
 
   '@types/dockerode@4.0.1':
     dependencies:
       '@types/docker-modem': 3.0.6
-      '@types/node': 26.2.0
+      '@types/node': 26.6.2
       '@types/ssh2': 1.15.6
 
   '@types/estree@1.0.9': {}
@@ -5340,11 +5356,11 @@ snapshots:
 
   '@types/ssh2-streams@0.1.13':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.6.2
 
   '@types/ssh2@0.5.52':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.6.2
       '@types/ssh2-streams': 0.1.13
 
   '@types/ssh2@1.15.6':
@@ -5832,7 +5848,7 @@ snapshots:
 
   docker-compose@1.4.2:
     dependencies:
-      yaml: 2.9.0
+      yaml: 2.9.1
 
   docker-modem@5.0.7:
     dependencies:

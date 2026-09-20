@@ -2387,3 +2387,30 @@ M3.7 将生产 Forge activity composition 从 Temporal worker application 中提
 - synthetic `restate-spike` 与其 authority fixture 仍是历史 candidate evidence，不是生产 Forge execution path；
 - 未来 provider adapter 必须复用 neutral contracts 与 composition，然后独立证明 production-stack parity 以及所需的 split service/executor restart behavior；
 - M3.3 至 M3.6 仍然冻结。M3.7 保留其 durable authority semantics，只改变代码所有权和 provider boundary。
+
+## Stage M3.8：Restate provider coordination adapter
+
+M3.8 新增了一个隔离的 Restate runtime adapter，它消费 M3.7 的 provider-neutral `ForgeActivities` port。它不改变 ADR-028：Temporal 仍然是选定的 durable-execution substrate。这个 adapter 证明第二个 provider 可以 journal Forge coordination，同时把 authority decision 保留在 compact activity port 及其最终连接的 SQLite-backed composition 中。
+
+已构建：
+
+- `restate-runtime` 拥有这个 adapter 的全部 Restate SDK import，并导出 `createRestateForgeRunService`；
+- 它的 Forge run workflow 镜像已选 provider 的 compact control flow：scheduler reevaluation、builder execution、output evaluation、repair admission/execution、accepted-output integration，以及 final run state；
+- blocked repair 通过精确 repair attempt ID 关联。wake 会先到达 `resumeBlockedRepair`；只有 durable `resumed` result 才能再次执行该 repair；
+- Restate durable promise 是 one-shot，因此 adapter 会保存当前 blocked repair，并在每个被忽略的 early/stale wake 后递增 durable wake generation。这让同一 repair 能继续等待后续有效 wake，而不会把 wake 本身当作 authority；
+- 新 runtime 不导入历史 `restate-spike` 或其 synthetic scenario service。
+
+已验证：
+
+- 一个 live `RestateTestEnvironment` test 使用 scripted compact activity port 运行新 service；
+- 错误 repair ID 不会产生 resume attempt；
+- 与 repair 匹配、但被 Forge 返回为 `ignored` 的 wake 不会执行 repair，workflow 会继续等待下一次匹配 wake；
+- 后续匹配 wake 返回 `resumed` 时会执行同一 repair ID、集成它的 accepted output、reevaluate 并 finalize run；
+- adapter 能通过 type-check、lint、format，并参与 workspace build 与 test configuration。
+
+范围与剩余工作：
+
+- M3.8 只证明 provider coordination。它没有新增 Restate worker application、没有把真实 Forge runtime composition 接入 Restate，也不声称与 Temporal 或 legacy execution 存在生产 SQLite authority parity；
+- `RestateTestEnvironment` 会打包 Restate server 与 service endpoint。成功的 wait/wake test 不是独立替换 executor 后仍能恢复 pending workflow 的证据；
+- 后续 production parity stage 必须使用 shared composition、隔离的 authority store、归一化 durable outcome，以及 split server/service-process restart fixture，之后才可作出更强的结论；
+- M3.3 至 M3.7 仍然冻结。M3.8 是 additive，不改变既有 Forge authority semantics。
