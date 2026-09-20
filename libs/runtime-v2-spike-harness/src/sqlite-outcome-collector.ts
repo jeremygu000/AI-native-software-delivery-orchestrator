@@ -78,7 +78,9 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
   return {
     builderAttempt: builderAttempt.attempt,
     repairs,
-    verifications,
+    verifications: [...verifications].toSorted((left, right) =>
+      left.verifiedAt.localeCompare(right.verifiedAt)
+    ),
     reviews: normalizeReviews(reviews),
     leases: leases.map((p: PersistedWriteLease) => p.lease),
     integration,

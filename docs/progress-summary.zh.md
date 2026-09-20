@@ -2331,3 +2331,29 @@ M3.5 在不重新打开已冻结的 M3.3 Scenario A 和 M3.4 Scenario B 授权�
 阶段结果：
 
 - M3.5 的持久化取消授权与运维控制范围已经关闭并冻结。除非发现真实的 contract regression，否则不能修改 M3.3、M3.4 和 M3.5 的 authority semantics。
+
+## Stage M3.6：Legacy 与 Temporal Runtime V2 差分验收
+
+M3.6 证明 legacy `OrchestrationRuntime` 与生产 Temporal Runtime V2 workflow 在 ADR-027 定义的迁移场景中会得到相同的持久 Forge authority outcome。验收 suite 为每个 runtime 使用独立的 SQLite authority database、run ID、workspace identity 和 repository target。它比较归一化后的持久 Forge evidence，而不比较框架特有的 event history 或 workflow 实现细节。
+
+该 suite 使用真实 legacy runtime、真实 Temporal workflow、生产 Temporal worker composition 以及 Drizzle SQLite persistence。确定性的测试 seam 只替代外部 Git、agent、verifier 和 model 副作用。这样既能使测试可重复，又仍然会执行迁移必须保留的 runtime authority boundary、persistence、review lineage、repair admission、integration admission 和 recovery behavior。
+
+已构建：
+
+- normal-path fixture 会在两个 runtime 中执行 build、verification、请求 repair 的 review、一次 repair、repair verification、accepted review，以及精确 accepted-output integration；
+- blocked-repair fixture 会持久化 `BLOCKED` repair，释放它精确的 blocker lease，恢复同一个 repair ID，递增持久 revision，写入一个 authorization dispatch，完成 repair，并在两个 runtime 中集成 accepted output；
+- legacy recovery 现在会将 resume authorization 传入已有的原子 repair-resume persistence operation。持久 repair-state transition 与唯一 resume-dispatch record 会一起提交，因此 recovery retry 不会为同一个 blocked snapshot 授权额外执行；
+- SQLite outcome collector 会按持久的 verification timestamp 排序 verification evidence 再选择最终 evidence，而不再依赖偶然的数据库行顺序。
+
+已验证：
+
+- 两个 runtime 都独立满足共享 durable-outcome contract 中的 `build-review-repair-integrate` 和 `blocked-repair-restart-resume`；
+- 归一化后的 legacy 与 Temporal outcome 相等。归一化只替换 runtime 生成的 ID、由其派生的 verification fingerprint、timestamp 和 runtime-local absolute revision；不会移除任何 durable authority field；
+- blocked 场景为两个 runtime 都证明了精确 blocker release、相同 repair attempt ID、blocked-to-resumed relationship、一个 dispatch、最终 accepted review 和精确 integration output binding；
+- Temporal 侧使用真实 test Temporal server、worker、生产 workflow 和生产 worker composition。Legacy 侧使用真实生产 `OrchestrationRuntime` topology 与 coordination service。
+
+范围与剩余工作：
+
+- 本阶段刻意不包含 runtime-conflict parity。ADR-027 将跨 runtime 的 conflict behavior 延后到 Stage 22/22R suite；
+- 确定性 seam 并不声称替代真实 Git、外部 agent session 或 model-provider integration coverage。这些外部副作用仍由专门的 integration test 覆盖；
+- M3.6 在这两个 ADR-027 迁移场景范围内已经关闭并冻结。除非发现真实的 contract regression，否则不能修改 M3.3 至 M3.6 的 authority semantics。

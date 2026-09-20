@@ -19,5 +19,11 @@
     "@ai-native-software-delivery-orchestrator/temporal-runtime": "workspace:*",
     "@ai-native-software-delivery-orchestrator/workspace-git": "workspace:*",
     "@temporalio/activity": "^1.24.0"
+  },
+  "devDependencies": {
+    "@ai-native-software-delivery-orchestrator/runtime-v2-spike-harness": "workspace:*",
+    "@temporalio/client": "^1.24.0",
+    "@temporalio/testing": "^1.24.0",
+    "@temporalio/worker": "^1.24.0"
   }
 }

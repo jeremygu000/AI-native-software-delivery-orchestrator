@@ -2639,3 +2639,29 @@ Current limitations:
 Stage outcome:
 
 - M3.5 is closed and frozen for durable cancellation authority and operator control. M3.3, M3.4, and M3.5 authority semantics must change only when a real contract regression is found.
+
+## Stage M3.6: Legacy and Temporal Runtime V2 differential acceptance
+
+M3.6 proves that the legacy `OrchestrationRuntime` and the production Temporal Runtime V2 workflow reach the same durable Forge authority outcome for the migration scenarios in ADR-027. The acceptance suite runs each runtime against its own SQLite authority database, run ID, workspace identity, and repository target. It compares normalized persisted Forge evidence, never framework-specific event history or workflow implementation details.
+
+The suite uses the real legacy runtime, the real Temporal workflow, the production Temporal worker composition, and Drizzle SQLite persistence. Deterministic test seams replace only external Git, agent, verifier, and model effects. This keeps the test reproducible while still exercising the runtime authority boundaries, persistence, review lineage, repair admission, integration admission, and recovery behavior that the migration must preserve.
+
+What was built:
+
+- a differential normal-path fixture runs build, verification, review requesting repair, one repair, repair verification, accepted review, and exact accepted-output integration through both runtimes;
+- a differential blocked-repair fixture persists a `BLOCKED` repair, releases its exact blocker lease, resumes the same repair ID, increments its durable revision, persists one authorization dispatch, completes the repair, and integrates the accepted output through both runtimes;
+- legacy recovery now passes its resume authorization into the existing atomic repair-resume persistence operation. The durable repair-state transition and its one resume-dispatch record are committed together, so recovery retries cannot authorize an additional execution of the same blocked snapshot;
+- the SQLite outcome collector orders verification evidence by its durable verification timestamp before selecting the final evidence, rather than relying on incidental database row order.
+
+What was verified:
+
+- each runtime independently satisfies `build-review-repair-integrate` and `blocked-repair-restart-resume` from the shared durable-outcome contract;
+- normalized legacy and Temporal outcomes are equal. Normalization replaces only runtime-generated IDs, derived verification fingerprints, timestamps, and runtime-local absolute revisions; it does not remove any durable authority field;
+- the blocked scenario proves the exact blocker release, same repair attempt ID, blocked-to-resumed relationship, one dispatch, final accepted review, and exact integration output binding for both runtimes;
+- the Temporal side uses a real test Temporal server, worker, production workflow, and production worker composition. The legacy side uses the real production `OrchestrationRuntime` topology and coordination services.
+
+Scope and remaining work:
+
+- this stage deliberately excludes runtime-conflict parity. ADR-027 defers cross-runtime conflict behavior to the later Stage 22/22R suite;
+- deterministic seams do not claim to replace real Git, external agent session, or model-provider integration coverage. Those side effects remain covered by their dedicated integration tests;
+- M3.6 is closed and frozen for the two ADR-027 migration scenarios. M3.3 through M3.6 authority semantics must change only when a real contract regression is found.

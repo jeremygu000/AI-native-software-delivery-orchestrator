@@ -600,6 +600,11 @@ describe('OrchestrationRuntime', () => {
     ];
     let resumeCalls = 0;
     let loseResume = false;
+    const resumeDispatches: Array<{
+      readonly taskId: string;
+      readonly dispatchId: string;
+      readonly authorizedAt: string;
+    } | undefined> = [];
     const workItems: any[] = [];
     let nextRepairId = 2;
     const repairStore: any = {
@@ -627,8 +632,9 @@ describe('OrchestrationRuntime', () => {
         workItems.push(createWorkItem(admitted));
         return admitted;
       },
-      resumeRepairAttempt: async ({ expectedRevision }: any) => {
+      resumeRepairAttempt: async ({ expectedRevision, dispatch }: any) => {
         resumeCalls += 1;
+        resumeDispatches.push(dispatch);
         const current = repairRecords[0].attempt;
         if (loseResume) {
           return { status: 'version-conflict' as const, actualRevision: current.revision + 1 };
@@ -881,12 +887,20 @@ describe('OrchestrationRuntime', () => {
           ]),
           symbols: new Map()
         }
-      }
+      },
+      now: () => new Date('2026-08-12T00:00:00.000Z')
     });
     await expect(runtime.startOrResumeRun(run)).resolves.toMatchObject({
       snapshot: { taskStates: [{ taskId: 'A', state: 'COMPLETED' }] }
     });
     expect(resumeCalls).toBe(1);
+    expect(resumeDispatches).toEqual([
+      {
+        taskId: 'A',
+        dispatchId: 'repair-resume:repair-1:4',
+        authorizedAt: '2026-08-12T00:00:00.000Z'
+      }
+    ]);
     expect(repairRuns).toBe(2);
     expect(repairRecords).toMatchObject([
       { attempt: { id: 'repair-1', state: 'COMPLETED', repairIteration: 1 } },
@@ -927,6 +941,11 @@ describe('OrchestrationRuntime', () => {
     persistence.state = 'ACTIVE';
     await runtime.startOrResumeRun(run);
     expect(resumeCalls).toBe(2);
+    expect(resumeDispatches.at(-1)).toEqual({
+      taskId: 'A',
+      dispatchId: 'repair-resume:repair-1:11',
+      authorizedAt: '2026-08-12T00:00:00.000Z'
+    });
     expect(repairRuns).toBe(3);
 
     repairRecords[0] = {

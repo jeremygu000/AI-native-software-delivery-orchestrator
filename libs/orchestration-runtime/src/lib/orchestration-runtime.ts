@@ -965,7 +965,15 @@ export class OrchestrationRuntime {
           `Blocked repair continuation evidence mismatch: ${attempt.id}`
         );
       }
-      const resumed = await this.#outputReview.repairs.tryResume(attempt);
+      const resumed = await this.#outputReview.repairs.tryResume(attempt, {
+        dispatch: {
+          taskId: attempt.taskId,
+          // The resumed revision is part of the durable primary key, so retries
+          // cannot authorize a second execution for this blocked snapshot.
+          dispatchId: `repair-resume:${attempt.id}:${attempt.revision + 1}`,
+          authorizedAt: this.#now().toISOString()
+        }
+      });
       if (resumed !== undefined) {
         state.repairAttemptsByTask.set(resumed.taskId, resumed);
         state.pendingRepairAttemptIds.add(resumed.id);
