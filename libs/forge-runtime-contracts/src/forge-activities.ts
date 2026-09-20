@@ -20,14 +20,12 @@ import type {
 } from './contracts.js';
 
 /**
- * The set of Temporal activity functions for a Forge run.
+ * The provider-neutral Forge execution operations for a run.
  *
- * Implement this interface in the Worker process — each method receives
- * compact IDs from the workflow, resolves full domain objects via
- * persistence, calls the corresponding Forge service, and returns
- * compact IDs back to the workflow.
- *
- * Pass an implementation to createTemporalWorker via `forgeActivities`.
+ * A durable-runtime adapter invokes these operations using compact,
+ * serializable contracts. Implementations resolve full domain objects via
+ * persistence, call the corresponding Forge service, and return compact IDs
+ * to the adapter.
  */
 export type ForgeActivities = {
   reevaluateRun(input: ReevaluateRunInput): Promise<ReevaluateRunResult>;

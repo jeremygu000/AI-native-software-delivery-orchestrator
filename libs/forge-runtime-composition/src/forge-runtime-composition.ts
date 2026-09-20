@@ -89,9 +89,8 @@ import {
   ForgeRunReevaluationService
 } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
-const WORKER_DATABASE_PATH =
-  process.env.FORGE_WORKER_DATABASE_PATH ??
-  resolve(process.cwd(), 'dist', 'temporal-worker.sqlite');
+const RUNTIME_DATABASE_PATH =
+  process.env.FORGE_WORKER_DATABASE_PATH ?? resolve(process.cwd(), 'dist', 'forge-runtime.sqlite');
 const WORKER_REPOSITORY_PATH = process.env.FORGE_WORKER_REPOSITORY_PATH ?? process.cwd();
 
 const assertBuilderTuple = (
@@ -218,7 +217,7 @@ export async function createForgeRuntimeComposition(
       ? await analyzeRepository(WORKER_REPOSITORY_PATH)
       : { graph: overrides.repositoryGraph };
   const persistence =
-    overrides.persistence ?? new DrizzleSqliteOrchestrationPersistence(WORKER_DATABASE_PATH);
+    overrides.persistence ?? new DrizzleSqliteOrchestrationPersistence(RUNTIME_DATABASE_PATH);
   const writeGuards = new Map<string, InMemoryWriteGuard>();
   const writeGuardForRunSync = (runId: string): InMemoryWriteGuard => {
     const existing = writeGuards.get(runId);

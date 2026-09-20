@@ -2369,6 +2369,7 @@ M3.7 将生产 Forge activity composition 从 Temporal worker application 中提
 - `forge-runtime-contracts` 现在拥有紧凑的 Forge run、activity、repair-wake 与 activity-port contract。这些 contract 只包含可序列化的 identifier 和 result；不会暴露 Temporal、Restate、persistence-provider、compiler 或 domain implementation object；
 - `forge-runtime-composition` 现在拥有原生产 Temporal worker composition：SQLite recovery、write-guard hydration、ACTIVE-only claim、builder/evaluation/repair/integration service、cancellation reconciliation、精确 blocked-repair continuation，以及 run progression/finalization；
 - 共享 composition 不导入 Temporal SDK。provider 可以选择提供一个包含 cancellation signal 的 activity execution context。没有该 signal 不会产生 authority，也不会绕过任何 durable validation；
+- 共享 composition 拥有 neutral 的默认 authority-store 位置 `dist/forge-runtime.sqlite`。provider 仍可通过已有的 persistence override 或 `FORGE_WORKER_DATABASE_PATH` configuration 选择不同的 store；
 - Temporal worker 现在是很小的 compatibility adapter。activity 在 Temporal 下运行时它提供 `Context.current().cancellationSignal`；direct composition test 则安全地不提供 signal；
 - 现有 Temporal contract export 作为刻意的 compatibility boundary 仍可从 Temporal package 获取，但实现由 neutral contracts library 提供；
 - `SandboxedPackageScriptVerifier` 已从已有的 `run-preparation` public boundary 导出，因此提取后的 composition 不再进入其他 package 的 source tree。
