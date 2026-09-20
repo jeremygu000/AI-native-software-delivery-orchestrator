@@ -123,7 +123,6 @@ export const createRestateForgeRunService = (activities: ForgeActivities) =>
                 repairFailed = true;
                 break;
               }
-              ctx.clear(currentRepairStateKey);
               repairResult = await ctx.run('executeResumedRepair', () =>
                 activities.executeRepair({
                   runId,

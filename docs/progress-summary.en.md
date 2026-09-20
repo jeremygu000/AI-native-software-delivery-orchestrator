@@ -2705,7 +2705,7 @@ What was built:
 - `restate-runtime` owns every Restate SDK import for this adapter and exports `createRestateForgeRunService`;
 - its Forge run workflow mirrors the selected provider's compact control flow: scheduler reevaluation, builder execution, output evaluation, repair admission and execution, accepted-output integration, and final run state;
 - a blocked repair is correlated by its exact repair attempt ID. A wake first reaches `resumeBlockedRepair`; only a durable `resumed` result can execute that repair again;
-- Restate durable promises are one-shot, so the adapter arms a durable wake generation before execution can report `BLOCKED` and arms its successor before each resume authorization. This preserves a single matching wake that arrives during the activity response or during an ignored authorization decision, without treating the wake itself as authority;
+- Restate durable promises are one-shot, so the adapter arms a durable wake generation before execution can report `BLOCKED` and arms its successor before each resume authorization. The current repair remains armed throughout resumed execution, so the same repair can durably block, resume, and block again without losing its next matching wake. Wakes remain hints, never authority;
 - the new runtime does not import the historical `restate-spike` or its synthetic scenario services.
 
 What was verified:
@@ -2714,6 +2714,7 @@ What was verified:
 - a wrong repair ID produces no resume attempt;
 - a single matching wake received after Forge reaches `BLOCKED` but before the activity response returns is buffered and reauthorized;
 - a single next wake received while Forge is deciding that the preceding resume is `ignored` is buffered for the armed successor generation;
+- a single matching wake received while a successfully resumed repair executes again is preserved if that repair returns to `BLOCKED`, then reauthorized against the same repair ID;
 - a later matching wake with a `resumed` result executes the same repair ID, integrates its accepted output, reevaluates, and finalizes the run;
 - the adapter type-checks, lints, formats, and participates in the workspace build and test configuration.
 

@@ -16,8 +16,10 @@ describe('Restate Forge run service', () => {
   let repairExecutions = 0;
   let resumeAttempts = 0;
   let firstRepairEntered = false;
+  let reblockedRepairEntered = false;
   let ignoredResumeEntered = false;
   let releaseFirstRepair: (() => void) | undefined;
+  let releaseReblockedRepair: (() => void) | undefined;
   let releaseIgnoredResume: (() => void) | undefined;
 
   const activities: ForgeActivities = {
@@ -68,6 +70,19 @@ describe('Restate Forge run service', () => {
           state: 'blocked',
           repairAttemptId,
           blockerLeaseId: 'lease-1'
+        };
+      }
+      if (repairExecutions === 2) {
+        reblockedRepairEntered = true;
+        await new Promise<void>((resolve) => {
+          releaseReblockedRepair = resolve;
+        });
+        return {
+          runId,
+          taskId,
+          state: 'blocked',
+          repairAttemptId,
+          blockerLeaseId: 'lease-2'
         };
       }
       return {
@@ -124,13 +139,15 @@ describe('Restate Forge run service', () => {
     await environment.stop();
   });
 
-  it('buffers single matching wakes across blocked and ignored authority responses', async () => {
+  it('buffers single matching wakes across blocked, ignored, and reblocked repair responses', async () => {
     calls.length = 0;
     repairExecutions = 0;
     resumeAttempts = 0;
     firstRepairEntered = false;
+    reblockedRepairEntered = false;
     ignoredResumeEntered = false;
     releaseFirstRepair = undefined;
+    releaseReblockedRepair = undefined;
     releaseIgnoredResume = undefined;
     const client = ingress.workflowClient(service, 'forge-run-service-test');
     const handle = await client.workflowSubmit({ runId: 'run-1' });
@@ -151,6 +168,13 @@ describe('Restate Forge run service', () => {
     await client.sendRepairWake({ repairAttemptId: 'repair-1' });
     releaseIgnoredResume?.();
 
+    await expect.poll(() => reblockedRepairEntered).toBe(true);
+
+    // A successful resume keeps the same repair armed while it runs again.
+    // This single wake must survive the second durable BLOCKED response.
+    await client.sendRepairWake({ repairAttemptId: 'repair-1' });
+    releaseReblockedRepair?.();
+
     const result = await ingress.result(handle);
     expect(result).toEqual({ runId: 'run-1', status: 'completed' });
     expect(calls).toEqual([
@@ -161,6 +185,8 @@ describe('Restate Forge run service', () => {
       'admit',
       'repair:repair-1',
       'resume:repair-1',
+      'resume:repair-1',
+      'repair:repair-1',
       'resume:repair-1',
       'repair:repair-1',
       'integrate',
