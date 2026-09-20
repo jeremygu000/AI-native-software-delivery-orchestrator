@@ -1,5 +1,6 @@
 import type {
   AgentExecutionAttempt,
+  CancellationSignal,
   TaskCodeReview,
   TaskCodeReviewSubject,
   TaskContract,
@@ -69,6 +70,7 @@ export class ForgeRepairExecutionService {
     readonly leases?: readonly WriteLease[];
     readonly feedback?: RepairRuntimeFeedback;
     readonly preCreatedRepairAttempt?: TaskRepairAttempt;
+    readonly cancellationSignal?: CancellationSignal;
   }): Promise<RepairExecutionOutcome> {
     const repair =
       request.preCreatedRepairAttempt ??
@@ -94,7 +96,8 @@ export class ForgeRepairExecutionService {
         verificationPolicyFingerprint: request.verificationPolicyFingerprint,
         repository: request.repository,
         reviewIteration: request.reviewIteration,
-        feedback: request.feedback
+        feedback: request.feedback,
+        cancellationSignal: request.cancellationSignal
       });
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Repair blocked by lease:')) {

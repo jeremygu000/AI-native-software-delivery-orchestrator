@@ -108,10 +108,13 @@ describe('PiCodingAgentGateway', () => {
   it('disables built-ins and establishes the session before prompting', async () => {
     const activeTools = vi.fn();
     const prompt = vi.fn(async () => {});
+    const abort = vi.fn(async () => {});
     let options: Parameters<PiSessionFactory>[0] | undefined;
     const createSession: PiSessionFactory = async (receivedOptions) => {
       options = receivedOptions;
-      return { session: { sessionId: 'pi-session-1', setActiveToolsByName: activeTools, prompt } };
+      return {
+        session: { sessionId: 'pi-session-1', setActiveToolsByName: activeTools, prompt, abort }
+      };
     };
     const started: string[] = [];
     const gateway = new PiCodingAgentGateway(createSession);
@@ -152,8 +155,9 @@ describe('PiCodingAgentGateway', () => {
   it('does not prompt when durable session establishment rejects', async () => {
     const activeTools = vi.fn();
     const prompt = vi.fn(async () => {});
+    const abort = vi.fn(async () => {});
     const createSession: PiSessionFactory = async () => ({
-      session: { sessionId: 'pi-session-1', setActiveToolsByName: activeTools, prompt }
+      session: { sessionId: 'pi-session-1', setActiveToolsByName: activeTools, prompt, abort }
     });
     const gateway = new PiCodingAgentGateway(createSession);
 
@@ -168,6 +172,32 @@ describe('PiCodingAgentGateway', () => {
         }
       })
     ).rejects.toThrow('Attempt persistence failed.');
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('aborts the Pi session when the owning activity is cancelled', async () => {
+    const activeTools = vi.fn();
+    const prompt = vi.fn(async () => {});
+    const abort = vi.fn(async () => {});
+    const controller = new AbortController();
+    const gateway = new PiCodingAgentGateway(async () => ({
+      session: { sessionId: 'pi-session-1', setActiveToolsByName: activeTools, prompt, abort }
+    }));
+
+    await expect(
+      gateway.start({
+        cwd: '/workspace',
+        prompt: 'Change value',
+        tools: ['forge_read'],
+        executeTool: async () => ({ content: 'unused' }),
+        onStarted: async () => {
+          controller.abort();
+        },
+        cancellationSignal: controller.signal
+      })
+    ).rejects.toThrow('Pi session cancelled before prompt');
+
+    expect(abort).toHaveBeenCalledOnce();
     expect(prompt).not.toHaveBeenCalled();
   });
 });

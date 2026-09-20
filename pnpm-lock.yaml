@@ -129,6 +129,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/workspace-git':
         specifier: workspace:*
         version: link:../../libs/workspace-git
+      '@temporalio/activity':
+        specifier: ^1.24.0
+        version: 1.24.0
 
   libs/agent-runtime:
     dependencies:
@@ -6965,7 +6968,7 @@ snapshots:
   vite@8.2.1(@types/node@26.6.2)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(tsx@4.23.11)(yaml@2.9.1):
     dependencies:
       lightningcss: 1.33.0
-      picomatch: 4.0.5
+      picomatch: 4.0.7
       postcss: 8.5.26
       rolldown: 1.2.3
       tinyglobby: 0.2.17

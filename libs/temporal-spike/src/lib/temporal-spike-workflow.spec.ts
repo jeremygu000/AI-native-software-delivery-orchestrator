@@ -225,7 +225,7 @@ describe('Temporal spike workflow - Scenario B (blocked-repair-restart-resume)',
       repairAttemptId: 'blocked-repair-1'
     });
 
-    const result = await worker.runUntil(handle.result());
+    await worker.runUntil(handle.result());
 
     const outcome = collectDurableExecutionOutcome(evidenceStore['runId'], evidenceStore);
 
@@ -265,7 +265,7 @@ describe('Temporal spike workflow - Scenario B (blocked-repair-restart-resume)',
       repairAttemptId: 'blocked-repair-1'
     });
 
-    const result = await worker.runUntil(handle.result());
+    await worker.runUntil(handle.result());
 
     const outcome = collectDurableExecutionOutcome(evidenceStore['runId'], evidenceStore);
 

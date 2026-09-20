@@ -1,5 +1,6 @@
 import {
   canonicalTaskLeaseResources,
+  type CancellationSignal,
   type AgentExecutionAttempt,
   type AgentRunner,
   type OrchestrationPersistence,
@@ -62,20 +63,26 @@ export class ForgeBuilderExecutionService {
     readonly task: TaskContract;
     readonly binding: RuntimeTaskBinding;
     readonly attempt: AgentExecutionAttempt;
+    readonly cancellationSignal?: CancellationSignal;
   }): Promise<ForgeBuilderExecutionResult> {
-    if (request.attempt.state !== 'PREPARING') {
-      throw new ForgeBuilderExecutionError('Builder execution requires a PREPARING attempt');
+    if (request.attempt.state !== 'PREPARING' && request.attempt.state !== 'STARTING') {
+      throw new ForgeBuilderExecutionError('Builder execution requires a PREPARING or STARTING attempt');
     }
     const workspace = await this.#workspaceManager.create(request.binding.workspace);
     await this.#persistence.persistWorkspace({ runId: request.runId, workspace });
     const leases = await this.#acquire(request.runId, request.binding);
-    const starting: AgentExecutionAttempt = {
-      ...request.attempt,
-      state: 'STARTING',
-      revision: request.attempt.revision + 1,
-      startedAt: this.#now()
-    };
-    await this.#persistence.persistAttempt({ runId: request.runId, attempt: starting });
+    const starting: AgentExecutionAttempt =
+      request.attempt.state === 'STARTING'
+        ? request.attempt
+        : {
+            ...request.attempt,
+            state: 'STARTING',
+            revision: request.attempt.revision + 1,
+            startedAt: this.#now()
+          };
+    if (request.attempt.state === 'PREPARING') {
+      await this.#persistence.persistAttempt({ runId: request.runId, attempt: starting });
+    }
     let running: AgentExecutionAttempt = starting;
     let established = false;
     let result: Awaited<ReturnType<AgentRunner['run']>>;
@@ -91,6 +98,7 @@ export class ForgeBuilderExecutionService {
         trustedCommandPath: request.binding.trustedCommandPath,
         workspace,
         instructions: request.task.goal,
+        cancellationSignal: request.cancellationSignal,
         onStarted: async ({ sessionRef }) => {
           if (established) {
             throw new ForgeBuilderExecutionError('Builder started twice');
@@ -124,19 +132,27 @@ export class ForgeBuilderExecutionService {
       throw new ForgeBuilderExecutionError(`Builder runner failed: ${failure.detail}`);
     }
     if (result.status !== 'completed' || !established) {
-      const detail = result.status === 'failed' ? result.detail : 'Builder did not establish';
+      const detail =
+        result.status === 'failed' || result.status === 'cancelled'
+          ? result.detail
+          : 'Builder did not establish';
       const failed: AgentExecutionAttempt = {
         ...running,
-        state: established ? 'UNKNOWN' : 'FAILED',
+        state: result.status === 'cancelled' ? 'CANCELLED' : established ? 'UNKNOWN' : 'FAILED',
         revision: running.revision + 1,
         completedAt: this.#now(),
         failure: {
-          type: established ? 'unknown-outcome' : 'execution-failed',
+          type:
+            result.status === 'cancelled'
+              ? 'cancelled'
+              : established
+                ? 'unknown-outcome'
+                : 'execution-failed',
           detail
         }
       };
       await this.#persistence.persistAttempt({ runId: request.runId, attempt: failed });
-      if (!established) {
+      if (!established || result.status === 'cancelled') {
         await this.#release(leases);
       }
       throw new ForgeBuilderExecutionError(`Builder did not complete: ${detail}`);

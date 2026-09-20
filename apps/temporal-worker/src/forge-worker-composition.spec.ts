@@ -1,5 +1,7 @@
 import type {
+  ActiveMutationClaimPersistence,
   AgentExecutionAttempt,
+  CancellationPersistence,
   CreatePersistedRunRequest,
   OrchestrationPersistence,
   PersistedAgentExecutionAttempt,
@@ -18,9 +20,13 @@ import type {
   TaskCodeReview,
   TaskCodeReviewStore,
   TaskImpact,
+  TaskRepairAdmissionStore,
+  TaskRepairResumeStore,
   TaskRepairAttempt,
+  TaskRepairWorkItemStore,
   TaskRepairWorkItem,
   TaskWorkspace,
+  TaskVerificationEvidenceStore,
   TaskVerificationEvidence
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
@@ -33,10 +39,21 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createForgeWorkerComposition,
   reviewPolicyFingerprint,
-  verificationPolicyFingerprint
+  verificationPolicyFingerprint,
+  type ForgeWorkerCompositionOverrides
 } from './forge-worker-composition.js';
 
-class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore {
+class MemoryPersistence
+  implements
+    OrchestrationPersistence,
+    CancellationPersistence,
+    ActiveMutationClaimPersistence,
+    TaskCodeReviewStore,
+    TaskVerificationEvidenceStore,
+    TaskRepairAdmissionStore,
+    TaskRepairResumeStore,
+    TaskRepairWorkItemStore
+{
   request: CreatePersistedRunRequest | undefined;
   state: RecoveredRun['run']['state'] = 'ACTIVE';
   readonly reevaluations: PersistedReevaluation[] = [];
@@ -144,6 +161,23 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
     this.attempts.push(record);
   }
 
+  async claimBuilderStart(record: PersistedAgentExecutionAttempt): Promise<AgentExecutionAttempt> {
+    if (this.state !== 'ACTIVE') {
+      throw new Error(`Run is not active: ${record.runId}`);
+    }
+    const index = this.attempts.findIndex((entry) => entry.attempt.id === record.attempt.id);
+    const existing = this.attempts[index]?.attempt;
+    if (
+      existing === undefined ||
+      existing.state !== 'PREPARING' ||
+      existing.revision + 1 !== record.attempt.revision
+    ) {
+      throw new Error(`Builder claim authority mismatch: ${record.attempt.id}`);
+    }
+    this.attempts[index] = record;
+    return record.attempt;
+  }
+
   async updateRunState(_runId: string, state: RecoveredRun['run']['state']): Promise<void> {
     this.state = state;
   }
@@ -219,6 +253,23 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
       return;
     }
     this.repairAttempts.push(record);
+  }
+
+  async claimRepairStart(record: PersistedTaskRepairAttempt): Promise<TaskRepairAttempt> {
+    if (this.state !== 'ACTIVE') {
+      throw new Error(`Run is not active: ${record.runId}`);
+    }
+    const index = this.repairAttempts.findIndex((entry) => entry.attempt.id === record.attempt.id);
+    const existing = this.repairAttempts[index]?.attempt;
+    if (
+      existing === undefined ||
+      existing.state !== 'PREPARING' ||
+      existing.revision + 1 !== record.attempt.revision
+    ) {
+      throw new Error(`Repair claim authority mismatch: ${record.attempt.id}`);
+    }
+    this.repairAttempts[index] = record;
+    return record.attempt;
   }
 
   async recoverRepairAttempts(): Promise<readonly PersistedTaskRepairAttempt[]> {
@@ -298,6 +349,17 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
 
   async recoverRepairWorkItems(): Promise<readonly TaskRepairWorkItem[]> {
     return this.repairWorkItems;
+  }
+
+  async persistRepairWorkItem(item: TaskRepairWorkItem): Promise<void> {
+    const index = this.repairWorkItems.findIndex(
+      (existing) => existing.repairAttemptId === item.repairAttemptId
+    );
+    if (index >= 0) {
+      this.repairWorkItems[index] = item;
+      return;
+    }
+    this.repairWorkItems.push(item);
   }
 
   async close(): Promise<void> {}
@@ -388,6 +450,34 @@ const emptyRepositoryGraph: RepositoryGraph = {
   diagnostics: []
 };
 
+type BuilderExecutionOverride = NonNullable<ForgeWorkerCompositionOverrides['builderExecution']>;
+type EvaluationOverride = NonNullable<ForgeWorkerCompositionOverrides['evaluation']>;
+type IntegrationOverride = NonNullable<ForgeWorkerCompositionOverrides['integration']>;
+type RepairExecutionOverride = NonNullable<ForgeWorkerCompositionOverrides['repairExecution']>;
+type BuilderExecutionRequest = Parameters<BuilderExecutionOverride['execute']>[0];
+type RepairExecutionRequest = Parameters<RepairExecutionOverride['execute']>[0];
+type EvaluationRequest = Parameters<EvaluationOverride['evaluate']>[0];
+
+const unexpectedExecution = (name: string) => async (): Promise<never> => {
+  throw new Error(`${name} must not be called in this test`);
+};
+
+const unusedBuilderExecution = (): BuilderExecutionOverride => ({
+  execute: unexpectedExecution('builder execution')
+});
+
+const unusedEvaluation = (): EvaluationOverride => ({
+  evaluate: unexpectedExecution('builder-output evaluation')
+});
+
+const unusedIntegration = (): IntegrationOverride => ({
+  integrate: unexpectedExecution('accepted-output integration')
+});
+
+const unusedRepairExecution = (): RepairExecutionOverride => ({
+  execute: unexpectedExecution('repair execution')
+});
+
 const directories: string[] = [];
 
 afterEach(() => {
@@ -403,11 +493,11 @@ describe('temporal worker production vertical slice', () => {
     await persistence.updateRunState('run-1', 'CANCEL_REQUESTED');
 
     const composition = await createForgeWorkerComposition({
-      persistence: persistence as never,
-      builderExecution: { execute: async () => undefined } as never,
-      evaluation: { evaluate: async () => undefined } as never,
-      integration: { integrate: async () => undefined } as never,
-      repairExecution: { execute: async () => undefined } as never,
+      persistence,
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
+      integration: unusedIntegration(),
+      repairExecution: unusedRepairExecution(),
       repositoryGraph: emptyRepositoryGraph
     });
 
@@ -425,31 +515,31 @@ describe('temporal worker production vertical slice', () => {
     await persistence.updateRunState('run-1', 'CANCEL_REQUESTED');
     const calls: string[] = [];
     const composition = await createForgeWorkerComposition({
-      persistence: persistence as never,
+      persistence,
       builderExecution: {
         execute: async () => {
           calls.push('builder');
           throw new Error('not reached');
         }
-      } as never,
+      } satisfies BuilderExecutionOverride,
       evaluation: {
         evaluate: async () => {
           calls.push('evaluation');
           throw new Error('not reached');
         }
-      } as never,
+      } satisfies EvaluationOverride,
       integration: {
         integrate: async () => {
           calls.push('integration');
           throw new Error('not reached');
         }
-      } as never,
+      } satisfies IntegrationOverride,
       repairExecution: {
         execute: async () => {
           calls.push('repair');
           throw new Error('not reached');
         }
-      } as never,
+      } satisfies RepairExecutionOverride,
       repositoryGraph: emptyRepositoryGraph
     });
 
@@ -459,7 +549,7 @@ describe('temporal worker production vertical slice', () => {
         taskId: 'task-a',
         attemptId: 'attempt-task-a'
       })
-    ).rejects.toThrow('Cancellation is pending');
+    ).rejects.toThrow('Run does not accept mutations: run-1/CANCEL_REQUESTED');
     await expect(
       composition.forgeActivities.evaluateBuilderOutput({
         runId: 'run-1',
@@ -468,7 +558,7 @@ describe('temporal worker production vertical slice', () => {
         builderAttemptId: 'attempt-task-a',
         impactId: 'attempt-task-a'
       })
-    ).rejects.toThrow('Cancellation is pending');
+    ).rejects.toThrow('Run does not accept mutations: run-1/CANCEL_REQUESTED');
     await expect(
       composition.forgeActivities.admitRepair({
         runId: 'run-1',
@@ -480,7 +570,7 @@ describe('temporal worker production vertical slice', () => {
           workspaceId: 'workspace-task-a'
         }
       })
-    ).rejects.toThrow('Cancellation is pending');
+    ).rejects.toThrow('Run does not accept mutations: run-1/CANCEL_REQUESTED');
     await expect(
       composition.forgeActivities.executeRepair({
         runId: 'run-1',
@@ -491,7 +581,7 @@ describe('temporal worker production vertical slice', () => {
         reviewId: 'task-a:1',
         repairAttemptId: 'repair-task-a'
       })
-    ).rejects.toThrow('Cancellation is pending');
+    ).rejects.toThrow('Run does not accept mutations: run-1/CANCEL_REQUESTED');
     await expect(
       composition.forgeActivities.integrateAcceptedOutput({
         runId: 'run-1',
@@ -503,13 +593,13 @@ describe('temporal worker production vertical slice', () => {
           workspaceId: 'workspace-task-a'
         }
       })
-    ).rejects.toThrow('Cancellation is pending');
+    ).rejects.toThrow('Run does not accept mutations: run-1/CANCEL_REQUESTED');
     await expect(
       composition.forgeActivities.resumeBlockedRepair({
         runId: 'run-1',
         repairAttemptId: 'repair-task-a'
       })
-    ).rejects.toThrow('Cancellation is pending');
+    ).rejects.toThrow('Run does not accept mutations: run-1/CANCEL_REQUESTED');
     expect(calls).toEqual([]);
 
     await composition.close();
@@ -521,23 +611,11 @@ describe('temporal worker production vertical slice', () => {
     await persistence.updateRunState('run-1', 'CANCEL_REQUESTED');
 
     const composition = await createForgeWorkerComposition({
-      persistence: persistence as never,
-      builderExecution: { execute: async () => undefined } as never,
-      evaluation: {
-        evaluate: async () => {
-          throw new Error('not used');
-        }
-      } as never,
-      integration: {
-        integrate: async () => {
-          throw new Error('not used');
-        }
-      } as never,
-      repairExecution: {
-        execute: async () => {
-          throw new Error('not used');
-        }
-      } as never,
+      persistence,
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
+      integration: unusedIntegration(),
+      repairExecution: unusedRepairExecution(),
       repositoryGraph: emptyRepositoryGraph
     });
 
@@ -573,11 +651,11 @@ describe('temporal worker production vertical slice', () => {
     });
 
     const composition = await createForgeWorkerComposition({
-      persistence: persistence as never,
-      builderExecution: { execute: async () => undefined } as never,
-      evaluation: { evaluate: async () => undefined } as never,
-      integration: { integrate: async () => undefined } as never,
-      repairExecution: { execute: async () => undefined } as never,
+      persistence,
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
+      integration: unusedIntegration(),
+      repairExecution: unusedRepairExecution(),
       repositoryGraph: emptyRepositoryGraph
     });
 
@@ -610,11 +688,11 @@ describe('temporal worker production vertical slice', () => {
     });
 
     const composition = await createForgeWorkerComposition({
-      persistence: persistence as never,
-      builderExecution: { execute: async () => undefined } as never,
-      evaluation: { evaluate: async () => undefined } as never,
-      integration: { integrate: async () => undefined } as never,
-      repairExecution: { execute: async () => undefined } as never,
+      persistence,
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
+      integration: unusedIntegration(),
+      repairExecution: unusedRepairExecution(),
       repositoryGraph: emptyRepositoryGraph
     });
 
@@ -730,7 +808,10 @@ describe('temporal worker production vertical slice', () => {
     });
 
     const repairExecution = {
-      async execute(request: { runId: string; preCreatedRepairAttempt: TaskRepairAttempt }) {
+      async execute(request: RepairExecutionRequest) {
+        if (request.preCreatedRepairAttempt === undefined) {
+          throw new Error('Expected a pre-created repair attempt');
+        }
         const reviewSubject = {
           builderAttemptId: builderAttempt.id,
           outputAttemptId: blockedRepair.id,
@@ -761,27 +842,31 @@ describe('temporal worker production vertical slice', () => {
             completedAt: new Date('2026-08-12T00:04:00.000Z')
           },
           recommendation: 'accept' as const,
-          verification: { fingerprint: 'verification-repair-1' },
+          verification: {
+            id: 'verification-repair-1',
+            runId: request.runId,
+            taskId: request.preCreatedRepairAttempt.taskId,
+            attemptId: request.preCreatedRepairAttempt.id,
+            workspaceId: request.workspace.id,
+            workspaceRevision: request.workspace.revision,
+            workspaceChangeFingerprint: reviewSubject.workspaceChangeFingerprint,
+            verificationPolicyFingerprint: 'fp',
+            status: 'passed' as const,
+            verifiedAt: new Date('2026-08-12T00:04:00.000Z').toISOString(),
+            fingerprint: 'verification-repair-1'
+          },
           reviewSubject,
           review
         };
       }
-    };
+    } satisfies RepairExecutionOverride;
 
     const composition = await createForgeWorkerComposition({
-      persistence: persistence as never,
-      builderExecution: { execute: async () => undefined } as never,
-      evaluation: {
-        evaluate: async () => {
-          throw new Error('not used');
-        }
-      } as never,
-      integration: {
-        integrate: async () => {
-          throw new Error('not used');
-        }
-      } as never,
-      repairExecution: repairExecution as never,
+      persistence,
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
+      integration: unusedIntegration(),
+      repairExecution,
       repositoryGraph: emptyRepositoryGraph
     });
     const activities = composition.forgeActivities;
@@ -956,23 +1041,18 @@ describe('temporal worker production vertical slice', () => {
     const compositionA = await createForgeWorkerComposition({
       persistence: writer,
       repositoryGraph: emptyRepositoryGraph,
-      builderExecution: { execute: async () => undefined } as never,
-      evaluation: {
-        evaluate: async () => {
-          throw new Error('not used');
-        }
-      } as never,
-      integration: {
-        integrate: async () => {
-          throw new Error('not used');
-        }
-      } as never,
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
+      integration: unusedIntegration(),
       repairExecution: {
-        async execute() {
+        async execute(request: RepairExecutionRequest) {
+          if (request.preCreatedRepairAttempt === undefined) {
+            throw new Error('Expected a pre-created repair attempt');
+          }
           const blocked = {
-            ...blockedRepair,
+            ...request.preCreatedRepairAttempt,
             state: 'BLOCKED' as const,
-            revision: 3,
+            revision: request.preCreatedRepairAttempt.revision + 1,
             blocker: { type: 'lease' as const, leaseId: 'lease-blocker-restart' }
           };
           await writer.persistRepairAttempt({ runId: 'run-1', attempt: blocked });
@@ -982,7 +1062,7 @@ describe('temporal worker production vertical slice', () => {
             blockerLeaseId: 'lease-blocker-restart'
           };
         }
-      } as never
+      } satisfies RepairExecutionOverride
     });
     await compositionA.forgeActivities.reevaluateRun({ runId: 'run-1' });
     const blocked = await compositionA.forgeActivities.executeRepair({
@@ -1003,15 +1083,14 @@ describe('temporal worker production vertical slice', () => {
       persistence: reader,
       repositoryGraph: emptyRepositoryGraph,
       onWriteGuardHydrated: (_runId, leases) =>
-        hydratedLeaseSnapshots.push(leases.map((lease) => lease.id).sort()),
-      builderExecution: { execute: async () => undefined } as never,
-      evaluation: {
-        evaluate: async () => {
-          throw new Error('not used');
-        }
-      } as never,
+        hydratedLeaseSnapshots.push(leases.map((lease) => lease.id).toSorted()),
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
       repairExecution: {
-        async execute(request: { runId: string; preCreatedRepairAttempt: TaskRepairAttempt }) {
+        async execute(request: RepairExecutionRequest) {
+          if (request.preCreatedRepairAttempt === undefined) {
+            throw new Error('Expected a pre-created repair attempt');
+          }
           const reviewSubject = {
             builderAttemptId: builderAttempt.id,
             outputAttemptId: request.preCreatedRepairAttempt.id,
@@ -1042,17 +1121,29 @@ describe('temporal worker production vertical slice', () => {
               completedAt: new Date('2026-08-12T00:04:00.000Z')
             },
             recommendation: 'accept' as const,
-            verification: { fingerprint: 'verification-restart-repair' },
+            verification: {
+              id: 'verification-restart-repair',
+              runId: request.runId,
+              taskId: request.preCreatedRepairAttempt.taskId,
+              attemptId: request.preCreatedRepairAttempt.id,
+              workspaceId: request.workspace.id,
+              workspaceRevision: request.workspace.revision,
+              workspaceChangeFingerprint: reviewSubject.workspaceChangeFingerprint,
+              verificationPolicyFingerprint: 'fp',
+              status: 'passed' as const,
+              verifiedAt: new Date('2026-08-12T00:04:00.000Z').toISOString(),
+              fingerprint: 'verification-restart-repair'
+            },
             reviewSubject,
             review
           };
         }
-      } as never,
+      } satisfies RepairExecutionOverride,
       integration: {
         async integrate(request: { workspace: TaskWorkspace }) {
           return { status: 'integrated' as const, workspace: request.workspace };
         }
-      } as never
+      } satisfies IntegrationOverride
     });
     const earlyWake = await compositionB.forgeActivities.resumeBlockedRepair({
       runId: 'run-1',
@@ -1078,7 +1169,7 @@ describe('temporal worker production vertical slice', () => {
         releasedAt: new Date('2026-08-12T00:03:00.000Z')
       }
     });
-    await releaser.close();
+    releaser.close();
 
     const resumed = await compositionB.forgeActivities.resumeBlockedRepair({
       runId: 'run-1',
@@ -1137,11 +1228,7 @@ describe('temporal worker production vertical slice', () => {
     await persistence.createRun(createRunRequest(['task-a', 'task-b']));
 
     const builderExecution = {
-      async execute(request: {
-        runId: string;
-        attempt: AgentExecutionAttempt;
-        binding: { workspace: { id: string } };
-      }) {
+      async execute(request: BuilderExecutionRequest) {
         const workspace: TaskWorkspace = {
           runId: request.runId,
           taskId: request.attempt.taskId,
@@ -1160,23 +1247,26 @@ describe('temporal worker production vertical slice', () => {
           taskId: request.attempt.taskId,
           impact: impactFor(request.attempt.taskId)
         });
+        const attempt = {
+          ...request.attempt,
+          state: 'COMPLETED' as const,
+          revision: request.attempt.revision + 1,
+          startedAt: new Date('2026-08-12T00:00:00.000Z'),
+          completedAt: new Date('2026-08-12T00:01:00.000Z')
+        };
+        const impact = impactFor(request.attempt.taskId);
         await persistence.persistAttempt({
           runId: request.runId,
-          attempt: {
-            ...request.attempt,
-            state: 'COMPLETED',
-            revision: request.attempt.revision + 1,
-            startedAt: new Date('2026-08-12T00:00:00.000Z'),
-            completedAt: new Date('2026-08-12T00:01:00.000Z')
-          }
+          attempt
         });
+        return { workspace, attempt, impact };
       }
-    };
+    } satisfies BuilderExecutionOverride;
 
     const reviewByAttempt = new Map<string, TaskCodeReview>();
 
     const evaluation = {
-      async evaluate(request: { runId: string; builderAttempt: AgentExecutionAttempt }) {
+      async evaluate(request: EvaluationRequest) {
         const subject = {
           builderAttemptId: request.builderAttempt.id,
           outputAttemptId: request.builderAttempt.id,
@@ -1206,13 +1296,25 @@ describe('temporal worker production vertical slice', () => {
         });
         reviewByAttempt.set(request.builderAttempt.id, review);
         return {
-          verification: { fingerprint: `verification-${request.builderAttempt.taskId}` },
+          verification: {
+            id: `verification-${request.builderAttempt.taskId}`,
+            runId: request.runId,
+            taskId: request.builderAttempt.taskId,
+            attemptId: request.builderAttempt.id,
+            workspaceId: request.workspace.id,
+            workspaceRevision: request.workspace.revision,
+            workspaceChangeFingerprint: subject.workspaceChangeFingerprint,
+            verificationPolicyFingerprint: 'fp',
+            status: 'passed' as const,
+            verifiedAt: new Date('2026-08-12T00:01:00.000Z').toISOString(),
+            fingerprint: `verification-${request.builderAttempt.taskId}`
+          },
           subject,
           review,
           recommendation: 'accept' as const
         };
       }
-    };
+    } satisfies EvaluationOverride;
 
     const integration = {
       async integrate(request: { runId: string; taskId: string; workspace: TaskWorkspace }) {
@@ -1225,26 +1327,23 @@ describe('temporal worker production vertical slice', () => {
         await persistence.persistWorkspace({ runId: request.runId, workspace: integrated });
         return { status: 'integrated' as const, workspace: integrated };
       }
-    };
+    } satisfies IntegrationOverride;
 
     const composition = await createForgeWorkerComposition({
-      persistence: persistence as never,
-      builderExecution: builderExecution as never,
-      evaluation: evaluation as never,
-      integration: integration as never,
-      repairExecution: {
-        execute: async () => {
-          throw new Error('no repair in accept path');
-        }
-      } as never,
+      persistence,
+      builderExecution,
+      evaluation,
+      integration,
+      repairExecution: unusedRepairExecution(),
       repositoryGraph: emptyRepositoryGraph
     });
     const activities = composition.forgeActivities;
 
     const first = await activities.reevaluateRun({ runId: 'run-1' });
     expect(first.authorizedTasks).toHaveLength(1);
-    expect(first.authorizedTasks[0]!.taskId).toBe('task-a');
-    const attemptA = first.authorizedTasks[0]!.attemptId;
+    const [taskA] = first.authorizedTasks;
+    expect(taskA.taskId).toBe('task-a');
+    const attemptA = taskA.attemptId;
 
     const builderA = await activities.executeBuilder({
       runId: 'run-1',
@@ -1275,8 +1374,9 @@ describe('temporal worker production vertical slice', () => {
 
     const afterA = await activities.reevaluateRun({ runId: 'run-1' });
     expect(afterA.authorizedTasks).toHaveLength(1);
-    expect(afterA.authorizedTasks[0]!.taskId).toBe('task-b');
-    const attemptB = afterA.authorizedTasks[0]!.attemptId;
+    const [taskB] = afterA.authorizedTasks;
+    expect(taskB.taskId).toBe('task-b');
+    const attemptB = taskB.attemptId;
     expect(attemptB).not.toBe(attemptA);
 
     const builderB = await activities.executeBuilder({

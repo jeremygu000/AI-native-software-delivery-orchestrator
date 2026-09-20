@@ -1,6 +1,7 @@
 import type {
   AgentExecutionAttempt,
   AgentRunResult,
+  CancellationSignal,
   OrchestrationPersistence,
   RepositorySnapshotProvider,
   TaskCodeReviewSubjectProvider,
@@ -96,9 +97,13 @@ export class RepairExecutionCoordinator {
     readonly repository: Parameters<TaskCodeReviewCollector['collect']>[0]['repository'];
     readonly reviewIteration: number;
     readonly feedback?: RepairRuntimeFeedback;
+    readonly cancellationSignal?: CancellationSignal;
   }): Promise<TaskRepairExecutionResult> {
     let established = false;
-    let running = await this.#repairs.markStarting(request.repair);
+    let running =
+      request.repair.state === 'STARTING'
+        ? request.repair
+        : await this.#repairs.markStarting(request.repair);
     let result: AgentRunResult;
     try {
       result = await this.#runner.run({
@@ -110,6 +115,7 @@ export class RepairExecutionCoordinator {
         leases: request.leases,
         workspace: request.workspace,
         instructions: this.#repairInstructions(request.repair),
+        cancellationSignal: request.cancellationSignal,
         onStarted: async ({ sessionRef }) => {
           if (established) {
             throw new RepairExecutionError(`Repair execution started twice: ${request.repair.id}`);
@@ -145,12 +151,17 @@ export class RepairExecutionCoordinator {
         );
         throw new RepairExecutionError(`Repair blocked by lease: ${result.leaseId}`);
       }
-      await this.#repairs.fail(
-        running,
-        result.status === 'failed' ? result.detail : 'Repair did not establish'
-      );
+      const detail =
+        result.status === 'failed' || result.status === 'cancelled'
+          ? result.detail
+          : 'Repair did not establish';
+      if (result.status === 'cancelled') {
+        await this.#repairs.cancel(running, detail);
+      } else {
+        await this.#repairs.fail(running, detail);
+      }
       await this.#release(request.leases, request.feedback);
-      throw new RepairExecutionError('Repair did not complete');
+      throw new RepairExecutionError(`Repair did not complete: ${detail}`);
     }
     const allLeases = [...request.leases, ...(result.additionalLeases ?? [])];
     const reconciliation = await this.#reconciler.reconcile({

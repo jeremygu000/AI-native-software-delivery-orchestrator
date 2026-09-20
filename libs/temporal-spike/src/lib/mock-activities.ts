@@ -21,8 +21,8 @@ const makeFindings = () => [
   {
     id: `finding-${makeId()}`,
     severity: 'medium' as const,
-    fileIds: [] as readonly string[],
-    symbolIds: [] as readonly string[],
+    fileIds: [],
+    symbolIds: [],
     description: 'Review finding'
   }
 ];
@@ -291,8 +291,7 @@ export const createMockActivities = (ctx: MockActivityContext) => ({
     const blockedLeaseEvidence = existingLeases.find(
       (l) => l.state === 'RELEASED' || l.state === 'STALE'
     );
-    const leaseState: 'RELEASED' | 'STALE' =
-      (blockedLeaseEvidence?.state as 'RELEASED' | 'STALE') ?? 'RELEASED';
+    const leaseState = blockedLeaseEvidence?.state === 'STALE' ? 'STALE' : 'RELEASED';
 
     if (!ctx.evidenceStore.getBuilderAttempt(request.runId)) {
       const builderAttempt: BuilderAttemptEvidence = {

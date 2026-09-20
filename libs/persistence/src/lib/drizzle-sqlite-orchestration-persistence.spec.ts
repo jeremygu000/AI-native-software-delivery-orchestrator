@@ -379,6 +379,98 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     });
   });
 
+  it('settles only confirmed unknown cancellation attempts and matching active leases', async () => {
+    const persistence = new DrizzleSqliteOrchestrationPersistence();
+    await persistence.createRun(createRunRequest());
+    const unknownBuilder = {
+      id: 'attempt-unknown',
+      runId: 'run-1',
+      taskId: 'A',
+      agentId: 'agent-A',
+      workspaceId: 'workspace-A',
+      leasePlanFingerprint: `sha256:${'a'.repeat(64)}`,
+      state: 'UNKNOWN' as const,
+      revision: 2,
+      startedAt: new Date('2026-08-13T00:00:00.000Z'),
+      completedAt: new Date('2026-08-13T00:01:00.000Z'),
+      failure: { type: 'unknown-outcome' as const, detail: 'Agent connection dropped.' }
+    };
+    const matchingLease = {
+      id: 'lease-matching',
+      runId: 'run-1',
+      agentId: 'agent-A',
+      taskId: 'A',
+      resource: { type: 'project' as const, projectId: 'project-A' },
+      mode: 'exclusive' as const,
+      version: 1,
+      state: 'ACTIVE' as const,
+      acquiredAt: new Date('2026-08-13T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-13T00:00:00.000Z')
+    };
+    const unrelatedLease = {
+      ...matchingLease,
+      id: 'lease-unrelated',
+      agentId: 'agent-other',
+      taskId: 'B'
+    };
+    await persistence.persistAttempt({ runId: 'run-1', attempt: unknownBuilder });
+    await persistence.persistLease({ runId: 'run-1', lease: matchingLease });
+    await persistence.persistLease({ runId: 'run-1', lease: unrelatedLease });
+
+    await expect(
+      persistence.settleUnknownBuilderCancellation({
+        runId: 'run-1',
+        attemptId: unknownBuilder.id,
+        expectedRevision: 2,
+        detail: 'Operator confirmed the agent stopped.'
+      })
+    ).rejects.toThrow('Cancellation settlement requires CANCEL_REQUESTED run: run-1/ACTIVE');
+
+    await persistence.requestCancellation('run-1');
+    await expect(
+      persistence.settleUnknownBuilderCancellation({
+        runId: 'run-1',
+        attemptId: unknownBuilder.id,
+        expectedRevision: 1,
+        detail: 'Operator confirmed the agent stopped.'
+      })
+    ).resolves.toEqual({ status: 'version-conflict', actualRevision: 2 });
+    await expect(
+      persistence.settleUnknownBuilderCancellation({
+        runId: 'run-1',
+        attemptId: unknownBuilder.id,
+        expectedRevision: 2,
+        detail: 'Operator confirmed the agent stopped.'
+      })
+    ).resolves.toEqual({ status: 'settled', attemptId: unknownBuilder.id });
+
+    await expect(persistence.recoverRun('run-1')).resolves.toMatchObject({
+      attempts: [
+        {
+          attempt: {
+            id: unknownBuilder.id,
+            state: 'CANCELLED',
+            revision: 3,
+            failure: { type: 'cancelled' }
+          }
+        }
+      ],
+      leases: [
+        { lease: { id: matchingLease.id, state: 'RELEASED', version: 2 } },
+        { lease: { id: unrelatedLease.id, state: 'ACTIVE', version: 1 } }
+      ]
+    });
+    await expect(
+      persistence.settleUnknownBuilderCancellation({
+        runId: 'run-1',
+        attemptId: unknownBuilder.id,
+        expectedRevision: 3,
+        detail: 'Repeated confirmation.'
+      })
+    ).resolves.toEqual({ status: 'not-unknown', state: 'CANCELLED' });
+    persistence.close();
+  });
+
   it('persists task code review evidence idempotently by task iteration', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     const review = {
@@ -1363,7 +1455,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     persistence.close();
   });
 
-  it('persists dispatch attempts atomically and protects attempt revisions', async () => {
+  it('persists dispatch attempts atomically and claims starts only while the run is active', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     await persistence.createRun(createRunRequest());
     const dispatch = {
@@ -1391,7 +1483,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
       { attempts: [{ attempt: { id: 'attempt-1', taskId: 'B' } }] }
     ]);
     await expect(
-      persistence.persistAttempt({
+      persistence.claimBuilderStart({
         runId: 'run-1',
         attempt: {
           ...dispatch.attempts[0].attempt,
@@ -1400,7 +1492,18 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
           startedAt: new Date('2026-08-13T00:00:00.000Z')
         }
       })
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ id: 'attempt-1', state: 'STARTING', revision: 2 });
+    await expect(
+      persistence.claimBuilderStart({
+        runId: 'run-1',
+        attempt: {
+          ...dispatch.attempts[0].attempt,
+          state: 'STARTING',
+          revision: 2,
+          startedAt: new Date('2026-08-13T00:00:00.000Z')
+        }
+      })
+    ).rejects.toThrow('Builder mutation claim is stale: attempt-1');
     await expect(
       persistence.persistAttempt({
         runId: 'run-1',
@@ -1420,6 +1523,21 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         }
       })
     ).rejects.toThrow('Agent execution attempt revision already recorded with different evidence');
+    await expect(persistence.requestCancellation('run-1')).resolves.toEqual({
+      status: 'requested',
+      state: 'CANCEL_REQUESTED'
+    });
+    await expect(
+      persistence.claimBuilderStart({
+        runId: 'run-1',
+        attempt: {
+          ...dispatch.attempts[0].attempt,
+          state: 'STARTING',
+          revision: 3,
+          startedAt: new Date('2026-08-13T00:01:00.000Z')
+        }
+      })
+    ).rejects.toThrow('Mutation claim requires ACTIVE run: run-1/CANCEL_REQUESTED');
     await expect(persistence.persistDispatch({ ...dispatch, attempts: [] })).rejects.toThrow(
       'Dispatch attempts must exactly match scheduler starts as revision 1 PREPARING evidence'
     );

@@ -4,6 +4,9 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import type {
   CreatePersistedRunRequest,
+  ActiveMutationClaimPersistence,
+  CancellationSettlementPersistence,
+  CancellationSettlementResult,
   CancellationFinalizationResult,
   CancellationRequestResult,
   OrchestrationPersistence,
@@ -23,6 +26,8 @@ import type {
   PersistedWriteLease,
   PersistedTaskWorkspace,
   PersistedAgentExecutionAttempt,
+  AgentExecutionAttempt,
+  TaskRepairAttempt,
   PersistedDispatch,
   PersistedTaskExecutionBinding,
   RecoveredRun,
@@ -395,6 +400,8 @@ export class PersistenceReplayError extends Error {
 export class DrizzleSqliteOrchestrationPersistence
   implements
     OrchestrationPersistence,
+    ActiveMutationClaimPersistence,
+    CancellationSettlementPersistence,
     TaskCodeReviewStore,
     TaskRepairAttemptStore,
     TaskRepairAdmissionStore,
@@ -942,40 +949,7 @@ export class DrizzleSqliteOrchestrationPersistence
     writeLeaseSchema.parse(record.lease);
     this.#sqlite.transaction(() => {
       this.#assertRunExists(record.runId);
-      const existing = this.#db
-        .select()
-        .from(writeLeases)
-        .where(and(eq(writeLeases.runId, record.runId), eq(writeLeases.leaseId, record.lease.id)))
-        .get();
-      if (existing !== undefined) {
-        const stored = decode(existing.leaseJson, isWriteLease, 'write lease');
-        if (record.lease.version < stored.version) {
-          throw new PersistenceInputError(
-            `Lease version regression rejected: stored version ${stored.version}, incoming version ${record.lease.version}`
-          );
-        }
-        if (
-          record.lease.version === stored.version &&
-          canonicalPlainStringify(record.lease) !== canonicalPlainStringify(stored)
-        ) {
-          throw new PersistenceInputError('Lease version already recorded with different evidence');
-        }
-        if (record.lease.version === stored.version) {
-          return;
-        }
-      }
-      this.#db
-        .insert(writeLeases)
-        .values({
-          runId: record.runId,
-          leaseId: record.lease.id,
-          leaseJson: stringify(record.lease)
-        })
-        .onConflictDoUpdate({
-          target: [writeLeases.runId, writeLeases.leaseId],
-          set: { leaseJson: stringify(record.lease) }
-        })
-        .run();
+      this.#persistLeaseInTransaction(record);
     })();
   }
 
@@ -1038,12 +1012,67 @@ export class DrizzleSqliteOrchestrationPersistence
     })();
   }
 
+  async claimBuilderStart(record: PersistedAgentExecutionAttempt): Promise<AgentExecutionAttempt> {
+    this.#assertAttempt(record);
+    if (record.attempt.state !== 'STARTING') {
+      throw new PersistenceInputError('Builder mutation claim requires a STARTING attempt');
+    }
+    return this.#sqlite.transaction(() => {
+      this.#assertRunIsActive(record.runId);
+      this.#assertPrecedingBuilderAttempt(record);
+      this.#persistAttemptInTransaction(record);
+      return record.attempt;
+    })();
+  }
+
+  async settleUnknownBuilderCancellation(request: {
+    readonly runId: string;
+    readonly attemptId: string;
+    readonly expectedRevision: number;
+    readonly detail: string;
+  }): Promise<CancellationSettlementResult> {
+    return this.#sqlite.transaction((): CancellationSettlementResult => {
+      this.#assertRunIsCancellationRequested(request.runId);
+      const existing = this.#readBuilderAttempt(request.runId, request.attemptId);
+      if (existing.state !== 'UNKNOWN') {
+        return { status: 'not-unknown', state: existing.state };
+      }
+      if (existing.revision !== request.expectedRevision) {
+        return { status: 'version-conflict', actualRevision: existing.revision };
+      }
+      this.#persistAttemptInTransaction({
+        runId: request.runId,
+        attempt: {
+          ...existing,
+          state: 'CANCELLED',
+          revision: existing.revision + 1,
+          completedAt: new Date(),
+          failure: { type: 'cancelled', detail: request.detail }
+        }
+      });
+      this.#releaseActiveLeasesForSettlement(request.runId, existing.taskId, existing.agentId);
+      return { status: 'settled', attemptId: existing.id };
+    })();
+  }
+
   async updateRunState(runId: string, state: OrchestrationRunState): Promise<void> {
     this.#assertRunId(runId);
     this.#sqlite.transaction(() => {
-      const result = this.#db.update(runs).set({ state }).where(eq(runs.id, runId)).run();
+      // Normal orchestration finalization can only win while the run is ACTIVE.
+      // Cancellation owns CANCEL_REQUESTED -> CANCELLED through finalizeCancellation.
+      const result = this.#db
+        .update(runs)
+        .set({ state })
+        .where(and(eq(runs.id, runId), eq(runs.state, 'ACTIVE')))
+        .run();
       if (result.changes !== 1) {
-        throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
+        const current = this.#db.select({ state: runs.state }).from(runs).where(eq(runs.id, runId)).get();
+        if (current === undefined) {
+          throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
+        }
+        throw new PersistenceInputError(
+          `Normal run transition requires ACTIVE state: ${runId}/${current.state}`
+        );
       }
     })();
   }
@@ -1066,7 +1095,14 @@ export class DrizzleSqliteOrchestrationPersistence
       if (current.state === 'CANCEL_REQUESTED') {
         return { status: 'already-requested', state: 'CANCEL_REQUESTED' };
       }
-      return { status: 'terminal', state: current.state as 'COMPLETED' | 'FAILED' | 'CANCELLED' };
+      if (
+        current.state === 'COMPLETED' ||
+        current.state === 'FAILED' ||
+        current.state === 'CANCELLED'
+      ) {
+        return { status: 'terminal', state: current.state };
+      }
+      throw new PersistenceInputError(`Invalid cancellation request state: ${runId}/${current.state}`);
     })();
   }
 
@@ -1085,10 +1121,15 @@ export class DrizzleSqliteOrchestrationPersistence
       if (current === undefined) {
         throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
       }
-      return {
-        status: 'not-requested',
-        state: current.state as 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
-      };
+      if (
+        current.state === 'ACTIVE' ||
+        current.state === 'COMPLETED' ||
+        current.state === 'FAILED' ||
+        current.state === 'CANCELLED'
+      ) {
+        return { status: 'not-requested', state: current.state };
+      }
+      throw new PersistenceInputError(`Invalid cancellation finalization state: ${runId}/${current.state}`);
     })();
   }
 
@@ -1397,8 +1438,11 @@ export class DrizzleSqliteOrchestrationPersistence
     if (record === undefined) {
       return undefined;
     }
+    if (record.status !== 'integrated' && record.status !== 'blocked') {
+      throw new PersistenceInputError(`Invalid persisted integration status: ${record.status}`);
+    }
     return {
-      status: record.status as 'integrated' | 'blocked',
+      status: record.status,
       ...(record.outputAttemptId !== null ? { outputAttemptId: record.outputAttemptId } : {})
     };
   }
@@ -1475,6 +1519,50 @@ export class DrizzleSqliteOrchestrationPersistence
     this.#sqlite.transaction(() => {
       this.#assertRunExists(record.runId);
       this.#persistRepairAttemptInTransaction(record);
+    })();
+  }
+
+  async claimRepairStart(record: PersistedTaskRepairAttempt): Promise<TaskRepairAttempt> {
+    this.#assertRunId(record.runId);
+    taskRepairAttemptSchema.parse(record.attempt);
+    if (record.attempt.state !== 'STARTING') {
+      throw new PersistenceInputError('Repair mutation claim requires a STARTING attempt');
+    }
+    return this.#sqlite.transaction(() => {
+      this.#assertRunIsActive(record.runId);
+      this.#assertPrecedingRepairAttempt(record);
+      this.#persistRepairAttemptInTransaction(record);
+      return record.attempt;
+    })();
+  }
+
+  async settleUnknownRepairCancellation(request: {
+    readonly runId: string;
+    readonly attemptId: string;
+    readonly expectedRevision: number;
+    readonly detail: string;
+  }): Promise<CancellationSettlementResult> {
+    return this.#sqlite.transaction((): CancellationSettlementResult => {
+      this.#assertRunIsCancellationRequested(request.runId);
+      const existing = this.#readRepairAttempt(request.runId, request.attemptId);
+      if (existing.state !== 'UNKNOWN') {
+        return { status: 'not-unknown', state: existing.state };
+      }
+      if (existing.revision !== request.expectedRevision) {
+        return { status: 'version-conflict', actualRevision: existing.revision };
+      }
+      this.#persistRepairAttemptInTransaction({
+        runId: request.runId,
+        attempt: {
+          ...existing,
+          state: 'CANCELLED',
+          revision: existing.revision + 1,
+          completedAt: new Date(),
+          failure: { type: 'cancelled', detail: request.detail }
+        }
+      });
+      this.#releaseActiveLeasesForSettlement(request.runId, existing.taskId, existing.agentId);
+      return { status: 'settled', attemptId: existing.id };
     })();
   }
 
@@ -1947,6 +2035,154 @@ export class DrizzleSqliteOrchestrationPersistence
       );
     }
     agentExecutionAttemptSchema.parse(record.attempt);
+  }
+
+  #assertRunIsActive(runId: string): void {
+    const run = this.#db.select({ state: runs.state }).from(runs).where(eq(runs.id, runId)).get();
+    if (run === undefined) {
+      throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
+    }
+    if (run.state !== 'ACTIVE') {
+      throw new PersistenceInputError(`Mutation claim requires ACTIVE run: ${runId}/${run.state}`);
+    }
+  }
+
+  #assertRunIsCancellationRequested(runId: string): void {
+    const run = this.#db.select({ state: runs.state }).from(runs).where(eq(runs.id, runId)).get();
+    if (run === undefined) {
+      throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
+    }
+    if (run.state !== 'CANCEL_REQUESTED') {
+      throw new PersistenceInputError(
+        `Cancellation settlement requires CANCEL_REQUESTED run: ${runId}/${run.state}`
+      );
+    }
+  }
+
+  #readBuilderAttempt(runId: string, attemptId: string): AgentExecutionAttempt {
+    const record = this.#db
+      .select({ attemptJson: agentExecutionAttempts.attemptJson })
+      .from(agentExecutionAttempts)
+      .where(and(eq(agentExecutionAttempts.runId, runId), eq(agentExecutionAttempts.attemptId, attemptId)))
+      .get();
+    if (record === undefined) {
+      throw new PersistenceInputError(`Unknown builder attempt: ${attemptId}`);
+    }
+    return decode(record.attemptJson, isAgentExecutionAttempt, 'agent execution attempt');
+  }
+
+  #readRepairAttempt(runId: string, attemptId: string): TaskRepairAttempt {
+    const record = this.#db
+      .select({ attemptJson: taskRepairAttempts.attemptJson })
+      .from(taskRepairAttempts)
+      .where(and(eq(taskRepairAttempts.runId, runId), eq(taskRepairAttempts.attemptId, attemptId)))
+      .get();
+    if (record === undefined) {
+      throw new PersistenceInputError(`Unknown repair attempt: ${attemptId}`);
+    }
+    return decode(record.attemptJson, isTaskRepairAttempt, 'task repair attempt');
+  }
+
+  #releaseActiveLeasesForSettlement(runId: string, taskId: string, agentId: string): void {
+    const now = new Date();
+    const leases = this.#db
+      .select()
+      .from(writeLeases)
+      .where(eq(writeLeases.runId, runId))
+      .all()
+      .map((record) => decode(record.leaseJson, isWriteLease, 'write lease'));
+    for (const lease of leases) {
+      if (lease.state !== 'ACTIVE' || lease.taskId !== taskId || lease.agentId !== agentId) {
+        continue;
+      }
+      this.#persistLeaseInTransaction({
+        runId,
+        lease: { ...lease, state: 'RELEASED', version: lease.version + 1, releasedAt: now }
+      });
+    }
+  }
+
+  #persistLeaseInTransaction(record: PersistedWriteLease): void {
+    const existing = this.#db
+      .select()
+      .from(writeLeases)
+      .where(and(eq(writeLeases.runId, record.runId), eq(writeLeases.leaseId, record.lease.id)))
+      .get();
+    if (existing !== undefined) {
+      const stored = decode(existing.leaseJson, isWriteLease, 'write lease');
+      if (record.lease.version < stored.version) {
+        throw new PersistenceInputError(
+          `Lease version regression rejected: stored version ${stored.version}, incoming version ${record.lease.version}`
+        );
+      }
+      if (
+        record.lease.version === stored.version &&
+        canonicalPlainStringify(record.lease) !== canonicalPlainStringify(stored)
+      ) {
+        throw new PersistenceInputError('Lease version already recorded with different evidence');
+      }
+      if (record.lease.version === stored.version) {
+        return;
+      }
+    }
+    this.#db
+      .insert(writeLeases)
+      .values({
+        runId: record.runId,
+        leaseId: record.lease.id,
+        leaseJson: stringify(record.lease)
+      })
+      .onConflictDoUpdate({
+        target: [writeLeases.runId, writeLeases.leaseId],
+        set: { leaseJson: stringify(record.lease) }
+      })
+      .run();
+  }
+
+  #assertPrecedingBuilderAttempt(record: PersistedAgentExecutionAttempt): void {
+    const existing = this.#db
+      .select({ attemptJson: agentExecutionAttempts.attemptJson })
+      .from(agentExecutionAttempts)
+      .where(
+        and(
+          eq(agentExecutionAttempts.runId, record.runId),
+          eq(agentExecutionAttempts.attemptId, record.attempt.id)
+        )
+      )
+      .get();
+    if (existing === undefined) {
+      throw new PersistenceInputError(`Missing PREPARING builder attempt: ${record.attempt.id}`);
+    }
+    const preparing = decode(existing.attemptJson, isAgentExecutionAttempt, 'agent execution attempt');
+    if (
+      preparing.state !== 'PREPARING' ||
+      record.attempt.revision !== preparing.revision + 1
+    ) {
+      throw new PersistenceInputError(`Builder mutation claim is stale: ${record.attempt.id}`);
+    }
+  }
+
+  #assertPrecedingRepairAttempt(record: PersistedTaskRepairAttempt): void {
+    const existing = this.#db
+      .select({ attemptJson: taskRepairAttempts.attemptJson })
+      .from(taskRepairAttempts)
+      .where(
+        and(
+          eq(taskRepairAttempts.runId, record.runId),
+          eq(taskRepairAttempts.attemptId, record.attempt.id)
+        )
+      )
+      .get();
+    if (existing === undefined) {
+      throw new PersistenceInputError(`Missing PREPARING repair attempt: ${record.attempt.id}`);
+    }
+    const preparing = decode(existing.attemptJson, isTaskRepairAttempt, 'task repair attempt');
+    if (
+      preparing.state !== 'PREPARING' ||
+      record.attempt.revision !== preparing.revision + 1
+    ) {
+      throw new PersistenceInputError(`Repair mutation claim is stale: ${record.attempt.id}`);
+    }
   }
 
   #persistAttemptInTransaction(record: PersistedAgentExecutionAttempt): void {

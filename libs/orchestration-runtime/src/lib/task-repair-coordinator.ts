@@ -202,4 +202,16 @@ export class TaskRepairCoordinator {
     await this.#store.persistRepairAttempt({ runId: failed.runId, attempt: failed });
     return failed;
   }
+
+  async cancel(attempt: TaskRepairAttempt, detail: string) {
+    const cancelled: TaskRepairAttempt = {
+      ...attempt,
+      state: 'CANCELLED',
+      revision: attempt.revision + 1,
+      completedAt: this.#now(),
+      failure: { type: 'cancelled', detail }
+    };
+    await this.#store.persistRepairAttempt({ runId: cancelled.runId, attempt: cancelled });
+    return cancelled;
+  }
 }

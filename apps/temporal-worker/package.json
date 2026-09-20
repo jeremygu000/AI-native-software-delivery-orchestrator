@@ -17,6 +17,7 @@
     "@ai-native-software-delivery-orchestrator/runtime-guard": "workspace:*",
     "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*",
     "@ai-native-software-delivery-orchestrator/temporal-runtime": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/workspace-git": "workspace:*"
+    "@ai-native-software-delivery-orchestrator/workspace-git": "workspace:*",
+    "@temporalio/activity": "^1.24.0"
   }
 }

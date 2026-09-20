@@ -4,7 +4,8 @@ import type {
   AgentCommandExecutionResult,
   AgentCommandExecutor,
   AgentCommandPolicy,
-  AgentCommandSandbox
+  AgentCommandSandbox,
+  CancellationSignal
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { defaultAgentCommandSandboxProfile } from '@ai-native-software-delivery-orchestrator/domain';
 import { defaultAgentCommandTrustedPath } from '@ai-native-software-delivery-orchestrator/domain';
@@ -23,14 +24,20 @@ export class AgentCommandRuntime {
   readonly #executor: AgentCommandExecutor;
   #policy: AgentCommandPolicy | undefined;
   #workspacePath: string | undefined;
+  #cancellationSignal: CancellationSignal | undefined;
 
   constructor(executor: AgentCommandExecutor) {
     this.#executor = executor;
   }
 
-  bindRuntimePolicy(policy: AgentCommandPolicy | undefined, workspacePath: string): void {
+  bindRuntimePolicy(
+    policy: AgentCommandPolicy | undefined,
+    workspacePath: string,
+    cancellationSignal?: CancellationSignal
+  ): void {
     this.#policy = policy;
     this.#workspacePath = workspacePath;
+    this.#cancellationSignal = cancellationSignal;
   }
 
   async run(commandId: string): Promise<AgentCommandExecutionResult> {
@@ -44,7 +51,8 @@ export class AgentCommandRuntime {
       command,
       sandbox: policy.sandbox ?? defaultAgentCommandSandboxProfile,
       cwd: workspacePath,
-      environment: policy.environment
+      environment: policy.environment,
+      signal: this.#cancellationSignal
     });
   }
 }

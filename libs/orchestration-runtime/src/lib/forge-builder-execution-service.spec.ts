@@ -222,4 +222,26 @@ describe('ForgeBuilderExecutionService', () => {
     expect(leases).toHaveLength(1);
     expect(leases[0]).toMatchObject({ state: 'ACTIVE' });
   });
+
+  it('records confirmed cancellation and releases authority after start', async () => {
+    const { service, attempts, leases } = createHarness({
+      run: async (request) => {
+        await request.onStarted({ sessionRef: { backend: 'fake', value: 'builder' } });
+        return { status: 'cancelled', detail: 'Cancellation confirmed by agent.' };
+      }
+    });
+    await expect(
+      service.execute({
+        runId: 'run-1',
+        task,
+        binding,
+        attempt
+      })
+    ).rejects.toThrow('Cancellation confirmed by agent');
+    expect(attempts.at(-1)).toMatchObject({
+      state: 'CANCELLED',
+      failure: { type: 'cancelled' }
+    });
+    expect(leases.at(-1)).toMatchObject({ state: 'RELEASED' });
+  });
 });

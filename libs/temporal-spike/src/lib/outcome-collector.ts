@@ -36,43 +36,9 @@ export interface RepairAttemptEvidence {
   readonly completedAt?: Date;
 }
 
-export interface VerificationEvidence {
-  readonly id: string;
-  readonly runId: string;
-  readonly taskId: string;
-  readonly attemptId: string;
-  readonly workspaceId: string;
-  readonly workspaceRevision: number;
-  readonly workspaceChangeFingerprint: string;
-  readonly verificationPolicyFingerprint: string;
-  readonly status: 'passed' | 'failed';
-  readonly verifiedAt: string;
-  readonly fingerprint: string;
-}
+export type VerificationEvidence = DurableExecutionSpikeOutcome['verifications'][number];
 
-export interface ReviewEvidence {
-  readonly subject: {
-    readonly builderAttemptId: string;
-    readonly outputAttemptId: string;
-    readonly workspaceId: string;
-    readonly workspaceRevision: number;
-    readonly workspaceChangeFingerprint: string;
-    readonly impactFingerprint: string;
-    readonly verificationFingerprint: string;
-  };
-  readonly review: {
-    readonly recommendation: 'accept' | 'repair' | 'reject';
-    readonly summary: string;
-    readonly findings: Array<{
-      readonly id: string;
-      readonly severity: 'critical' | 'high' | 'low' | 'medium';
-      readonly fileIds: readonly string[];
-      readonly symbolIds: readonly string[];
-      readonly description: string;
-      readonly requirementReference?: string;
-    }>;
-  };
-}
+export type ReviewEvidence = DurableExecutionSpikeOutcome['reviews'][number];
 
 export interface LeaseEvidence {
   readonly id: string;
@@ -128,17 +94,19 @@ export const collectDurableExecutionOutcome = (
   }
 
   let dispatchCount = 0;
-  if (builderAttempt.state === 'COMPLETED') dispatchCount++;
+  if (builderAttempt.state === 'COMPLETED') {
+    dispatchCount++;
+  }
   dispatchCount += repairs.filter((r) => r.state === 'COMPLETED').length;
 
   return {
-    builderAttempt: builderAttempt as DurableExecutionSpikeOutcome['builderAttempt'],
-    repairs: repairs as DurableExecutionSpikeOutcome['repairs'],
-    verifications: verifications as DurableExecutionSpikeOutcome['verifications'],
-    reviews: reviews as DurableExecutionSpikeOutcome['reviews'],
-    leases: leases as DurableExecutionSpikeOutcome['leases'],
+    builderAttempt,
+    repairs,
+    verifications,
+    reviews,
+    leases,
     integration: integration ?? { status: 'blocked' },
-    blockedResume: blockedResume as DurableExecutionSpikeOutcome['blockedResume'],
+    blockedResume,
     dispatchCount
   };
 };

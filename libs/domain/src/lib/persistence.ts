@@ -46,6 +46,11 @@ export type CancellationFinalizationResult =
       readonly state: 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
     };
 
+export type CancellationSettlementResult =
+  | { readonly status: 'settled'; readonly attemptId: string }
+  | { readonly status: 'not-unknown'; readonly state: string }
+  | { readonly status: 'version-conflict'; readonly actualRevision: number };
+
 const digestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const recordIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const nonEmptyStringSchema = z.string().trim().min(1);
@@ -291,6 +296,36 @@ export interface OrchestrationPersistence {
 export interface CancellationPersistence {
   requestCancellation(runId: string): Promise<CancellationRequestResult>;
   finalizeCancellation(runId: string): Promise<CancellationFinalizationResult>;
+}
+
+/**
+ * Atomically hands an already-authorized PREPARING attempt to the mutation
+ * runtime while the durable run is still ACTIVE. This is deliberately a
+ * narrow control-plane capability so historical orchestration consumers do
+ * not acquire cancellation authority accidentally.
+ */
+export interface ActiveMutationClaimPersistence {
+  claimBuilderStart(record: PersistedAgentExecutionAttempt): Promise<AgentExecutionAttempt>;
+  claimRepairStart(record: PersistedTaskRepairAttempt): Promise<TaskRepairAttempt>;
+}
+
+/**
+ * Operator-only settlement of an UNKNOWN external agent during cancellation.
+ * The caller must have independently confirmed the external process stopped.
+ */
+export interface CancellationSettlementPersistence {
+  settleUnknownBuilderCancellation(request: {
+    readonly runId: string;
+    readonly attemptId: string;
+    readonly expectedRevision: number;
+    readonly detail: string;
+  }): Promise<CancellationSettlementResult>;
+  settleUnknownRepairCancellation(request: {
+    readonly runId: string;
+    readonly attemptId: string;
+    readonly expectedRevision: number;
+    readonly detail: string;
+  }): Promise<CancellationSettlementResult>;
 }
 
 /** Durable evidence storage for read-only code review iterations. */

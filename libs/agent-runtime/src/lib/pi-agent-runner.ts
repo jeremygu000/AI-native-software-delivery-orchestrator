@@ -36,7 +36,11 @@ export class PiAgentRunner implements AgentRunner {
       const tools = this.#createTools(request);
       tools.bindRuntimeAuthority(request.impact, request.leases);
       const commands = this.#createCommands(request);
-      commands.bindRuntimePolicy(request.commandPolicy, request.workspace.workspacePath);
+      commands.bindRuntimePolicy(
+        request.commandPolicy,
+        request.workspace.workspacePath,
+        request.cancellationSignal
+      );
       const toolNames: PiToolCall['name'][] = [
         'forge_read',
         'forge_list',
@@ -52,6 +56,9 @@ export class PiAgentRunner implements AgentRunner {
         executeTool: async (call) => {
           if (!sessionEstablished) {
             return { content: 'Pi session is not durably established', isError: true };
+          }
+          if (request.cancellationSignal?.aborted === true) {
+            return { content: 'Pi session is cancelled', isError: true };
           }
           if (blockedLeaseId !== undefined) {
             return { content: `Write blocked by lease: ${blockedLeaseId}`, isError: true };
@@ -69,7 +76,8 @@ export class PiAgentRunner implements AgentRunner {
         onStarted: async (sessionId) => {
           await request.onStarted({ sessionRef: { backend: 'pi', value: sessionId } });
           sessionEstablished = true;
-        }
+        },
+        cancellationSignal: request.cancellationSignal
       });
       if (blockedLeaseId !== undefined) {
         return {
@@ -87,6 +95,12 @@ export class PiAgentRunner implements AgentRunner {
         additionalLeases: tools.leases()
       };
     } catch (error) {
+      if (request.cancellationSignal?.aborted === true) {
+        return {
+          status: 'cancelled' as const,
+          detail: 'Pi agent session was cancelled'
+        };
+      }
       if (sessionEstablished) {
         throw error;
       }

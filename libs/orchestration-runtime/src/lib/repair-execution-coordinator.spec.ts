@@ -421,6 +421,70 @@ describe('RepairExecutionCoordinator', () => {
     expect(setupResult.persistedLeases).toEqual([]);
   });
 
+  it('records confirmed cancellation and releases leases after repair start', async () => {
+    const setupResult = setup();
+    const repair = await setupResult.repairs.prepare({
+      runId: 'run-1',
+      taskId: 'task-1',
+      agentId: 'repair',
+      workspaceId: 'workspace-1',
+      reviewIteration: 1,
+      review: repairReview,
+      subject
+    });
+    const lease = {
+      id: 'lease-1',
+      runId: 'run-1',
+      agentId: 'repair',
+      taskId: 'task-1',
+      resource: { type: 'project' as const, projectId: 'core' },
+      mode: 'exclusive' as const,
+      version: 1,
+      state: 'ACTIVE' as const,
+      acquiredAt: new Date(),
+      lastHeartbeatAt: new Date()
+    };
+    const coordinator = new RepairExecutionCoordinator({
+      repairs: setupResult.repairs,
+      runner: {
+        run: async (request) => {
+          await request.onStarted({});
+          return { status: 'cancelled', detail: 'Cancellation confirmed by agent.' };
+        }
+      },
+      reconciler: { reconcile: async () => { throw new Error('not reached'); } },
+      verifier: { verify: async () => ({ status: 'passed' }) },
+      snapshots: { capture: async () => { throw new Error('not reached'); } },
+      subjects: { createSubject: () => subject },
+      reviews: setupResult.reviews,
+      verificationEvidence: setupResult.verificationEvidence,
+      writeGuard: writeGuard(),
+      persistence: setupResult.persistence,
+      feedback: setupResult.feedbackPort,
+      createEvidenceId: () => 'unused',
+      createVerificationEvidence: () => { throw new Error('not reached'); }
+    });
+    await expect(
+      coordinator.execute({
+        repair,
+        builderAttempt,
+        task,
+        workspace,
+        impact,
+        leases: [lease],
+        verificationPolicyFingerprint: `sha256:${'6'.repeat(64)}`,
+        repository: { files: new Map(), symbols: new Map() },
+        reviewIteration: 2
+      })
+    ).rejects.toThrow('Cancellation confirmed by agent');
+    expect(setupResult.attempts[0]?.attempt).toMatchObject({
+      state: 'CANCELLED',
+      failure: { type: 'cancelled' }
+    });
+    expect(setupResult.persistedLeases).toHaveLength(1);
+    expect(setupResult.persistedLeases[0].lease).toMatchObject({ state: 'RELEASED' });
+  });
+
   it('fails a pre-start repair and releases its active lease', async () => {
     const setupResult = setup();
     const repair = await setupResult.repairs.prepare({

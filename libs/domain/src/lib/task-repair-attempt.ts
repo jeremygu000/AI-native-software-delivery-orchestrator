@@ -12,6 +12,7 @@ export const taskRepairAttemptStateSchema = z.enum([
   'BLOCKED',
   'COMPLETED',
   'FAILED',
+  'CANCELLED',
   'UNKNOWN'
 ]);
 
@@ -95,7 +96,7 @@ export const taskRepairAttemptSchema = z
       }
     }
     if (
-      (attempt.state === 'FAILED' || attempt.state === 'UNKNOWN') &&
+      (attempt.state === 'FAILED' || attempt.state === 'CANCELLED' || attempt.state === 'UNKNOWN') &&
       attempt.failure === undefined
     ) {
       context.addIssue({

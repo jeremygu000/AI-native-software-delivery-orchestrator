@@ -9,6 +9,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import { DeterministicConflictEngine } from '@ai-native-software-delivery-orchestrator/conflict-engine';
 import type {
+  CancellationSettlementPersistence,
   FileNode,
   RepositoryDiagnostic,
   RepositoryGraph,
@@ -111,6 +112,14 @@ export interface ForgeProgramDependencies {
     readonly runId: string;
     readonly runDirectory: string;
   }) => Promise<{ readonly runId: string; readonly state: string }>;
+  readonly settleCancellation?: (request: {
+    readonly runId: string;
+    readonly runDirectory: string;
+    readonly attemptKind: 'builder' | 'repair';
+    readonly attemptId: string;
+    readonly expectedRevision: number;
+    readonly detail: string;
+  }) => Promise<{ readonly attemptId: string; readonly state: 'CANCELLED' }>;
   readonly requestWorkflowCancellation?: (runId: string) => Promise<void>;
   readonly writeOutput?: (output: string) => void;
 }
@@ -368,6 +377,31 @@ const statusRun = async (request: {
   };
 };
 
+const settleCancellation = async (request: {
+  readonly runId: string;
+  readonly runDirectory: string;
+  readonly attemptKind: 'builder' | 'repair';
+  readonly attemptId: string;
+  readonly expectedRevision: number;
+  readonly detail: string;
+}): Promise<{ readonly attemptId: string; readonly state: 'CANCELLED' }> => {
+  const databasePath = join(request.runDirectory, request.runId, 'run.sqlite');
+  const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
+  const settlementStore: CancellationSettlementPersistence = persistence;
+  const result =
+    request.attemptKind === 'builder'
+      ? await settlementStore.settleUnknownBuilderCancellation(request)
+      : await settlementStore.settleUnknownRepairCancellation(request);
+  if (result.status !== 'settled') {
+    throw new Error(
+      result.status === 'version-conflict'
+        ? `Cancellation settlement revision conflict: ${request.attemptId}/${result.actualRevision}`
+        : `Cancellation settlement requires UNKNOWN attempt: ${request.attemptId}/${result.state}`
+    );
+  }
+  return { attemptId: result.attemptId, state: 'CANCELLED' };
+};
+
 const planStores = async (request: {
   readonly repositoryPath: string;
   readonly planDirectory?: string;
@@ -571,6 +605,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
         runId
       ));
   const cancelRunFn = dependencies.cancelRun ?? cancelRun(requestWorkflowCancellation);
+  const settleCancellationFn = dependencies.settleCancellation ?? settleCancellation;
   const writeOutput =
     dependencies.writeOutput ?? ((output: string) => process.stdout.write(output));
 
@@ -865,6 +900,47 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
         throw error;
       }
     });
+
+  program
+    .command('settle-cancellation')
+    .description('Record operator-confirmed settlement of an UNKNOWN cancelled agent attempt')
+    .requiredOption('--run-id <id>', 'run identity containing the unknown attempt')
+    .requiredOption('--run-directory <path>', 'directory containing the exact run database authority')
+    .requiredOption('--attempt-kind <kind>', 'attempt kind: builder or repair')
+    .requiredOption('--attempt-id <id>', 'UNKNOWN attempt identity to settle')
+    .requiredOption('--expected-revision <number>', 'exact current UNKNOWN attempt revision', parsePositiveInteger)
+    .requiredOption('--detail <text>', 'operator confirmation that the external agent has stopped')
+    .action(
+      async (options: {
+        runId: string;
+        runDirectory: string;
+        attemptKind: string;
+        attemptId: string;
+        expectedRevision: number;
+        detail: string;
+      }) => {
+        if (options.attemptKind !== 'builder' && options.attemptKind !== 'repair') {
+          program.error('--attempt-kind must be builder or repair');
+          return;
+        }
+        try {
+          const result = await settleCancellationFn({
+            runId: options.runId,
+            runDirectory: options.runDirectory,
+            attemptKind: options.attemptKind,
+            attemptId: options.attemptId,
+            expectedRevision: options.expectedRevision,
+            detail: options.detail
+          });
+          writeOutput(`${JSON.stringify(result, null, 2)}\n`);
+        } catch (error) {
+          if (error instanceof Error) {
+            program.error(error.message);
+          }
+          throw error;
+        }
+      }
+    );
 
   return program;
 };

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import type { CancellationSignal } from './execution.js';
+
 export const defaultAgentCommandSandboxProfile = {
   kind: 'trusted-local',
   assurance: 'developer-trusted',
@@ -52,7 +54,7 @@ export interface AgentCommandSandboxRequest {
   readonly containerName?: string;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
-  readonly signal?: AbortSignal;
+  readonly signal?: CancellationSignal;
 }
 
 export type AgentCommandSandboxResult =

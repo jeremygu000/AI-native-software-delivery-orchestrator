@@ -158,8 +158,7 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
 describe('ForgeRunFinalizationService', () => {
   it('fails closed when the run cannot be recovered', async () => {
     const progression = new ForgeRunProgressionService({
-      persistence: new MemoryPersistence() as unknown as OrchestrationPersistence &
-        TaskCodeReviewStore
+      persistence: new MemoryPersistence()
     });
     const service = new ForgeRunFinalizationService({ progression });
 

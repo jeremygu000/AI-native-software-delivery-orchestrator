@@ -45,9 +45,11 @@ export async function createTemporalWorker(
       await worker.run();
     },
     async shutdown() {
-      if (shutdownRequested) return;
+      if (shutdownRequested) {
+        return;
+      }
       shutdownRequested = true;
-      await worker.shutdown();
+      worker.shutdown();
     }
   };
 }

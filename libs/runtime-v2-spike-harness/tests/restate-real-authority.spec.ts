@@ -329,7 +329,7 @@ describe('Restate spike - Scenario B real authority (SQLite)', () => {
 
     const client = negRs.workflowClient(negWorkflow, `real-b-neg-${negRunId}`);
 
-    const handle = await client.workflowSubmit({
+    await client.workflowSubmit({
       scenario: 'blocked-repair-restart-resume',
       runId: negRunId,
       taskId,

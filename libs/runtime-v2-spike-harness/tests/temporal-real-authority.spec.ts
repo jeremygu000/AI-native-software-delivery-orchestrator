@@ -18,8 +18,8 @@ import {
 } from '../src/index.js';
 import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = resolve(__dirname, '../../..');
+const currentDirectory = dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = resolve(currentDirectory, '../../..');
 
 const environments: {
   readonly environment: TestWorkflowEnvironment;

@@ -960,7 +960,7 @@ describe('forge cancel', () => {
       expect(JSON.parse(output)).toEqual({ runId, state: 'CANCEL_REQUESTED' });
       expect((await persistence.recoverRun(runId))?.run.state).toBe('CANCEL_REQUESTED');
     } finally {
-      await persistence.close();
+      persistence.close();
       await rm(runDirectory, { recursive: true, force: true });
     }
   });
@@ -1043,7 +1043,7 @@ describe('forge cancel', () => {
       expect(requests).toBe(1);
       expect((await persistence.recoverRun(runId))?.run.state).toBe('CANCEL_REQUESTED');
     } finally {
-      await persistence.close();
+      persistence.close();
       await rm(runDirectory, { recursive: true, force: true });
     }
   });
@@ -1075,5 +1075,85 @@ describe('forge cancel', () => {
       ])
     ).rejects.toMatchObject({ code: 'commander.error' });
     expect(errorOutput).toContain('Run not found');
+  });
+});
+
+describe('forge settle-cancellation', () => {
+  it('requires explicit operator confirmation and forwards exact settlement authority', async () => {
+    let output = '';
+    let request:
+      | {
+          readonly runId: string;
+          readonly runDirectory: string;
+          readonly attemptKind: 'builder' | 'repair';
+          readonly attemptId: string;
+          readonly expectedRevision: number;
+          readonly detail: string;
+        }
+      | undefined;
+    const program = createForgeProgram({
+      settleCancellation: async (input) => {
+        request = input;
+        return { attemptId: input.attemptId, state: 'CANCELLED' };
+      },
+      writeOutput: (value) => {
+        output += value;
+      }
+    });
+
+    await program.parseAsync([
+      'node',
+      'forge',
+      'settle-cancellation',
+      '--run-id',
+      'run-1',
+      '--run-directory',
+      '/run-authority',
+      '--attempt-kind',
+      'repair',
+      '--attempt-id',
+      'repair-1',
+      '--expected-revision',
+      '3',
+      '--detail',
+      'Confirmed agent process stopped.'
+    ]);
+
+    expect(request).toEqual({
+      runId: 'run-1',
+      runDirectory: '/run-authority',
+      attemptKind: 'repair',
+      attemptId: 'repair-1',
+      expectedRevision: 3,
+      detail: 'Confirmed agent process stopped.'
+    });
+    expect(JSON.parse(output)).toEqual({ attemptId: 'repair-1', state: 'CANCELLED' });
+  });
+
+  it('rejects an unsupported attempt kind before settlement', async () => {
+    const settleCancellation = vi.fn();
+    const program = createForgeProgram({ settleCancellation, writeOutput: () => {} });
+    program.exitOverride();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'forge',
+        'settle-cancellation',
+        '--run-id',
+        'run-1',
+        '--run-directory',
+        '/run-authority',
+        '--attempt-kind',
+        'unknown',
+        '--attempt-id',
+        'attempt-1',
+        '--expected-revision',
+        '1',
+        '--detail',
+        'Confirmed stopped.'
+      ])
+    ).rejects.toMatchObject({ code: 'commander.error' });
+    expect(settleCancellation).not.toHaveBeenCalled();
   });
 });

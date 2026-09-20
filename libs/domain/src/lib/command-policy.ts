@@ -1,4 +1,6 @@
 import { z } from 'zod';
+
+import type { CancellationSignal } from './execution.js';
 import {
   defaultAgentCommandSandboxProfile,
   agentCommandSandboxProfileSchema,
@@ -89,7 +91,7 @@ export interface AgentCommandExecutionRequest {
   readonly sandbox?: AgentCommandSandboxProfile;
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
-  readonly signal?: AbortSignal;
+  readonly signal?: CancellationSignal;
 }
 
 export type AgentCommandExecutionResult =

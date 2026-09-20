@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import { Context } from '@temporalio/activity';
 
 import {
   AgentToolRuntime,
@@ -9,8 +10,17 @@ import {
   PiCodeReviewModelResolver
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import type {
+  ActiveMutationClaimPersistence,
   AgentExecutionAttempt,
+  CancellationPersistence,
+  OrchestrationPersistence,
+  PersistedTaskExecutionBinding,
   PersistedWriteLease,
+  TaskCodeReviewStore,
+  TaskRepairAdmissionStore,
+  TaskRepairResumeStore,
+  TaskRepairWorkItemStore,
+  TaskVerificationEvidenceStore,
   TaskWorkspace,
   TaskVerificationEvidence
 } from '@ai-native-software-delivery-orchestrator/domain';
@@ -77,6 +87,36 @@ const WORKER_DATABASE_PATH =
   resolve(process.cwd(), 'dist', 'temporal-worker.sqlite');
 const WORKER_REPOSITORY_PATH = process.env.FORGE_WORKER_REPOSITORY_PATH ?? process.cwd();
 
+const currentActivityCancellationSignal = () => {
+  try {
+    return Context.current().cancellationSignal;
+  } catch {
+    // Composition tests invoke activities directly, outside Temporal's activity context.
+    return undefined;
+  }
+};
+
+const assertBuilderTuple = (
+  binding: PersistedTaskExecutionBinding,
+  attempt: AgentExecutionAttempt
+): void => {
+  if (attempt.runId !== binding.runId || attempt.taskId !== binding.taskId) {
+    throw new Error(`Builder attempt does not belong to binding: ${attempt.id}`);
+  }
+  if (attempt.agentId !== binding.agentId) {
+    throw new Error(`Builder agent authority mismatch: ${attempt.id}`);
+  }
+  if (attempt.workspaceId !== binding.workspace.id) {
+    throw new Error(`Builder workspace authority mismatch: ${attempt.id}`);
+  }
+  if (attempt.leasePlanFingerprint !== taskLeasePlanFingerprint(binding.leasePlan)) {
+    throw new Error(`Builder lease authority mismatch: ${attempt.id}`);
+  }
+  if (attempt.commandPolicyFingerprint !== agentCommandPolicyFingerprint(binding.commandPolicy)) {
+    throw new Error(`Builder command authority mismatch: ${attempt.id}`);
+  }
+};
+
 const codeReviewPolicy = {
   version: 1,
   reviewer: {
@@ -123,13 +163,26 @@ export interface ForgeWorkerComposition {
   close(): Promise<void>;
 }
 
+type ForgeWorkerPersistence =
+  & OrchestrationPersistence
+  & CancellationPersistence
+  & ActiveMutationClaimPersistence
+  & TaskCodeReviewStore
+  & TaskVerificationEvidenceStore
+  & TaskRepairAdmissionStore
+  & TaskRepairResumeStore
+  & TaskRepairWorkItemStore
+  & {
+    close?(): Promise<void> | void;
+  };
+
 /**
  * Test-only injection seams. Production callers pass nothing and get the real
  * implementations; the worker vertical spec substitutes in-memory/stub versions of the
  * services that perform external side effects (git, agent runner, reviewer, verifier).
  */
 export interface ForgeWorkerCompositionOverrides {
-  readonly persistence?: InstanceType<typeof DrizzleSqliteOrchestrationPersistence>;
+  readonly persistence?: ForgeWorkerPersistence;
   readonly builderExecution?: Pick<ForgeBuilderExecutionService, 'execute'>;
   readonly evaluation?: Pick<ForgeBuilderOutputEvaluationService, 'evaluate'>;
   readonly repairExecution?: Pick<ForgeRepairExecutionService, 'execute'>;
@@ -182,7 +235,7 @@ export async function createForgeWorkerComposition(
   });
   const subjects = new SnapshotTaskCodeReviewSubjectProvider();
 
-  const reviews = new TaskCodeReviewCollector({
+  const reviewCollector = new TaskCodeReviewCollector({
     reviewer: new PiTaskCodeReviewer({
       policy: codeReviewPolicy,
       modelResolver: new PiCodeReviewModelResolver(),
@@ -214,7 +267,7 @@ export async function createForgeWorkerComposition(
   const admission = new TaskOutputAdmissionCoordinator({
     snapshots,
     subjects,
-    reviews,
+    reviews: reviewCollector,
     reviewStore: persistence,
     verificationEvidence: persistence,
     createVerificationEvidence,
@@ -260,7 +313,7 @@ export async function createForgeWorkerComposition(
     new ForgeBuilderOutputEvaluationService({
       snapshots,
       subjects,
-      reviews,
+      reviews: reviewCollector,
       reviewStore: persistence,
       verificationEvidence: persistence,
       createVerificationEvidence,
@@ -291,7 +344,7 @@ export async function createForgeWorkerComposition(
         verifier,
         snapshots,
         subjects,
-        reviews,
+        reviews: reviewCollector,
         verificationEvidence: persistence,
         writeGuard: writeGuardForRunSync(runId),
         persistence,
@@ -366,29 +419,8 @@ export async function createForgeWorkerComposition(
     if (recovered === undefined) {
       throw new Error(`Run not found: ${runId}`);
     }
-    if (recovered.run.state === 'CANCEL_REQUESTED') {
-      throw new Error(`Cancellation is pending for run: ${runId}`);
-    }
-  };
-
-  const assertBuilderTuple = (
-    binding: NonNullable<Awaited<ReturnType<typeof persistence.recoverTaskBinding>>>,
-    attempt: AgentExecutionAttempt
-  ): void => {
-    if (attempt.runId !== binding.runId || attempt.taskId !== binding.taskId) {
-      throw new Error(`Builder attempt does not belong to binding: ${attempt.id}`);
-    }
-    if (attempt.agentId !== binding.agentId) {
-      throw new Error(`Builder agent authority mismatch: ${attempt.id}`);
-    }
-    if (attempt.workspaceId !== binding.workspace.id) {
-      throw new Error(`Builder workspace authority mismatch: ${attempt.id}`);
-    }
-    if (attempt.leasePlanFingerprint !== taskLeasePlanFingerprint(binding.leasePlan)) {
-      throw new Error(`Builder lease authority mismatch: ${attempt.id}`);
-    }
-    if (attempt.commandPolicyFingerprint !== agentCommandPolicyFingerprint(binding.commandPolicy)) {
-      throw new Error(`Builder command authority mismatch: ${attempt.id}`);
+    if (recovered.run.state !== 'ACTIVE') {
+      throw new Error(`Run does not accept mutations: ${runId}/${recovered.run.state}`);
     }
   };
 
@@ -425,11 +457,21 @@ export async function createForgeWorkerComposition(
       }
       assertBuilderTuple(context.binding, context.attempt);
       await writeGuardForRun(input.runId, true);
+      const claimedAttempt = await persistence.claimBuilderStart({
+        runId: input.runId,
+        attempt: {
+          ...context.attempt,
+          state: 'STARTING',
+          revision: context.attempt.revision + 1,
+          startedAt: new Date()
+        }
+      });
       await builderExecution.execute({
         runId: input.runId,
         task: context.task,
         binding: context.binding,
-        attempt: context.attempt
+        attempt: claimedAttempt,
+        cancellationSignal: currentActivityCancellationSignal()
       });
       await progression.advance(input.runId, {
         type: 'agent-completed',
@@ -440,11 +482,11 @@ export async function createForgeWorkerComposition(
       if (refreshed === undefined) {
         throw new Error(`Missing persisted builder outputs: ${input.runId}/${input.taskId}`);
       }
-      const impact = refreshed.impacts.find((impact) => impact.taskId === input.taskId)?.impact;
+      const taskImpact = refreshed.impacts.find((entry) => entry.taskId === input.taskId)?.impact;
       const workspace = refreshed.workspaces.find(
         (entry) => entry.workspace.taskId === input.taskId
       )?.workspace;
-      if (workspace === undefined || impact === undefined) {
+      if (workspace === undefined || taskImpact === undefined) {
         throw new Error(`Missing persisted builder outputs: ${input.runId}/${input.taskId}`);
       }
       return {
@@ -487,8 +529,8 @@ export async function createForgeWorkerComposition(
         repository: { files: repository.graph.files, symbols: repository.graph.symbols }
       });
       const recoveredReviews = await persistence.recoverReviews(input.runId);
-      const reviewRecord = [...recoveredReviews]
-        .reverse()
+      const reviewRecord = recoveredReviews
+        .toReversed()
         .find((record) => record.taskId === input.taskId);
       if (reviewRecord === undefined) {
         throw new Error(`Missing persisted review authority: ${input.runId}/${input.taskId}`);
@@ -599,6 +641,15 @@ export async function createForgeWorkerComposition(
       // Refresh before executing so an old ACTIVE lease cannot re-block a
       // repair that SQLite has already authorized to resume.
       await writeGuardForRun(input.runId, true);
+      const claimedRepair = await persistence.claimRepairStart({
+        runId: input.runId,
+        attempt: {
+          ...admittedRepair,
+          state: 'STARTING',
+          revision: admittedRepair.revision + 1,
+          startedAt: new Date()
+        }
+      });
       const result = await repairExecution.execute({
         runId: input.runId,
         agentId: context.binding.agentId,
@@ -619,7 +670,8 @@ export async function createForgeWorkerComposition(
         review: review.review,
         subject: review.subject,
         maxRepairs: 2,
-        preCreatedRepairAttempt: admittedRepair
+        preCreatedRepairAttempt: claimedRepair,
+        cancellationSignal: currentActivityCancellationSignal()
       });
       if (result.state !== 'completed') {
         if (result.state !== 'blocked') {
@@ -749,10 +801,10 @@ export async function createForgeWorkerComposition(
       if (liveRepair !== undefined) {
         return { runId: input.runId, status: 'pending' };
       }
-      const finalization = await persistence.finalizeCancellation(input.runId);
-      if (finalization.status !== 'cancelled') {
+      const cancellationFinalization = await persistence.finalizeCancellation(input.runId);
+      if (cancellationFinalization.status !== 'cancelled') {
         throw new Error(
-          `Cancellation finalization lost authority for run: ${input.runId} (${finalization.state})`
+          `Cancellation finalization lost authority for run: ${input.runId} (${cancellationFinalization.state})`
         );
       }
       return { runId: input.runId, status: 'cancelled' };
@@ -890,7 +942,7 @@ export async function createForgeWorkerComposition(
   return {
     forgeActivities,
     async close() {
-      await persistence.close?.();
+      void persistence.close?.();
     }
   };
 }

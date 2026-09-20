@@ -1,4 +1,5 @@
 import { createAgentSession, defineTool } from '@mariozechner/pi-coding-agent';
+import type { CancellationSignal } from '@ai-native-software-delivery-orchestrator/domain';
 import { Type } from 'typebox';
 
 type PiSdkSessionOptions = Parameters<typeof createAgentSession>[0];
@@ -7,6 +8,7 @@ interface PiSessionFacade {
   readonly sessionId: string;
   setActiveToolsByName(toolNames: string[]): void;
   prompt(prompt: string): Promise<void>;
+  abort(): Promise<void>;
 }
 
 export type PiSessionFactory = (
@@ -38,6 +40,7 @@ export interface PiSessionGateway {
     readonly tools: readonly PiToolCall['name'][];
     readonly executeTool: (call: PiToolCall) => Promise<PiToolResult>;
     readonly onStarted: (sessionId: string) => Promise<void>;
+    readonly cancellationSignal?: CancellationSignal;
   }): Promise<{ readonly sessionId: string }>;
 }
 
@@ -120,7 +123,8 @@ export class PiCodingAgentGateway implements PiSessionGateway {
         session: {
           sessionId: session.sessionId,
           setActiveToolsByName: (toolNames) => session.setActiveToolsByName(toolNames),
-          prompt: (prompt) => session.prompt(prompt)
+          prompt: (prompt) => session.prompt(prompt),
+          abort: () => session.abort()
         }
       };
     }
@@ -134,6 +138,7 @@ export class PiCodingAgentGateway implements PiSessionGateway {
     readonly tools: readonly PiToolCall['name'][];
     readonly executeTool: (call: PiToolCall) => Promise<PiToolResult>;
     readonly onStarted: (sessionId: string) => Promise<void>;
+    readonly cancellationSignal?: CancellationSignal;
   }): Promise<{ readonly sessionId: string }> {
     const { session } = await this.#createSession({
       cwd: options.cwd,
@@ -143,7 +148,21 @@ export class PiCodingAgentGateway implements PiSessionGateway {
     });
     session.setActiveToolsByName([...options.tools]);
     await options.onStarted(session.sessionId);
-    await session.prompt(options.prompt);
+    const cancellationSignal = options.cancellationSignal;
+    const abort = () => void session.abort();
+    cancellationSignal?.addEventListener('abort', abort, { once: true });
+    try {
+      if (cancellationSignal?.aborted) {
+        await session.abort();
+        throw new Error('Pi session cancelled before prompt');
+      }
+      await session.prompt(options.prompt);
+      if (cancellationSignal?.aborted) {
+        throw new Error('Pi session cancelled during prompt');
+      }
+    } finally {
+      cancellationSignal?.removeEventListener('abort', abort);
+    }
     return { sessionId: session.sessionId };
   }
 }

@@ -28,25 +28,30 @@ import {
   repairWakeSignal
 } from '../index.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = resolve(__dirname, '../../../..');
+const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = resolve(moduleDirectory, '../../../..');
 const WORKFLOWS_PATH = resolve(
   PROJECT_ROOT,
   'libs/temporal-runtime/dist/lib/workflows/forge-run.js'
 );
 
+const createDeferred = (): { promise: Promise<void>; resolve: () => void } => {
+  let resolvePromise!: () => void;
+  const promise = new Promise<void>((resolveDeferred) => {
+    resolvePromise = resolveDeferred;
+  });
+  return { promise, resolve: resolvePromise };
+};
+
 describe('temporal-runtime Scenario A workflow', () => {
   it('reconciles external cancellation through the non-cancellable finalizer', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     const calls: string[] = [];
-    let markReevaluationStarted = () => {};
-    const reevaluationStarted = new Promise<void>((resolve) => {
-      markReevaluationStarted = resolve;
-    });
+    const reevaluationStarted = createDeferred();
     const activities: ForgeActivities = {
       async reevaluateRun(_input: ReevaluateRunInput) {
         calls.push('reevaluateRun');
-        markReevaluationStarted();
+        reevaluationStarted.resolve();
         Context.current().heartbeat();
         await Context.current().cancelled;
         throw new Error('activity cancellation should interrupt the workflow');
@@ -90,7 +95,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         args: [{ runId: 'run-cancelled' }],
         workflowId: 'forge-run:run-cancelled'
       });
-      await reevaluationStarted;
+      await reevaluationStarted.promise;
       await handle.cancel();
 
       await expect(handle.result()).resolves.toEqual({ runId: 'run-cancelled', status: 'cancelled' });
@@ -105,18 +110,12 @@ describe('temporal-runtime Scenario A workflow', () => {
   it('re-drives cancellation reconciliation until durable cleanup completes', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     const calls: string[] = [];
-    let markReevaluationStarted = () => {};
-    const reevaluationStarted = new Promise<void>((resolve) => {
-      markReevaluationStarted = resolve;
-    });
-    let markPendingFinalizerCalled = () => {};
-    const pendingFinalizerCalled = new Promise<void>((resolve) => {
-      markPendingFinalizerCalled = resolve;
-    });
+    const reevaluationStarted = createDeferred();
+    const pendingFinalizerCalled = createDeferred();
 
     const activities: ForgeActivities = {
       async reevaluateRun(_input: ReevaluateRunInput) {
-        markReevaluationStarted();
+        reevaluationStarted.resolve();
         Context.current().heartbeat();
         await Context.current().cancelled;
         throw new Error('activity cancellation should interrupt the workflow');
@@ -142,7 +141,7 @@ describe('temporal-runtime Scenario A workflow', () => {
       async finalizeRunCancellation() {
         calls.push('finalizeRunCancellation');
         if (calls.length === 1) {
-          markPendingFinalizerCalled();
+          pendingFinalizerCalled.resolve();
           return { runId: 'run-cancelled', status: 'pending' };
         }
         return { runId: 'run-cancelled', status: 'cancelled' };
@@ -163,9 +162,9 @@ describe('temporal-runtime Scenario A workflow', () => {
         args: [{ runId: 'run-cancelled' }],
         workflowId: 'forge-run:run-cancellation-rejected'
       });
-      await reevaluationStarted;
+      await reevaluationStarted.promise;
       await handle.cancel();
-      await pendingFinalizerCalled;
+      await pendingFinalizerCalled.promise;
       await environment.sleep(5_000);
 
       await expect(handle.result()).resolves.toEqual({ runId: 'run-cancelled', status: 'cancelled' });

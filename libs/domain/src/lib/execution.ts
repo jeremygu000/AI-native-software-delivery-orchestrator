@@ -234,7 +234,16 @@ export interface AgentRunRequest {
   readonly commandSandboxProfile?: AgentCommandSandboxProfile;
   readonly workspace: TaskWorkspace;
   readonly instructions: string;
+  /** Aborts external agent work when the owning activity is cancelled. */
+  readonly cancellationSignal?: CancellationSignal;
   readonly onStarted: (evidence: { readonly sessionRef?: AgentSessionRef }) => Promise<void>;
+}
+
+/** Minimal abort boundary so domain contracts do not depend on DOM globals. */
+export interface CancellationSignal {
+  readonly aborted: boolean;
+  addEventListener(type: 'abort', listener: () => void, options?: { readonly once?: boolean }): void;
+  removeEventListener(type: 'abort', listener: () => void): void;
 }
 
 export type AgentRunResult =
@@ -251,6 +260,7 @@ export type AgentRunResult =
       readonly observedImpact?: ObservedTaskImpact;
       readonly additionalLeases?: readonly WriteLease[];
     }
+  | { readonly status: 'cancelled'; readonly detail: string }
   | { readonly status: 'failed'; readonly detail: string };
 
 export interface AgentRunner {
