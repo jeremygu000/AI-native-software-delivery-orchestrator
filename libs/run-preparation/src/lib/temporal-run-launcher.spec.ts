@@ -1,5 +1,8 @@
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
-import type { StartRuntimeRunRequest } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import {
+  ForgeRunProgressionService,
+  type StartRuntimeRunRequest
+} from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -218,10 +221,12 @@ describe('TemporalRunLauncher', () => {
 
   it('rejects a reused run ID with changed durable authority', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence(':memory:');
+    const starts: string[] = [];
     const launcher = new TemporalRunLauncher({
       persistence,
       workflow: {
         async start(runId) {
+          starts.push(runId);
           return { workflowId: `forge-run:${runId}`, workflowRunId: 'temporal-run-1' };
         }
       }
@@ -236,6 +241,34 @@ describe('TemporalRunLauncher', () => {
     await expect(launcher.startOrResumeRun(changed)).rejects.toThrow(
       'Temporal launch authority mismatch: run-1'
     );
+    const partial = request('partial-run');
+    await persistence.createRun({
+      run: partial.run,
+      tasks: partial.tasks,
+      taskBindings: partial.taskBindings.map((binding) => ({ ...binding, runId: partial.run.id })),
+      hardConflicts: [],
+      riskConflicts: [],
+      scheduleOptions: partial.scheduleOptions
+    });
+    const partialPersistence = new Proxy(persistence, {
+      get(target, property) {
+        if (property === 'persistDispatch') {
+          return async (dispatch: Parameters<typeof target.persistDispatch>[0]) =>
+            target.persistReevaluation(dispatch.reevaluation);
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    });
+    await new ForgeRunProgressionService({
+      persistence: partialPersistence,
+      now: () => new Date(partial.run.createdAt),
+      createAttemptId: () => 'partial-attempt'
+    }).advance(partial.run.id, { type: 'run-started' });
+    await expect(launcher.startOrResumeRun(partial)).rejects.toThrow(
+      'Temporal launch authority history is missing sequence-one dispatch attempts'
+    );
+    expect(starts).toEqual(['run-1']);
     persistence.close();
   });
 });

@@ -263,6 +263,11 @@ export interface OrchestrationPersistence {
   ): Promise<PersistedTaskExecutionBinding | undefined>;
   persistReevaluation(reevaluation: PersistedReevaluation): Promise<void>;
   persistDispatch(dispatch: PersistedDispatch): Promise<void>;
+  /**
+   * Atomically establishes sequence-one launch authority. Repeating equivalent
+   * initial evidence must preserve attempts that have already advanced.
+   */
+  ensureInitialDispatch?(dispatch: PersistedDispatch): Promise<void>;
   recoverDispatches(runId: string): Promise<readonly PersistedDispatch[]>;
   recoverAttempts(runId: string): Promise<readonly PersistedAgentExecutionAttempt[]>;
   recoverLeases(runId: string): Promise<readonly PersistedWriteLease[]>;

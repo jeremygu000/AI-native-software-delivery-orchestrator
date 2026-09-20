@@ -20,7 +20,10 @@ export interface TemporalRunLaunchResult {
   readonly workflowRunId: string;
 }
 
-type TemporalLaunchPersistence = OrchestrationPersistence & TaskCodeReviewStore;
+type TemporalLaunchPersistence = OrchestrationPersistence &
+  TaskCodeReviewStore & {
+    ensureInitialDispatch: NonNullable<OrchestrationPersistence['ensureInitialDispatch']>;
+  };
 
 const bindings = (request: StartRuntimeRunRequest): readonly PersistedTaskExecutionBinding[] =>
   request.taskBindings.map((binding) => ({
@@ -61,8 +64,19 @@ const hasInitialRunStarted = (recovered: RecoveredRun): boolean => {
   if (initialEvent.event.type !== 'run-started') {
     throw new Error('Temporal launch authority history must begin with run-started');
   }
-  if (!recovered.decisions.some((decision) => decision.sequence === 1)) {
+  const initialDecision = recovered.decisions.find((decision) => decision.sequence === 1);
+  if (initialDecision === undefined) {
     throw new Error('Temporal launch authority history is missing sequence-one decision');
+  }
+  const initialStartTaskIds = initialDecision.decision.taskDecisions
+    .filter((decision) => decision.action === 'start')
+    .map((decision) => decision.taskId);
+  if (
+    initialStartTaskIds.some(
+      (taskId) => !recovered.attempts.some(({ attempt }) => attempt.taskId === taskId)
+    )
+  ) {
+    throw new Error('Temporal launch authority history is missing sequence-one dispatch attempts');
   }
   return true;
 };

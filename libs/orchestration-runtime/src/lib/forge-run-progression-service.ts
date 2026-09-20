@@ -147,9 +147,22 @@ const hasInitialRunStarted = (recovered: RecoveredRun): boolean => {
       `Initial scheduler authority must begin with run-started: ${recovered.run.id}`
     );
   }
-  if (!recovered.decisions.some((decision) => decision.sequence === 1)) {
+  const initialDecision = recovered.decisions.find((decision) => decision.sequence === 1);
+  if (initialDecision === undefined) {
     throw new ForgeRunProgressionError(
       `Initial scheduler authority is missing sequence-one decision: ${recovered.run.id}`
+    );
+  }
+  const initialStartTaskIds = initialDecision.decision.taskDecisions
+    .filter((decision) => decision.action === 'start')
+    .map((decision) => decision.taskId);
+  if (
+    initialStartTaskIds.some(
+      (taskId) => !recovered.attempts.some(({ attempt }) => attempt.taskId === taskId)
+    )
+  ) {
+    throw new ForgeRunProgressionError(
+      `Initial scheduler authority is missing sequence-one dispatch attempts: ${recovered.run.id}`
     );
   }
   return true;
@@ -367,7 +380,16 @@ export class ForgeRunProgressionService {
           }
         } satisfies PersistedAgentExecutionAttempt;
       });
-    await this.#persistence.persistDispatch({ reevaluation, attempts });
+    if (stopAtInitialAuthority) {
+      if (this.#persistence.ensureInitialDispatch === undefined) {
+        throw new ForgeRunProgressionError(
+          'Persistence does not support initial dispatch authority'
+        );
+      }
+      await this.#persistence.ensureInitialDispatch({ reevaluation, attempts });
+    } else {
+      await this.#persistence.persistDispatch({ reevaluation, attempts });
+    }
     return attempts.map(({ attempt }) => ({ taskId: attempt.taskId, attemptId: attempt.id }));
   }
 

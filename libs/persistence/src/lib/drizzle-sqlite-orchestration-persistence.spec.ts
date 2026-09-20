@@ -1539,6 +1539,14 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         }
       })
     ).rejects.toThrow('Agent execution attempt revision already recorded with different evidence');
+    const concurrentGenericAttempt = {
+      ...dispatch.attempts[0],
+      attempt: { ...dispatch.attempts[0].attempt, id: 'attempt-2' }
+    };
+    await persistence.persistDispatch({ ...dispatch, attempts: [concurrentGenericAttempt] });
+    await expect(persistence.recoverAttempts('run-1')).resolves.toContainEqual(
+      expect.objectContaining({ attempt: expect.objectContaining({ id: 'attempt-2' }) })
+    );
     await expect(persistence.requestCancellation('run-1')).resolves.toEqual({
       status: 'requested',
       state: 'CANCEL_REQUESTED'
@@ -1588,7 +1596,10 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     );
     const recovered = await persistence.recoverRun('run-1');
     expect(recovered?.events).toHaveLength(1);
-    expect(recovered?.attempts).toMatchObject([{ attempt: { state: 'STARTING', revision: 2 } }]);
+    expect(recovered?.attempts).toMatchObject([
+      { attempt: { id: 'attempt-1', state: 'STARTING', revision: 2 } },
+      { attempt: { id: 'attempt-2', state: 'PREPARING', revision: 1 } }
+    ]);
     persistence.close();
   });
 

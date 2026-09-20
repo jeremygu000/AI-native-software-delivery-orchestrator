@@ -716,10 +716,23 @@ export class DrizzleSqliteOrchestrationPersistence
     }
     await this.#exclusiveReevaluation(() =>
       this.#sqlite.transaction(() => {
+        this.#persistReevaluationInTransaction(reevaluation);
+        for (const attempt of attempts) {
+          this.#persistAttemptInTransaction(attempt);
+        }
+      })()
+    );
+  }
+
+  async ensureInitialDispatch(dispatch: PersistedDispatch): Promise<void> {
+    const { reevaluation, attempts } = dispatch;
+    this.#assertInitialDispatch(reevaluation, attempts);
+    await this.#exclusiveReevaluation(() =>
+      this.#sqlite.transaction(() => {
         const existing = this.#hasRecordedReevaluation(reevaluation);
         this.#persistReevaluationInTransaction(reevaluation);
-        // A matching scheduler decision is immutable authority. Its attempts may
-        // already have advanced, so a stale concurrent dispatch must not overwrite them.
+        // Initial authority is immutable: a stale launcher must not rewrite an
+        // attempt that another worker has already advanced.
         if (existing) {
           return;
         }
@@ -766,6 +779,35 @@ export class DrizzleSqliteOrchestrationPersistence
           'Runtime conflict mutations must become effective at their reevaluation sequence'
         );
       }
+    }
+  }
+
+  #assertInitialDispatch(
+    reevaluation: PersistedReevaluation,
+    attempts: readonly PersistedAgentExecutionAttempt[]
+  ): void {
+    if (reevaluation.event.sequence !== 1 || reevaluation.event.event.type !== 'run-started') {
+      throw new PersistenceInputError(
+        'Initial dispatch must be sequence-one run-started authority'
+      );
+    }
+    this.#assertReevaluation(reevaluation);
+    for (const attempt of attempts) {
+      this.#assertAttempt(attempt);
+    }
+    const startTaskIds = reevaluation.decision.decision.taskDecisions
+      .filter((decision) => decision.action === 'start')
+      .map((decision) => decision.taskId)
+      .toSorted();
+    const attemptTaskIds = attempts.map(({ attempt }) => attempt.taskId).toSorted();
+    if (
+      startTaskIds.length !== attemptTaskIds.length ||
+      startTaskIds.some((taskId, index) => taskId !== attemptTaskIds[index]) ||
+      attempts.some(({ attempt }) => attempt.state !== 'PREPARING' || attempt.revision !== 1)
+    ) {
+      throw new PersistenceInputError(
+        'Dispatch attempts must exactly match scheduler starts as revision 1 PREPARING evidence'
+      );
     }
   }
 

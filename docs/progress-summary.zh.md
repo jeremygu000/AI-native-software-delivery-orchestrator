@@ -2514,6 +2514,8 @@ Temporal 以紧凑的 run ID 启动 `forgeRunWorkflow`。初始 dispatch 使用�
 sequence one 已持久化后，即使该 attempt 已推进，后续 launch 也不会重新评估 Forge scheduling，只会请求 Temporal
 复用 workflow。progression service 会从新鲜 authority 再次检查 sequence one，dispatch 写入边界也会将陈旧的
 sequence-one 写入作为 no-op，因此持有空快照的 launcher 不会在另一个 launcher 初始化 run 后创建 sequence two。
+该 no-op 仅限专用的 initial-dispatch persistence 边界；通用 progression dispatch 仍会持久化每一个返回的
+authorization。若每个 sequence-one `start` decision 没有 durable attempt evidence，初始 history 也会被拒绝。
 
 Temporal client 使用稳定的 workflow identity `forge-run:<runId>` 和 Temporal `USE_EXISTING` conflict
 policy。相同 authority 的重复启动复用同一个 durable Forge request 和 workflow identity。若复用的 run ID

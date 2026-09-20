@@ -2837,7 +2837,9 @@ recorded, later launches do not reevaluate Forge scheduling even after that atte
 they only ask Temporal to reuse the workflow. The progression service checks sequence one again
 from fresh authority, and the dispatch write boundary makes a stale sequence-one write a no-op, so
 a launcher holding an empty snapshot cannot create sequence two after another launcher initializes
-the run.
+the run. That no-op is limited to the dedicated initial-dispatch persistence boundary; generic
+progression dispatches still persist every returned authorization. Initial history is also rejected
+unless every sequence-one `start` decision has durable attempt evidence.
 
 The Temporal client uses the stable workflow identity `forge-run:<runId>` and the Temporal
 `USE_EXISTING` conflict policy. Repeating a matching launch reuses the same durable Forge request
