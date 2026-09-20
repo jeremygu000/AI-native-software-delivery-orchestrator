@@ -6,6 +6,12 @@ import {
 import { createForgeWorkerComposition } from './forge-worker-composition.js';
 
 async function main(): Promise<void> {
+  if (
+    process.env.FORGE_WORKER_DATABASE_PATH === undefined ||
+    process.env.FORGE_WORKER_REPOSITORY_PATH === undefined
+  ) {
+    throw new Error('Worker requires FORGE_WORKER_DATABASE_PATH and FORGE_WORKER_REPOSITORY_PATH');
+  }
   const config = resolveTemporalConfig({
     serverUrl: process.env.TEMPORAL_SERVER_URL ?? 'http://localhost:7233',
     namespace: process.env.TEMPORAL_NAMESPACE ?? 'default',

@@ -37,8 +37,8 @@ export interface RuntimeBindingPolicy {
   }): Promise<StartRuntimeRunRequest>;
 }
 
-export interface RuntimeStarter {
-  startOrResumeRun(request: StartRuntimeRunRequest): Promise<RecoveredRuntimeRun>;
+export interface RuntimeStarter<Result = RecoveredRuntimeRun> {
+  startOrResumeRun(request: StartRuntimeRunRequest): Promise<Result>;
 }
 
 export class RunPreparationError extends Error {
@@ -48,17 +48,17 @@ export class RunPreparationError extends Error {
   }
 }
 
-export class RunPreparation {
+export class RunPreparation<Result = RecoveredRuntimeRun> {
   readonly #authority: ExecutionAuthorityRevalidator;
   readonly #checkouts: IntegrationCheckoutProvisioner;
   readonly #bindings: RuntimeBindingPolicy;
-  readonly #runtime: RuntimeStarter;
+  readonly #runtime: RuntimeStarter<Result>;
 
   constructor(options: {
     readonly authority: ExecutionAuthorityRevalidator;
     readonly checkouts: IntegrationCheckoutProvisioner;
     readonly bindings: RuntimeBindingPolicy;
-    readonly runtime: RuntimeStarter;
+    readonly runtime: RuntimeStarter<Result>;
   }) {
     this.#authority = options.authority;
     this.#checkouts = options.checkouts;
@@ -66,7 +66,7 @@ export class RunPreparation {
     this.#runtime = options.runtime;
   }
 
-  async start(intentCandidate: PlanExecutionIntent): Promise<RecoveredRuntimeRun> {
+  async start(intentCandidate: PlanExecutionIntent): Promise<Result> {
     const requestedIntent = parsePlanExecutionIntent(intentCandidate);
     const intent = parsePlanExecutionIntent(await this.#authority.revalidate(requestedIntent));
     if (intent.executionFingerprint !== requestedIntent.executionFingerprint) {

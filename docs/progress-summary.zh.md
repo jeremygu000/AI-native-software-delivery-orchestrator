@@ -2503,3 +2503,36 @@ integration、progression 或 persistence service。
 - M3.9 对已验证的 same-run Stage 22/22R boundary 已关闭并冻结。后续工作可进入选定 Temporal 的
   production cutover、observability/read model、production end-to-end hardening、API/UI、advisory memory，
   并仅在 scaling 需要时引入 PostgreSQL。
+
+## Stage M3.10：Temporal 启动桥接
+
+M3.10 开始已选定 Temporal 的 production cutover，但不把 Forge authority 移入 Temporal。CLI 仍会准备并
+验证已批准的 run，但不再构造 `LocalRuntimeStarter` 在进程内执行。`TemporalRunLauncher` 会先在已配置的
+SQLite store 中持久化 run、binding、conflict、schedule 和初始 `run-started` authority decision，然后才请求
+Temporal 以紧凑的 run ID 启动 `forgeRunWorkflow`。
+
+Temporal client 使用稳定的 workflow identity `forge-run:<runId>` 和 Temporal `USE_EXISTING` conflict
+policy。相同 authority 的重复启动复用同一个 durable Forge request 和 workflow identity。若复用的 run ID
+具有不同 authority、binding、task、conflict 或 schedule，会在联系 Temporal 前 fail closed。
+
+第一版 deployment boundary 有意只支持一个显式配置的 authority scope。`forge run` 和独立 worker 都要求
+`FORGE_WORKER_DATABASE_PATH` 与 `FORGE_WORKER_REPOSITORY_PATH`；CLI 还会拒绝 worker scope 外的 repository
+path。CLI 只是 Temporal client，不启动 worker；worker 仍是独立运行的进程，并读取同一个已配置 SQLite
+authority store。
+
+验证：
+
+- launch 测试证明首次初始化、完全相同的重试、稳定 workflow identity 和 authority mismatch rejection；
+- CLI command 测试和 Temporal client 测试通过；
+- launch acceptance 测试通过 `TemporalRunLauncher` 初始化 authority，经独立 client boundary 启动 workflow，并由
+  使用同一 SQLite authority store 和 production Forge composition 的独立实例化 worker 完成；
+- `pnpm lint`、`pnpm typecheck`、`pnpm test` 和 `pnpm build` 通过。全套测试为 72 个 test file、706 个通过、
+  707 个通过、1 个跳过。
+
+范围和剩余工作：
+
+- M3.10 不删除 legacy runtime，不引入 dynamic per-run worker routing，也不宣称 multi-host worker fleet；
+- 此 boundary 不修改已冻结的 M3.3 至 M3.9 scheduler、lease、cancellation、review、repair 或 integration
+  authority semantics；
+- 此测试环境证明 launch/worker authority boundary，但不证明独立部署的 worker process、真实 external provider
+  effects 或 operational production readiness。

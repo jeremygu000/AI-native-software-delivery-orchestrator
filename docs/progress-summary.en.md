@@ -2823,3 +2823,42 @@ Scope and remaining work:
 - M3.9 is closed and frozen for the verified same-run Stage 22/22R boundary. Later work can proceed
   to the selected Temporal production cutover, observability/read models, production end-to-end
   hardening, API/UI, advisory memory, and PostgreSQL only when scaling requires it.
+
+## Stage M3.10: Temporal launch bridge
+
+M3.10 begins the selected Temporal production cutover without moving Forge authority into Temporal.
+The CLI now prepares and validates the approved run as before, but it no longer constructs a
+`LocalRuntimeStarter` to execute the run in-process. Instead, `TemporalRunLauncher` persists the
+run, bindings, conflicts, schedule, and initial `run-started` authority decision in the configured
+SQLite store before asking Temporal to start `forgeRunWorkflow` with the compact run ID.
+
+The Temporal client uses the stable workflow identity `forge-run:<runId>` and the Temporal
+`USE_EXISTING` conflict policy. Repeating a matching launch reuses the same durable Forge request
+and workflow identity. A reused run ID with changed authority, bindings, tasks, conflicts, or
+schedule fails closed before Temporal is contacted.
+
+This first deployment boundary intentionally supports one explicitly configured authority scope.
+Both `forge run` and the independent worker require `FORGE_WORKER_DATABASE_PATH` and
+`FORGE_WORKER_REPOSITORY_PATH`; the CLI also rejects a repository path outside the worker scope.
+The CLI is a Temporal client only and does not start a worker. The worker remains an independently
+operated process which reads the same configured SQLite authority store.
+
+Verification:
+
+- launch tests prove first initialization, exact retry, stable workflow identity, and authority
+  mismatch rejection;
+- CLI command tests and Temporal client tests pass;
+- a launch acceptance test initializes authority through `TemporalRunLauncher`, starts a workflow
+  through a separate client boundary, and completes it on an independently instantiated worker
+  using the same SQLite authority store and production Forge composition;
+- `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build` pass. The full suite reports 72 test
+  files, 707 passing tests, and 1 skipped test.
+
+Scope and remaining work:
+
+- M3.10 does not remove the legacy runtime, introduce dynamic per-run worker routing, or claim a
+  multi-host worker fleet;
+- this boundary does not change frozen M3.3 through M3.9 scheduler, lease, cancellation, review,
+  repair, or integration authority semantics;
+- this test environment proves the launch/worker authority boundary, not a separately deployed
+  worker process, real external provider effects, or operational production readiness.

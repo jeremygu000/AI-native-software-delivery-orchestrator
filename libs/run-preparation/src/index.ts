@@ -1,4 +1,9 @@
 export { RunPreparation } from './lib/run-preparation.js';
+export { TemporalRunLauncher } from './lib/temporal-run-launcher.js';
+export type {
+  TemporalRunLaunchResult,
+  TemporalWorkflowStarter
+} from './lib/temporal-run-launcher.js';
 export { LocalRuntimeBindingPolicy } from './lib/local-runtime-binding-policy.js';
 export { LocalRuntimeStarter } from './lib/local-runtime-starter.js';
 export { RepositoryResourceResolver } from './lib/local-runtime-starter.js';

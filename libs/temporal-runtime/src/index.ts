@@ -1,12 +1,16 @@
 export {
   createTemporalClient,
   forgeRunWorkflowId,
-  requestForgeRunCancellation
+  requestForgeRunCancellation,
+  startForgeRun
 } from './lib/client.js';
 export type {
   TemporalCancellationClientFactory,
   TemporalCancellationClientHandle,
-  TemporalClientHandle
+  TemporalClientHandle,
+  TemporalLaunchClientFactory,
+  TemporalLaunchClientHandle,
+  ForgeRunLaunchHandle
 } from './lib/client.js';
 export { TemporalConfigSchema, resolveTemporalConfig } from './lib/config.js';
 export type { TemporalConfig } from './lib/config.js';

@@ -22,6 +22,51 @@ export type TemporalCancellationClientFactory = (
   config: TemporalConfig
 ) => Promise<TemporalCancellationClientHandle>;
 
+export interface TemporalLaunchClientHandle {
+  readonly client: {
+    readonly workflow: {
+      start(
+        workflowType: string,
+        options: {
+          readonly workflowId: string;
+          readonly taskQueue: string;
+          readonly args: readonly [{ readonly runId: string }];
+          readonly workflowIdConflictPolicy: 'USE_EXISTING';
+        }
+      ): Promise<{ readonly workflowId: string; readonly firstExecutionRunId: string }>;
+    };
+  };
+  close(): Promise<void>;
+}
+
+export type TemporalLaunchClientFactory = (
+  config: TemporalConfig
+) => Promise<TemporalLaunchClientHandle>;
+
+export interface ForgeRunLaunchHandle {
+  readonly workflowId: string;
+  readonly workflowRunId: string;
+}
+
+export async function startForgeRun(
+  config: TemporalConfig,
+  runId: string,
+  createClient: TemporalLaunchClientFactory = createTemporalClient
+): Promise<ForgeRunLaunchHandle> {
+  const handle = await createClient(config);
+  try {
+    const workflow = await handle.client.workflow.start('forgeRunWorkflow', {
+      workflowId: forgeRunWorkflowId(runId),
+      taskQueue: config.taskQueue,
+      args: [{ runId }],
+      workflowIdConflictPolicy: 'USE_EXISTING'
+    });
+    return { workflowId: workflow.workflowId, workflowRunId: workflow.firstExecutionRunId };
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function requestForgeRunCancellation(
   config: TemporalConfig,
   runId: string,

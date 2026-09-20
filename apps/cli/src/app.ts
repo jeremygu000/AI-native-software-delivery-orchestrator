@@ -42,8 +42,8 @@ import {
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
 import {
   LocalRuntimeBindingPolicy,
-  LocalRuntimeStarter,
-  RunPreparation
+  RunPreparation,
+  TemporalRunLauncher
 } from '@ai-native-software-delivery-orchestrator/run-preparation';
 import {
   RepositoryTaskImpactAnalyzer,
@@ -56,7 +56,8 @@ import {
 } from '@ai-native-software-delivery-orchestrator/workspace-git';
 import {
   requestForgeRunCancellation,
-  resolveTemporalConfig
+  resolveTemporalConfig,
+  startForgeRun
 } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 import { Command } from 'commander';
 
@@ -512,20 +513,26 @@ const runRepositoryPlan = async (request: {
   readonly reviewProvider: string;
   readonly reviewModel: string;
 }): Promise<unknown> => {
+  const authorityDatabasePath = process.env.FORGE_WORKER_DATABASE_PATH;
+  const workerRepositoryPath = process.env.FORGE_WORKER_REPOSITORY_PATH;
+  if (authorityDatabasePath === undefined || workerRepositoryPath === undefined) {
+    throw new Error(
+      'Temporal launch requires FORGE_WORKER_DATABASE_PATH and FORGE_WORKER_REPOSITORY_PATH'
+    );
+  }
+  if (resolve(workerRepositoryPath) !== resolve(request.repositoryPath)) {
+    throw new Error('Temporal worker repository scope does not match the requested repository');
+  }
   const [stores, registry] = await Promise.all([
     planStores(request),
     loadSharedResourceRegistry(request.sharedResourcesPath)
   ]);
-  let currentGraph: RepositoryGraph | undefined;
   const binder = new PlanExecutionBinder({
     artifactStore: stores.artifactStore,
     approvalStore: stores.approvalStore,
     snapshotProvider: new GitRepositorySnapshotProvider(),
     factsProvider: {
-      analyze: async (repository) => {
-        currentGraph = (await analyzeRepository(repository.repositoryPath)).graph;
-        return currentGraph;
-      }
+      analyze: async (repository) => (await analyzeRepository(repository.repositoryPath)).graph
     }
   });
   const bind = () =>
@@ -550,19 +557,25 @@ const runRepositoryPlan = async (request: {
     bindings: new LocalRuntimeBindingPolicy({ workspaceRoot: runDirectory }),
     runtime: {
       startOrResumeRun: async (runtimeRequest) => {
-        if (currentGraph === undefined) {
-          throw new Error('Repository Facts were not available after execution revalidation');
-        }
-        const runtime = new LocalRuntimeStarter({
-          graph: currentGraph,
-          databasePath: join(runDirectory, request.runId, 'run.sqlite'),
-          verificationPolicy,
-          codeReviewPolicy: codeReviewPolicy(request.reviewProvider, request.reviewModel)
+        const persistence = new DrizzleSqliteOrchestrationPersistence(authorityDatabasePath);
+        const launcher = new TemporalRunLauncher({
+          persistence,
+          workflow: {
+            start: (runId: string) =>
+              startForgeRun(
+                resolveTemporalConfig({
+                  serverUrl: process.env.TEMPORAL_SERVER_URL,
+                  namespace: process.env.TEMPORAL_NAMESPACE,
+                  taskQueue: process.env.TEMPORAL_TASK_QUEUE
+                }),
+                runId
+              )
+          }
         });
         try {
-          return await runtime.startOrResumeRun(runtimeRequest);
+          return await launcher.startOrResumeRun(runtimeRequest);
         } finally {
-          runtime.close();
+          persistence.close();
         }
       }
     }
@@ -931,10 +944,17 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .command('settle-cancellation')
     .description('Record operator-confirmed settlement of an UNKNOWN cancelled agent attempt')
     .requiredOption('--run-id <id>', 'run identity containing the unknown attempt')
-    .requiredOption('--run-directory <path>', 'directory containing the exact run database authority')
+    .requiredOption(
+      '--run-directory <path>',
+      'directory containing the exact run database authority'
+    )
     .requiredOption('--attempt-kind <kind>', 'attempt kind: builder or repair')
     .requiredOption('--attempt-id <id>', 'UNKNOWN attempt identity to settle')
-    .requiredOption('--expected-revision <number>', 'exact current UNKNOWN attempt revision', parsePositiveInteger)
+    .requiredOption(
+      '--expected-revision <number>',
+      'exact current UNKNOWN attempt revision',
+      parsePositiveInteger
+    )
     .requiredOption('--detail <text>', 'operator confirmation that the external agent has stopped')
     .action(
       async (options: {
@@ -972,11 +992,17 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .command('settle-integration-cancellation')
     .description('Record operator-confirmed settlement of an orphaned integration claim')
     .requiredOption('--run-id <id>', 'run identity containing the integration claim')
-    .requiredOption('--run-directory <path>', 'directory containing the exact run database authority')
+    .requiredOption(
+      '--run-directory <path>',
+      'directory containing the exact run database authority'
+    )
     .requiredOption('--task-id <id>', 'task identity owning the integration claim')
     .requiredOption('--workspace-id <id>', 'exact workspace identity in the integration claim')
     .requiredOption('--output-attempt-id <id>', 'exact accepted output attempt identity')
-    .requiredOption('--detail <text>', 'operator confirmation that the Git operation has stopped or settled')
+    .requiredOption(
+      '--detail <text>',
+      'operator confirmation that the Git operation has stopped or settled'
+    )
     .action(
       async (options: {
         runId: string;
