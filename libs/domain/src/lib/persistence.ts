@@ -34,6 +34,18 @@ export type OrchestrationRunState =
   | 'FAILED'
   | 'CANCELLED';
 
+export type CancellationRequestResult =
+  | { readonly status: 'requested'; readonly state: 'CANCEL_REQUESTED' }
+  | { readonly status: 'already-requested'; readonly state: 'CANCEL_REQUESTED' }
+  | { readonly status: 'terminal'; readonly state: 'COMPLETED' | 'FAILED' | 'CANCELLED' };
+
+export type CancellationFinalizationResult =
+  | { readonly status: 'cancelled'; readonly state: 'CANCELLED' }
+  | {
+      readonly status: 'not-requested';
+      readonly state: 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+    };
+
 const digestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const recordIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const nonEmptyStringSchema = z.string().trim().min(1);
@@ -269,6 +281,16 @@ export interface OrchestrationPersistence {
   updateRunState(runId: string, state: OrchestrationRunState): Promise<void>;
   recoverRun(runId: string): Promise<RecoveredRun | undefined>;
   replayRun(runId: string, scheduler: Scheduler): Promise<readonly PersistedSchedulerDecision[]>;
+}
+
+/**
+ * Durable control-plane transitions deliberately stay separate from normal
+ * orchestration persistence. Historical runtimes only need the data-plane
+ * contract above, while operators require atomic cancellation CAS semantics.
+ */
+export interface CancellationPersistence {
+  requestCancellation(runId: string): Promise<CancellationRequestResult>;
+  finalizeCancellation(runId: string): Promise<CancellationFinalizationResult>;
 }
 
 /** Durable evidence storage for read-only code review iterations. */

@@ -303,20 +303,10 @@ const cancelRun =
   }): Promise<{ readonly runId: string; readonly state: string }> => {
     const databasePath = join(request.runDirectory, request.runId, 'run.sqlite');
     const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
-    const recovered = await persistence.recoverRun(request.runId);
-    if (recovered === undefined) {
-      throw new Error(`Run not found: ${request.runId}`);
+    const cancellation = await persistence.requestCancellation(request.runId);
+    if (cancellation.status === 'terminal') {
+      throw new Error(`Cannot cancel run ${request.runId} in state ${cancellation.state}`);
     }
-    if (recovered.run.state === 'CANCEL_REQUESTED') {
-      throw new Error(`Cancellation is already requested for run ${request.runId}`);
-    }
-    if (recovered.run.state === 'CANCELLED') {
-      throw new Error(`Run ${request.runId} is already cancelled`);
-    }
-    if (recovered.run.state === 'COMPLETED' || recovered.run.state === 'FAILED') {
-      throw new Error(`Cannot cancel run ${request.runId} in state ${recovered.run.state}`);
-    }
-    await persistence.updateRunState(request.runId, 'CANCEL_REQUESTED');
     await requestWorkflowCancellation(request.runId);
     return { runId: request.runId, state: 'CANCEL_REQUESTED' };
   };
@@ -834,17 +824,15 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .command('status')
     .description('Show the current state of a run, including tasks, leases, and recent events')
     .requiredOption('--run-id <id>', 'run identity to query')
-    .option(
+    .requiredOption(
       '--run-directory <path>',
-      'directory containing the run database (default: ~/.forge/runs/<repository-id>/<run-id>)'
+      'directory containing the exact run database authority'
     )
-    .action(async (options: { runId: string; runDirectory?: string }) => {
+    .action(async (options: { runId: string; runDirectory: string }) => {
       try {
-        const runDirectory =
-          options.runDirectory ?? join(homedir(), '.forge', 'runs', options.runId);
         const result = await statusRunFn({
           runId: options.runId,
-          runDirectory
+          runDirectory: options.runDirectory
         });
         writeOutput(`${JSON.stringify(result, null, 2)}\n`);
       } catch (error) {
@@ -859,17 +847,15 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .command('cancel')
     .description('Request cancellation of an active run')
     .requiredOption('--run-id <id>', 'run identity to cancel')
-    .option(
+    .requiredOption(
       '--run-directory <path>',
-      'directory containing the run database (default: ~/.forge/runs/<run-id>)'
+      'directory containing the exact run database authority'
     )
-    .action(async (options: { runId: string; runDirectory?: string }) => {
+    .action(async (options: { runId: string; runDirectory: string }) => {
       try {
-        const runDirectory =
-          options.runDirectory ?? join(homedir(), '.forge', 'runs', options.runId);
         const result = await cancelRunFn({
           runId: options.runId,
-          runDirectory
+          runDirectory: options.runDirectory
         });
         writeOutput(`${JSON.stringify(result, null, 2)}\n`);
       } catch (error) {

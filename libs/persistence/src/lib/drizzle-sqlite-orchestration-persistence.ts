@@ -4,6 +4,8 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import type {
   CreatePersistedRunRequest,
+  CancellationFinalizationResult,
+  CancellationRequestResult,
   OrchestrationPersistence,
   TaskCodeReviewStore,
   TaskRepairAttemptStore,
@@ -1043,6 +1045,50 @@ export class DrizzleSqliteOrchestrationPersistence
       if (result.changes !== 1) {
         throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
       }
+    })();
+  }
+
+  async requestCancellation(runId: string): Promise<CancellationRequestResult> {
+    this.#assertRunId(runId);
+    return this.#sqlite.transaction((): CancellationRequestResult => {
+      const requested = this.#db
+        .update(runs)
+        .set({ state: 'CANCEL_REQUESTED' })
+        .where(and(eq(runs.id, runId), eq(runs.state, 'ACTIVE')))
+        .run();
+      if (requested.changes === 1) {
+        return { status: 'requested', state: 'CANCEL_REQUESTED' };
+      }
+      const current = this.#db.select({ state: runs.state }).from(runs).where(eq(runs.id, runId)).get();
+      if (current === undefined) {
+        throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
+      }
+      if (current.state === 'CANCEL_REQUESTED') {
+        return { status: 'already-requested', state: 'CANCEL_REQUESTED' };
+      }
+      return { status: 'terminal', state: current.state as 'COMPLETED' | 'FAILED' | 'CANCELLED' };
+    })();
+  }
+
+  async finalizeCancellation(runId: string): Promise<CancellationFinalizationResult> {
+    this.#assertRunId(runId);
+    return this.#sqlite.transaction((): CancellationFinalizationResult => {
+      const finalized = this.#db
+        .update(runs)
+        .set({ state: 'CANCELLED' })
+        .where(and(eq(runs.id, runId), eq(runs.state, 'CANCEL_REQUESTED')))
+        .run();
+      if (finalized.changes === 1) {
+        return { status: 'cancelled', state: 'CANCELLED' };
+      }
+      const current = this.#db.select({ state: runs.state }).from(runs).where(eq(runs.id, runId)).get();
+      if (current === undefined) {
+        throw new PersistenceInputError(`Unknown orchestration run: ${runId}`);
+      }
+      return {
+        status: 'not-requested',
+        state: current.state as 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+      };
     })();
   }
 

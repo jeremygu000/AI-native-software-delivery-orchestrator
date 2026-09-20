@@ -181,7 +181,7 @@ export type FinalizeRunCancellationInput = z.infer<typeof FinalizeRunCancellatio
 
 export const FinalizeRunCancellationResultSchema = z.object({
   runId: RunIdSchema,
-  status: z.literal('cancelled')
+  status: z.enum(['cancelled', 'pending'])
 });
 export type FinalizeRunCancellationResult = z.infer<
   typeof FinalizeRunCancellationResultSchema

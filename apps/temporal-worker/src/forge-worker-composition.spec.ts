@@ -148,6 +148,31 @@ class MemoryPersistence implements OrchestrationPersistence, TaskCodeReviewStore
     this.state = state;
   }
 
+  async requestCancellation(): Promise<
+    | { status: 'requested' | 'already-requested'; state: 'CANCEL_REQUESTED' }
+    | { status: 'terminal'; state: 'COMPLETED' | 'FAILED' | 'CANCELLED' }
+  > {
+    if (this.state === 'ACTIVE') {
+      this.state = 'CANCEL_REQUESTED';
+      return { status: 'requested', state: 'CANCEL_REQUESTED' };
+    }
+    if (this.state === 'CANCEL_REQUESTED') {
+      return { status: 'already-requested', state: 'CANCEL_REQUESTED' };
+    }
+    return { status: 'terminal', state: this.state };
+  }
+
+  async finalizeCancellation(): Promise<
+    | { status: 'cancelled'; state: 'CANCELLED' }
+    | { status: 'not-requested'; state: 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED' }
+  > {
+    if (this.state === 'CANCEL_REQUESTED') {
+      this.state = 'CANCELLED';
+      return { status: 'cancelled', state: 'CANCELLED' };
+    }
+    return { status: 'not-requested', state: this.state };
+  }
+
   async recoverRun(runId: string): Promise<RecoveredRun | undefined> {
     if (this.request === undefined || this.request.run.id !== runId) {
       return undefined;
@@ -394,6 +419,102 @@ describe('temporal worker production vertical slice', () => {
     await composition.close();
   });
 
+  it('rejects every external mutation activity after cancellation is requested', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(createRunRequest(['task-a']));
+    await persistence.updateRunState('run-1', 'CANCEL_REQUESTED');
+    const calls: string[] = [];
+    const composition = await createForgeWorkerComposition({
+      persistence: persistence as never,
+      builderExecution: {
+        execute: async () => {
+          calls.push('builder');
+          throw new Error('not reached');
+        }
+      } as never,
+      evaluation: {
+        evaluate: async () => {
+          calls.push('evaluation');
+          throw new Error('not reached');
+        }
+      } as never,
+      integration: {
+        integrate: async () => {
+          calls.push('integration');
+          throw new Error('not reached');
+        }
+      } as never,
+      repairExecution: {
+        execute: async () => {
+          calls.push('repair');
+          throw new Error('not reached');
+        }
+      } as never,
+      repositoryGraph: emptyRepositoryGraph
+    });
+
+    await expect(
+      composition.forgeActivities.executeBuilder({
+        runId: 'run-1',
+        taskId: 'task-a',
+        attemptId: 'attempt-task-a'
+      })
+    ).rejects.toThrow('Cancellation is pending');
+    await expect(
+      composition.forgeActivities.evaluateBuilderOutput({
+        runId: 'run-1',
+        taskId: 'task-a',
+        workspaceId: 'workspace-task-a',
+        builderAttemptId: 'attempt-task-a',
+        impactId: 'attempt-task-a'
+      })
+    ).rejects.toThrow('Cancellation is pending');
+    await expect(
+      composition.forgeActivities.admitRepair({
+        runId: 'run-1',
+        taskId: 'task-a',
+        reviewId: 'task-a:1',
+        subjectRef: {
+          builderAttemptId: 'attempt-task-a',
+          outputAttemptId: 'attempt-task-a',
+          workspaceId: 'workspace-task-a'
+        }
+      })
+    ).rejects.toThrow('Cancellation is pending');
+    await expect(
+      composition.forgeActivities.executeRepair({
+        runId: 'run-1',
+        taskId: 'task-a',
+        workspaceId: 'workspace-task-a',
+        builderAttemptId: 'attempt-task-a',
+        impactId: 'attempt-task-a',
+        reviewId: 'task-a:1',
+        repairAttemptId: 'repair-task-a'
+      })
+    ).rejects.toThrow('Cancellation is pending');
+    await expect(
+      composition.forgeActivities.integrateAcceptedOutput({
+        runId: 'run-1',
+        taskId: 'task-a',
+        workspaceId: 'workspace-task-a',
+        subjectRef: {
+          builderAttemptId: 'attempt-task-a',
+          outputAttemptId: 'attempt-task-a',
+          workspaceId: 'workspace-task-a'
+        }
+      })
+    ).rejects.toThrow('Cancellation is pending');
+    await expect(
+      composition.forgeActivities.resumeBlockedRepair({
+        runId: 'run-1',
+        repairAttemptId: 'repair-task-a'
+      })
+    ).rejects.toThrow('Cancellation is pending');
+    expect(calls).toEqual([]);
+
+    await composition.close();
+  });
+
   it('finalizes a durable cancellation request only through the cancellation activity', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRunRequest(['task-a']));
@@ -462,7 +583,7 @@ describe('temporal worker production vertical slice', () => {
 
     await expect(
       composition.forgeActivities.finalizeRunCancellation?.({ runId: 'run-1' })
-    ).rejects.toThrow('Cancellation still has unknown attempts: run-1');
+    ).resolves.toEqual({ runId: 'run-1', status: 'pending' });
     expect(persistence.state).toBe('CANCEL_REQUESTED');
 
     await composition.close();
@@ -499,7 +620,7 @@ describe('temporal worker production vertical slice', () => {
 
     await expect(
       composition.forgeActivities.finalizeRunCancellation?.({ runId: 'run-1' })
-    ).rejects.toThrow('Cancellation still has active leases: run-1');
+    ).resolves.toEqual({ runId: 'run-1', status: 'pending' });
     expect(persistence.state).toBe('CANCEL_REQUESTED');
 
     await composition.close();

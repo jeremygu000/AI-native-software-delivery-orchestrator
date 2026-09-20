@@ -4,7 +4,8 @@ import {
   defineSignal,
   isCancellation,
   proxyActivities,
-  setHandler
+  setHandler,
+  sleep
 } from '@temporalio/workflow';
 import type { ForgeActivities } from '../activities/forge-activities.js';
 import {
@@ -72,8 +73,12 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
     if (!isCancellation(error)) {
       throw error;
     }
-    return new CancellationScope({ cancellable: false }).run(async () => {
-      const result = await finalizeRunCancellation({ runId });
+    return CancellationScope.nonCancellable(async () => {
+      let result = await finalizeRunCancellation({ runId });
+      while (result.status === 'pending') {
+        await sleep('5 seconds');
+        result = await finalizeRunCancellation({ runId });
+      }
       return ForgeRunResultSchema.parse(result);
     });
   }

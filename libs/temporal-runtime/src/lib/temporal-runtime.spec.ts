@@ -43,7 +43,6 @@ describe('temporal-runtime Scenario A workflow', () => {
     const reevaluationStarted = new Promise<void>((resolve) => {
       markReevaluationStarted = resolve;
     });
-
     const activities: ForgeActivities = {
       async reevaluateRun(_input: ReevaluateRunInput) {
         calls.push('reevaluateRun');
@@ -103,12 +102,16 @@ describe('temporal-runtime Scenario A workflow', () => {
     }
   });
 
-  it('does not report cancelled when cancellation reconciliation rejects', async () => {
+  it('re-drives cancellation reconciliation until durable cleanup completes', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     const calls: string[] = [];
     let markReevaluationStarted = () => {};
     const reevaluationStarted = new Promise<void>((resolve) => {
       markReevaluationStarted = resolve;
+    });
+    let markPendingFinalizerCalled = () => {};
+    const pendingFinalizerCalled = new Promise<void>((resolve) => {
+      markPendingFinalizerCalled = resolve;
     });
 
     const activities: ForgeActivities = {
@@ -138,7 +141,11 @@ describe('temporal-runtime Scenario A workflow', () => {
       },
       async finalizeRunCancellation() {
         calls.push('finalizeRunCancellation');
-        throw new Error('Cancellation still has unknown attempts: run-cancelled');
+        if (calls.length === 1) {
+          markPendingFinalizerCalled();
+          return { runId: 'run-cancelled', status: 'pending' };
+        }
+        return { runId: 'run-cancelled', status: 'cancelled' };
       }
     };
 
@@ -158,15 +165,17 @@ describe('temporal-runtime Scenario A workflow', () => {
       });
       await reevaluationStarted;
       await handle.cancel();
+      await pendingFinalizerCalled;
+      await environment.sleep(5_000);
 
-      await expect(handle.result()).rejects.toThrow('Workflow execution failed');
-      expect(calls).toEqual(['finalizeRunCancellation']);
+      await expect(handle.result()).resolves.toEqual({ runId: 'run-cancelled', status: 'cancelled' });
+      expect(calls).toEqual(['finalizeRunCancellation', 'finalizeRunCancellation']);
     } finally {
       worker.shutdown();
       await workerPromise;
       await environment.teardown();
     }
-  });
+  }, 15_000);
 
   it('returns completed when no tasks are ready', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();

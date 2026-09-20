@@ -357,10 +357,25 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
   it('recovers a durable cancellation request', async () => {
     const persistence = new DrizzleSqliteOrchestrationPersistence();
     await persistence.createRun(createRunRequestWithBindings());
-    await persistence.updateRunState('run-1', 'CANCEL_REQUESTED');
+    await expect(persistence.requestCancellation('run-1')).resolves.toEqual({
+      status: 'requested',
+      state: 'CANCEL_REQUESTED'
+    });
+    await expect(persistence.requestCancellation('run-1')).resolves.toEqual({
+      status: 'already-requested',
+      state: 'CANCEL_REQUESTED'
+    });
 
     await expect(persistence.recoverRun('run-1')).resolves.toMatchObject({
       run: { state: 'CANCEL_REQUESTED' }
+    });
+    await expect(persistence.finalizeCancellation('run-1')).resolves.toEqual({
+      status: 'cancelled',
+      state: 'CANCELLED'
+    });
+    await expect(persistence.finalizeCancellation('run-1')).resolves.toEqual({
+      status: 'not-requested',
+      state: 'CANCELLED'
     });
   });
 

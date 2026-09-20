@@ -361,6 +361,16 @@ export async function createForgeWorkerComposition(
     return review;
   };
 
+  const assertRunAcceptsMutations = async (runId: string): Promise<void> => {
+    const recovered = await persistence.recoverRun(runId);
+    if (recovered === undefined) {
+      throw new Error(`Run not found: ${runId}`);
+    }
+    if (recovered.run.state === 'CANCEL_REQUESTED') {
+      throw new Error(`Cancellation is pending for run: ${runId}`);
+    }
+  };
+
   const assertBuilderTuple = (
     binding: NonNullable<Awaited<ReturnType<typeof persistence.recoverTaskBinding>>>,
     attempt: AgentExecutionAttempt
@@ -399,6 +409,7 @@ export async function createForgeWorkerComposition(
       };
     },
     async executeBuilder(input: ExecuteBuilderInput): Promise<ExecuteBuilderResult> {
+      await assertRunAcceptsMutations(input.runId);
       const context = await recoverTaskContext(input.runId, input.taskId, input.attemptId);
       if (
         context.binding === undefined ||
@@ -447,6 +458,7 @@ export async function createForgeWorkerComposition(
     async evaluateBuilderOutput(
       input: EvaluateBuilderOutputInput
     ): Promise<EvaluateBuilderOutputResult> {
+      await assertRunAcceptsMutations(input.runId);
       const context = await recoverTaskContext(input.runId, input.taskId, input.builderAttemptId);
       if (
         context.task === undefined ||
@@ -495,6 +507,7 @@ export async function createForgeWorkerComposition(
       };
     },
     async admitRepair(input: AdmitRepairInput): Promise<AdmitRepairResult> {
+      await assertRunAcceptsMutations(input.runId);
       const review = await recoverReviewById(input.runId, input.taskId, input.reviewId);
       const context = await recoverTaskContext(
         input.runId,
@@ -544,6 +557,7 @@ export async function createForgeWorkerComposition(
       };
     },
     async executeRepair(input: ExecuteRepairInput): Promise<ExecuteRepairResult> {
+      await assertRunAcceptsMutations(input.runId);
       const repairAttempts = await persistence.recoverRepairAttempts(input.runId);
       const admittedRepair = repairAttempts.find(
         (attempt) => attempt.attempt.id === input.repairAttemptId
@@ -649,6 +663,7 @@ export async function createForgeWorkerComposition(
     async integrateAcceptedOutput(
       input: IntegrateAcceptedOutputInput
     ): Promise<IntegrateAcceptedOutputResult> {
+      await assertRunAcceptsMutations(input.runId);
       const context = await recoverTaskContext(input.runId, input.taskId);
       if (context.task === undefined || context.workspace === undefined) {
         throw new Error(`Missing durable integration authority: ${input.runId}/${input.taskId}`);
@@ -717,15 +732,33 @@ export async function createForgeWorkerComposition(
         );
       }
       if (recovered.leases.some(({ lease }) => lease.state === 'ACTIVE')) {
-        throw new Error(`Cancellation still has active leases: ${input.runId}`);
+        return { runId: input.runId, status: 'pending' };
       }
-      if (recovered.attempts.some(({ attempt }) => attempt.state === 'UNKNOWN')) {
-        throw new Error(`Cancellation still has unknown attempts: ${input.runId}`);
+      const repairAttempts = await persistence.recoverRepairAttempts(input.runId);
+      const liveBuilder = recovered.attempts.find(
+        ({ attempt }) =>
+          attempt.state === 'STARTING' || attempt.state === 'RUNNING' || attempt.state === 'UNKNOWN'
+      );
+      if (liveBuilder !== undefined) {
+        return { runId: input.runId, status: 'pending' };
       }
-      await persistence.updateRunState(input.runId, 'CANCELLED');
+      const liveRepair = repairAttempts.find(
+        ({ attempt }) =>
+          attempt.state === 'STARTING' || attempt.state === 'RUNNING' || attempt.state === 'UNKNOWN'
+      );
+      if (liveRepair !== undefined) {
+        return { runId: input.runId, status: 'pending' };
+      }
+      const finalization = await persistence.finalizeCancellation(input.runId);
+      if (finalization.status !== 'cancelled') {
+        throw new Error(
+          `Cancellation finalization lost authority for run: ${input.runId} (${finalization.state})`
+        );
+      }
       return { runId: input.runId, status: 'cancelled' };
     },
     async resumeBlockedRepair(input: ResumeBlockedRepairInput): Promise<ResumeBlockedRepairResult> {
+      await assertRunAcceptsMutations(input.runId);
       const repairAttempts = await persistence.recoverRepairAttempts(input.runId);
       const repairRecord = repairAttempts.find(
         (record) => record.attempt.id === input.repairAttemptId

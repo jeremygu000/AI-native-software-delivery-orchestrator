@@ -848,7 +848,15 @@ describe('forge status', () => {
       }
     });
 
-    await program.parseAsync(['node', 'forge', 'status', '--run-id', 'run-1']);
+    await program.parseAsync([
+      'node',
+      'forge',
+      'status',
+      '--run-id',
+      'run-1',
+      '--run-directory',
+      '/run-authority'
+    ]);
 
     const result: unknown = JSON.parse(output);
     expect(result).toEqual(mockStatus);
@@ -903,7 +911,15 @@ describe('forge status', () => {
     });
 
     await expect(
-      program.parseAsync(['node', 'forge', 'status', '--run-id', 'nonexistent'])
+      program.parseAsync([
+        'node',
+        'forge',
+        'status',
+        '--run-id',
+        'nonexistent',
+        '--run-directory',
+        '/run-authority'
+      ])
     ).rejects.toMatchObject({ code: 'commander.error' });
     expect(errorOutput).toContain('Run not found');
   });
@@ -958,7 +974,15 @@ describe('forge cancel', () => {
       }
     });
 
-    await program.parseAsync(['node', 'forge', 'cancel', '--run-id', 'run-1']);
+    await program.parseAsync([
+      'node',
+      'forge',
+      'cancel',
+      '--run-id',
+      'run-1',
+      '--run-directory',
+      '/run-authority'
+    ]);
 
     const result: unknown = JSON.parse(output);
     expect(result).toEqual({ runId: 'run-1', state: 'CANCEL_REQUESTED' });
@@ -990,6 +1014,40 @@ describe('forge cancel', () => {
     });
   });
 
+  it('re-requests Temporal cancellation for an already requested durable intent', async () => {
+    const runDirectory = await mkdtemp(join(tmpdir(), 'forge-cli-cancel-retry-'));
+    const runId = 'run-cancel-retry';
+    const runPath = join(runDirectory, runId);
+    await mkdir(runPath);
+    const persistence = new DrizzleSqliteOrchestrationPersistence(join(runPath, 'run.sqlite'));
+    await persistence.createRun(cancellationRun(runId));
+    await persistence.requestCancellation(runId);
+    let requests = 0;
+    const program = createForgeProgram({
+      requestWorkflowCancellation: async () => {
+        requests += 1;
+      },
+      writeOutput: () => {}
+    });
+
+    try {
+      await program.parseAsync([
+        'node',
+        'forge',
+        'cancel',
+        '--run-id',
+        runId,
+        '--run-directory',
+        runDirectory
+      ]);
+      expect(requests).toBe(1);
+      expect((await persistence.recoverRun(runId))?.run.state).toBe('CANCEL_REQUESTED');
+    } finally {
+      await persistence.close();
+      await rm(runDirectory, { recursive: true, force: true });
+    }
+  });
+
   it('prints error when run not found', async () => {
     let errorOutput = '';
     const program = createForgeProgram({
@@ -1006,7 +1064,15 @@ describe('forge cancel', () => {
     });
 
     await expect(
-      program.parseAsync(['node', 'forge', 'cancel', '--run-id', 'nonexistent'])
+      program.parseAsync([
+        'node',
+        'forge',
+        'cancel',
+        '--run-id',
+        'nonexistent',
+        '--run-directory',
+        '/run-authority'
+      ])
     ).rejects.toMatchObject({ code: 'commander.error' });
     expect(errorOutput).toContain('Run not found');
   });
