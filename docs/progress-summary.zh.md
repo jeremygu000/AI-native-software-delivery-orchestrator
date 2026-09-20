@@ -2343,14 +2343,15 @@ M3.6 证明 legacy `OrchestrationRuntime` 与生产 Temporal Runtime V2 workflow
 - normal-path fixture 会在两个 runtime 中执行 build、verification、请求 repair 的 review、一次 repair、repair verification、accepted review，以及精确 accepted-output integration；
 - blocked-repair fixture 会持久化 `BLOCKED` repair，释放它精确的 blocker lease，恢复同一个 repair ID，递增持久 revision，写入一个 authorization dispatch，完成 repair，并在两个 runtime 中集成 accepted output；
 - legacy recovery 现在会将 resume authorization 传入已有的原子 repair-resume persistence operation。持久 repair-state transition 与唯一 resume-dispatch record 会一起提交，因此 recovery retry 不会为同一个 blocked snapshot 授权额外执行；
-- SQLite outcome collector 会按持久的 verification timestamp 排序 verification evidence 再选择最终 evidence，而不再依赖偶然的数据库行顺序。
+- SQLite outcome collector 会先按持久 verification timestamp、再按 attempt 与 evidence identity 排序 verification evidence，再选择最终 evidence。即使 timestamp 相同，也不会依赖偶然的数据库行顺序。
 
 已验证：
 
 - 两个 runtime 都独立满足共享 durable-outcome contract 中的 `build-review-repair-integrate` 和 `blocked-repair-restart-resume`；
-- 归一化后的 legacy 与 Temporal outcome 相等。归一化只替换 runtime 生成的 ID、由其派生的 verification fingerprint、timestamp 和 runtime-local absolute revision；不会移除任何 durable authority field；
+- 归一化后的 legacy 与 Temporal outcome 相等。归一化会替换 runtime 生成的 ID、由其派生的 verification fingerprint、timestamp 以及 runtime-local absolute revision value。它保留 authority structure，同时每个 runtime 都独立证明 blocked-to-resumed revision relationship；
 - blocked 场景为两个 runtime 都证明了精确 blocker release、相同 repair attempt ID、blocked-to-resumed relationship、一个 dispatch、最终 accepted review 和精确 integration output binding；
-- Temporal 侧使用真实 test Temporal server、worker、生产 workflow 和生产 worker composition。Legacy 侧使用真实生产 `OrchestrationRuntime` topology 与 coordination service。
+- Temporal 侧使用真实 test Temporal server、worker、生产 workflow、生产 worker composition，以及生产 builder/evaluation/repair/integration service。只有外部 adapter 是确定性的 seam。Legacy 侧使用真实生产 `OrchestrationRuntime` topology 与 coordination service；
+- blocked 场景会在两个 runtime 中跨越真实 restart boundary。每个 phase 都关闭 SQLite connection，并针对同一个 authority database 重建对应 runtime 的 worker 或 runtime，然后才通过已释放 blocker 恢复 repair。
 
 范围与剩余工作：
 

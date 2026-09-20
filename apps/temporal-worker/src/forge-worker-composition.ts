@@ -13,17 +13,25 @@ import type {
   ActiveMutationClaimPersistence,
   IntegrationMutationClaimPersistence,
   AgentExecutionAttempt,
+  AgentRunner,
   CancellationPersistence,
   OrchestrationPersistence,
   PersistedTaskExecutionBinding,
   PersistedWriteLease,
   TaskCodeReviewStore,
+  TaskCodeReviewer,
+  TaskCodeReviewSubjectProvider,
+  RepositorySnapshotProvider,
+  TaskImpactReconciler,
+  TaskRepairRunner,
+  TaskVerifier,
   TaskRepairAdmissionStore,
   TaskRepairResumeStore,
   TaskRepairWorkItemStore,
   TaskVerificationEvidenceStore,
   TaskWorkspace,
-  TaskVerificationEvidence
+  TaskVerificationEvidence,
+  WorkspaceManager
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 import { analyzeRepository } from '@ai-native-software-delivery-orchestrator/repository-analysis';
@@ -164,27 +172,34 @@ export interface ForgeWorkerComposition {
   close(): Promise<void>;
 }
 
-type ForgeWorkerPersistence =
-  & OrchestrationPersistence
-  & CancellationPersistence
-  & ActiveMutationClaimPersistence
-  & IntegrationMutationClaimPersistence
-  & TaskCodeReviewStore
-  & TaskVerificationEvidenceStore
-  & TaskRepairAdmissionStore
-  & TaskRepairResumeStore
-  & TaskRepairWorkItemStore
-  & {
+type ForgeWorkerPersistence = OrchestrationPersistence &
+  CancellationPersistence &
+  ActiveMutationClaimPersistence &
+  IntegrationMutationClaimPersistence &
+  TaskCodeReviewStore &
+  TaskVerificationEvidenceStore &
+  TaskRepairAdmissionStore &
+  TaskRepairResumeStore &
+  TaskRepairWorkItemStore & {
     close?(): Promise<void> | void;
   };
 
 /**
- * Test-only injection seams. Production callers pass nothing and get the real
- * implementations; the worker vertical spec substitutes in-memory/stub versions of the
- * services that perform external side effects (git, agent runner, reviewer, verifier).
+ * Test-only injection seams. Production callers pass nothing and get real adapters and
+ * services. Adapter seams keep the production Forge services in place while substituting
+ * external Git, agent, verification, and model effects. Whole-service seams remain for
+ * focused activity tests that isolate a single worker boundary.
  */
 export interface ForgeWorkerCompositionOverrides {
   readonly persistence?: ForgeWorkerPersistence;
+  readonly workspaceManager?: WorkspaceManager;
+  readonly snapshots?: RepositorySnapshotProvider;
+  readonly subjects?: TaskCodeReviewSubjectProvider;
+  readonly reviewer?: TaskCodeReviewer;
+  readonly verifier?: TaskVerifier;
+  readonly builderAgentRunner?: AgentRunner;
+  readonly repairRunner?: TaskRepairRunner;
+  readonly reconciler?: TaskImpactReconciler;
   readonly builderExecution?: Pick<ForgeBuilderExecutionService, 'execute'>;
   readonly evaluation?: Pick<ForgeBuilderOutputEvaluationService, 'evaluate'>;
   readonly repairExecution?: Pick<ForgeRepairExecutionService, 'execute'>;
@@ -228,39 +243,45 @@ export async function createForgeWorkerComposition(
     writeGuards.set(runId, guard);
     return guard;
   };
-  const workspaceManager = new GitWorkspaceManager();
-  const snapshots = new GitRepositorySnapshotProvider();
+  const workspaceManager = overrides.workspaceManager ?? new GitWorkspaceManager();
+  const snapshots = overrides.snapshots ?? new GitRepositorySnapshotProvider();
   const resources = new RepositoryResourceResolver(repository.graph);
-  const reconciler = new RepositoryImpactReconciler({
-    changes: new GitWorkspaceChangeInspector(),
-    resources
-  });
-  const subjects = new SnapshotTaskCodeReviewSubjectProvider();
+  const reconciler =
+    overrides.reconciler ??
+    new RepositoryImpactReconciler({
+      changes: new GitWorkspaceChangeInspector(),
+      resources
+    });
+  const subjects = overrides.subjects ?? new SnapshotTaskCodeReviewSubjectProvider();
 
   const reviewCollector = new TaskCodeReviewCollector({
-    reviewer: new PiTaskCodeReviewer({
-      policy: codeReviewPolicy,
-      modelResolver: new PiCodeReviewModelResolver(),
-      createTools: (request) =>
-        new AgentToolRuntime({
-          runId: request.runId,
-          taskId: request.task.id,
-          attemptId: request.builderAttempt.id,
-          agentId: request.builderAttempt.agentId,
-          workspacePath: request.workspace.workspacePath,
-          resolveResource: (path) => resources.resolve(path),
-          resolveFileId: (path) => resources.fileId(path),
-          persistence,
-          writeGuard: writeGuardForRunSync(request.runId)
-        })
-    }),
+    reviewer:
+      overrides.reviewer ??
+      new PiTaskCodeReviewer({
+        policy: codeReviewPolicy,
+        modelResolver: new PiCodeReviewModelResolver(),
+        createTools: (request) =>
+          new AgentToolRuntime({
+            runId: request.runId,
+            taskId: request.task.id,
+            attemptId: request.builderAttempt.id,
+            agentId: request.builderAttempt.agentId,
+            workspacePath: request.workspace.workspacePath,
+            resolveResource: (path) => resources.resolve(path),
+            resolveFileId: (path) => resources.fileId(path),
+            persistence,
+            writeGuard: writeGuardForRunSync(request.runId)
+          })
+      }),
     store: persistence
   });
 
-  const verifier = new SandboxedPackageScriptVerifier({
-    policy: verificationPolicy,
-    graph: repository.graph
-  });
+  const verifier =
+    overrides.verifier ??
+    new SandboxedPackageScriptVerifier({
+      policy: verificationPolicy,
+      graph: repository.graph
+    });
 
   const progression = new ForgeRunProgressionService({ persistence });
   const reevaluation = new ForgeRunReevaluationService({ progression });
@@ -288,21 +309,23 @@ export async function createForgeWorkerComposition(
       persistence,
       workspaceManager,
       writeGuard: writeGuardForRunSync(runId),
-      agentRunner: new PiAgentRunner({
-        gateway: new PiCodingAgentGateway(),
-        createTools: (request) =>
-          new AgentToolRuntime({
-            runId: request.runId,
-            taskId: request.taskId,
-            attemptId: request.attempt.id,
-            agentId: request.attempt.agentId,
-            workspacePath: request.workspace.workspacePath,
-            resolveResource: (path) => resources.resolve(path),
-            resolveFileId: (path) => resources.fileId(path),
-            persistence,
-            writeGuard: writeGuardForRunSync(request.runId)
-          })
-      }),
+      agentRunner:
+        overrides.builderAgentRunner ??
+        new PiAgentRunner({
+          gateway: new PiCodingAgentGateway(),
+          createTools: (request) =>
+            new AgentToolRuntime({
+              runId: request.runId,
+              taskId: request.taskId,
+              attemptId: request.attempt.id,
+              agentId: request.attempt.agentId,
+              workspacePath: request.workspace.workspacePath,
+              resolveResource: (path) => resources.resolve(path),
+              resolveFileId: (path) => resources.fileId(path),
+              persistence,
+              writeGuard: writeGuardForRunSync(request.runId)
+            })
+        }),
       reconciler
     });
   const builderExecution = overrides.builderExecution ?? {
@@ -327,21 +350,23 @@ export async function createForgeWorkerComposition(
       repairCoordinator,
       executionCoordinator: new RepairExecutionCoordinator({
         repairs: repairCoordinator,
-        runner: new PiAgentRunner({
-          gateway: new PiCodingAgentGateway(),
-          createTools: (request) =>
-            new AgentToolRuntime({
-              runId: request.runId,
-              taskId: request.taskId,
-              attemptId: request.attempt.id,
-              agentId: request.attempt.agentId,
-              workspacePath: request.workspace.workspacePath,
-              resolveResource: (path) => resources.resolve(path),
-              resolveFileId: (path) => resources.fileId(path),
-              persistence,
-              writeGuard: writeGuardForRunSync(request.runId)
-            })
-        }),
+        runner:
+          overrides.repairRunner ??
+          new PiAgentRunner({
+            gateway: new PiCodingAgentGateway(),
+            createTools: (request) =>
+              new AgentToolRuntime({
+                runId: request.runId,
+                taskId: request.taskId,
+                attemptId: request.attempt.id,
+                agentId: request.attempt.agentId,
+                workspacePath: request.workspace.workspacePath,
+                resolveResource: (path) => resources.resolve(path),
+                resolveFileId: (path) => resources.fileId(path),
+                persistence,
+                writeGuard: writeGuardForRunSync(request.runId)
+              })
+          }),
         reconciler,
         verifier,
         snapshots,

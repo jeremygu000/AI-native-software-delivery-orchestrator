@@ -78,9 +78,14 @@ export const collectDurableExecutionOutcomeFromSqlite = async (
   return {
     builderAttempt: builderAttempt.attempt,
     repairs,
-    verifications: [...verifications].toSorted((left, right) =>
-      left.verifiedAt.localeCompare(right.verifiedAt)
-    ),
+    verifications: [...verifications].toSorted((left, right) => {
+      const verifiedAt = left.verifiedAt.localeCompare(right.verifiedAt);
+      if (verifiedAt !== 0) {
+        return verifiedAt;
+      }
+      const attemptId = left.attemptId.localeCompare(right.attemptId);
+      return attemptId !== 0 ? attemptId : left.id.localeCompare(right.id);
+    }),
     reviews: normalizeReviews(reviews),
     leases: leases.map((p: PersistedWriteLease) => p.lease),
     integration,

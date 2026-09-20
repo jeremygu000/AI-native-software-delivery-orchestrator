@@ -2651,14 +2651,15 @@ What was built:
 - a differential normal-path fixture runs build, verification, review requesting repair, one repair, repair verification, accepted review, and exact accepted-output integration through both runtimes;
 - a differential blocked-repair fixture persists a `BLOCKED` repair, releases its exact blocker lease, resumes the same repair ID, increments its durable revision, persists one authorization dispatch, completes the repair, and integrates the accepted output through both runtimes;
 - legacy recovery now passes its resume authorization into the existing atomic repair-resume persistence operation. The durable repair-state transition and its one resume-dispatch record are committed together, so recovery retries cannot authorize an additional execution of the same blocked snapshot;
-- the SQLite outcome collector orders verification evidence by its durable verification timestamp before selecting the final evidence, rather than relying on incidental database row order.
+- the SQLite outcome collector orders verification evidence by durable verification timestamp, then attempt and evidence identity, before selecting final evidence. This avoids incidental database row order even when timestamps tie.
 
 What was verified:
 
 - each runtime independently satisfies `build-review-repair-integrate` and `blocked-repair-restart-resume` from the shared durable-outcome contract;
-- normalized legacy and Temporal outcomes are equal. Normalization replaces only runtime-generated IDs, derived verification fingerprints, timestamps, and runtime-local absolute revisions; it does not remove any durable authority field;
+- normalized legacy and Temporal outcomes are equal. Normalization replaces runtime-generated IDs, derived verification fingerprints, timestamps, and runtime-local absolute revision values. It preserves authority structure, while each runtime independently proves the blocked-to-resumed revision relationship;
 - the blocked scenario proves the exact blocker release, same repair attempt ID, blocked-to-resumed relationship, one dispatch, final accepted review, and exact integration output binding for both runtimes;
-- the Temporal side uses a real test Temporal server, worker, production workflow, and production worker composition. The legacy side uses the real production `OrchestrationRuntime` topology and coordination services.
+- the Temporal side uses a real test Temporal server, worker, production workflow, production worker composition, and production builder/evaluation/repair/integration services. Only external adapters are deterministic seams. The legacy side uses the real production `OrchestrationRuntime` topology and coordination services;
+- the blocked scenario crosses a real restart boundary for both runtimes. Each phase closes its SQLite connection and reconstructs the runtime-specific worker or runtime against the same authority database before the released blocker resumes the repair.
 
 Scope and remaining work:
 

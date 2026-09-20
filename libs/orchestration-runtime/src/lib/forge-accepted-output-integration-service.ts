@@ -22,7 +22,10 @@ export interface ForgeAcceptedOutputIntegrationResult {
   readonly workspace: TaskWorkspace;
 }
 
-type IntegrationPersistence = Pick<OrchestrationPersistence, 'persistWorkspace'>;
+type IntegrationPersistence = Pick<
+  OrchestrationPersistence,
+  'persistWorkspace' | 'persistIntegration'
+>;
 
 export class ForgeAcceptedOutputIntegrationService {
   readonly #coordinator: TaskOutputAdmissionCoordinator;
@@ -64,6 +67,11 @@ export class ForgeAcceptedOutputIntegrationService {
       runId: request.runId,
       workspace: integration.workspace
     });
+    await this.#persistence.persistIntegration(
+      request.runId,
+      integration.status,
+      integration.status === 'integrated' ? request.subject.outputAttemptId : undefined
+    );
 
     return {
       status: integration.status,
