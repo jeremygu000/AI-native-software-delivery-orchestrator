@@ -1558,6 +1558,12 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     };
 
     await expect(persistence.claimIntegrationStart(claim)).resolves.toBeUndefined();
+    await expect(
+      persistence.settleIntegrationCancellation({
+        ...claim,
+        detail: 'Confirmed the Git integration process stopped.'
+      })
+    ).rejects.toThrow('Cancellation settlement requires CANCEL_REQUESTED run: run-1/ACTIVE');
     await expect(persistence.claimIntegrationStart(claim)).resolves.toBeUndefined();
     await expect(
       persistence.claimIntegrationStart({ ...claim, outputAttemptId: 'output-attempt-2' })
@@ -1569,10 +1575,26 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     });
     await expect(persistence.hasActiveIntegrationClaim('run-1')).resolves.toBe(true);
     await expect(
+      persistence.settleIntegrationCancellation({
+        ...claim,
+        outputAttemptId: 'output-attempt-2',
+        detail: 'Confirmed the Git integration process stopped.'
+      })
+    ).rejects.toThrow('Integration mutation claim is missing or mismatched: run-1/B');
+    await expect(
       persistence.claimIntegrationStart({ ...claim, taskId: 'C', workspaceId: 'workspace-C' })
     ).rejects.toThrow('Mutation claim requires ACTIVE run: run-1/CANCEL_REQUESTED');
-    await expect(persistence.releaseIntegrationClaim(claim)).resolves.toBeUndefined();
+    await expect(
+      persistence.settleIntegrationCancellation({
+        ...claim,
+        detail: 'Confirmed the Git integration process stopped.'
+      })
+    ).resolves.toBeUndefined();
     await expect(persistence.hasActiveIntegrationClaim('run-1')).resolves.toBe(false);
+    await expect(persistence.finalizeCancellation('run-1')).resolves.toEqual({
+      status: 'cancelled',
+      state: 'CANCELLED'
+    });
     persistence.close();
   });
 

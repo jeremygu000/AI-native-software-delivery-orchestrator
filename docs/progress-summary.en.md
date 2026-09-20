@@ -2612,8 +2612,9 @@ What was built:
 - builder and repair execution claim ACTIVE-run authority atomically before starting. Once cancellation is requested, no new mutation can acquire that authority;
 - an attempt whose external execution cannot be confirmed stopped is recorded as UNKNOWN rather than being treated as cancelled. An operator must explicitly settle that attempt after independently confirming it is no longer running;
 - accepted-output integration has its own durable in-flight claim. The worker acquires it while the run is ACTIVE before calling Git-facing integration, and cancellation finalization remains pending until the claim is released. A terminal CANCELLED state therefore cannot race an integration that is still able to mutate a workspace;
+- if a worker crashes or loses an integration outcome after acquiring that claim, an operator can use `forge settle-integration-cancellation` with the exact run, task, workspace, and output-attempt tuple. This removes only the matching orphaned claim while the run is CANCEL_REQUESTED, allowing cancellation to finish without making the claim a permanent tombstone;
 - Pi agent cancellation now distinguishes a request from confirmation. The runner reports cancelled only after the provider session confirms `abort()` succeeded. Abort failures or ambiguous errors propagate, so the existing builder and repair paths retain their active leases and persist UNKNOWN instead of falsely releasing authority;
-- the CLI exposes `forge status`, `forge cancel`, and `forge settle-cancellation` so operators can inspect a run, request cancellation, and explicitly settle a previously UNKNOWN cancellation attempt.
+- the CLI exposes `forge status`, `forge cancel`, `forge settle-cancellation`, and `forge settle-integration-cancellation` so operators can inspect a run, request cancellation, and explicitly reconcile uncertain builder, repair, or integration work.
 
 Why this matters:
 
@@ -2624,15 +2625,15 @@ Why this matters:
 What was verified:
 
 - focused worker and SQLite persistence regression suites passed, including a paused accepted-output integration where cancellation remains pending until integration settles;
-- focused Pi gateway and Pi runner suites passed, including a provider `abort()` failure that propagates instead of becoming a false cancellation confirmation;
+- focused Pi gateway and Pi runner suites passed, including provider `abort()` failures that propagate instead of becoming false cancellation confirmation, even when prompt completion wins the initial race;
 - `pnpm typecheck` passed;
 - `pnpm lint` passed;
-- `pnpm test` passed with 674 passed and 1 skipped tests;
+- `pnpm test` passed with 676 passed and 1 skipped tests;
 - `pnpm build` passed, including TypeScript project-reference builds and the CLI bundle.
 
 Current limitations:
 
-- cancellation is not a kill guarantee for arbitrary external tools. Before using `forge settle-cancellation` on an UNKNOWN attempt, an operator must independently verify that the external process has stopped and can no longer mutate the workspace;
+- cancellation is not a kill guarantee for arbitrary external tools. Before using `forge settle-cancellation` on an UNKNOWN attempt or `forge settle-integration-cancellation` on an orphaned integration claim, an operator must independently verify that the external process or Git operation has stopped and can no longer mutate the workspace;
 - this stage does not introduce a general cross-process fencing protocol, external publication workflow, or remote trigger control plane.
 
 Stage outcome:

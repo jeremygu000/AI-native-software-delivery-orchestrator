@@ -233,4 +233,45 @@ describe('PiCodingAgentGateway', () => {
     ).rejects.toThrow('Pi abort failed.');
     expect(abort).toHaveBeenCalledOnce();
   });
+
+  it('propagates an abort failure when prompt completion wins the cancellation race', async () => {
+    const controller = new AbortController();
+    let rejectAbort!: (error: Error) => void;
+    let resolveAbortStarted!: () => void;
+    const abortStarted = new Promise<void>((resolve) => {
+      resolveAbortStarted = resolve;
+    });
+    const abort = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectAbort = reject;
+          resolveAbortStarted();
+        })
+    );
+    const prompt = vi.fn(async () => {
+      controller.abort();
+    });
+    const gateway = new PiCodingAgentGateway(async () => ({
+      session: {
+        sessionId: 'pi-session-1',
+        setActiveToolsByName: vi.fn(),
+        prompt,
+        abort
+      }
+    }));
+
+    const start = gateway.start({
+      cwd: '/workspace',
+      prompt: 'Change value',
+      tools: ['forge_read'],
+      executeTool: async () => ({ content: 'unused' }),
+      onStarted: async () => {},
+      cancellationSignal: controller.signal
+    });
+    await abortStarted;
+    rejectAbort(new Error('Pi abort failed after prompt completion.'));
+
+    await expect(start).rejects.toThrow('Pi abort failed after prompt completion.');
+    expect(abort).toHaveBeenCalledOnce();
+  });
 });

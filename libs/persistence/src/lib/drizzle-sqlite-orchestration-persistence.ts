@@ -1102,6 +1102,38 @@ export class DrizzleSqliteOrchestrationPersistence
     })();
   }
 
+  async settleIntegrationCancellation(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly outputAttemptId: string;
+    readonly detail: string;
+  }): Promise<void> {
+    this.#assertIntegrationClaim(request);
+    if (request.detail.trim().length === 0) {
+      throw new PersistenceInputError('Integration cancellation settlement detail must not be empty');
+    }
+    this.#sqlite.transaction(() => {
+      this.#assertRunIsCancellationRequested(request.runId);
+      const result = this.#db
+        .delete(integrationClaims)
+        .where(
+          and(
+            eq(integrationClaims.runId, request.runId),
+            eq(integrationClaims.taskId, request.taskId),
+            eq(integrationClaims.workspaceId, request.workspaceId),
+            eq(integrationClaims.outputAttemptId, request.outputAttemptId)
+          )
+        )
+        .run();
+      if (result.changes !== 1) {
+        throw new PersistenceInputError(
+          `Integration mutation claim is missing or mismatched: ${request.runId}/${request.taskId}`
+        );
+      }
+    })();
+  }
+
   async hasActiveIntegrationClaim(runId: string): Promise<boolean> {
     this.#assertRunId(runId);
     return (

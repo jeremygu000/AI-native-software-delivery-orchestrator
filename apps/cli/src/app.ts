@@ -11,6 +11,7 @@ import { DeterministicConflictEngine } from '@ai-native-software-delivery-orches
 import type {
   CancellationSettlementPersistence,
   FileNode,
+  IntegrationMutationClaimPersistence,
   RepositoryDiagnostic,
   RepositoryGraph,
   SymbolNode
@@ -120,6 +121,14 @@ export interface ForgeProgramDependencies {
     readonly expectedRevision: number;
     readonly detail: string;
   }) => Promise<{ readonly attemptId: string; readonly state: 'CANCELLED' }>;
+  readonly settleIntegrationCancellation?: (request: {
+    readonly runId: string;
+    readonly runDirectory: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly outputAttemptId: string;
+    readonly detail: string;
+  }) => Promise<{ readonly taskId: string; readonly state: 'SETTLED' }>;
   readonly requestWorkflowCancellation?: (runId: string) => Promise<void>;
   readonly writeOutput?: (output: string) => void;
 }
@@ -402,6 +411,21 @@ const settleCancellation = async (request: {
   return { attemptId: result.attemptId, state: 'CANCELLED' };
 };
 
+const settleIntegrationCancellation = async (request: {
+  readonly runId: string;
+  readonly runDirectory: string;
+  readonly taskId: string;
+  readonly workspaceId: string;
+  readonly outputAttemptId: string;
+  readonly detail: string;
+}): Promise<{ readonly taskId: string; readonly state: 'SETTLED' }> => {
+  const databasePath = join(request.runDirectory, request.runId, 'run.sqlite');
+  const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
+  const settlementStore: IntegrationMutationClaimPersistence = persistence;
+  await settlementStore.settleIntegrationCancellation(request);
+  return { taskId: request.taskId, state: 'SETTLED' };
+};
+
 const planStores = async (request: {
   readonly repositoryPath: string;
   readonly planDirectory?: string;
@@ -606,6 +630,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
       ));
   const cancelRunFn = dependencies.cancelRun ?? cancelRun(requestWorkflowCancellation);
   const settleCancellationFn = dependencies.settleCancellation ?? settleCancellation;
+  const settleIntegrationCancellationFn =
+    dependencies.settleIntegrationCancellation ?? settleIntegrationCancellation;
   const writeOutput =
     dependencies.writeOutput ?? ((output: string) => process.stdout.write(output));
 
@@ -932,6 +958,36 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
             expectedRevision: options.expectedRevision,
             detail: options.detail
           });
+          writeOutput(`${JSON.stringify(result, null, 2)}\n`);
+        } catch (error) {
+          if (error instanceof Error) {
+            program.error(error.message);
+          }
+          throw error;
+        }
+      }
+    );
+
+  program
+    .command('settle-integration-cancellation')
+    .description('Record operator-confirmed settlement of an orphaned integration claim')
+    .requiredOption('--run-id <id>', 'run identity containing the integration claim')
+    .requiredOption('--run-directory <path>', 'directory containing the exact run database authority')
+    .requiredOption('--task-id <id>', 'task identity owning the integration claim')
+    .requiredOption('--workspace-id <id>', 'exact workspace identity in the integration claim')
+    .requiredOption('--output-attempt-id <id>', 'exact accepted output attempt identity')
+    .requiredOption('--detail <text>', 'operator confirmation that the Git operation has stopped or settled')
+    .action(
+      async (options: {
+        runId: string;
+        runDirectory: string;
+        taskId: string;
+        workspaceId: string;
+        outputAttemptId: string;
+        detail: string;
+      }) => {
+        try {
+          const result = await settleIntegrationCancellationFn(options);
           writeOutput(`${JSON.stringify(result, null, 2)}\n`);
         } catch (error) {
           if (error instanceof Error) {

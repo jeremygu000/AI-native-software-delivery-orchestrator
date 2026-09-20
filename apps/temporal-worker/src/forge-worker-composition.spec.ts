@@ -229,6 +229,22 @@ class MemoryPersistence
     this.integrationClaims.splice(index, 1);
   }
 
+  async settleIntegrationCancellation(request: {
+    runId: string;
+    taskId: string;
+    workspaceId: string;
+    outputAttemptId: string;
+    detail: string;
+  }): Promise<void> {
+    if (this.state !== 'CANCEL_REQUESTED') {
+      throw new Error(`Run cancellation is not requested: ${request.runId}/${this.state}`);
+    }
+    if (request.detail.trim().length === 0) {
+      throw new Error('Integration cancellation settlement detail must not be empty');
+    }
+    await this.releaseIntegrationClaim(request);
+  }
+
   async hasActiveIntegrationClaim(runId: string): Promise<boolean> {
     return this.integrationClaims.some((claim) => claim.runId === runId);
   }

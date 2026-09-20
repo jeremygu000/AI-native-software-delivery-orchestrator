@@ -169,12 +169,14 @@ export class PiCodingAgentGateway implements PiSessionGateway {
         },
         (error: unknown) => {
           rejectCancellation(error);
+          throw error;
         }
       );
       return abortPromise;
     };
     const abortOnCancellation = () => {
-      void abort();
+      // cancellationOutcome carries the failure to the active prompt race.
+      void abort().catch(() => {});
     };
     cancellationSignal?.addEventListener('abort', abortOnCancellation, { once: true });
     try {

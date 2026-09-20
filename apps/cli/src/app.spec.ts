@@ -1157,3 +1157,56 @@ describe('forge settle-cancellation', () => {
     expect(settleCancellation).not.toHaveBeenCalled();
   });
 });
+
+describe('forge settle-integration-cancellation', () => {
+  it('requires exact claim authority and forwards operator settlement', async () => {
+    let output = '';
+    let request:
+      | {
+          readonly runId: string;
+          readonly runDirectory: string;
+          readonly taskId: string;
+          readonly workspaceId: string;
+          readonly outputAttemptId: string;
+          readonly detail: string;
+        }
+      | undefined;
+    const program = createForgeProgram({
+      settleIntegrationCancellation: async (input) => {
+        request = input;
+        return { taskId: input.taskId, state: 'SETTLED' };
+      },
+      writeOutput: (value) => {
+        output += value;
+      }
+    });
+
+    await program.parseAsync([
+      'node',
+      'forge',
+      'settle-integration-cancellation',
+      '--run-id',
+      'run-1',
+      '--run-directory',
+      '/run-authority',
+      '--task-id',
+      'task-1',
+      '--workspace-id',
+      'workspace-1',
+      '--output-attempt-id',
+      'output-1',
+      '--detail',
+      'Confirmed the Git integration process stopped.'
+    ]);
+
+    expect(request).toEqual({
+      runId: 'run-1',
+      runDirectory: '/run-authority',
+      taskId: 'task-1',
+      workspaceId: 'workspace-1',
+      outputAttemptId: 'output-1',
+      detail: 'Confirmed the Git integration process stopped.'
+    });
+    expect(JSON.parse(output)).toEqual({ taskId: 'task-1', state: 'SETTLED' });
+  });
+});

@@ -326,6 +326,17 @@ export interface IntegrationMutationClaimPersistence {
     readonly workspaceId: string;
     readonly outputAttemptId: string;
   }): Promise<void>;
+  /**
+   * Operator-only reconciliation for an orphaned integration claim. The
+   * caller must independently confirm the Git operation cannot still mutate.
+   */
+  settleIntegrationCancellation(request: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly workspaceId: string;
+    readonly outputAttemptId: string;
+    readonly detail: string;
+  }): Promise<void>;
   hasActiveIntegrationClaim(runId: string): Promise<boolean>;
 }
 
