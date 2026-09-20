@@ -40,7 +40,8 @@ import type {
   TaskState,
   TaskConflict,
   TaskRepairWorkItem,
-  TaskVerificationEvidence
+  TaskVerificationEvidence,
+  WriteLease
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
   scheduleOptionsSchema,
@@ -1028,16 +1029,28 @@ export class DrizzleSqliteOrchestrationPersistence
     })();
   }
 
-  async claimBuilderStart(record: PersistedAgentExecutionAttempt): Promise<AgentExecutionAttempt> {
+  async claimBuilderStart(request: {
+    readonly runId: string;
+    readonly attempt: AgentExecutionAttempt;
+    readonly leases: readonly WriteLease[];
+  }): Promise<AgentExecutionAttempt> {
+    const record = { runId: request.runId, attempt: request.attempt };
     this.#assertAttempt(record);
-    if (record.attempt.state !== 'STARTING') {
+    if (request.attempt.state !== 'STARTING') {
       throw new PersistenceInputError('Builder mutation claim requires a STARTING attempt');
     }
     return this.#sqlite.transaction(() => {
-      this.#assertRunIsActive(record.runId);
+      this.#assertRunIsActive(request.runId);
       this.#assertPrecedingBuilderAttempt(record);
+      for (const lease of request.leases) {
+        writeLeaseSchema.parse(lease);
+        if (lease.runId !== request.runId) {
+          throw new PersistenceInputError('Write lease run ID must match persistence run ID');
+        }
+        this.#persistLeaseInTransaction({ runId: request.runId, lease });
+      }
       this.#persistAttemptInTransaction(record);
-      return record.attempt;
+      return request.attempt;
     })();
   }
 

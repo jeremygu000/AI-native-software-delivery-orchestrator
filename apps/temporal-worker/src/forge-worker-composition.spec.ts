@@ -28,7 +28,8 @@ import type {
   TaskRepairWorkItem,
   TaskWorkspace,
   TaskVerificationEvidenceStore,
-  TaskVerificationEvidence
+  TaskVerificationEvidence,
+  WriteLease
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
@@ -169,7 +170,12 @@ class MemoryPersistence
     this.attempts.push(record);
   }
 
-  async claimBuilderStart(record: PersistedAgentExecutionAttempt): Promise<AgentExecutionAttempt> {
+  async claimBuilderStart(request: {
+    runId: string;
+    attempt: AgentExecutionAttempt;
+    leases: readonly WriteLease[];
+  }): Promise<AgentExecutionAttempt> {
+    const record = { runId: request.runId, attempt: request.attempt };
     if (this.state !== 'ACTIVE') {
       throw new Error(`Run is not active: ${record.runId}`);
     }
@@ -181,6 +187,9 @@ class MemoryPersistence
       existing.revision + 1 !== record.attempt.revision
     ) {
       throw new Error(`Builder claim authority mismatch: ${record.attempt.id}`);
+    }
+    for (const lease of request.leases) {
+      await this.persistLease({ runId: request.runId, lease });
     }
     this.attempts[index] = record;
     return record.attempt;
@@ -1377,10 +1386,7 @@ describe('temporal worker production vertical slice', () => {
       repairAttemptId: blockedRepair.id,
       taskId: 'task-a'
     });
-    expect(hydratedLeaseSnapshots).toEqual([
-      ['lease-active-restart', 'lease-blocker-restart'],
-      ['lease-active-restart', 'lease-blocker-restart']
-    ]);
+    expect(hydratedLeaseSnapshots).toEqual([['lease-active-restart', 'lease-blocker-restart']]);
 
     const recoveredAfterLostResponse = await compositionB.forgeActivities.resumeBlockedRepair({
       runId: 'run-1',
@@ -1677,9 +1683,12 @@ describe('temporal worker production vertical slice', () => {
       taskAStarted = resolve;
     });
     const startedTasks: string[] = [];
+    const hydratedLeaseSnapshots: string[][] = [];
     const composition = await createForgeWorkerComposition({
       persistence,
       repositoryGraph: emptyRepositoryGraph,
+      onWriteGuardHydrated: (_runId, leases) =>
+        hydratedLeaseSnapshots.push(leases.map((lease) => lease.id).toSorted()),
       workspaceManager: {
         async create(workspace) {
           return { ...workspace, revision: 1, phase: 'READY_TO_INTEGRATE' };
@@ -1740,13 +1749,14 @@ describe('temporal worker production vertical slice', () => {
       taskId: authorizationA.taskId,
       attemptId: authorizationA.attemptId
     });
-    await taskAStartedPromise;
-
-    const blocked = await activities.executeBuilder({
+    const builderB = activities.executeBuilder({
       runId: 'run-1',
       taskId: authorizationB.taskId,
       attemptId: authorizationB.attemptId
     });
+    await taskAStartedPromise;
+
+    const blocked = await builderB;
     expect(blocked).toEqual({
       status: 'blocked',
       runId: 'run-1',
@@ -1755,6 +1765,7 @@ describe('temporal worker production vertical slice', () => {
       blockerLeaseId: expect.any(String)
     });
     expect(startedTasks).toEqual(['task-a']);
+    expect(hydratedLeaseSnapshots).toEqual([[]]);
     expect(
       persistence.attempts.filter(({ attempt }) => attempt.id === authorizationB.attemptId)
     ).toEqual([

@@ -2453,8 +2453,14 @@ integration、progression 或 persistence service。
   不启动 agent。精确 lease release 会重新授权同一个 attempt ID，使其随后完成；
 - compact builder result 现为 completed-or-blocked union。blocked builder 不会进入 evaluation、repair 或
   integration。scheduler dispatch 在 unblock 后会复用匹配的 `PREPARING` attempt，而非创建重复 attempt；
-- write-guard hydration 现在保留 released lease history 以及 active lease。released lease 不会阻塞工作，
-  但其 ID 与 version 会阻止重建 activity 复用旧 lease ID 并触发 SQLite version check failure；
+- 一个 composition 现在在整个生命周期内为每个 run 保留一个 hydrated write guard。并发 builder activity
+  会共享该 guard，而不会在 refresh 时替换它，因此同一 run 的 lease acquisition 只有一个有效 authority
+  view。hydration 也保留 released lease history 和 active lease；released lease 不会阻塞工作，但其 ID 与
+  version 会阻止重建 activity 复用旧 lease ID 并触发 SQLite version check failure；
+- builder mutation authority 现在会在同一个 ACTIVE-run claim 中原子持久化完整 acquired lease plan 与
+  `PREPARING -> STARTING` transition。workspace creation 只会在 claim 胜出后开始。因此 cancellation
+  先胜出时 attempt 保持 PREPARING、不会创建 workspace，也不会持久化 active lease；claim failure 会先
+  rollback in-memory acquisition，不会留下 durable lease evidence；
 - run-level integration summary 现更新 latest status。逐任务 authority 仍由 integration claim、workspace
   record、accepted review subject、attempt、lease 和 scheduler history 保存。
 
@@ -2469,10 +2475,14 @@ integration、progression 或 persistence service。
 - concurrent builder wave 会在任一 builder complete 前启动 durable authorization snapshot 中全部任务。
   lease-blocked builder 没有 STARTING lifecycle claim 或 agent session、会跳过所有 downstream work，并在
   exact blocker release 后以原 attempt identity 运行；
+- 对抗测试强制两个同 run builder 在任一 acquire lease 前并发 hydrate，证明共享 guard 会阻塞第二个
+  builder。独立的 service 与 SQLite 测试证明 cancellation-lost start claim 不会创建 workspace 或 active
+  lease；
 - blocked integration restart 证明 worker A 在 worker B 使用同一 SQLite database 与 task queue 重建
   composition 之前已经到达 `STOPPED`。匹配的 legacy 场景也会在 recovery 前重建 runtime 与 persistence；
 - `pnpm lint`、`pnpm typecheck`、`pnpm test` 与 `pnpm build` 都通过。全量 suite 报告 71 个 test file、
-  701 个 passing test 和 1 个 skipped test。预期的 Temporal test-server warning 与 intentional
+  702 个 passing test 和 1 个 skipped test。一次全量测试出现 transient timeout 后，也已单独重跑
+  cancellation workflow test 并再次完成完整 suite。预期的 Temporal test-server warning 与 intentional
   failure-path activity log 不代表测试失败。
 
 范围与剩余工作：

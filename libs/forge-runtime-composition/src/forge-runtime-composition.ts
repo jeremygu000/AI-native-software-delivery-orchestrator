@@ -222,6 +222,7 @@ export async function createForgeRuntimeComposition(
   const persistence =
     overrides.persistence ?? new DrizzleSqliteOrchestrationPersistence(RUNTIME_DATABASE_PATH);
   const writeGuards = new Map<string, InMemoryWriteGuard>();
+  const writeGuardHydrations = new Map<string, Promise<InMemoryWriteGuard>>();
   const writeGuardForRunSync = (runId: string): InMemoryWriteGuard => {
     const existing = writeGuards.get(runId);
     if (existing !== undefined) {
@@ -229,21 +230,30 @@ export async function createForgeRuntimeComposition(
     }
     const guard = new InMemoryWriteGuard();
     writeGuards.set(runId, guard);
+    writeGuardHydrations.set(runId, Promise.resolve(guard));
     return guard;
   };
-  const writeGuardForRun = async (runId: string, refresh = false): Promise<InMemoryWriteGuard> => {
+  const writeGuardForRun = async (runId: string): Promise<InMemoryWriteGuard> => {
     const existing = writeGuards.get(runId);
-    if (existing !== undefined && !refresh) {
+    if (existing !== undefined) {
       return existing;
     }
-    const recovered = await persistence.recoverRun(runId);
-    // Released and stale leases do not block acquisition, but their IDs and versions
-    // must survive activity reconstruction so a new lease cannot regress persisted history.
-    const recoveredLeases = recovered?.leases.map(({ lease }) => lease) ?? [];
-    overrides.onWriteGuardHydrated?.(runId, recoveredLeases);
-    const guard = new InMemoryWriteGuard({ initialLeases: recoveredLeases });
-    writeGuards.set(runId, guard);
-    return guard;
+    const priorHydration = writeGuardHydrations.get(runId);
+    if (priorHydration !== undefined) {
+      return priorHydration;
+    }
+    const hydration = (async () => {
+      const recovered = await persistence.recoverRun(runId);
+      // Released and stale leases do not block acquisition, but their IDs and versions
+      // must survive activity reconstruction so a new lease cannot regress persisted history.
+      const recoveredLeases = recovered?.leases.map(({ lease }) => lease) ?? [];
+      overrides.onWriteGuardHydrated?.(runId, recoveredLeases);
+      const guard = new InMemoryWriteGuard({ initialLeases: recoveredLeases });
+      writeGuards.set(runId, guard);
+      return guard;
+    })();
+    writeGuardHydrations.set(runId, hydration);
+    return hydration;
   };
   const workspaceManager = overrides.workspaceManager ?? new GitWorkspaceManager();
   const snapshots = overrides.snapshots ?? new GitRepositorySnapshotProvider();
@@ -329,7 +339,8 @@ export async function createForgeRuntimeComposition(
             })
         }),
       reconciler,
-      claimStart: async (attempt) => persistence.claimBuilderStart({ runId, attempt }),
+      claimStart: async ({ attempt, leases }) =>
+        persistence.claimBuilderStart({ runId, attempt, leases }),
       leaseReleased: async ({ taskId, lease }) => {
         await progression.advance(runId, {
           type: 'lease-released',
@@ -500,7 +511,7 @@ export async function createForgeRuntimeComposition(
         );
       }
       assertBuilderTuple(context.binding, context.attempt);
-      await writeGuardForRun(input.runId, true);
+      await writeGuardForRun(input.runId);
       let outcome: Awaited<ReturnType<typeof builderExecution.execute>>;
       try {
         outcome = await builderExecution.execute({
@@ -700,10 +711,9 @@ export async function createForgeRuntimeComposition(
       ) {
         throw new Error(`Repair attempt lineage mismatch: ${input.repairAttemptId}`);
       }
-      // Lease state is durable and may have changed since a previous wake.
-      // Refresh before executing so an old ACTIVE lease cannot re-block a
-      // repair that SQLite has already authorized to resume.
-      await writeGuardForRun(input.runId, true);
+      // Ensure this composition has hydrated its stable per-run guard before
+      // executing a repair that SQLite has authorized to resume.
+      await writeGuardForRun(input.runId);
       const claimedRepair = await persistence.claimRepairStart({
         runId: input.runId,
         attempt: {
@@ -962,9 +972,9 @@ export async function createForgeRuntimeComposition(
           detail: 'not-found'
         };
       }
-      // A wake is only a hint. Reconcile the cached guard with durable leases
-      // before testing or issuing continuation authority.
-      await writeGuardForRun(input.runId, true);
+      // A wake is only a hint. Ensure this composition has hydrated its stable
+      // per-run guard before testing or issuing continuation authority.
+      await writeGuardForRun(input.runId);
       const repair = repairRecord.attempt;
       const priorDispatches = await persistence.recoverRepairResumeDispatches(input.runId);
       const priorDispatch = priorDispatches.find(

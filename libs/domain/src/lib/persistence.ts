@@ -305,7 +305,11 @@ export interface CancellationPersistence {
  * not acquire cancellation authority accidentally.
  */
 export interface ActiveMutationClaimPersistence {
-  claimBuilderStart(record: PersistedAgentExecutionAttempt): Promise<AgentExecutionAttempt>;
+  claimBuilderStart(request: {
+    readonly runId: string;
+    readonly attempt: AgentExecutionAttempt;
+    readonly leases: readonly WriteLease[];
+  }): Promise<AgentExecutionAttempt>;
   claimRepairStart(record: PersistedTaskRepairAttempt): Promise<TaskRepairAttempt>;
 }
 

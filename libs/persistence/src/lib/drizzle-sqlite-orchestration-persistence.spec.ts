@@ -1499,6 +1499,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     await expect(
       persistence.claimBuilderStart({
         runId: 'run-1',
+        leases: [],
         attempt: {
           ...dispatch.attempts[0].attempt,
           state: 'STARTING',
@@ -1510,6 +1511,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     await expect(
       persistence.claimBuilderStart({
         runId: 'run-1',
+        leases: [],
         attempt: {
           ...dispatch.attempts[0].attempt,
           state: 'STARTING',
@@ -1544,6 +1546,7 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
     await expect(
       persistence.claimBuilderStart({
         runId: 'run-1',
+        leases: [],
         attempt: {
           ...dispatch.attempts[0].attempt,
           state: 'STARTING',
@@ -1552,6 +1555,34 @@ describe('DrizzleSqliteOrchestrationPersistence', () => {
         }
       })
     ).rejects.toThrow('Mutation claim requires ACTIVE run: run-1/CANCEL_REQUESTED');
+    await expect(
+      persistence.claimBuilderStart({
+        runId: 'run-1',
+        attempt: {
+          ...dispatch.attempts[0].attempt,
+          state: 'STARTING',
+          revision: 3,
+          startedAt: new Date('2026-08-13T00:01:00.000Z')
+        },
+        leases: [
+          {
+            id: 'lease-cancelled-start',
+            runId: 'run-1',
+            agentId: 'agent-B',
+            taskId: 'B',
+            resource: { type: 'project', projectId: 'core' },
+            mode: 'exclusive',
+            version: 1,
+            state: 'ACTIVE',
+            acquiredAt: new Date('2026-08-13T00:01:00.000Z'),
+            lastHeartbeatAt: new Date('2026-08-13T00:01:00.000Z')
+          }
+        ]
+      })
+    ).rejects.toThrow('Mutation claim requires ACTIVE run: run-1/CANCEL_REQUESTED');
+    await expect(persistence.recoverLeases('run-1')).resolves.not.toContainEqual(
+      expect.objectContaining({ lease: expect.objectContaining({ id: 'lease-cancelled-start' }) })
+    );
     await expect(persistence.persistDispatch({ ...dispatch, attempts: [] })).rejects.toThrow(
       'Dispatch attempts must exactly match scheduler starts as revision 1 PREPARING evidence'
     );

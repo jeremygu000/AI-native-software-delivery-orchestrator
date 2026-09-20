@@ -88,6 +88,7 @@ const createHarness = (
   const attempts: AgentExecutionAttempt[] = [];
   const leases: any[] = [];
   const sideEffects: string[] = [];
+  let workspaceCreates = 0;
   const scopeExpansionRequests: {
     readonly runId: string;
     readonly taskId: string;
@@ -144,7 +145,10 @@ const createHarness = (
     })
   };
   const manager: WorkspaceManager = {
-    create: async () => workspace,
+    create: async () => {
+      workspaceCreates += 1;
+      return workspace;
+    },
     commit: async () => workspace,
     integrate: async () => {
       throw new Error('Not used');
@@ -162,6 +166,7 @@ const createHarness = (
   return {
     attempts,
     leases,
+    workspaceCreates: () => workspaceCreates,
     sideEffects,
     scopeExpansionRequests,
     service: new ForgeBuilderExecutionService({
@@ -266,6 +271,26 @@ describe('ForgeBuilderExecutionService', () => {
       blockerLeaseId: 'lease-owner'
     });
     expect(runnerCalls).toBe(0);
+    expect(attempts).toEqual([]);
+    expect(leases).toEqual([]);
+  });
+
+  it('does not create a workspace or persist leases when the durable start claim loses cancellation', async () => {
+    const { service, attempts, leases, workspaceCreates } = createHarness(
+      {
+        run: async () => ({ status: 'completed' })
+      },
+      {
+        claimStart: async () => {
+          throw new Error('Mutation claim requires ACTIVE run: run-1/CANCEL_REQUESTED');
+        }
+      }
+    );
+
+    await expect(service.execute({ runId: 'run-1', task, binding, attempt })).rejects.toThrow(
+      'CANCEL_REQUESTED'
+    );
+    expect(workspaceCreates()).toBe(0);
     expect(attempts).toEqual([]);
     expect(leases).toEqual([]);
   });

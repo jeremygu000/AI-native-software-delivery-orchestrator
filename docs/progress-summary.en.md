@@ -2766,9 +2766,17 @@ What was built:
 - the compact builder result is a completed-or-blocked union. It prevents a blocked builder from
   entering evaluation, repair, or integration. Scheduler dispatch reuses a matching existing
   `PREPARING` attempt rather than creating a duplicate after unblock;
-- write-guard hydration retains released lease history as well as active leases. Released leases do
-  not block work, but their retained identifiers and versions prevent a rebuilt activity from
-  reusing an older lease ID and failing SQLite version checks;
+- one composition now retains one hydrated write guard per run for its whole lifetime. Concurrent
+  builder activities share that guard instead of replacing it during refresh, so same-run lease
+  acquisition has one effective authority view. Hydration also retains released lease history as
+  well as active leases; released leases do not block work, but their retained identifiers and
+  versions prevent a rebuilt activity from reusing an older lease ID and failing SQLite version
+  checks;
+- builder mutation authority now atomically persists the complete acquired lease plan with the
+  `PREPARING -> STARTING` ACTIVE-run claim. Workspace creation begins only after that claim wins.
+  A cancellation that wins first therefore leaves the attempt PREPARING, creates no workspace, and
+  persists no active lease; a failed claim rolls the in-memory acquisition back before it can leave
+  durable lease evidence;
 - the run-level integration summary now updates its latest status. Per-task authority remains in
   integration claims, workspace records, accepted review subjects, attempts, leases, and scheduler
   history.
@@ -2785,11 +2793,15 @@ What was verified:
   completes. A lease-blocked builder has no STARTING lifecycle claim or agent session, bypasses all
   downstream work, and later runs under its original attempt identity after the exact blocker
   releases;
+- adversarial tests force two same-run builders to hydrate concurrently before either acquires a
+  lease, proving that one shared guard blocks the second builder. Separate service and SQLite tests
+  prove a cancellation-lost start claim creates neither a workspace nor an active lease;
 - blocked integration restart proves worker A reaches `STOPPED` before worker B recreates the
   composition on the same SQLite database and task queue. The matching legacy scenario recreates
   its runtime and persistence before recovery;
 - `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build` pass. The full suite reports 71 test
-  files, 701 passing tests, and 1 skipped test. Expected Temporal test-server warnings and intentional
+  files, 702 passing tests, and 1 skipped test. The cancellation workflow test was also rerun in
+  isolation after one transient full-suite timeout, then the complete suite passed. Expected Temporal test-server warnings and intentional
   failure-path activity logs do not indicate failed tests.
 
 Scope and remaining work:

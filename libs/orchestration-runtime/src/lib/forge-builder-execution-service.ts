@@ -65,7 +65,10 @@ export class ForgeBuilderExecutionService {
   readonly #scopeExpanded: ScopeExpansionFeedback | undefined;
   readonly #leaseReleased: LeaseReleasedFeedback | undefined;
   readonly #claimStart:
-    | ((attempt: AgentExecutionAttempt) => Promise<AgentExecutionAttempt>)
+    | ((request: {
+        readonly attempt: AgentExecutionAttempt;
+        readonly leases: readonly WriteLease[];
+      }) => Promise<AgentExecutionAttempt>)
     | undefined;
   readonly #now: () => Date;
 
@@ -77,7 +80,10 @@ export class ForgeBuilderExecutionService {
     readonly reconciler?: TaskImpactReconciler;
     readonly scopeExpanded?: ScopeExpansionFeedback;
     readonly leaseReleased?: LeaseReleasedFeedback;
-    readonly claimStart?: (attempt: AgentExecutionAttempt) => Promise<AgentExecutionAttempt>;
+    readonly claimStart?: (request: {
+      readonly attempt: AgentExecutionAttempt;
+      readonly leases: readonly WriteLease[];
+    }) => Promise<AgentExecutionAttempt>;
     readonly now?: () => Date;
   }) {
     this.#persistence = options.persistence;
@@ -103,8 +109,6 @@ export class ForgeBuilderExecutionService {
         'Builder execution requires a PREPARING or STARTING attempt'
       );
     }
-    const workspace = await this.#workspaceManager.create(request.binding.workspace);
-    await this.#persistence.persistWorkspace({ runId: request.runId, workspace });
     const acquisition = await this.#acquire(request.runId, request.binding);
     if (acquisition.status === 'blocked') {
       return acquisition;
@@ -122,13 +126,44 @@ export class ForgeBuilderExecutionService {
     let starting = startingCandidate;
     if (request.attempt.state === 'PREPARING') {
       if (this.#claimStart === undefined) {
+        for (const lease of leases) {
+          await this.#persistence.persistLease({ runId: request.runId, lease });
+        }
         await this.#persistence.persistAttempt({
           runId: request.runId,
           attempt: startingCandidate
         });
       } else {
-        starting = await this.#claimStart(startingCandidate);
+        try {
+          starting = await this.#claimStart({ attempt: startingCandidate, leases });
+        } catch (error) {
+          await this.#release(leases, false);
+          throw error;
+        }
       }
+    }
+    let workspace: TaskWorkspace;
+    try {
+      workspace = await this.#workspaceManager.create(request.binding.workspace);
+      await this.#persistence.persistWorkspace({ runId: request.runId, workspace });
+    } catch (error) {
+      const unknown: AgentExecutionAttempt = {
+        ...starting,
+        state: 'UNKNOWN',
+        revision: starting.revision + 1,
+        completedAt: this.#now(),
+        failure: {
+          type: 'unknown-outcome',
+          detail:
+            error instanceof Error
+              ? error.message
+              : 'Builder workspace creation threw a non-error value.'
+        }
+      };
+      await this.#persistence.persistAttempt({ runId: request.runId, attempt: unknown });
+      throw new ForgeBuilderExecutionError(
+        `Builder workspace creation failed: ${unknown.failure?.detail ?? 'unknown error'}`
+      );
     }
     let running: AgentExecutionAttempt = starting;
     let established = false;
@@ -270,12 +305,11 @@ export class ForgeBuilderExecutionService {
         return { status: 'blocked', blockerLeaseId };
       }
       leases.push(acquired.lease);
-      await this.#persistence.persistLease({ runId, lease: acquired.lease });
     }
     return { status: 'granted', leases };
   }
 
-  async #release(leases: readonly WriteLease[]): Promise<void> {
+  async #release(leases: readonly WriteLease[], persist = true): Promise<void> {
     for (const activeLease of [
       ...new Map(leases.map((entry) => [entry.id, entry])).values()
     ].toReversed()) {
@@ -289,12 +323,14 @@ export class ForgeBuilderExecutionService {
       if (released.status !== 'released') {
         throw new ForgeBuilderExecutionError(`Lease release failed: ${activeLease.id}`);
       }
-      await this.#persistence.persistLease({ runId: activeLease.runId, lease: released.lease });
-      await this.#leaseReleased?.({
-        runId: activeLease.runId,
-        taskId: activeLease.taskId,
-        lease: released.lease
-      });
+      if (persist) {
+        await this.#persistence.persistLease({ runId: activeLease.runId, lease: released.lease });
+        await this.#leaseReleased?.({
+          runId: activeLease.runId,
+          taskId: activeLease.taskId,
+          lease: released.lease
+        });
+      }
     }
   }
 
