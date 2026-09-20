@@ -65,6 +65,39 @@ describe('InMemoryWriteGuard', () => {
       })
     ).resolves.toEqual({ status: 'blocked', conflictingLeaseIds: ['lease-existing'] });
   });
+
+  it('reconciles a durable release into the same guard identity', async () => {
+    const blocker = {
+      id: 'lease-existing',
+      runId: 'run-1',
+      agentId: 'agent-blocker',
+      taskId: 'task-blocker',
+      resource: project('core'),
+      mode: 'exclusive' as const,
+      version: 2,
+      state: 'ACTIVE' as const,
+      acquiredAt: new Date('2026-08-13T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-13T00:00:00.000Z')
+    };
+    const guard = new InMemoryWriteGuard({ initialLeases: [blocker] });
+
+    await expect(
+      guard.acquire(request({ resource: file('core', 'core:repair.ts') }))
+    ).resolves.toEqual({ status: 'blocked', conflictingLeaseIds: ['lease-existing'] });
+
+    await guard.reconcileDurableLeases([
+      {
+        ...blocker,
+        version: 3,
+        state: 'RELEASED',
+        releasedAt: new Date('2026-08-13T00:01:00.000Z')
+      }
+    ]);
+
+    await expect(
+      guard.acquire(request({ resource: file('core', 'core:repair.ts') }))
+    ).resolves.toMatchObject({ status: 'granted', lease: { id: 'lease-1' } });
+  });
   it('grants an exclusive lease with a stable lifecycle record', async () => {
     const guard = createGuard();
 

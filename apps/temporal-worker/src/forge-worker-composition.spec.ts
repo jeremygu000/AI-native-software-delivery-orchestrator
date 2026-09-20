@@ -33,6 +33,7 @@ import type {
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
+import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -1285,66 +1286,93 @@ describe('temporal worker production vertical slice', () => {
 
     const reader = new DrizzleSqliteOrchestrationPersistence(databasePath);
     const hydratedLeaseSnapshots: string[][] = [];
+    let hydratedGuard: InMemoryWriteGuard | undefined;
+    let repairGuardStatus: 'granted' | 'blocked' | undefined;
     const compositionB = await createForgeWorkerComposition({
       persistence: reader,
       repositoryGraph: emptyRepositoryGraph,
-      onWriteGuardHydrated: (_runId, leases) =>
-        hydratedLeaseSnapshots.push(leases.map((lease) => lease.id).toSorted()),
+      onWriteGuardHydrated: (_runId, leases, guard) => {
+        hydratedLeaseSnapshots.push(leases.map((lease) => lease.id).toSorted());
+        hydratedGuard = guard;
+      },
       builderExecution: unusedBuilderExecution(),
       evaluation: unusedEvaluation(),
-      repairExecution: {
-        async execute(request: RepairExecutionRequest) {
-          if (request.preCreatedRepairAttempt === undefined) {
-            throw new Error('Expected a pre-created repair attempt');
+      repairRunner: {
+        async run(request) {
+          await request.onStarted({
+            sessionRef: { backend: 'repair-resume-fixture', value: 'repair-session' }
+          });
+          if (hydratedGuard === undefined) {
+            throw new Error('Expected the repair guard to be hydrated');
           }
-          const reviewSubject = {
-            builderAttemptId: builderAttempt.id,
-            outputAttemptId: request.preCreatedRepairAttempt.id,
-            workspaceId: workspace.id,
-            workspaceRevision: 2,
-            workspaceChangeFingerprint: 'sha256:'.concat('d'.repeat(64)),
-            impactFingerprint: parentSubject.impactFingerprint,
-            verificationFingerprint: 'sha256:'.concat('e'.repeat(64))
-          };
-          const review: TaskCodeReview = {
-            recommendation: 'accept',
-            summary: 'restart repair accepted',
-            findings: []
-          };
-          await reader.persistReview({
+          const acquired = await hydratedGuard.acquire({
             runId: request.runId,
-            taskId: 'task-a',
-            iteration: 2,
-            subject: reviewSubject,
-            review
+            agentId: request.attempt.agentId,
+            taskId: request.taskId,
+            resource: { type: 'file', projectId: 'project-a', fileId: 'project-a:repair.ts' },
+            mode: 'exclusive'
+          });
+          repairGuardStatus = acquired.status;
+          if (acquired.status === 'blocked') {
+            return {
+              status: 'blocked',
+              leaseId: acquired.conflictingLeaseIds[0] ?? 'missing-blocker',
+              detail: 'Repair remained blocked by a durable lease.'
+            };
+          }
+          await hydratedGuard.release({
+            leaseId: acquired.lease.id,
+            expectedVersion: acquired.lease.version
           });
           return {
-            state: 'completed' as const,
-            attempt: {
-              ...request.preCreatedRepairAttempt,
-              state: 'COMPLETED' as const,
-              revision: request.preCreatedRepairAttempt.revision + 1,
-              completedAt: new Date('2026-08-12T00:04:00.000Z')
-            },
-            recommendation: 'accept' as const,
-            verification: {
-              id: 'verification-restart-repair',
-              runId: request.runId,
-              taskId: request.preCreatedRepairAttempt.taskId,
-              attemptId: request.preCreatedRepairAttempt.id,
-              workspaceId: request.workspace.id,
-              workspaceRevision: request.workspace.revision,
-              workspaceChangeFingerprint: reviewSubject.workspaceChangeFingerprint,
-              verificationPolicyFingerprint: 'fp',
-              status: 'passed' as const,
-              verifiedAt: new Date('2026-08-12T00:04:00.000Z').toISOString(),
-              fingerprint: 'verification-restart-repair'
-            },
-            reviewSubject,
-            review
+            status: 'completed',
+            sessionRef: { backend: 'repair-resume-fixture', value: 'repair-session' }
           };
         }
-      } satisfies RepairExecutionOverride,
+      },
+      verifier: {
+        async verify() {
+          return { status: 'passed' };
+        }
+      },
+      snapshots: {
+        async capture({ repositoryPath }) {
+          return {
+            repositoryId: 'repo-1',
+            repositoryRoot: repositoryPath,
+            baseCommit: 'a'.repeat(40),
+            workingTreeFingerprint: 'sha256:'.concat('d'.repeat(64)),
+            dirty: true
+          };
+        }
+      },
+      reviewer: {
+        async review() {
+          return { recommendation: 'accept', summary: 'restart repair accepted', findings: [] };
+        }
+      },
+      reconciler: {
+        async reconcile({ taskId }) {
+          return {
+            observed: {
+              taskId,
+              filesRead: new Set(),
+              filesCreated: new Set(),
+              filesWritten: new Set(),
+              filesDeleted: new Set(),
+              symbolsWritten: new Set(),
+              dependencyRequests: new Set(),
+              manifestFilesChanged: new Set(),
+              generatedFilesChanged: new Set()
+            },
+            reconciliation: {
+              status: 'within-predicted-scope',
+              expandedFileIds: new Set(),
+              unleasedFileIds: new Set()
+            }
+          };
+        }
+      },
       integration: {
         async integrate(request: { workspace: TaskWorkspace }) {
           return { status: 'integrated' as const, workspace: request.workspace };
@@ -1413,6 +1441,7 @@ describe('temporal worker production vertical slice', () => {
       recommendation: 'accept',
       reviewId: 'task-a:2'
     });
+    expect(repairGuardStatus).toBe('granted');
     if (repaired.subjectRef === undefined) {
       throw new Error('Expected persisted repair review subject');
     }

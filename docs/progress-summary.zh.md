@@ -2455,7 +2455,9 @@ integration、progression 或 persistence service。
   integration。scheduler dispatch 在 unblock 后会复用匹配的 `PREPARING` attempt，而非创建重复 attempt；
 - 一个 composition 现在在整个生命周期内为每个 run 保留一个 hydrated write guard。并发 builder activity
   会共享该 guard，而不会在 refresh 时替换它，因此同一 run 的 lease acquisition 只有一个有效 authority
-  view。hydration 也保留 released lease history 和 active lease；released lease 不会阻塞工作，但其 ID 与
+  view。在 durable continuation 使用该稳定 identity 前，当前 SQLite lease record 会 reconcile 到同一个
+  serialized guard object，因此后续的 `RELEASED` 或 `STALE` transition 可以可见，而无需替换 guard。
+  hydration 也保留 released lease history 和 active lease；released lease 不会阻塞工作，但其 ID 与
   version 会阻止重建 activity 复用旧 lease ID 并触发 SQLite version check failure；
 - builder mutation authority 现在会在同一个 ACTIVE-run claim 中原子持久化完整 acquired lease plan 与
   `PREPARING -> STARTING` transition。workspace creation 只会在 claim 胜出后开始。因此 cancellation
@@ -2477,11 +2479,13 @@ integration、progression 或 persistence service。
   exact blocker release 后以原 attempt identity 运行；
 - 对抗测试强制两个同 run builder 在任一 acquire lease 前并发 hydrate，证明共享 guard 会阻塞第二个
   builder。独立的 service 与 SQLite 测试证明 cancellation-lost start claim 不会创建 workspace 或 active
-  lease；
+  lease。真实 repair continuation test 会在 blocker 仍为 ACTIVE 时 hydrate stable guard，再通过另一 SQLite
+  connection 将 blocker release，然后证明 resumed repair 能 acquire 原先冲突的 resource，而不会因 stale
+  guard state 再次 blocked；
 - blocked integration restart 证明 worker A 在 worker B 使用同一 SQLite database 与 task queue 重建
   composition 之前已经到达 `STOPPED`。匹配的 legacy 场景也会在 recovery 前重建 runtime 与 persistence；
 - `pnpm lint`、`pnpm typecheck`、`pnpm test` 与 `pnpm build` 都通过。全量 suite 报告 71 个 test file、
-  702 个 passing test 和 1 个 skipped test。一次全量测试出现 transient timeout 后，也已单独重跑
+  703 个 passing test 和 1 个 skipped test。一次全量测试出现 transient timeout 后，也已单独重跑
   cancellation workflow test 并再次完成完整 suite。预期的 Temporal test-server warning 与 intentional
   failure-path activity log 不代表测试失败。
 

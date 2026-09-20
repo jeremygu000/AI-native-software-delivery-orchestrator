@@ -197,7 +197,8 @@ export interface ForgeRuntimeCompositionOverrides {
   readonly repositoryGraph?: Awaited<ReturnType<typeof analyzeRepository>>['graph'];
   readonly onWriteGuardHydrated?: (
     runId: string,
-    leases: readonly PersistedWriteLease['lease'][]
+    leases: readonly PersistedWriteLease['lease'][],
+    guard: InMemoryWriteGuard
   ) => void;
 }
 
@@ -236,6 +237,8 @@ export async function createForgeRuntimeComposition(
   const writeGuardForRun = async (runId: string): Promise<InMemoryWriteGuard> => {
     const existing = writeGuards.get(runId);
     if (existing !== undefined) {
+      const recovered = await persistence.recoverRun(runId);
+      await existing.reconcileDurableLeases(recovered?.leases.map(({ lease }) => lease) ?? []);
       return existing;
     }
     const priorHydration = writeGuardHydrations.get(runId);
@@ -247,8 +250,8 @@ export async function createForgeRuntimeComposition(
       // Released and stale leases do not block acquisition, but their IDs and versions
       // must survive activity reconstruction so a new lease cannot regress persisted history.
       const recoveredLeases = recovered?.leases.map(({ lease }) => lease) ?? [];
-      overrides.onWriteGuardHydrated?.(runId, recoveredLeases);
       const guard = new InMemoryWriteGuard({ initialLeases: recoveredLeases });
+      overrides.onWriteGuardHydrated?.(runId, recoveredLeases, guard);
       writeGuards.set(runId, guard);
       return guard;
     })();

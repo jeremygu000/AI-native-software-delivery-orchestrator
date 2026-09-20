@@ -2768,10 +2768,12 @@ What was built:
   `PREPARING` attempt rather than creating a duplicate after unblock;
 - one composition now retains one hydrated write guard per run for its whole lifetime. Concurrent
   builder activities share that guard instead of replacing it during refresh, so same-run lease
-  acquisition has one effective authority view. Hydration also retains released lease history as
-  well as active leases; released leases do not block work, but their retained identifiers and
-  versions prevent a rebuilt activity from reusing an older lease ID and failing SQLite version
-  checks;
+  acquisition has one effective authority view. Before a durable continuation uses that stable
+  identity, current SQLite lease records reconcile into the same serialized guard object. This
+  makes later `RELEASED` or `STALE` transitions visible without replacing the guard. Hydration also
+  retains released lease history as well as active leases; released leases do not block work, but
+  their retained identifiers and versions prevent a rebuilt activity from reusing an older lease ID
+  and failing SQLite version checks;
 - builder mutation authority now atomically persists the complete acquired lease plan with the
   `PREPARING -> STARTING` ACTIVE-run claim. Workspace creation begins only after that claim wins.
   A cancellation that wins first therefore leaves the attempt PREPARING, creates no workspace, and
@@ -2795,12 +2797,15 @@ What was verified:
   releases;
 - adversarial tests force two same-run builders to hydrate concurrently before either acquires a
   lease, proving that one shared guard blocks the second builder. Separate service and SQLite tests
-  prove a cancellation-lost start claim creates neither a workspace nor an active lease;
+  prove a cancellation-lost start claim creates neither a workspace nor an active lease. A real
+  repair continuation test hydrates the stable guard while its blocker is ACTIVE, releases that
+  blocker through another SQLite connection, then proves the resumed repair acquires its formerly
+  conflicting resource rather than re-blocking on stale guard state;
 - blocked integration restart proves worker A reaches `STOPPED` before worker B recreates the
   composition on the same SQLite database and task queue. The matching legacy scenario recreates
   its runtime and persistence before recovery;
 - `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build` pass. The full suite reports 71 test
-  files, 702 passing tests, and 1 skipped test. The cancellation workflow test was also rerun in
+  files, 703 passing tests, and 1 skipped test. The cancellation workflow test was also rerun in
   isolation after one transient full-suite timeout, then the complete suite passed. Expected Temporal test-server warnings and intentional
   failure-path activity logs do not indicate failed tests.
 

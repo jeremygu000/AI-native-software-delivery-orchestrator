@@ -117,11 +117,24 @@ export class InMemoryWriteGuard implements WriteGuard {
       }
       assertResource(lease.resource);
       this.#leases.set(lease.id, cloneLease(lease));
-      const generatedSequence = /^lease-(\d+)$/.exec(lease.id)?.[1];
-      if (generatedSequence !== undefined) {
-        this.#nextLeaseNumber = Math.max(this.#nextLeaseNumber, Number(generatedSequence) + 1);
-      }
+      this.#observeLeaseId(lease.id);
     }
+  }
+
+  async reconcileDurableLeases(leases: readonly WriteLease[]): Promise<void> {
+    await this.#exclusive(() => {
+      for (const durableLease of leases) {
+        assertResource(durableLease.resource);
+        const existing = this.#leases.get(durableLease.id);
+        if (existing !== undefined && !this.#sameLeaseIdentity(existing, durableLease)) {
+          throw new WriteGuardInputError(`Durable lease identity mismatch: ${durableLease.id}`);
+        }
+        if (existing === undefined || durableLease.version > existing.version) {
+          this.#leases.set(durableLease.id, cloneLease(durableLease));
+        }
+        this.#observeLeaseId(durableLease.id);
+      }
+    });
   }
 
   async acquire(request: WriteLeaseRequest): Promise<WriteLeaseResult> {
@@ -254,6 +267,23 @@ export class InMemoryWriteGuard implements WriteGuard {
       throw new WriteGuardInputError(`Duplicate lease ID: ${leaseId}`);
     }
     return leaseId;
+  }
+
+  #sameLeaseIdentity(existing: WriteLease, durableLease: WriteLease): boolean {
+    return (
+      existing.runId === durableLease.runId &&
+      existing.agentId === durableLease.agentId &&
+      existing.taskId === durableLease.taskId &&
+      existing.mode === durableLease.mode &&
+      resourcesEqual(existing.resource, durableLease.resource)
+    );
+  }
+
+  #observeLeaseId(leaseId: string): void {
+    const generatedSequence = /^lease-(\d+)$/.exec(leaseId)?.[1];
+    if (generatedSequence !== undefined) {
+      this.#nextLeaseNumber = Math.max(this.#nextLeaseNumber, Number(generatedSequence) + 1);
+    }
   }
 
   async #exclusive<T>(operation: () => T): Promise<T> {
