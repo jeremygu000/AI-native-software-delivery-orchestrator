@@ -52,8 +52,10 @@ export {
 export { ForgeReadModel } from './lib/forge-read-model.js';
 export type {
   ForgeAttemptSummary,
+  ForgeBlockingReference,
   ForgeBlockingReason,
   ForgeCorrelation,
+  ForgeLeaseResource,
   ForgeLeaseSummary,
   ForgeReadModelPersistence,
   ForgeReviewReference,

@@ -2,6 +2,7 @@ import type {
   OrchestrationPersistence,
   PersistedTaskCodeReview,
   RecoveredRun,
+  SchedulerDecisionReason,
   TaskCodeReviewStore,
   TaskRepairAttemptStore,
   TaskVerificationEvidenceStore
@@ -22,7 +23,24 @@ export interface ForgeCorrelation {
 export interface ForgeBlockingReason {
   readonly type: string;
   readonly detail?: string;
+  readonly blockers?: readonly ForgeBlockingReference[];
 }
+
+export type ForgeBlockingReference =
+  | { readonly type: 'lease'; readonly leaseId: string }
+  | { readonly type: 'runtime-conflict'; readonly conflictId: string };
+
+export type ForgeLeaseResource =
+  | { readonly type: 'project'; readonly projectId: string }
+  | { readonly type: 'file'; readonly projectId: string; readonly fileId: string }
+  | {
+      readonly type: 'symbol';
+      readonly projectId: string;
+      readonly fileId: string;
+      readonly symbolId: string;
+      readonly ancestorSymbolIds: readonly string[];
+    }
+  | { readonly type: 'shared-resource'; readonly resourceId: string };
 
 export interface ForgeAttemptSummary {
   readonly id: string;
@@ -54,7 +72,7 @@ export interface ForgeLeaseSummary {
   readonly id: string;
   readonly taskId: string;
   readonly agentId: string;
-  readonly resource: string;
+  readonly resource: ForgeLeaseResource;
   readonly state: 'ACTIVE' | 'RELEASED' | 'STALE';
   readonly acquiredAt: string;
   readonly lastHeartbeatAt: string;
@@ -113,17 +131,15 @@ const eventDetail = (event: Record<string, unknown>): string | undefined => {
 const taskIdForEvent = (event: Record<string, unknown>): string | undefined =>
   typeof event.taskId === 'string' ? event.taskId : undefined;
 
-const resourceId = (resource: WritableResource): string => {
-  if (resource.type === 'project') {
-    return `project:${resource.projectId}`;
+const leaseResource = (resource: WritableResource): ForgeLeaseResource => resource;
+
+const blockingReferences = (
+  reason: SchedulerDecisionReason
+): readonly ForgeBlockingReference[] | undefined => {
+  if (reason.type !== 'runtime-blocked' && reason.type !== 'runtime-blocker-released') {
+    return undefined;
   }
-  if (resource.type === 'file') {
-    return `file:${resource.projectId}:${resource.fileId}`;
-  }
-  if (resource.type === 'symbol') {
-    return `symbol:${resource.projectId}:${resource.fileId}:${resource.symbolId}`;
-  }
-  return `shared-resource:${resource.resourceId}`;
+  return reason.blockers;
 };
 
 const blockingReason = (
@@ -141,7 +157,13 @@ const blockingReason = (
     );
     const reason = taskDecision?.reasons[0];
     if (reason !== undefined) {
-      return { type: reason.type, detail: reason.detail };
+      return {
+        type: reason.type,
+        detail: reason.detail,
+        ...(blockingReferences(reason) === undefined
+          ? {}
+          : { blockers: blockingReferences(reason) })
+      };
     }
   }
   return undefined;
@@ -162,6 +184,10 @@ const reviewReference = (
   correlation: {
     runId: review.runId,
     taskId: review.taskId,
+    attemptId: review.subject?.builderAttemptId,
+    ...(review.subject?.outputAttemptId === review.subject?.builderAttemptId
+      ? {}
+      : { repairAttemptId: review.subject?.outputAttemptId }),
     workspaceId: review.subject?.workspaceId,
     workflowId,
     activity: 'evaluate-output'
@@ -230,6 +256,7 @@ export class ForgeReadModel {
           correlation: {
             runId,
             taskId: task.id,
+            attemptId: record.attempt.parentReviewSubject.builderAttemptId,
             repairAttemptId: record.attempt.id,
             workspaceId: record.attempt.workspaceId,
             workflowId,
@@ -244,20 +271,25 @@ export class ForgeReadModel {
         attempts: [...builderAttempts, ...repairAttempts],
         verification: verification
           .filter((evidence) => evidence.taskId === task.id)
-          .map((evidence): ForgeVerificationReference => ({
-            id: evidence.id,
-            status: evidence.status,
-            verifiedAt: evidence.verifiedAt,
-            fingerprint: evidence.fingerprint,
-            correlation: {
-              runId,
-              taskId: task.id,
-              attemptId: evidence.attemptId,
-              workspaceId: evidence.workspaceId,
-              workflowId,
-              activity: 'evaluate-output'
-            }
-          })),
+          .map((evidence): ForgeVerificationReference => {
+            const repair = repairs.find((record) => record.attempt.id === evidence.attemptId);
+            return {
+              id: evidence.id,
+              status: evidence.status,
+              verifiedAt: evidence.verifiedAt,
+              fingerprint: evidence.fingerprint,
+              correlation: {
+                runId,
+                taskId: task.id,
+                attemptId:
+                  repair?.attempt.parentReviewSubject.builderAttemptId ?? evidence.attemptId,
+                ...(repair === undefined ? {} : { repairAttemptId: evidence.attemptId }),
+                workspaceId: evidence.workspaceId,
+                workflowId,
+                activity: 'evaluate-output'
+              }
+            };
+          }),
         reviews: reviews
           .filter((review) => review.taskId === task.id)
           .map((review) => reviewReference(review, workflowId))
@@ -278,7 +310,7 @@ export class ForgeReadModel {
       id: record.lease.id,
       taskId: record.lease.taskId,
       agentId: record.lease.agentId,
-      resource: resourceId(record.lease.resource),
+      resource: leaseResource(record.lease.resource),
       state: record.lease.state,
       acquiredAt: record.lease.acquiredAt.toISOString(),
       lastHeartbeatAt: record.lease.lastHeartbeatAt.toISOString(),

@@ -2647,6 +2647,11 @@ M3.13 增加 operator-facing read boundary，不改变 scheduling、execution �
 builder attempt、repair attempt、verification evidence 与 code review。它产出 `ForgeRunReadModel`、task/attempt
 summary、当前 blocking reason、verification/review reference，以及有序 durable timeline。
 
+repair lineage 来自 durable record，而不是从 review iteration 推断。repair attempt、它的 verification evidence 与
+后续 review 都同时关联原始 builder `attemptId` 和 repair `repairAttemptId`。lease resource 使用 structural、
+discriminated summary，完整保留 symbol ancestry；runtime blocking reason 保留 lease 与 runtime-conflict reference，
+使 API 或 UI 不必重建 scheduler history 即可呈现。
+
 每条 read-model record 都带 provider-neutral correlation object。在可用时它包含 durable identifier：`runId`、
 `taskId`、`attemptId`、`repairAttemptId` 与 `workspaceId`。CLI 再加入稳定的 workflow correlation
 `forge-run:<runId>`，以及 `execute-builder`、`execute-repair`、`evaluate-output`、`reevaluate-run` 等 operation
@@ -2656,7 +2661,8 @@ label。read model 从不 import Temporal type，因此未来 API 或 UI 可复�
 durable-state interpretation。这使 `status` 与 production launch、worker、cancel 使用的 explicit authority database
 保持一致。专门 regression 覆盖了 blocked task 的 builder/repair lineage、verification、review、timeline 以及全部必要
 correlation。read model 也保留 durable lease summary，避免 `forge status` 在改用统一 projection 后丢失既有的
-lease observability。
+lease observability。该 regression 使用 repair verification evidence 与 iteration-two repair review，防止把 repair
+evidence 错报成只属于 builder 的 attempt。
 
 M3.14 的准备工作刻意保持 non-destructive。`docs/runtime-v2-cutover-preparation.en.md` 及其中文副本盘点保留的
 legacy differential runtime 和 frozen prototype package，说明当前 production route、cutover assertion 与 deletion
@@ -2667,8 +2673,7 @@ order。它们明确禁止在 M3.12 记录成功的 authorized external-effect s
 
 - focused read-model 与 CLI status test 验证 projection 和 JSON surface；
 - `pnpm lint`、`pnpm typecheck` 与 `pnpm build` 通过；
-- non-worker test phase 通过 71 个 file、688 个通过和 1 个跳过；单独调用的 Temporal worker phase 中，已冻结的 M3.9
-  same-run competing-lease differential 超时。这会作为既有 test-stability limitation 如实报告，而不是归因于此只读阶段；
+- `pnpm test` 通过 74 个 file、720 个通过和 1 个跳过，其中包括单独调用的 Temporal worker phase；
 - `pnpm check` 仍会在本阶段之外既有的 formatting issue 处停止，会如实报告，绝不静默修改 inherited file。
 
 M3.13 为 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**。M3.12 仍是 blocked-deferred 且未关闭；没有执行任何

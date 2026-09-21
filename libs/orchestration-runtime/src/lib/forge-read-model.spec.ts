@@ -58,9 +58,11 @@ describe('ForgeReadModel', () => {
               taskId: 'task-1',
               agentId: 'agent-1',
               resource: {
-                type: 'file' as const,
+                type: 'symbol' as const,
                 projectId: 'project-1',
-                fileId: 'src/read.ts'
+                fileId: 'src/read.ts',
+                symbolId: 'readModel',
+                ancestorSymbolIds: ['parentSymbol']
               },
               mode: 'exclusive' as const,
               version: 1,
@@ -109,7 +111,10 @@ describe('ForgeReadModel', () => {
                   reasons: [
                     {
                       type: 'runtime-blocked' as const,
-                      blockers: [{ type: 'lease' as const, leaseId: 'lease-1' }]
+                      blockers: [
+                        { type: 'lease' as const, leaseId: 'lease-1' },
+                        { type: 'runtime-conflict' as const, conflictId: 'conflict-1' }
+                      ]
                     }
                   ]
                 }
@@ -162,6 +167,25 @@ describe('ForgeReadModel', () => {
               }
             ]
           }
+        },
+        {
+          runId: 'run-1',
+          taskId: 'task-1',
+          iteration: 2,
+          subject: {
+            builderAttemptId: 'attempt-1',
+            outputAttemptId: 'repair-1',
+            workspaceId: 'workspace-1',
+            workspaceRevision: 2,
+            workspaceChangeFingerprint: digest('f'),
+            impactFingerprint: digest('c'),
+            verificationFingerprint: digest('g')
+          },
+          review: {
+            recommendation: 'accept' as const,
+            summary: 'Repair accepted',
+            findings: []
+          }
         }
       ],
       recoverRepairAttempts: async () => [
@@ -184,9 +208,10 @@ describe('ForgeReadModel', () => {
               verificationFingerprint: digest('d')
             },
             repairIteration: 1,
-            state: 'RUNNING' as const,
+            state: 'COMPLETED' as const,
             revision: 2,
-            startedAt: new Date('2026-09-22T00:00:03.000Z')
+            startedAt: new Date('2026-09-22T00:00:03.000Z'),
+            completedAt: new Date('2026-09-22T00:00:04.000Z')
           }
         }
       ],
@@ -203,6 +228,19 @@ describe('ForgeReadModel', () => {
           status: 'passed' as const,
           verifiedAt: '2026-09-22T00:00:02.000Z',
           fingerprint: digest('d')
+        },
+        {
+          id: 'verification-2',
+          runId: 'run-1',
+          taskId: 'task-1',
+          attemptId: 'repair-1',
+          workspaceId: 'workspace-1',
+          workspaceRevision: 2,
+          workspaceChangeFingerprint: digest('f'),
+          verificationPolicyFingerprint: digest('e'),
+          status: 'passed' as const,
+          verifiedAt: '2026-09-22T00:00:04.000Z',
+          fingerprint: digest('g')
         }
       ]
     };
@@ -219,7 +257,13 @@ describe('ForgeReadModel', () => {
           id: 'lease-1',
           taskId: 'task-1',
           state: 'ACTIVE',
-          resource: 'file:project-1:src/read.ts',
+          resource: {
+            type: 'symbol',
+            projectId: 'project-1',
+            fileId: 'src/read.ts',
+            symbolId: 'readModel',
+            ancestorSymbolIds: ['parentSymbol']
+          },
           correlation: { taskId: 'task-1', activity: 'reevaluate-run' }
         }
       ],
@@ -227,7 +271,13 @@ describe('ForgeReadModel', () => {
         {
           id: 'task-1',
           state: 'BLOCKED',
-          currentBlockingReason: { type: 'runtime-blocked' },
+          currentBlockingReason: {
+            type: 'runtime-blocked',
+            blockers: [
+              { type: 'lease', leaseId: 'lease-1' },
+              { type: 'runtime-conflict', conflictId: 'conflict-1' }
+            ]
+          },
           attempts: [
             {
               id: 'attempt-1',
@@ -242,6 +292,7 @@ describe('ForgeReadModel', () => {
               id: 'repair-1',
               kind: 'repair',
               correlation: {
+                attemptId: 'attempt-1',
                 repairAttemptId: 'repair-1',
                 workspaceId: 'workspace-1',
                 activity: 'execute-repair'
@@ -252,13 +303,35 @@ describe('ForgeReadModel', () => {
             {
               id: 'verification-1',
               correlation: { attemptId: 'attempt-1', activity: 'evaluate-output' }
+            },
+            {
+              id: 'verification-2',
+              correlation: {
+                attemptId: 'attempt-1',
+                repairAttemptId: 'repair-1',
+                activity: 'evaluate-output'
+              }
             }
           ],
           reviews: [
             {
               iteration: 1,
               recommendation: 'repair',
-              correlation: { workspaceId: 'workspace-1', activity: 'evaluate-output' }
+              correlation: {
+                attemptId: 'attempt-1',
+                workspaceId: 'workspace-1',
+                activity: 'evaluate-output'
+              }
+            },
+            {
+              iteration: 2,
+              recommendation: 'accept',
+              correlation: {
+                attemptId: 'attempt-1',
+                repairAttemptId: 'repair-1',
+                workspaceId: 'workspace-1',
+                activity: 'evaluate-output'
+              }
             }
           ]
         }

@@ -2994,6 +2994,12 @@ the persisted run, task transitions, builder attempts, repair attempts, verifica
 reviews. It produces `ForgeRunReadModel`, task and attempt summaries, current blocking reason,
 verification/review references, durable lease summaries, and an ordered durable timeline.
 
+Repair lineage is preserved from durable records rather than inferred from review iteration. A repair
+attempt, its verification evidence, and its follow-up review correlate both the original builder
+`attemptId` and the repair `repairAttemptId`. Lease resources are structural, discriminated summaries
+that preserve symbol ancestry, and runtime blocking reasons retain lease and runtime-conflict references
+for an API or UI to render without reconstructing scheduler history.
+
 Every read-model record has a provider-neutral correlation object. It carries durable identifiers where
 they exist: `runId`, `taskId`, `attemptId`, `repairAttemptId`, and `workspaceId`. The CLI adds the stable
 string workflow correlation `forge-run:<runId>` and operation labels such as `execute-builder`,
@@ -3005,7 +3011,9 @@ SDK.
 `ForgeReadModel`; it no longer assembles a second, CLI-specific interpretation of durable state. This
 keeps `status` aligned with the same explicit authority database that production launch, worker, and
 cancel use. A focused regression covers a blocked task with builder and repair lineage, verification,
-review, lease, timeline, and all required correlations.
+review, lease, timeline, and all required correlations. The regression includes repair verification
+evidence and an iteration-two repair review, preventing repair evidence from being misreported as a
+builder-only attempt.
 
 M3.14 preparation is deliberately non-destructive. `docs/runtime-v2-cutover-preparation.en.md` and its
 Chinese counterpart inventory the retained legacy differential runtime and frozen prototype packages,
@@ -3017,9 +3025,8 @@ Verification:
 
 - focused read-model and CLI status tests validate the projection and JSON surface;
 - `pnpm lint`, `pnpm typecheck`, and `pnpm build` pass;
-- the non-worker test phase passes 71 files with 688 passing and 1 skipped tests; the frozen M3.9
-  same-run competing-lease differential timed out in the separately invoked Temporal worker phase and
-  is reported as an existing test-stability limitation rather than changed by this read-only stage;
+- `pnpm test` passes 74 files with 720 passing and 1 skipped tests, including the separately invoked
+  Temporal worker phases;
 - `pnpm check` still stops at the pre-existing formatting issues outside this stage and is reported
   separately rather than silently modifying inherited files.
 
