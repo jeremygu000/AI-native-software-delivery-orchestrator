@@ -2573,21 +2573,25 @@ worker restart recovery 会在 builder 已 durably completed 且 evaluation 暂�
 五秒 heartbeat timeout，acceptance reviewer 在暂停时持续 heartbeat。worker 死亡后，替代 worker 会接收重试 activity。
 当 immutable builder attempt、workspace snapshot 与 policy identity 相同，verification evidence 会复用，因此在
 evidence 持久化后崩溃不会因生成新的随机 evidence 而使重试失败。builder 和 repair activity 仍保留 one-attempt
-boundary，因为它们可能执行 non-idempotent external work。
+boundary，因为它们可能执行 non-idempotent external work。也会先恢复完全匹配的 iteration-one review subject 与
+review，才会再次调用 reviewer，因此 review 已持久化后 Activity response 丢失不会重复 nondeterministic model call，
+也不会与 durable review authority 冲突。
 
 验证：
 
 - compiled-process acceptance 启动真实 local Temporal server、compiled CLI subprocess 及独立 compiled worker
   subprocess；正常执行在 durable SQLite 中达到 `COMPLETED`，且只有一个初始 authority event 和一个 builder attempt；
 - restart acceptance 在 heartbeat-protected evaluation 期间杀死 worker A，再以相同 server、queue、repository 与
-  SQLite 文件启动 worker B，并证明完成时没有第二个初始 event、builder attempt 或 workspace；
+  SQLite 文件启动 worker B，并证明完成时没有第二个初始 event、builder attempt、workspace，或已持久化 review 后
+  lost response 导致的第二次 reviewer call；
 - worker A 与原始 launch process 退出后，由新的 compiled CLI process 发出 cancellation，worker restart 后仍达到
   durable `CANCELLED`；
 - 即使 `--run-directory` 指向不同的空位置，status 仍读取已配置 authority SQLite；CLI 与 compiled-worker 测试均会
   拒绝相对 authority database path；
 - `pnpm build`、目标 CLI/runtime 测试以及 compiled-process acceptance 均通过；
-- `pnpm test` 会先运行 non-worker project，再串行运行 temporal-worker project，在保留其他项目并行的同时避免 local
-  Temporal resource contention；最终全套测试为 73 个 test file、713 个通过、1 个跳过。
+- `pnpm test` 会先运行 non-worker project，再在独立的串行 Vitest process 中运行 legacy differential、composition 与
+  compiled-process worker spec，在保留其他项目并行的同时避免 local Temporal resource contention；最终全套测试为
+  73 个 test file、713 个通过、1 个跳过。
 
 范围和剩余工作：
 

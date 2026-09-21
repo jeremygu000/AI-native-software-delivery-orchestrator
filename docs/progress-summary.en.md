@@ -2907,8 +2907,10 @@ paused. The retry-safe evaluation activity has a five-second heartbeat timeout, 
 reviewer heartbeats while paused. On worker death, a replacement worker receives the retried activity.
 Verification evidence is reused when its immutable builder attempt, workspace snapshot, and policy
 identity already match, so a crash after evidence persistence cannot fail the retry by generating new
-random evidence. Builder and repair activities retain their one-attempt boundary because they may
-perform non-idempotent external work.
+random evidence. The exact iteration-one review subject and review are also recovered before calling
+the reviewer again, so a lost activity response after review persistence does not repeat a
+nondeterministic model call or conflict with durable review authority. Builder and repair activities
+retain their one-attempt boundary because they may perform non-idempotent external work.
 
 Verification:
 
@@ -2917,15 +2919,16 @@ Verification:
   `COMPLETED` state with one initial authority event and one builder attempt;
 - the restart acceptance kills worker A during a heartbeat-protected evaluation, starts worker B with
   the same server, queue, repository, and SQLite file, and proves completion without a second initial
-  event, builder attempt, or workspace;
+  event, builder attempt, workspace, or reviewer call after a persisted-review lost response;
 - cancellation is issued by a new compiled CLI process after the original launch process and worker A
   are gone, survives worker restart, and reaches durable `CANCELLED` state;
 - status reads the configured authority SQLite file even when `--run-directory` names a different
   empty location; CLI and compiled-worker tests reject relative authority database paths;
 - `pnpm build`, targeted CLI/runtime tests, and the compiled-process acceptance pass;
-- `pnpm test` runs non-worker projects before the serialized temporal-worker project, avoiding local
-  Temporal resource contention while retaining parallelism elsewhere; the final suite has 73 test
-  files, 713 passing tests, and 1 skipped test.
+- `pnpm test` runs non-worker projects first, then runs the legacy differential, composition, and
+  compiled-process worker specs in separate serialized Vitest processes. This avoids local Temporal
+  resource contention while retaining parallelism elsewhere; the final suite has 73 test files, 713
+  passing tests, and 1 skipped test.
 
 Scope and remaining work:
 

@@ -1,6 +1,6 @@
 import { Context } from '@temporalio/activity';
 import { existsSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { appendFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { createForgeRuntimeComposition } from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
@@ -30,7 +30,16 @@ const heartbeatEvaluation = async <Result>(operation: () => Promise<Result>): Pr
   try {
     Context.current().heartbeat();
     timer = setInterval(() => Context.current().heartbeat(), 1_000);
-    return await operation();
+    const result = await operation();
+    const pausePath = process.env.FORGE_ACCEPTANCE_EVALUATION_RESULT_PAUSE_PATH;
+    if (pausePath !== undefined && existsSync(pausePath)) {
+      const readyPath = process.env.FORGE_ACCEPTANCE_EVALUATION_RESULT_READY_PATH;
+      if (readyPath !== undefined) {
+        await writeFile(readyPath, 'ready\n');
+      }
+      await waitForAcceptanceRelease(pausePath);
+    }
+    return result;
   } catch (error) {
     if (timer !== undefined) {
       throw error;
@@ -60,6 +69,10 @@ const acceptanceOverrides = (): ForgeRuntimeCompositionOverrides => ({
   },
   reviewer: {
     async review() {
+      const callsPath = process.env.FORGE_ACCEPTANCE_REVIEW_CALLS_PATH;
+      if (callsPath !== undefined) {
+        await appendFile(callsPath, 'review\n');
+      }
       const pausePath = process.env.FORGE_ACCEPTANCE_EVALUATION_PAUSE_PATH;
       const readyPath = process.env.FORGE_ACCEPTANCE_EVALUATION_READY_PATH;
       if (pausePath !== undefined && existsSync(pausePath)) {

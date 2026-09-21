@@ -24,6 +24,18 @@ type CreateVerificationEvidence = (request: {
   readonly verifiedAt: Date;
 }) => TaskVerificationEvidence;
 
+const sameReviewSubject = (
+  left: NonNullable<Awaited<ReturnType<TaskCodeReviewStore['recoverReviews']>>[number]['subject']>,
+  right: NonNullable<Awaited<ReturnType<TaskCodeReviewStore['recoverReviews']>>[number]['subject']>
+): boolean =>
+  left.builderAttemptId === right.builderAttemptId &&
+  left.outputAttemptId === right.outputAttemptId &&
+  left.workspaceId === right.workspaceId &&
+  left.workspaceRevision === right.workspaceRevision &&
+  left.workspaceChangeFingerprint === right.workspaceChangeFingerprint &&
+  left.impactFingerprint === right.impactFingerprint &&
+  left.verificationFingerprint === right.verificationFingerprint;
+
 export class TaskOutputAdmissionError extends Error {
   constructor(message: string) {
     super(message);
@@ -107,6 +119,20 @@ export class TaskOutputAdmissionCoordinator {
       workspaceSnapshot: snapshot,
       verificationFingerprint: verification.fingerprint
     });
+    const existingReview = (await this.#reviewStore.recoverReviews(request.runId)).find(
+      (review) => review.taskId === request.task.id && review.iteration === 1
+    );
+    if (existingReview !== undefined) {
+      if (
+        existingReview.subject === undefined ||
+        !sameReviewSubject(existingReview.subject, subject)
+      ) {
+        throw new TaskOutputAdmissionError(
+          `Persisted builder review authority does not match current output: ${request.task.id}`
+        );
+      }
+      return { subject, review: existingReview.review, verification };
+    }
     const review = await this.#reviews.collect({
       runId: request.runId,
       task: request.task,

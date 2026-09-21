@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -405,14 +405,16 @@ describe('compiled CLI and Temporal worker process boundary', () => {
     }
   }, 120_000);
 
-  it('recovers durable work after worker death and preserves one builder and integration authority', async () => {
+  it('recovers a lost evaluator response without repeating review authority', async () => {
     const environment = await TestWorkflowEnvironment.createLocal();
     const fixture = await createFixture(environment, 'restart');
-    const pausePath = join(fixture.root, 'pause-evaluation');
-    const readyPath = join(fixture.root, 'evaluation-ready');
+    const pausePath = join(fixture.root, 'pause-evaluation-result');
+    const readyPath = join(fixture.root, 'evaluation-result-ready');
+    const reviewCallsPath = join(fixture.root, 'review-calls');
     writeFileSync(pausePath, 'pause\n');
-    fixture.env.FORGE_ACCEPTANCE_EVALUATION_PAUSE_PATH = pausePath;
-    fixture.env.FORGE_ACCEPTANCE_EVALUATION_READY_PATH = readyPath;
+    fixture.env.FORGE_ACCEPTANCE_EVALUATION_RESULT_PAUSE_PATH = pausePath;
+    fixture.env.FORGE_ACCEPTANCE_EVALUATION_RESULT_READY_PATH = readyPath;
+    fixture.env.FORGE_ACCEPTANCE_REVIEW_CALLS_PATH = reviewCallsPath;
     const first = worker(fixture);
     let second: CapturedProcess | undefined;
     try {
@@ -444,6 +446,7 @@ describe('compiled CLI and Temporal worker process boundary', () => {
       expect(recovered?.attempts[0]?.attempt.state).toBe('COMPLETED');
       expect(recovered?.events.filter(({ event }) => event.type === 'run-started')).toHaveLength(1);
       expect(recovered?.workspaces).toHaveLength(1);
+      expect(readFileSync(reviewCallsPath, 'utf8').trim().split('\n')).toEqual(['review']);
     } finally {
       if (existsSync(pausePath)) {
         unlinkSync(pausePath);

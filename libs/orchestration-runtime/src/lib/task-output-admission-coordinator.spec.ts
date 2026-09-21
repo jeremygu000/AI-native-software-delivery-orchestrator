@@ -60,12 +60,28 @@ describe('TaskOutputAdmissionCoordinator', () => {
     const verification: Parameters<
       TaskVerificationEvidenceStore['persistVerificationEvidence']
     >[0][] = [];
+    let reviewerCalls = 0;
     const collector = new TaskCodeReviewCollector({
       reviewer: {
-        review: async () => ({ recommendation: 'accept', summary: 'Approved.', findings: [] })
+        review: async () => {
+          reviewerCalls += 1;
+          if (reviewerCalls > 1) {
+            throw new Error('Lost-response retry must recover durable review authority');
+          }
+          return { recommendation: 'accept', summary: 'Approved.', findings: [] };
+        }
       },
       store: {
         persistReview: async (record) => {
+          const existing = reviews.find(
+            (review) =>
+              review.runId === record.runId &&
+              review.taskId === record.taskId &&
+              review.iteration === record.iteration
+          );
+          if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(record)) {
+            throw new Error('Task code review iteration already recorded with different evidence');
+          }
           reviews.push(record);
         },
         recoverReviews: async () => reviews
@@ -101,6 +117,15 @@ describe('TaskOutputAdmissionCoordinator', () => {
       reviews: collector,
       reviewStore: {
         persistReview: async (record) => {
+          const existing = reviews.find(
+            (review) =>
+              review.runId === record.runId &&
+              review.taskId === record.taskId &&
+              review.iteration === record.iteration
+          );
+          if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(record)) {
+            throw new Error('Task code review iteration already recorded with different evidence');
+          }
           reviews.push(record);
         },
         recoverReviews: async () => reviews
@@ -187,9 +212,10 @@ describe('TaskOutputAdmissionCoordinator', () => {
 
     expect(verification).toHaveLength(1);
     expect(retried.verification).toEqual(result.verification);
-    expect(reviews).toHaveLength(2);
+    expect(retried.review).toEqual(result.review);
+    expect(reviewerCalls).toBe(1);
+    expect(reviews).toHaveLength(1);
     expect(reviews).toMatchObject([
-      { taskId: 'task-1', iteration: 1, subject: { outputAttemptId: 'attempt-1' } },
       { taskId: 'task-1', iteration: 1, subject: { outputAttemptId: 'attempt-1' } }
     ]);
   });

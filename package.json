@@ -16,7 +16,10 @@
     "lint": "oxlint --type-aware apps libs",
     "test": "pnpm test:non-temporal-worker && pnpm test:temporal-worker",
     "test:non-temporal-worker": "vitest run --config vitest.config.ts --project=!temporal-worker",
-    "test:temporal-worker": "vitest run --config vitest.config.ts --project=temporal-worker",
+    "test:temporal-worker": "pnpm test:temporal-worker:legacy && pnpm test:temporal-worker:composition && pnpm test:temporal-worker:acceptance",
+    "test:temporal-worker:legacy": "vitest run apps/temporal-worker/src/legacy-temporal-differential.spec.ts --config vitest.config.ts --project=temporal-worker",
+    "test:temporal-worker:composition": "vitest run apps/temporal-worker/src/forge-worker-composition.spec.ts --config vitest.config.ts --project=temporal-worker",
+    "test:temporal-worker:acceptance": "vitest run apps/temporal-worker/src/compiled-cli-worker.acceptance.spec.ts --config vitest.config.ts --project=temporal-worker",
     "test:coverage": "vitest run --config vitest.config.ts --coverage --no-file-parallelism",
     "typecheck": "tsc -b --force --emitDeclarationOnly"
   },
