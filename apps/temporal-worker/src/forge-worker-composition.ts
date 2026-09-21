@@ -97,13 +97,13 @@ const acceptanceOverrides = (): ForgeRuntimeCompositionOverrides => ({
 });
 
 const workerOverrides = (): ForgeRuntimeCompositionOverrides => {
-  if (process.env.FORGE_M312_EXTERNAL_SMOKE !== undefined) {
+  if (process.env.FORGE_M312_EXTERNAL_SMOKE === '1') {
     const externalSmoke = resolveM312ExternalSmokeConfig();
     const model = new PiCodeReviewModelResolver().resolve({
       provider: externalSmoke.provider,
       id: externalSmoke.model
     });
-    return { builderGateway: new PiCodingAgentGateway(undefined, { model }) };
+    return { agentGateway: new PiCodingAgentGateway(undefined, { model }) };
   }
   const mode = process.env.FORGE_WORKER_COMPOSITION;
   if (mode === undefined || mode === 'production') {

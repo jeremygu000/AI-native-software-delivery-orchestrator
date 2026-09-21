@@ -156,6 +156,7 @@ const main = async (): Promise<void> => {
   const runId = 'm312-external-smoke';
   const approvalId = 'm312-external-approval';
   const queue = `forge-m312-${Date.now()}`;
+  let fixtureBaseCommit: string | undefined;
   let environment: TestWorkflowEnvironment | undefined;
   let worker: CapturedProcess | undefined;
   const keepFixture = process.env.FORGE_M312_KEEP_FIXTURE === '1';
@@ -192,6 +193,7 @@ const main = async (): Promise<void> => {
     );
     git(repository, ['add', '.']);
     git(repository, ['commit', '-m', 'm3.12 smoke fixture']);
+    fixtureBaseCommit = git(repository, ['rev-parse', 'HEAD']);
 
     environment = await TestWorkflowEnvironment.createLocal();
     const env = {
@@ -261,18 +263,23 @@ const main = async (): Promise<void> => {
       env
     );
     await waitForCompletion(runId, runDirectory, env, worker);
-    const integration = join(runDirectory, runId, 'integration', 'src/index.ts');
-    const changedFiles = git(join(runDirectory, runId, 'integration'), [
+    if (fixtureBaseCommit === undefined) {
+      throw new Error('External smoke fixture base commit was not recorded');
+    }
+    const integrationRepository = join(runDirectory, runId, 'integration');
+    const integration = join(integrationRepository, 'src/index.ts');
+    const changedFiles = git(integrationRepository, [
       'diff',
       '--name-only',
-      'HEAD'
+      `${fixtureBaseCommit}..HEAD`
     ])
       .split('\n')
       .filter((path) => path.length > 0);
     if (
       !existsSync(integration) ||
       readFileSync(integration, 'utf8') !== 'export const value = "completed";\n' ||
-      JSON.stringify(changedFiles) !== JSON.stringify(['src/index.ts'])
+      JSON.stringify(changedFiles) !== JSON.stringify(['src/index.ts']) ||
+      git(integrationRepository, ['status', '--porcelain']) !== ''
     ) {
       throw new Error('External smoke completed without the expected integrated fixture change');
     }

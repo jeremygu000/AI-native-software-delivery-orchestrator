@@ -2955,20 +2955,26 @@ the default test suite and does not call a provider unless an operator explicitl
 
 The runner fails before creating a Temporal server, worker, Git fixture, Docker container, or model
 session when any of those values is absent, blank, or differs from the fixed production identity. The
-same resolved Pi model is supplied explicitly to planning, semantic review, coding, and task code
-review; no smoke role may fall back to Pi's implicit default model. It always creates a disposable
-temporary Git repository rather than targeting this orchestrator repository. When explicitly
-authorized, it runs the production path: compiled `forge plan` with semantic review, approval,
-compiled `forge run`, a separately spawned compiled worker, real Pi coding and review adapters, a
-real Docker verifier, Git integration, and a durable Temporal/SQLite completion check. The harness
-also requires exactly the expected integrated `src/index.ts` content and no other Git diff. `pnpm
-smoke:m3.12` builds the runnable artifacts then invokes this guarded runner;
+same resolved Pi model is supplied explicitly to planning, semantic review, builder coding, repair
+coding, and task code review; no smoke role may fall back to Pi's implicit default model. Builder and
+repair runners share one provider-neutral gateway override, so a nondeterministic repair
+recommendation cannot select an implicit model. It always creates a disposable temporary Git
+repository rather than targeting this orchestrator repository. When explicitly authorized, it runs
+the production path: compiled `forge plan` with semantic review, approval, compiled `forge run`, a
+separately spawned compiled worker, real Pi coding and review adapters, a real Docker verifier, Git
+integration, and a durable Temporal/SQLite completion check. The harness compares the fixture base
+commit with the integrated checkout `HEAD`, requires exactly `src/index.ts` in that range, exact file
+contents, and a clean integrated working tree. `pnpm smoke:m3.12` builds the runnable artifacts then
+invokes this guarded runner;
 `FORGE_M312_KEEP_FIXTURE=1` retains the disposable fixture for operator diagnosis.
 
 Verification so far:
 
 - unit tests prove missing authorization, credential attestation, coding-agent attestation, provider,
   blank model, or unsupported model configuration fails closed;
+- a composition regression forces a `repair` recommendation and proves that the same injected coding
+  gateway serves both the builder and repair sessions; Pi gateway tests separately prove the explicit
+  resolved model reaches each session factory;
 - the compiled runner itself was invoked without authorization and stopped with
   `M3.12 external smoke requires FORGE_M312_EXTERNAL_SMOKE=1`, before any external provider or Docker
   operation;

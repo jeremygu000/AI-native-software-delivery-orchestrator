@@ -32,6 +32,7 @@ import type {
   WriteLease
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
+import type { PiSessionGateway } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -447,6 +448,19 @@ class MemoryPersistence
     this.repairWorkItems.push(item);
   }
 
+  async admitRepairAttemptWithWorkItem(request: {
+    attempt: TaskRepairAttempt;
+    maxRepairs: number;
+    createWorkItem: (attempt: TaskRepairAttempt) => TaskRepairWorkItem;
+  }): Promise<TaskRepairAttempt> {
+    if (request.maxRepairs < 1) {
+      throw new Error('Repair budget exhausted');
+    }
+    await this.persistRepairAttempt({ runId: request.attempt.runId, attempt: request.attempt });
+    await this.persistRepairWorkItem(request.createWorkItem(request.attempt));
+    return request.attempt;
+  }
+
   async close(): Promise<void> {}
 }
 
@@ -528,7 +542,17 @@ const emptyRepositoryGraph: RepositoryGraph = {
   repositoryPath: '/repo',
   projects: new Map(),
   projectDependencies: [],
-  files: new Map(),
+  files: new Map([
+    [
+      'fixture.ts',
+      {
+        id: 'fixture.ts',
+        projectId: 'repo-1',
+        path: '/repo/fixture.ts',
+        isGenerated: false
+      }
+    ]
+  ]),
   symbols: new Map(),
   fileDependencies: [],
   symbolReferences: [],
@@ -1454,6 +1478,136 @@ describe('temporal worker production vertical slice', () => {
     expect(integrated.status).toBe('integrated');
     await compositionB.close();
   }, 60000);
+
+  it('uses one injected coding gateway for builder and repair sessions', async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.createRun(createRunRequest(['task-a']));
+    const sessionPrompts: string[] = [];
+    const agentGateway: PiSessionGateway = {
+      async start(request) {
+        sessionPrompts.push(request.prompt);
+        await request.onStarted(`session-${sessionPrompts.length}`);
+        return { sessionId: `session-${sessionPrompts.length}` };
+      }
+    };
+    let reviewCalls = 0;
+    const composition = await createForgeWorkerComposition({
+      persistence,
+      repositoryGraph: emptyRepositoryGraph,
+      agentGateway,
+      workspaceManager: {
+        async create(workspace) {
+          return { ...workspace, revision: 1, phase: 'READY_TO_INTEGRATE' };
+        },
+        async commit({ workspace }) {
+          return workspace;
+        },
+        integrate: unexpectedExecution('workspace integration'),
+        resumeIntegration: unexpectedExecution('workspace integration resume'),
+        abortIntegration: unexpectedExecution('workspace integration abort'),
+        dispose: unexpectedExecution('workspace disposal')
+      },
+      reconciler: {
+        async reconcile({ taskId }) {
+          return {
+            observed: {
+              taskId,
+              filesRead: new Set(),
+              filesCreated: new Set(),
+              filesWritten: new Set(),
+              filesDeleted: new Set(),
+              symbolsWritten: new Set(),
+              dependencyRequests: new Set(),
+              manifestFilesChanged: new Set(),
+              generatedFilesChanged: new Set()
+            },
+            reconciliation: {
+              status: 'within-predicted-scope' as const,
+              expandedFileIds: new Set(),
+              unleasedFileIds: new Set()
+            }
+          };
+        }
+      },
+      snapshots: {
+        async capture({ repositoryPath }) {
+          return {
+            repositoryId: 'repo-1',
+            repositoryRoot: repositoryPath,
+            baseCommit: 'a'.repeat(40),
+            workingTreeFingerprint: 'sha256:'.concat('a'.repeat(64)),
+            dirty: true
+          };
+        }
+      },
+      verifier: {
+        async verify() {
+          return { status: 'passed' };
+        }
+      },
+      reviewer: {
+        async review() {
+          reviewCalls += 1;
+          return {
+            recommendation: reviewCalls === 1 ? 'repair' : 'accept',
+            summary: 'gateway fixture review',
+            findings:
+              reviewCalls === 1
+                ? [
+                    {
+                      id: 'repair-required',
+                      severity: 'low' as const,
+                      fileIds: ['fixture.ts'],
+                      symbolIds: [],
+                      description: 'Exercise the repair coding session.'
+                    }
+                  ]
+                : []
+          };
+        }
+      }
+    });
+
+    const activities = composition.forgeActivities;
+    const authorization = (await activities.reevaluateRun({ runId: 'run-1' })).authorizedTasks[0];
+    const built = await activities.executeBuilder({
+      runId: 'run-1',
+      taskId: authorization.taskId,
+      attemptId: authorization.attemptId
+    });
+    if (built.status !== 'completed') {
+      throw new Error('Expected builder completion');
+    }
+    const evaluated = await activities.evaluateBuilderOutput({
+      runId: 'run-1',
+      taskId: 'task-a',
+      workspaceId: built.workspaceId,
+      builderAttemptId: built.attemptId,
+      impactId: built.impactId
+    });
+    expect(evaluated.recommendation).toBe('repair');
+    const admitted = await activities.admitRepair({
+      runId: 'run-1',
+      taskId: 'task-a',
+      reviewId: evaluated.reviewId,
+      subjectRef: evaluated.subjectRef
+    });
+    const repaired = await activities.executeRepair({
+      runId: 'run-1',
+      taskId: 'task-a',
+      workspaceId: built.workspaceId,
+      builderAttemptId: built.attemptId,
+      impactId: built.impactId,
+      reviewId: evaluated.reviewId,
+      repairAttemptId: admitted.repairAttemptId
+    });
+
+    expect(repaired.recommendation).toBe('accept');
+    expect(sessionPrompts).toHaveLength(2);
+    expect(sessionPrompts[0]).not.toContain('Repair task findings');
+    expect(sessionPrompts[1]).toContain('Repair task findings');
+    await composition.close();
+  });
 
   it('persists builder scope expansion before later scheduling can authorize a conflicting task', async () => {
     const persistence = new MemoryPersistence();

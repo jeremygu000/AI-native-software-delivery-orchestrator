@@ -189,7 +189,11 @@ export interface ForgeRuntimeCompositionOverrides {
   readonly reviewer?: TaskCodeReviewer;
   readonly verifier?: TaskVerifier;
   readonly builderAgentRunner?: AgentRunner;
-  readonly builderGateway?: PiSessionGateway;
+  /**
+   * Optional common gateway for builder and repair coding sessions. This keeps
+   * both paths on the same approved provider identity when an app supplies one.
+   */
+  readonly agentGateway?: PiSessionGateway;
   readonly repairRunner?: TaskRepairRunner;
   readonly reconciler?: TaskImpactReconciler;
   readonly builderExecution?: Pick<ForgeBuilderExecutionService, 'execute'>;
@@ -329,7 +333,7 @@ export async function createForgeRuntimeComposition(
       agentRunner:
         overrides.builderAgentRunner ??
         new PiAgentRunner({
-          gateway: overrides.builderGateway ?? new PiCodingAgentGateway(),
+          gateway: overrides.agentGateway ?? new PiCodingAgentGateway(),
           createTools: (request) =>
             new AgentToolRuntime({
               runId: request.runId,
@@ -382,7 +386,7 @@ export async function createForgeRuntimeComposition(
         runner:
           overrides.repairRunner ??
           new PiAgentRunner({
-            gateway: new PiCodingAgentGateway(),
+            gateway: overrides.agentGateway ?? new PiCodingAgentGateway(),
             createTools: (request) =>
               new AgentToolRuntime({
                 runId: request.runId,
