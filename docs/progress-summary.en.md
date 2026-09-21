@@ -3030,5 +3030,6 @@ Verification:
 - `pnpm check` still stops at the pre-existing formatting issues outside this stage and is reported
   separately rather than silently modifying inherited files.
 
-M3.13 is **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**. M3.12 remains blocked-deferred and open; no
-destructive M3.14 cutover work was performed.
+M3.13 is **PASS / CLOSED / FROZEN** following independent review. Changes to this durable read-model
+contract now require a demonstrated regression or a new, separately designed stage. M3.12 remains
+blocked-deferred and open; no destructive M3.14 cutover work was performed.

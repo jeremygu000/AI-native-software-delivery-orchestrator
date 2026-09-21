@@ -2676,5 +2676,5 @@ order。它们明确禁止在 M3.12 记录成功的 authorized external-effect s
 - `pnpm test` 通过 74 个 file、720 个通过和 1 个跳过，其中包括单独调用的 Temporal worker phase；
 - `pnpm check` 仍会在本阶段之外既有的 formatting issue 处停止，会如实报告，绝不静默修改 inherited file。
 
-M3.13 为 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**。M3.12 仍是 blocked-deferred 且未关闭；没有执行任何
-destructive M3.14 cutover 工作。
+M3.13 经独立 review 后为 **PASS / CLOSED / FROZEN**。对该 durable read-model contract 的后续修改必须由已证明的
+regression 或单独设计的新阶段驱动。M3.12 仍是 blocked-deferred 且未关闭；没有执行任何 destructive M3.14 cutover 工作。
