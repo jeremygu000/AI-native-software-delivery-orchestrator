@@ -2879,3 +2879,59 @@ Scope and remaining work:
 
 M3.10 is **PASS / CLOSED / FROZEN** following independent review. Changes to this launch authority
 boundary now require a demonstrated contract regression or a new, separately designed stage.
+
+## Stage M3.11: Temporal production deployment and process boundary
+
+M3.11 proves the deployment boundary that M3.10 deliberately left open. A runnable worker bundle is
+now produced alongside the CLI bundle, so `node apps/cli/dist/main.js` and
+`node apps/temporal-worker/dist/main.js` can run as independent processes. The CLI remains only a
+Temporal client: it persists launch authority in the configured SQLite file and starts the workflow;
+it does not construct a worker or runtime composition.
+
+Operational commands now use the explicit `FORGE_WORKER_DATABASE_PATH` when it is supplied, rather
+than silently opening a per-run database beneath `--run-directory`. The legacy per-run location
+remains the fallback only when no deployment authority path is configured. A configured path must be
+nonempty and absolute. This lets `forge status`, `forge cancel`, and cancellation settlement read
+and mutate the same durable authority observed by an independently deployed worker.
+
+The worker app preserves the real Pi, Git, and Docker composition as its default. It has a narrowly
+scoped `FORGE_WORKER_COMPOSITION=acceptance` app-boundary mode for the hermetic process test only;
+it supplies deterministic builder, reviewer, and verifier adapters without moving deployment policy
+into the provider-neutral composition library. Unknown modes fail closed. The test starts a local
+Temporal server with a child-reachable random address, then launches the compiled CLI and worker as
+separate Node processes with one absolute SQLite authority path, one repository scope, and one unique
+task queue.
+
+Worker restart recovery is exercised after the builder has durably completed and evaluation is
+paused. The retry-safe evaluation activity has a five-second heartbeat timeout, and the acceptance
+reviewer heartbeats while paused. On worker death, a replacement worker receives the retried activity.
+Verification evidence is reused when its immutable builder attempt, workspace snapshot, and policy
+identity already match, so a crash after evidence persistence cannot fail the retry by generating new
+random evidence. Builder and repair activities retain their one-attempt boundary because they may
+perform non-idempotent external work.
+
+Verification:
+
+- compiled-process acceptance starts a real local Temporal server, compiled CLI subprocess, and
+  separately spawned compiled worker subprocess; normal execution reaches durable SQLite
+  `COMPLETED` state with one initial authority event and one builder attempt;
+- the restart acceptance kills worker A during a heartbeat-protected evaluation, starts worker B with
+  the same server, queue, repository, and SQLite file, and proves completion without a second initial
+  event, builder attempt, or workspace;
+- cancellation is issued by a new compiled CLI process after the original launch process and worker A
+  are gone, survives worker restart, and reaches durable `CANCELLED` state;
+- status reads the configured authority SQLite file even when `--run-directory` names a different
+  empty location; CLI and compiled-worker tests reject relative authority database paths;
+- `pnpm build`, targeted CLI/runtime tests, and the compiled-process acceptance pass;
+- `pnpm test` runs non-worker projects before the serialized temporal-worker project, avoiding local
+  Temporal resource contention while retaining parallelism elsewhere; the final suite has 73 test
+  files, 713 passing tests, and 1 skipped test.
+
+Scope and remaining work:
+
+- M3.11 proves a local Temporal server and SQLite-backed single authority scope, not a multi-host
+  fleet or PostgreSQL deployment;
+- the default executable still uses real provider adapters, but live Pi/Claude/Git/Docker smoke is an
+  opt-in external integration concern for M3.12 rather than default test-suite behavior;
+- this stage does not redesign frozen scheduling, lease, repair, review, integration, or M3.10 launch
+  authority contracts.

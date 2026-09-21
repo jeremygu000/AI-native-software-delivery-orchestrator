@@ -895,6 +895,80 @@ describe('forge status', () => {
     });
   });
 
+  it('reads status from the configured worker authority database', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forge-cli-status-authority-'));
+    const databasePath = join(root, 'authority.sqlite');
+    const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    const original = process.env.FORGE_WORKER_DATABASE_PATH;
+    let output = '';
+    try {
+      await persistence.createRun(cancellationRun('run-status-authority'));
+      process.env.FORGE_WORKER_DATABASE_PATH = databasePath;
+      const program = createForgeProgram({
+        writeOutput: (value) => {
+          output += value;
+        }
+      });
+
+      await program.parseAsync([
+        'node',
+        'forge',
+        'status',
+        '--run-id',
+        'run-status-authority',
+        '--run-directory',
+        join(root, 'unrelated-run-directory')
+      ]);
+
+      expect(JSON.parse(output)).toMatchObject({
+        runId: 'run-status-authority',
+        state: 'ACTIVE'
+      });
+    } finally {
+      if (original === undefined) {
+        delete process.env.FORGE_WORKER_DATABASE_PATH;
+      } else {
+        process.env.FORGE_WORKER_DATABASE_PATH = original;
+      }
+      persistence.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a relative configured worker authority database', async () => {
+    const original = process.env.FORGE_WORKER_DATABASE_PATH;
+    let errorOutput = '';
+    try {
+      process.env.FORGE_WORKER_DATABASE_PATH = 'authority.sqlite';
+      const program = createForgeProgram({ writeOutput: () => {} });
+      program.exitOverride();
+      program.configureOutput({
+        writeErr: (value) => {
+          errorOutput += value;
+        }
+      });
+
+      await expect(
+        program.parseAsync([
+          'node',
+          'forge',
+          'status',
+          '--run-id',
+          'run-1',
+          '--run-directory',
+          '/run-authority'
+        ])
+      ).rejects.toMatchObject({ code: 'commander.error' });
+      expect(errorOutput).toContain('Operational commands require an absolute');
+    } finally {
+      if (original === undefined) {
+        delete process.env.FORGE_WORKER_DATABASE_PATH;
+      } else {
+        process.env.FORGE_WORKER_DATABASE_PATH = original;
+      }
+    }
+  });
+
   it('prints error message when statusRun throws', async () => {
     let errorOutput = '';
     const program = createForgeProgram({

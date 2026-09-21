@@ -152,6 +152,24 @@ describe('TaskOutputAdmissionCoordinator', () => {
       verificationPolicyFingerprint: `sha256:${'4'.repeat(64)}`,
       repository: { files: new Map(), symbols: new Map() }
     });
+    const retried = await coordinator.reviewBuilder({
+      runId: 'run-1',
+      task: {
+        id: 'task-1',
+        title: 'Task',
+        goal: 'Complete task',
+        dependencies: [],
+        expectedReads: [],
+        expectedWrites: [],
+        sharedResources: [],
+        verification: []
+      },
+      builderAttempt,
+      workspace,
+      impact,
+      verificationPolicyFingerprint: `sha256:${'4'.repeat(64)}`,
+      repository: { files: new Map(), symbols: new Map() }
+    });
     await coordinator.assertIntegrationAdmission({
       runId: 'run-1',
       taskId: 'task-1',
@@ -168,7 +186,10 @@ describe('TaskOutputAdmissionCoordinator', () => {
     ).rejects.toThrow('No repair review matches');
 
     expect(verification).toHaveLength(1);
+    expect(retried.verification).toEqual(result.verification);
+    expect(reviews).toHaveLength(2);
     expect(reviews).toMatchObject([
+      { taskId: 'task-1', iteration: 1, subject: { outputAttemptId: 'attempt-1' } },
       { taskId: 'task-1', iteration: 1, subject: { outputAttemptId: 'attempt-1' } }
     ]);
   });

@@ -74,16 +74,31 @@ export class TaskOutputAdmissionCoordinator {
     const snapshot = await this.#snapshots.capture({
       repositoryPath: request.workspace.workspacePath
     });
-    const verification = this.#createVerificationEvidence({
-      id: this.#createEvidenceId(),
-      attempt: request.builderAttempt,
-      // Git resolves worktree roots physically (for example /private/var on macOS).
-      workspace: { ...request.workspace, workspacePath: snapshot.repositoryRoot },
-      snapshot,
-      verificationPolicyFingerprint: request.verificationPolicyFingerprint,
-      verifiedAt: this.#now()
-    });
-    await this.#verificationEvidence.persistVerificationEvidence(verification);
+    const existing = (
+      await this.#verificationEvidence.recoverVerificationEvidence(request.runId)
+    ).find(
+      (verification) =>
+        verification.taskId === request.task.id &&
+        verification.attemptId === request.builderAttempt.id &&
+        verification.workspaceId === request.workspace.id &&
+        verification.workspaceRevision === request.workspace.revision &&
+        verification.workspaceChangeFingerprint === snapshot.workingTreeFingerprint &&
+        verification.verificationPolicyFingerprint === request.verificationPolicyFingerprint
+    );
+    const verification =
+      existing ??
+      this.#createVerificationEvidence({
+        id: this.#createEvidenceId(),
+        attempt: request.builderAttempt,
+        // Git resolves worktree roots physically (for example /private/var on macOS).
+        workspace: { ...request.workspace, workspacePath: snapshot.repositoryRoot },
+        snapshot,
+        verificationPolicyFingerprint: request.verificationPolicyFingerprint,
+        verifiedAt: this.#now()
+      });
+    if (existing === undefined) {
+      await this.#verificationEvidence.persistVerificationEvidence(verification);
+    }
     const subject = this.#subjects.createSubject({
       builderAttempt: request.builderAttempt,
       outputAttemptId: request.builderAttempt.id,

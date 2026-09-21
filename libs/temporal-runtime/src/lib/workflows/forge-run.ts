@@ -21,10 +21,17 @@ import {
   type RepairWakeSignal
 } from '@ai-native-software-delivery-orchestrator/forge-runtime-contracts';
 
-const { reevaluateRun, evaluateBuilderOutput, integrateAcceptedOutput, resumeBlockedRepair } =
+const { reevaluateRun, integrateAcceptedOutput, resumeBlockedRepair } =
   proxyActivities<ForgeActivities>({
     startToCloseTimeout: '5 minutes'
   });
+
+const { evaluateBuilderOutput } = proxyActivities<Pick<ForgeActivities, 'evaluateBuilderOutput'>>({
+  startToCloseTimeout: '5 minutes',
+  // Evaluation is replay-safe and its worker adapter heartbeats while an
+  // external review is pending, allowing a replacement worker to recover it.
+  heartbeatTimeout: '5 seconds'
+});
 
 const { resumeBlockedIntegration } = proxyActivities<BlockedIntegrationContinuationActivities>({
   startToCloseTimeout: '5 minutes'

@@ -2550,3 +2550,49 @@ authority store。
 
 独立 review 后，M3.10 已 **PASS / CLOSED / FROZEN**。除非证明存在 contract regression，或另行设计新的阶段，
 不得修改这个 launch authority boundary。
+
+## Stage M3.11：Temporal production deployment 与 process boundary
+
+M3.11 验证了 M3.10 有意保留的 deployment boundary。现在除 CLI bundle 外还会构建可运行的 worker bundle，因此
+`node apps/cli/dist/main.js` 与 `node apps/temporal-worker/dist/main.js` 可以作为独立进程运行。CLI 仍只是
+Temporal client：它在已配置 SQLite 文件中持久化 launch authority 并启动 workflow；它不会构造 worker 或 runtime
+composition。
+
+当提供 `FORGE_WORKER_DATABASE_PATH` 时，operational command 会使用该显式 authority SQLite，而不会悄悄打开
+`--run-directory` 下每个 run 的数据库。只有未配置 deployment authority path 时才保留 legacy per-run 路径回退。
+已配置路径必须非空且为绝对路径。因此 `forge status`、`forge cancel` 与 cancellation settlement 会读取并修改独立
+worker 所观察的同一个 durable authority。
+
+worker app 保持真实 Pi、Git 和 Docker composition 作为默认值。仅为 hermetic process test，在 app boundary 提供了
+范围受限的 `FORGE_WORKER_COMPOSITION=acceptance` mode；它提供确定性的 builder、reviewer 和 verifier adapter，
+但不会把 deployment policy 放入 provider-neutral composition library。未知 mode 会 fail closed。测试启动具有
+child-reachable 随机地址的 local Temporal server，再以同一个绝对 SQLite authority path、repository scope 和唯一
+task queue 启动编译后的 CLI 与独立 Node worker。
+
+worker restart recovery 会在 builder 已 durably completed 且 evaluation 暂停后执行。可安全重试的 evaluation activity 现在有
+五秒 heartbeat timeout，acceptance reviewer 在暂停时持续 heartbeat。worker 死亡后，替代 worker 会接收重试 activity。
+当 immutable builder attempt、workspace snapshot 与 policy identity 相同，verification evidence 会复用，因此在
+evidence 持久化后崩溃不会因生成新的随机 evidence 而使重试失败。builder 和 repair activity 仍保留 one-attempt
+boundary，因为它们可能执行 non-idempotent external work。
+
+验证：
+
+- compiled-process acceptance 启动真实 local Temporal server、compiled CLI subprocess 及独立 compiled worker
+  subprocess；正常执行在 durable SQLite 中达到 `COMPLETED`，且只有一个初始 authority event 和一个 builder attempt；
+- restart acceptance 在 heartbeat-protected evaluation 期间杀死 worker A，再以相同 server、queue、repository 与
+  SQLite 文件启动 worker B，并证明完成时没有第二个初始 event、builder attempt 或 workspace；
+- worker A 与原始 launch process 退出后，由新的 compiled CLI process 发出 cancellation，worker restart 后仍达到
+  durable `CANCELLED`；
+- 即使 `--run-directory` 指向不同的空位置，status 仍读取已配置 authority SQLite；CLI 与 compiled-worker 测试均会
+  拒绝相对 authority database path；
+- `pnpm build`、目标 CLI/runtime 测试以及 compiled-process acceptance 均通过；
+- `pnpm test` 会先运行 non-worker project，再串行运行 temporal-worker project，在保留其他项目并行的同时避免 local
+  Temporal resource contention；最终全套测试为 73 个 test file、713 个通过、1 个跳过。
+
+范围和剩余工作：
+
+- M3.11 证明的是 local Temporal server 和 SQLite-backed single authority scope，不是 multi-host fleet 或 PostgreSQL
+  deployment；
+- 默认 executable 仍使用真实 provider adapter，但 live Pi/Claude/Git/Docker smoke 是 M3.12 的 opt-in external
+  integration 工作，不进入默认 test suite；
+- 本阶段不重新设计已冻结的 scheduling、lease、repair、review、integration 或 M3.10 launch authority contract。

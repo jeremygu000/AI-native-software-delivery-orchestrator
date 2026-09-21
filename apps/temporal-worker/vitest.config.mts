@@ -17,6 +17,8 @@ export default defineConfig(() => ({
     globals: true,
     environment: 'node',
     include: ['src/**/*.spec.ts'],
+    // Temporal workers and the compiled-process acceptance both use local server resources.
+    fileParallelism: false,
     reporters: ['default']
   }
 }));

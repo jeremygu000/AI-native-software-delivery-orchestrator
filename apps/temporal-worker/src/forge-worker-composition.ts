@@ -1,4 +1,7 @@
 import { Context } from '@temporalio/activity';
+import { existsSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { createForgeRuntimeComposition } from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
 import type {
@@ -15,6 +18,77 @@ export type {
   ForgeRuntimeCompositionOverrides as ForgeWorkerCompositionOverrides
 } from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
 
+const waitForAcceptanceRelease = async (path: string): Promise<void> => {
+  while (existsSync(path)) {
+    Context.current().heartbeat();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+const heartbeatEvaluation = async <Result>(operation: () => Promise<Result>): Promise<Result> => {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  try {
+    Context.current().heartbeat();
+    timer = setInterval(() => Context.current().heartbeat(), 1_000);
+    return await operation();
+  } catch (error) {
+    if (timer !== undefined) {
+      throw error;
+    }
+    // Focused composition tests call activities without a Temporal context.
+    return operation();
+  } finally {
+    if (timer !== undefined) {
+      clearInterval(timer);
+    }
+  }
+};
+
+const acceptanceOverrides = (): ForgeRuntimeCompositionOverrides => ({
+  builderAgentRunner: {
+    async run(request) {
+      await request.onStarted({ sessionRef: { backend: 'acceptance', value: request.attempt.id } });
+      await writeFile(
+        join(request.workspace.workspacePath, 'src/index.ts'),
+        'export const value = "completed";\n'
+      );
+      return {
+        status: 'completed',
+        sessionRef: { backend: 'acceptance', value: request.attempt.id }
+      };
+    }
+  },
+  reviewer: {
+    async review() {
+      const pausePath = process.env.FORGE_ACCEPTANCE_EVALUATION_PAUSE_PATH;
+      const readyPath = process.env.FORGE_ACCEPTANCE_EVALUATION_READY_PATH;
+      if (pausePath !== undefined && existsSync(pausePath)) {
+        if (readyPath !== undefined) {
+          await writeFile(readyPath, 'ready\n');
+        }
+        await waitForAcceptanceRelease(pausePath);
+      }
+      return { recommendation: 'accept', summary: 'Acceptance fixture approved.', findings: [] };
+    }
+  },
+  verifier: {
+    async verify() {
+      return { status: 'passed' };
+    }
+  }
+});
+
+const workerOverrides = (): ForgeRuntimeCompositionOverrides => {
+  const mode = process.env.FORGE_WORKER_COMPOSITION;
+  if (mode === undefined || mode === 'production') {
+    return {};
+  }
+  if (mode === 'acceptance') {
+    return acceptanceOverrides();
+  }
+  throw new Error(`Unsupported FORGE_WORKER_COMPOSITION: ${mode}`);
+};
+
 /**
  * Temporal adapter around the provider-neutral Forge runtime composition.
  * Direct activity tests run without a Temporal context and receive no signal.
@@ -22,13 +96,24 @@ export type {
 export async function createForgeWorkerComposition(
   overrides: ForgeRuntimeCompositionOverrides = {}
 ): Promise<ForgeRuntimeComposition> {
-  return createForgeRuntimeComposition(overrides, {
-    getActivityExecutionContext: () => {
-      try {
-        return { cancellationSignal: Context.current().cancellationSignal };
-      } catch {
-        return undefined;
+  const composition = await createForgeRuntimeComposition(
+    { ...workerOverrides(), ...overrides },
+    {
+      getActivityExecutionContext: () => {
+        try {
+          return { cancellationSignal: Context.current().cancellationSignal };
+        } catch {
+          return undefined;
+        }
       }
     }
-  });
+  );
+  return {
+    ...composition,
+    forgeActivities: {
+      ...composition.forgeActivities,
+      evaluateBuilderOutput: async (input) =>
+        heartbeatEvaluation(() => composition.forgeActivities.evaluateBuilderOutput(input))
+    }
+  };
 }
