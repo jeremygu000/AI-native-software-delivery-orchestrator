@@ -4,6 +4,11 @@ import { appendFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { createForgeRuntimeComposition } from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
+import {
+  PiCodeReviewModelResolver,
+  PiCodingAgentGateway
+} from '@ai-native-software-delivery-orchestrator/agent-runtime';
+import { resolveM312ExternalSmokeConfig } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 import type {
   ForgeRuntimeComposition,
   ForgeRuntimeCompositionOverrides
@@ -92,6 +97,14 @@ const acceptanceOverrides = (): ForgeRuntimeCompositionOverrides => ({
 });
 
 const workerOverrides = (): ForgeRuntimeCompositionOverrides => {
+  if (process.env.FORGE_M312_EXTERNAL_SMOKE !== undefined) {
+    const externalSmoke = resolveM312ExternalSmokeConfig();
+    const model = new PiCodeReviewModelResolver().resolve({
+      provider: externalSmoke.provider,
+      id: externalSmoke.model
+    });
+    return { builderGateway: new PiCodingAgentGateway(undefined, { model }) };
+  }
   const mode = process.env.FORGE_WORKER_COMPOSITION;
   if (mode === undefined || mode === 'production') {
     return {};

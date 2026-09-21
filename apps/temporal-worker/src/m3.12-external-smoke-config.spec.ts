@@ -23,15 +23,33 @@ describe('resolveM312ExternalSmokeConfig', () => {
     ).toThrow('FORGE_M312_REVIEW_PROVIDER');
   });
 
-  it('returns only explicit nonblank provider and model configuration', () => {
+  it('rejects blank and non-production model identities before any smoke effect', () => {
+    const authorized = {
+      FORGE_M312_EXTERNAL_SMOKE: '1',
+      FORGE_M312_CREDENTIALS_CONFIRMED: '1',
+      FORGE_M312_CODING_AGENT_CONFIRMED: '1',
+      FORGE_M312_REVIEW_PROVIDER: 'openai'
+    };
+    expect(() =>
+      resolveM312ExternalSmokeConfig({ ...authorized, FORGE_M312_REVIEW_MODEL: ' ' })
+    ).toThrow('FORGE_M312_REVIEW_MODEL');
+    expect(() =>
+      resolveM312ExternalSmokeConfig({
+        ...authorized,
+        FORGE_M312_REVIEW_MODEL: 'claude-sonnet'
+      })
+    ).toThrow('only supports');
+  });
+
+  it('returns the fixed production model identity for every external role', () => {
     expect(
       resolveM312ExternalSmokeConfig({
         FORGE_M312_EXTERNAL_SMOKE: '1',
         FORGE_M312_CREDENTIALS_CONFIRMED: '1',
         FORGE_M312_CODING_AGENT_CONFIRMED: '1',
-        FORGE_M312_REVIEW_PROVIDER: 'anthropic',
-        FORGE_M312_REVIEW_MODEL: 'claude-sonnet'
+        FORGE_M312_REVIEW_PROVIDER: 'openai',
+        FORGE_M312_REVIEW_MODEL: 'gpt-4.1'
       })
-    ).toEqual({ reviewProvider: 'anthropic', reviewModel: 'claude-sonnet' });
+    ).toEqual({ provider: 'openai', model: 'gpt-4.1' });
   });
 });

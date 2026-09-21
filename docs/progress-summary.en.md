@@ -2950,21 +2950,25 @@ the default test suite and does not call a provider unless an operator explicitl
 - `FORGE_M312_EXTERNAL_SMOKE=1` to authorize this particular external smoke execution;
 - `FORGE_M312_CREDENTIALS_CONFIRMED=1` to attest that provider-owned credentials are configured;
 - `FORGE_M312_CODING_AGENT_CONFIRMED=1` to attest that the real coding agent is authorized;
-- `FORGE_M312_REVIEW_PROVIDER` and `FORGE_M312_REVIEW_MODEL` for the approved independent reviewer.
+- `FORGE_M312_REVIEW_PROVIDER=openai` and `FORGE_M312_REVIEW_MODEL=gpt-4.1`, the currently fixed
+  production review identity.
 
 The runner fails before creating a Temporal server, worker, Git fixture, Docker container, or model
-session when any of those values is absent or blank. It always creates a disposable temporary Git
-repository rather than targeting this orchestrator repository. When explicitly authorized, it runs
-the production path: compiled `forge plan` with semantic review, approval, compiled `forge run`, a
-separately spawned compiled worker, real Pi coding and review adapters, a real Docker verifier, Git
-integration, and a durable Temporal/SQLite completion check. `pnpm smoke:m3.12` builds the runnable
-artifacts then invokes this guarded runner; `FORGE_M312_KEEP_FIXTURE=1` retains the disposable fixture
-for operator diagnosis.
+session when any of those values is absent, blank, or differs from the fixed production identity. The
+same resolved Pi model is supplied explicitly to planning, semantic review, coding, and task code
+review; no smoke role may fall back to Pi's implicit default model. It always creates a disposable
+temporary Git repository rather than targeting this orchestrator repository. When explicitly
+authorized, it runs the production path: compiled `forge plan` with semantic review, approval,
+compiled `forge run`, a separately spawned compiled worker, real Pi coding and review adapters, a
+real Docker verifier, Git integration, and a durable Temporal/SQLite completion check. The harness
+also requires exactly the expected integrated `src/index.ts` content and no other Git diff. `pnpm
+smoke:m3.12` builds the runnable artifacts then invokes this guarded runner;
+`FORGE_M312_KEEP_FIXTURE=1` retains the disposable fixture for operator diagnosis.
 
 Verification so far:
 
 - unit tests prove missing authorization, credential attestation, coding-agent attestation, provider,
-  or model configuration fails closed;
+  blank model, or unsupported model configuration fails closed;
 - the compiled runner itself was invoked without authorization and stopped with
   `M3.12 external smoke requires FORGE_M312_EXTERNAL_SMOKE=1`, before any external provider or Docker
   operation;

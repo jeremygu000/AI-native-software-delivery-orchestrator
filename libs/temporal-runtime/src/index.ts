@@ -14,6 +14,8 @@ export type {
 } from './lib/client.js';
 export { TemporalConfigSchema, resolveTemporalConfig } from './lib/config.js';
 export type { TemporalConfig } from './lib/config.js';
+export { resolveM312ExternalSmokeConfig } from './lib/m3-external-smoke-config.js';
+export type { M312ExternalSmokeConfig } from './lib/m3-external-smoke-config.js';
 export { createTemporalWorker, getWorkflowsPath } from './lib/worker-factory.js';
 export type { TemporalWorkerHandle } from './lib/worker-factory.js';
 export {

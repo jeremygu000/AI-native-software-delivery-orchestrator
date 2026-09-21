@@ -5,6 +5,7 @@ import {
   AgentToolRuntime,
   PiAgentRunner,
   PiCodingAgentGateway,
+  type PiSessionGateway,
   PiTaskCodeReviewer,
   PiCodeReviewModelResolver
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
@@ -188,6 +189,7 @@ export interface ForgeRuntimeCompositionOverrides {
   readonly reviewer?: TaskCodeReviewer;
   readonly verifier?: TaskVerifier;
   readonly builderAgentRunner?: AgentRunner;
+  readonly builderGateway?: PiSessionGateway;
   readonly repairRunner?: TaskRepairRunner;
   readonly reconciler?: TaskImpactReconciler;
   readonly builderExecution?: Pick<ForgeBuilderExecutionService, 'execute'>;
@@ -327,7 +329,7 @@ export async function createForgeRuntimeComposition(
       agentRunner:
         overrides.builderAgentRunner ??
         new PiAgentRunner({
-          gateway: new PiCodingAgentGateway(),
+          gateway: overrides.builderGateway ?? new PiCodingAgentGateway(),
           createTools: (request) =>
             new AgentToolRuntime({
               runId: request.runId,

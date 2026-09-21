@@ -5,6 +5,7 @@ export * from './lib/docker-command-sandbox.js';
 export * from './lib/pi-agent-runner.js';
 export type {
   PiSessionFactory,
+  PiSessionModel,
   PiSessionGateway,
   PiToolCall,
   PiToolResult

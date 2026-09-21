@@ -2612,19 +2612,22 @@ M3.12 先提供一个刻意 opt-in 的真实外部副作用 smoke runner。它�
 - `FORGE_M312_EXTERNAL_SMOKE=1`：授权本次特定的 external smoke；
 - `FORGE_M312_CREDENTIALS_CONFIRMED=1`：确认 provider-owned credential 已配置；
 - `FORGE_M312_CODING_AGENT_CONFIRMED=1`：确认允许真实 coding agent 执行；
-- `FORGE_M312_REVIEW_PROVIDER` 与 `FORGE_M312_REVIEW_MODEL`：指定获批的独立 reviewer。
+- `FORGE_M312_REVIEW_PROVIDER=openai` 与 `FORGE_M312_REVIEW_MODEL=gpt-4.1`：当前固定的 production
+  review identity。
 
 任一值缺失或为空时，runner 会在创建 Temporal server、worker、Git fixture、Docker container 或 model session
-之前失败。它始终创建 disposable temporary Git repository，而不会把本 orchestrator repository 当作目标。获得明确
-授权后，runner 执行 production path：带 semantic review 的 compiled `forge plan`、approval、compiled `forge run`、
-独立启动的 compiled worker、真实 Pi coding/review adapter、真实 Docker verifier、Git integration，以及 durable
-Temporal/SQLite completion check。`pnpm smoke:m3.12` 会先构建 runnable artifact 再调用该 guarded runner；设置
-`FORGE_M312_KEEP_FIXTURE=1` 可保留 disposable fixture 供 operator 排查。
+之前失败；若 provider/model 不等于固定 production identity 也会在此前失败。规划、semantic review、coding 与 task
+code review 都显式使用同一个已解析 Pi model，任何 smoke role 都不能回退到 Pi 的隐式默认 model。它始终创建
+disposable temporary Git repository，而不会把本 orchestrator repository 当作目标。获得明确授权后，runner 执行
+production path：带 semantic review 的 compiled `forge plan`、approval、compiled `forge run`、独立启动的 compiled
+worker、真实 Pi coding/review adapter、真实 Docker verifier、Git integration，以及 durable Temporal/SQLite completion
+check。harness 还要求 integrated `src/index.ts` 内容精确匹配且 Git diff 中没有其他文件。`pnpm smoke:m3.12` 会先构建
+runnable artifact 再调用该 guarded runner；设置 `FORGE_M312_KEEP_FIXTURE=1` 可保留 disposable fixture 供 operator 排查。
 
 当前 verification：
 
-- unit test 已证明缺少 authorization、credential attestation、coding-agent attestation、provider 或 model 配置时会
-  fail closed；
+- unit test 已证明缺少 authorization、credential attestation、coding-agent attestation、provider、空 model 或不受支持
+  model 配置时会 fail closed；
 - 已在没有 authorization 的情况下调用 compiled runner；它以
   `M3.12 external smoke requires FORGE_M312_EXTERNAL_SMOKE=1` 停止，未执行任何外部 provider 或 Docker 操作；
 - 当前环境没有经过授权的 credential configuration，因此尚未执行真实 provider/model smoke。

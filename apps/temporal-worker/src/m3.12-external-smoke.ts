@@ -108,9 +108,13 @@ const status = async (
 const waitForCompletion = async (
   runId: string,
   runDirectory: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  worker: CapturedProcess
 ): Promise<void> => {
   for (let attempt = 0; attempt < 1_800; attempt++) {
+    if (worker.child.exitCode !== null || worker.child.signalCode !== null) {
+      throw new Error(`Worker exited before completion: ${worker.output()}`);
+    }
     const state = await status(runId, runDirectory, env);
     if (state === 'COMPLETED') {
       return;
@@ -209,9 +213,9 @@ const main = async (): Promise<void> => {
         planDirectory,
         '--semantic-review',
         '--review-provider',
-        configuration.reviewProvider,
+        configuration.provider,
         '--review-model',
-        configuration.reviewModel
+        configuration.model
       ],
       env
     );
@@ -250,15 +254,26 @@ const main = async (): Promise<void> => {
         '--run-directory',
         runDirectory,
         '--review-provider',
-        configuration.reviewProvider,
+        configuration.provider,
         '--review-model',
-        configuration.reviewModel
+        configuration.model
       ],
       env
     );
-    await waitForCompletion(runId, runDirectory, env);
+    await waitForCompletion(runId, runDirectory, env, worker);
     const integration = join(runDirectory, runId, 'integration', 'src/index.ts');
-    if (!existsSync(integration) || !readFileSync(integration, 'utf8').includes('"completed"')) {
+    const changedFiles = git(join(runDirectory, runId, 'integration'), [
+      'diff',
+      '--name-only',
+      'HEAD'
+    ])
+      .split('\n')
+      .filter((path) => path.length > 0);
+    if (
+      !existsSync(integration) ||
+      readFileSync(integration, 'utf8') !== 'export const value = "completed";\n' ||
+      JSON.stringify(changedFiles) !== JSON.stringify(['src/index.ts'])
+    ) {
       throw new Error('External smoke completed without the expected integrated fixture change');
     }
     process.stdout.write(

@@ -4,6 +4,8 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import {
+  PiCodeReviewModelResolver,
+  PiPlanningGatewayAdapter,
   PiPlanningAgent,
   PiSemanticPlanReviewer
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
@@ -56,6 +58,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/workspace-git';
 import {
   requestForgeRunCancellation,
+  resolveM312ExternalSmokeConfig,
   resolveTemporalConfig,
   startForgeRun
 } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
@@ -225,6 +228,18 @@ const createRepositoryPlan = async (request: {
   readonly reviewProvider: string;
   readonly reviewModel: string;
 }): Promise<PlanArtifact> => {
+  const externalSmoke =
+    process.env.FORGE_M312_EXTERNAL_SMOKE === undefined
+      ? undefined
+      : resolveM312ExternalSmokeConfig();
+  const model =
+    externalSmoke === undefined
+      ? undefined
+      : new PiCodeReviewModelResolver().resolve({
+          provider: externalSmoke.provider,
+          id: externalSmoke.model
+        });
+  const planningGateway = new PiPlanningGatewayAdapter(undefined, { model });
   const snapshotProvider = new GitRepositorySnapshotProvider();
   const [content, registry, snapshotBeforeAnalysis] = await Promise.all([
     readFile(request.specificationPath, 'utf8'),
@@ -242,8 +257,8 @@ const createRepositoryPlan = async (request: {
     path: request.specificationPath
   };
   const preparedPlan = await new AutonomousPlanPhase({
-    planner: new PiPlanningAgent(),
-    reviewer: new PiSemanticPlanReviewer(),
+    planner: new PiPlanningAgent(planningGateway),
+    reviewer: new PiSemanticPlanReviewer(planningGateway),
     impactAnalyzer: new RepositoryTaskImpactAnalyzer(registry),
     conflictAnalyzer: new DeterministicConflictEngine(registry),
     scheduler: new DeterministicScheduler()

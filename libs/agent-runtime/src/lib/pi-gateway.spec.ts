@@ -4,6 +4,7 @@ import {
   createControlledPiTools,
   PiCodingAgentGateway,
   PiSessionCancellationConfirmedError,
+  type PiSessionModel,
   type PiSessionFactory
 } from './pi-gateway.js';
 
@@ -151,6 +152,39 @@ describe('PiCodingAgentGateway', () => {
       'forge_write'
     ]);
     expect(prompt).toHaveBeenCalledWith('Change value');
+  });
+
+  it('binds an explicitly approved model to the coding session', async () => {
+    const model: PiSessionModel = {
+      provider: 'openai',
+      id: 'gpt-4.1',
+      name: 'GPT-4.1',
+      api: 'openai-completions',
+      baseUrl: 'https://api.openai.com/v1',
+      reasoning: false,
+      input: ['text'],
+      contextWindow: 1,
+      maxTokens: 1,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    };
+    const createSession = vi.fn(async () => ({
+      session: {
+        sessionId: 'pi-session-1',
+        setActiveToolsByName: () => undefined,
+        prompt: async () => undefined,
+        abort: async () => undefined
+      }
+    }));
+
+    await new PiCodingAgentGateway(createSession, { model }).start({
+      cwd: '/workspace',
+      prompt: 'Change value',
+      tools: ['forge_read'],
+      executeTool: async () => ({ content: 'unused' }),
+      onStarted: async () => undefined
+    });
+
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ model }));
   });
 
   it('does not prompt when durable session establishment rejects', async () => {

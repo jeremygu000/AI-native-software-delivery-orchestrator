@@ -2,7 +2,9 @@ import { createAgentSession, defineTool } from '@mariozechner/pi-coding-agent';
 import type { CancellationSignal } from '@ai-native-software-delivery-orchestrator/domain';
 import { Type } from 'typebox';
 
-type PiSdkSessionOptions = Parameters<typeof createAgentSession>[0];
+type PiSdkSessionOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
+
+export type PiSessionModel = PiSdkSessionOptions['model'];
 
 /** Thrown only after the provider acknowledged that its session has stopped. */
 export class PiSessionCancellationConfirmedError extends Error {
@@ -123,6 +125,7 @@ export const createReadOnlyPiTools = (executeTool: (call: PiToolCall) => Promise
 
 export class PiCodingAgentGateway implements PiSessionGateway {
   readonly #createSession: PiSessionFactory;
+  readonly #model?: PiSessionModel;
 
   constructor(
     createSession: PiSessionFactory = async (options) => {
@@ -135,9 +138,11 @@ export class PiCodingAgentGateway implements PiSessionGateway {
           abort: () => session.abort()
         }
       };
-    }
+    },
+    options: { readonly model?: PiSessionModel } = {}
   ) {
     this.#createSession = createSession;
+    this.#model = options.model;
   }
 
   async start(options: {
@@ -152,7 +157,8 @@ export class PiCodingAgentGateway implements PiSessionGateway {
       cwd: options.cwd,
       noTools: 'builtin',
       tools: [...options.tools],
-      customTools: createControlledPiTools(options.executeTool)
+      customTools: createControlledPiTools(options.executeTool),
+      ...(this.#model === undefined ? {} : { model: this.#model })
     });
     session.setActiveToolsByName([...options.tools]);
     await options.onStarted(session.sessionId);

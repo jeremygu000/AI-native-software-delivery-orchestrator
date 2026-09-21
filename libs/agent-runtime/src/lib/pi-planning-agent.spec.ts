@@ -2,7 +2,7 @@ import type { RepositoryGraph } from '@ai-native-software-delivery-orchestrator/
 import { createAgentSession, SessionManager, SettingsManager } from '@mariozechner/pi-coding-agent';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createControlledPiTools } from './pi-gateway.js';
+import { createControlledPiTools, type PiSessionModel } from './pi-gateway.js';
 import {
   createIsolatedPlanningResourceLoader,
   createPlanningFactTools,
@@ -514,6 +514,44 @@ describe('PiPlanningGatewayAdapter', () => {
     expect(prompt).toHaveBeenCalledWith('plan this');
     expect(dispose).toHaveBeenCalledOnce();
     expect(result).toEqual({ sessionId: 'session-1', output: '{"tasks":[]}' });
+  });
+
+  it('binds an explicitly approved model to the planning session', async () => {
+    const model: PiSessionModel = {
+      provider: 'openai',
+      id: 'gpt-4.1',
+      name: 'GPT-4.1',
+      api: 'openai-completions',
+      baseUrl: 'https://api.openai.com/v1',
+      reasoning: false,
+      input: ['text'],
+      contextWindow: 1,
+      maxTokens: 1,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    };
+    const createSession = vi.fn(async () => ({
+      session: {
+        sessionId: 'session-1',
+        setActiveToolsByName: () => undefined,
+        prompt: async () => undefined,
+        dispose: () => undefined,
+        assistantMessages: () => [
+          {
+            role: 'assistant' as const,
+            content: [{ type: 'text' as const, text: '{"tasks":[]}' }],
+            stopReason: 'stop'
+          }
+        ]
+      }
+    }));
+
+    await new PiPlanningGatewayAdapter(createSession, { model }).generate({
+      cwd: '/repo',
+      prompt: 'plan this',
+      executeTool: async () => ({ content: '[]' })
+    });
+
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ model }));
   });
 
   it('fails when Pi reports an aborted response', async () => {

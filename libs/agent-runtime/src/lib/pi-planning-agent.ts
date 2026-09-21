@@ -10,7 +10,9 @@ import {
 } from '@mariozechner/pi-coding-agent';
 import { Type } from 'typebox';
 
-type PiSdkSessionOptions = Parameters<typeof createAgentSession>[0];
+import type { PiSessionModel } from './pi-gateway.js';
+
+type PiSdkSessionOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 
 interface PiPlanningAssistantMessage {
   readonly role: 'assistant';
@@ -193,6 +195,7 @@ export const createPlanningFactTools = (
 
 export class PiPlanningGatewayAdapter implements PiPlanningGateway {
   readonly #createSession: PiPlanningSessionFactory;
+  readonly #model?: PiSessionModel;
 
   constructor(
     createSession: PiPlanningSessionFactory = async (options) => {
@@ -221,9 +224,11 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
             )
         }
       };
-    }
+    },
+    options: { readonly model?: PiSessionModel } = {}
   ) {
     this.#createSession = createSession;
+    this.#model = options.model;
   }
 
   async generate(options: {
@@ -236,7 +241,8 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
       cwd: options.cwd,
       noTools: 'builtin',
       tools: toolNames,
-      customTools: createPlanningFactTools(options.executeTool)
+      customTools: createPlanningFactTools(options.executeTool),
+      ...(this.#model === undefined ? {} : { model: this.#model })
     });
     let generated: { readonly sessionId: string; readonly output: string } | undefined;
     let operationFailure: unknown;
