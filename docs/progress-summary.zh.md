@@ -2603,3 +2603,31 @@ review，才会再次调用 reviewer，因此 review 已持久化后 Activity re
 
 独立 review 后，M3.11 已 **PASS / CLOSED / FROZEN**。除非证明存在 process-boundary deployment contract regression，
 或另行设计新的阶段，不得修改这个边界。
+
+## M3.12：外部副作用 Smoke Harness（进行中）
+
+M3.12 先提供一个刻意 opt-in 的真实外部副作用 smoke runner。它不属于默认 test suite；只有 operator 显式提供以下
+全部配置时，才会调用 provider：
+
+- `FORGE_M312_EXTERNAL_SMOKE=1`：授权本次特定的 external smoke；
+- `FORGE_M312_CREDENTIALS_CONFIRMED=1`：确认 provider-owned credential 已配置；
+- `FORGE_M312_CODING_AGENT_CONFIRMED=1`：确认允许真实 coding agent 执行；
+- `FORGE_M312_REVIEW_PROVIDER` 与 `FORGE_M312_REVIEW_MODEL`：指定获批的独立 reviewer。
+
+任一值缺失或为空时，runner 会在创建 Temporal server、worker、Git fixture、Docker container 或 model session
+之前失败。它始终创建 disposable temporary Git repository，而不会把本 orchestrator repository 当作目标。获得明确
+授权后，runner 执行 production path：带 semantic review 的 compiled `forge plan`、approval、compiled `forge run`、
+独立启动的 compiled worker、真实 Pi coding/review adapter、真实 Docker verifier、Git integration，以及 durable
+Temporal/SQLite completion check。`pnpm smoke:m3.12` 会先构建 runnable artifact 再调用该 guarded runner；设置
+`FORGE_M312_KEEP_FIXTURE=1` 可保留 disposable fixture 供 operator 排查。
+
+当前 verification：
+
+- unit test 已证明缺少 authorization、credential attestation、coding-agent attestation、provider 或 model 配置时会
+  fail closed；
+- 已在没有 authorization 的情况下调用 compiled runner；它以
+  `M3.12 external smoke requires FORGE_M312_EXTERNAL_SMOKE=1` 停止，未执行任何外部 provider 或 Docker 操作；
+- 当前环境没有经过授权的 credential configuration，因此尚未执行真实 provider/model smoke。
+
+M3.12 仍为 **IN PROGRESS**；只有 operator 明确运行至少一次获授权 provider/model smoke 并记录结果后才能关闭。它不
+修改已经冻结的 M3.10 或 M3.11 runtime contract。

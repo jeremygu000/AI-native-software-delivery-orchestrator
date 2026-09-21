@@ -2941,3 +2941,36 @@ Scope and remaining work:
 
 M3.11 is **PASS / CLOSED / FROZEN** following independent review. Changes to this process-boundary
 deployment contract now require a demonstrated regression or a new, separately designed stage.
+
+## M3.12: External-Effect Smoke Harness (In Progress)
+
+M3.12 begins with a deliberately opt-in runner for a real external-effect smoke. It is not part of
+the default test suite and does not call a provider unless an operator explicitly sets all of:
+
+- `FORGE_M312_EXTERNAL_SMOKE=1` to authorize this particular external smoke execution;
+- `FORGE_M312_CREDENTIALS_CONFIRMED=1` to attest that provider-owned credentials are configured;
+- `FORGE_M312_CODING_AGENT_CONFIRMED=1` to attest that the real coding agent is authorized;
+- `FORGE_M312_REVIEW_PROVIDER` and `FORGE_M312_REVIEW_MODEL` for the approved independent reviewer.
+
+The runner fails before creating a Temporal server, worker, Git fixture, Docker container, or model
+session when any of those values is absent or blank. It always creates a disposable temporary Git
+repository rather than targeting this orchestrator repository. When explicitly authorized, it runs
+the production path: compiled `forge plan` with semantic review, approval, compiled `forge run`, a
+separately spawned compiled worker, real Pi coding and review adapters, a real Docker verifier, Git
+integration, and a durable Temporal/SQLite completion check. `pnpm smoke:m3.12` builds the runnable
+artifacts then invokes this guarded runner; `FORGE_M312_KEEP_FIXTURE=1` retains the disposable fixture
+for operator diagnosis.
+
+Verification so far:
+
+- unit tests prove missing authorization, credential attestation, coding-agent attestation, provider,
+  or model configuration fails closed;
+- the compiled runner itself was invoked without authorization and stopped with
+  `M3.12 external smoke requires FORGE_M312_EXTERNAL_SMOKE=1`, before any external provider or Docker
+  operation;
+- no real provider/model smoke has been executed yet because this environment has no authorized
+  credential configuration.
+
+M3.12 is **IN PROGRESS** and must not be marked closed until an operator explicitly runs at least one
+authorized provider/model smoke successfully and records its result. It does not alter frozen M3.10 or
+M3.11 runtime contracts.
