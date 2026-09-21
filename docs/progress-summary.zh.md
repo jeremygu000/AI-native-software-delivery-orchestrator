@@ -2678,3 +2678,31 @@ order。它们明确禁止在 M3.12 记录成功的 authorized external-effect s
 
 M3.13 经独立 review 后为 **PASS / CLOSED / FROZEN**。对该 durable read-model contract 的后续修改必须由已证明的
 regression 或单独设计的新阶段驱动。M3.12 仍是 blocked-deferred 且未关闭；没有执行任何 destructive M3.14 cutover 工作。
+
+## M3.14：非破坏性 Cutover Readiness
+
+M3.14 将 Runtime V2 尚存的 migration inventory 从描述性文档转换为 machine-checkable cutover gate。
+`docs/runtime-v2-destructive-cutover-manifest.json` 分类保留的 legacy runtime、differential test、frozen prototype
+package、test-only spike support 与可复用 application service；它还记录 caller、M3.12 通过后是否可删除，以及
+destructive stage 必须满足的最终 assertion。`ForgeRunProgressionService` 与 `ForgeReadModel` 等可复用 orchestration
+service 被明确保留，不能与 legacy in-process `OrchestrationRuntime` 混为一谈。
+
+`apps/cli/src/runtime-v2-cutover-readiness.spec.ts` 使 production boundary 可执行验证：compiled CLI 不含 legacy
+runtime、`LocalRuntimeStarter` 或 worker-composition dependency；`forge run` 使用 `TemporalRunLauncher` 与
+`startForgeRun`；只有独立部署的 worker 组合 Temporal activity。同一测试还要求 manifest 保持 non-destructive，并保留
+完整 inventory 与 8 条最终 cutover assertion。
+
+cutover preparation 文档现在说明 manifest、直接 caller、deletion order 与严格 gate。M3.14 不删除任何内容，也不引入
+alternate runtime path。
+
+验证：
+
+- cutover-readiness architecture regression 与 CLI command test 通过；
+- `pnpm lint`、`pnpm typecheck` 与 `pnpm build` 通过；
+- non-worker `pnpm test` phase 通过 72 个 file、691 个通过和 1 个跳过，但冻结的 M3.9 same-run
+  competing-lease differential 在 Temporal worker phase 及 isolated rerun 中超时，因此完整 suite 当前并非全绿；
+- `pnpm check` 仍在本阶段以外既有的 formatting issue 处停止，会如实报告且不修改 inherited file。
+
+M3.14 为 **CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / AWAITING INDEPENDENT REVIEW**。M3.12 仍为
+**IMPLEMENTATION PASS / READY FOR REAL SMOKE / BLOCKED-DEFERRED / NOT CLOSED**，因为 provider quota 不可用。不得
+执行 destructive cutover、legacy deletion，或宣称 Runtime V2 已完成。

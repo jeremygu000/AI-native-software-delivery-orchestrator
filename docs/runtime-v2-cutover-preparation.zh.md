@@ -2,8 +2,14 @@
 
 ## 目的
 
-这是非破坏性的 M3.14 准备记录。它盘点 legacy migration evidence，并定义删除前必须满足的断言；它不授权删除
-fallback、不声明 Runtime V2 migration 已完成，也不关闭整个 M3 programme。
+这是非破坏性的 M3.14 准备记录。权威、machine-checkable 的 inventory 与 cutover gate 位于
+`runtime-v2-destructive-cutover-manifest.json`，架构 regression 位于
+`apps/cli/src/runtime-v2-cutover-readiness.spec.ts`。本文解释这些检查；它不授权删除 fallback、不声明
+Runtime V2 migration 已完成，也不关闭整个 M3 programme。
+
+**当前状态：** CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / NOT CLOSED。manifest 将
+`destructiveChangesPermitted` 固定为 `false`，直到 M3.12 记录成功且获授权、使用 `openai/gpt-4.1` 的
+external-effect smoke。
 
 ## 当前 Production Route
 
@@ -13,17 +19,24 @@ provider-neutral durable read model。
 
 ## Legacy Inventory
 
-以下路径保留为 migration evidence，而不是 production routing：
+manifest 对每个保留路径分类，并记录其 caller 与通过 smoke 后的删除资格：
 
 - `libs/orchestration-runtime/src/lib/orchestration-runtime.ts` 是 legacy in-process runtime，用于已冻结的
-  M3.6-M3.9 differential evidence。
+  M3.6-M3.9 differential evidence，分类为 differential-only。
+- `libs/run-preparation/src/lib/local-runtime-starter.ts` 是 legacy in-process runtime 的
+  differential-only caller。
 - `apps/temporal-worker/src/legacy-temporal-differential.spec.ts` 并行执行 legacy runtime 和 Temporal path，
-  保护 authority parity。
-- `libs/temporal-spike/` 和 `libs/restate-spike/` 是冻结的 decision/prototype artifact；它们不会启动 production
-  Forge worker。
+  保护 authority parity，分类为 differential-only，并由专门的 legacy test command 调用。
+- `libs/temporal-spike/` 和 `libs/restate-spike/` 是 frozen-prototype artifact；它们不会启动 production Forge
+  worker。
+- `libs/runtime-v2-spike-harness/` 是保留 differential 与 prototype evidence 的 test-only support。
+- `libs/orchestration-runtime/src/lib/` 整体不是 deletion candidate。其可复用 application service，包括
+  `TaskOutputAdmissionCoordinator`、`RepairExecutionCoordinator`、`ForgeRunProgressionService` 和
+  `ForgeReadModel`，继续位于 production route。
 
-compiled CLI 不得实例化 legacy runtime 或 Forge worker composition。compiled worker 是唯一负责 composition
-activity 的 production process。
+可执行的 architecture regression 验证 compiled CLI 不 import `OrchestrationRuntime`、`LocalRuntimeStarter` 或
+worker composition；`forge run` 包含 `TemporalRunLauncher` 与 `startForgeRun` route；独立部署的 worker 是唯一使用
+`createForgeWorkerComposition` 与 `createTemporalWorker` 组合 activity 的 production process。
 
 ## Cutover Assertions
 
@@ -45,4 +58,4 @@ activity 的 production process。
 3. 只有在没有 production 或 contract test import 后，移除最终 legacy runtime。
 4. 更新 architecture 和 progress documentation，说明最终 cutover boundary。
 
-在此之前，本 inventory 有意仅为 documentation。
+在此之前，本 inventory、manifest 与 regression 有意保持 non-destructive。M3.14 不删除任何列出的路径。

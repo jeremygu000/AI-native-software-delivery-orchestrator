@@ -3033,3 +3033,36 @@ Verification:
 M3.13 is **PASS / CLOSED / FROZEN** following independent review. Changes to this durable read-model
 contract now require a demonstrated regression or a new, separately designed stage. M3.12 remains
 blocked-deferred and open; no destructive M3.14 cutover work was performed.
+
+## M3.14: Non-Destructive Cutover Readiness
+
+M3.14 converts the remaining Runtime V2 migration inventory from descriptive documentation into a
+machine-checkable cutover gate. `docs/runtime-v2-destructive-cutover-manifest.json` classifies retained
+legacy runtime, differential tests, frozen prototype packages, test-only spike support, and reusable
+application services. It also records their callers, whether they are deletion candidates after M3.12,
+and the final assertions a destructive stage must satisfy. Reusable orchestration services, including
+`ForgeRunProgressionService` and `ForgeReadModel`, are explicitly kept rather than being conflated with
+the legacy in-process `OrchestrationRuntime`.
+
+`apps/cli/src/runtime-v2-cutover-readiness.spec.ts` makes the intended production boundary executable:
+the compiled CLI has no legacy runtime, `LocalRuntimeStarter`, or worker-composition dependency; `forge
+run` uses `TemporalRunLauncher` and `startForgeRun`; and the independently deployable worker alone
+composes Temporal activities. The same test requires the manifest to stay non-destructive and retain
+the full inventory and eight final cutover assertions.
+
+The cutover preparation documents now explain the manifest, direct callers, deletion order, and the
+strict gate. M3.14 performs no deletion and introduces no alternate runtime path.
+
+Verification:
+
+- the cutover-readiness architecture regression and CLI command tests pass;
+- `pnpm lint`, `pnpm typecheck`, and `pnpm build` pass;
+- the non-worker `pnpm test` phase passes 72 files with 691 passing and 1 skipped tests, but the frozen
+  M3.9 same-run competing-lease differential times out in the Temporal worker phase and in an isolated
+  rerun, so the full suite is not currently green;
+- `pnpm check` still stops at pre-existing formatting issues outside this stage and is reported without
+  modifying inherited files.
+
+M3.14 is **CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / AWAITING INDEPENDENT REVIEW**. M3.12 remains
+**IMPLEMENTATION PASS / READY FOR REAL SMOKE / BLOCKED-DEFERRED / NOT CLOSED** because provider quota is
+unavailable. No destructive cutover, legacy deletion, or Runtime V2 completion claim is permitted.
