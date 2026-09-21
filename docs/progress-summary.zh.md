@@ -2600,3 +2600,6 @@ review，才会再次调用 reviewer，因此 review 已持久化后 Activity re
 - 默认 executable 仍使用真实 provider adapter，但 live Pi/Claude/Git/Docker smoke 是 M3.12 的 opt-in external
   integration 工作，不进入默认 test suite；
 - 本阶段不重新设计已冻结的 scheduling、lease、repair、review、integration 或 M3.10 launch authority contract。
+
+独立 review 后，M3.11 已 **PASS / CLOSED / FROZEN**。除非证明存在 process-boundary deployment contract regression，
+或另行设计新的阶段，不得修改这个边界。

@@ -2938,3 +2938,6 @@ Scope and remaining work:
   opt-in external integration concern for M3.12 rather than default test-suite behavior;
 - this stage does not redesign frozen scheduling, lease, repair, review, integration, or M3.10 launch
   authority contracts.
+
+M3.11 is **PASS / CLOSED / FROZEN** following independent review. Changes to this process-boundary
+deployment contract now require a demonstrated regression or a new, separately designed stage.
