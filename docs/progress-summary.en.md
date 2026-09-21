@@ -2981,6 +2981,47 @@ Verification so far:
 - no real provider/model smoke has been executed yet because this environment has no authorized
   credential configuration.
 
-M3.12 is **IN PROGRESS** and must not be marked closed until an operator explicitly runs at least one
-authorized provider/model smoke successfully and records its result. It does not alter frozen M3.10 or
-M3.11 runtime contracts.
+M3.12 is **IMPLEMENTATION PASS / READY FOR REAL SMOKE / BLOCKED-DEFERRED / NOT CLOSED**. The currently
+authorized provider quota is unavailable, so no real provider/model smoke was run or claimed. It must
+remain open until an operator runs an authorized smoke successfully and records its result. It does not
+alter frozen M3.10 or M3.11 runtime contracts.
+
+## M3.13: Observability and Provider-Neutral Read Model
+
+M3.13 adds an operator-facing read boundary without changing scheduling, execution, or provider behavior.
+`ForgeReadModel` lives in orchestration runtime and reads only provider-neutral durable authority records:
+the persisted run, task transitions, builder attempts, repair attempts, verification evidence, and code
+reviews. It produces `ForgeRunReadModel`, task and attempt summaries, current blocking reason,
+verification/review references, durable lease summaries, and an ordered durable timeline.
+
+Every read-model record has a provider-neutral correlation object. It carries durable identifiers where
+they exist: `runId`, `taskId`, `attemptId`, `repairAttemptId`, and `workspaceId`. The CLI adds the stable
+string workflow correlation `forge-run:<runId>` and operation labels such as `execute-builder`,
+`execute-repair`, `evaluate-output`, and `reevaluate-run`. The read model never imports Temporal types,
+so the same summaries remain usable by a future API or UI without coupling that boundary to a workflow
+SDK.
+
+`forge status` now opens the configured SQLite authority store and delegates projection to
+`ForgeReadModel`; it no longer assembles a second, CLI-specific interpretation of durable state. This
+keeps `status` aligned with the same explicit authority database that production launch, worker, and
+cancel use. A focused regression covers a blocked task with builder and repair lineage, verification,
+review, lease, timeline, and all required correlations.
+
+M3.14 preparation is deliberately non-destructive. `docs/runtime-v2-cutover-preparation.en.md` and its
+Chinese counterpart inventory the retained legacy differential runtime and frozen prototype packages,
+state the current production route, list cutover assertions, and provide a deletion order. They explicitly
+prohibit deletion of the final legacy runtime or a Runtime V2 completion claim until M3.12 records a
+successful authorized external-effect smoke.
+
+Verification:
+
+- focused read-model and CLI status tests validate the projection and JSON surface;
+- `pnpm lint`, `pnpm typecheck`, and `pnpm build` pass;
+- the non-worker test phase passes 71 files with 688 passing and 1 skipped tests; the frozen M3.9
+  same-run competing-lease differential timed out in the separately invoked Temporal worker phase and
+  is reported as an existing test-stability limitation rather than changed by this read-only stage;
+- `pnpm check` still stops at the pre-existing formatting issues outside this stage and is reported
+  separately rather than silently modifying inherited files.
+
+M3.13 is **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**. M3.12 remains blocked-deferred and open; no
+destructive M3.14 cutover work was performed.

@@ -63,6 +63,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../../libs/domain
+      '@ai-native-software-delivery-orchestrator/orchestration-runtime':
+        specifier: workspace:*
+        version: link:../../libs/orchestration-runtime
       '@ai-native-software-delivery-orchestrator/persistence':
         specifier: workspace:*
         version: link:../../libs/persistence

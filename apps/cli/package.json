@@ -10,6 +10,7 @@
     "@ai-native-software-delivery-orchestrator/agent-runtime": "workspace:*",
     "@ai-native-software-delivery-orchestrator/conflict-engine": "workspace:*",
     "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/orchestration-runtime": "workspace:*",
     "@ai-native-software-delivery-orchestrator/persistence": "workspace:*",
     "@ai-native-software-delivery-orchestrator/planning": "workspace:*",
     "@ai-native-software-delivery-orchestrator/repository-analysis": "workspace:*",

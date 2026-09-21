@@ -803,6 +803,8 @@ describe('forge status', () => {
       runId: 'run-1',
       state: 'ACTIVE',
       createdAt: '2026-08-13T00:00:00.000Z',
+      correlation: { runId: 'run-1', workflowId: 'forge-run:run-1' },
+      leases: [],
       tasks: [
         {
           id: 'task-1',
@@ -811,32 +813,41 @@ describe('forge status', () => {
           attempts: [
             {
               id: 'attempt-1',
+              kind: 'builder' as const,
               state: 'RUNNING',
-              startedAt: '2026-08-13T00:01:00.000Z'
+              revision: 2,
+              startedAt: '2026-08-13T00:01:00.000Z',
+              correlation: {
+                runId: 'run-1',
+                taskId: 'task-1',
+                attemptId: 'attempt-1',
+                workspaceId: 'workspace-1',
+                workflowId: 'forge-run:run-1',
+                activity: 'execute-builder'
+              }
             }
-          ]
+          ],
+          verification: [],
+          reviews: []
         }
       ],
-      leases: [
-        {
-          id: 'lease-1',
-          resource: { type: 'project', projectId: 'core' },
-          state: 'ACTIVE',
-          agentId: 'agent-1',
-          taskId: 'task-1'
-        }
-      ],
-      events: [
+      timeline: [
         {
           sequence: 1,
           occurredAt: '2026-08-13T00:00:00.000Z',
-          type: 'run-started'
+          type: 'run-started',
+          correlation: { runId: 'run-1', workflowId: 'forge-run:run-1' }
         },
         {
           sequence: 2,
           occurredAt: '2026-08-13T00:01:00.000Z',
           type: 'agent-completed',
-          taskId: 'task-1',
+          correlation: {
+            runId: 'run-1',
+            taskId: 'task-1',
+            workflowId: 'forge-run:run-1',
+            activity: 'reevaluate-run'
+          },
           detail: undefined
         }
       ]
@@ -871,9 +882,10 @@ describe('forge status', () => {
           runId: request.runId,
           state: 'COMPLETED',
           createdAt: '2026-08-13T00:00:00.000Z',
-          tasks: [],
+          correlation: { runId: request.runId },
           leases: [],
-          events: []
+          tasks: [],
+          timeline: []
         };
       },
       writeOutput: () => {}

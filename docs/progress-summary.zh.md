@@ -2636,5 +2636,40 @@ integrated working tree 干净。`pnpm smoke:m3.12` 会先构建 runnable artifa
   `M3.12 external smoke requires FORGE_M312_EXTERNAL_SMOKE=1` 停止，未执行任何外部 provider 或 Docker 操作；
 - 当前环境没有经过授权的 credential configuration，因此尚未执行真实 provider/model smoke。
 
-M3.12 仍为 **IN PROGRESS**；只有 operator 明确运行至少一次获授权 provider/model smoke 并记录结果后才能关闭。它不
-修改已经冻结的 M3.10 或 M3.11 runtime contract。
+M3.12 当前为 **IMPLEMENTATION PASS / READY FOR REAL SMOKE / BLOCKED-DEFERRED / NOT CLOSED**。已获授权的
+provider quota 当前不可用，因此没有执行或宣称执行真实 provider/model smoke。只有 operator 成功运行获授权 smoke 并
+记录结果后才能关闭；它不修改已经冻结的 M3.10 或 M3.11 runtime contract。
+
+## M3.13：可观测性与 Provider-Neutral Read Model
+
+M3.13 增加 operator-facing read boundary，不改变 scheduling、execution 或 provider behavior。`ForgeReadModel`
+位于 orchestration runtime，只读取 provider-neutral durable authority record：persisted run、task transition、
+builder attempt、repair attempt、verification evidence 与 code review。它产出 `ForgeRunReadModel`、task/attempt
+summary、当前 blocking reason、verification/review reference，以及有序 durable timeline。
+
+每条 read-model record 都带 provider-neutral correlation object。在可用时它包含 durable identifier：`runId`、
+`taskId`、`attemptId`、`repairAttemptId` 与 `workspaceId`。CLI 再加入稳定的 workflow correlation
+`forge-run:<runId>`，以及 `execute-builder`、`execute-repair`、`evaluate-output`、`reevaluate-run` 等 operation
+label。read model 从不 import Temporal type，因此未来 API 或 UI 可复用同一 summary，而不会耦合 workflow SDK。
+
+`forge status` 现在打开 configured SQLite authority store，并委托 `ForgeReadModel` 投影；它不再在 CLI 内构造第二份
+durable-state interpretation。这使 `status` 与 production launch、worker、cancel 使用的 explicit authority database
+保持一致。专门 regression 覆盖了 blocked task 的 builder/repair lineage、verification、review、timeline 以及全部必要
+correlation。read model 也保留 durable lease summary，避免 `forge status` 在改用统一 projection 后丢失既有的
+lease observability。
+
+M3.14 的准备工作刻意保持 non-destructive。`docs/runtime-v2-cutover-preparation.en.md` 及其中文副本盘点保留的
+legacy differential runtime 和 frozen prototype package，说明当前 production route、cutover assertion 与 deletion
+order。它们明确禁止在 M3.12 记录成功的 authorized external-effect smoke 前删除最终 legacy runtime，或宣称 Runtime V2
+已完成。
+
+验证：
+
+- focused read-model 与 CLI status test 验证 projection 和 JSON surface；
+- `pnpm lint`、`pnpm typecheck` 与 `pnpm build` 通过；
+- non-worker test phase 通过 71 个 file、688 个通过和 1 个跳过；单独调用的 Temporal worker phase 中，已冻结的 M3.9
+  same-run competing-lease differential 超时。这会作为既有 test-stability limitation 如实报告，而不是归因于此只读阶段；
+- `pnpm check` 仍会在本阶段之外既有的 formatting issue 处停止，会如实报告，绝不静默修改 inherited file。
+
+M3.13 为 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**。M3.12 仍是 blocked-deferred 且未关闭；没有执行任何
+destructive M3.14 cutover 工作。

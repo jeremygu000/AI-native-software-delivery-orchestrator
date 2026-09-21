@@ -49,6 +49,19 @@ export {
   ForgeRunReevaluationError,
   ForgeRunReevaluationService
 } from './lib/forge-run-reevaluation-service.js';
+export { ForgeReadModel } from './lib/forge-read-model.js';
+export type {
+  ForgeAttemptSummary,
+  ForgeBlockingReason,
+  ForgeCorrelation,
+  ForgeLeaseSummary,
+  ForgeReadModelPersistence,
+  ForgeReviewReference,
+  ForgeRunReadModel,
+  ForgeTaskSummary,
+  ForgeTimelineEntry,
+  ForgeVerificationReference
+} from './lib/forge-read-model.js';
 export type { DurableExecutionScenarioService } from './lib/durable-execution-spike-contract.js';
 export {
   assertDurableExecutionSpikeOutcome,
