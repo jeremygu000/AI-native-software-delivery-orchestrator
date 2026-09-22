@@ -2723,15 +2723,20 @@ package export、workspace reference、build/test script、Vitest coverage exclu
 asset。可复用的 production service 继续保留在 `libs/orchestration-runtime`；唯一的 production execution route
 仍是 CLI launcher、Temporal workflow 与独立部署的 worker。
 
-保留的 production test 现在直接保护原 differential suite 独有的 durable invariant：精确与不匹配且重复的
-blocked-integration wake、没有 integration 的 repair-budget evidence、repair `UNKNOWN` authority、`STALE`
-blocker repair resume，以及可在 production boundary 测试的 restart recovery。cutover manifest 与对应 regression
-现在断言 retired path 已不存在，同时保留记录的 M3.12 external-smoke evidence。
+保留的 production test 保护精确、不匹配及重复的 blocked-integration wake。一个 local Temporal server 测试在精确
+wake 前用 worker B 替换 worker A；另一 composition 测试关闭临时 SQLite authority database 的第一个连接并为
+worker B 重新打开，证明错误 wake 不解除阻塞，精确 wake 仅集成一次，重复 wake 不重复执行。bounded repair 测试在第三次
+repair recommendation 耗尽预算后，仍保留两个已完成 repair、三条 review 与 verification evidence，且没有
+integration claim 或 `workspace-integrated` event。核心 repair-execution 测试保留 post-start `UNKNOWN` authority
+行为；本阶段未独立断言完整 Temporal repair-UNKNOWN nonterminal 场景。cutover manifest 与 regression 继续证明
+retired path 已不存在，并保留 M3.12 external-smoke evidence。
 
 normal production review authority 现在是显式配置，而不是 composition default。CLI 的 `plan`、`bind` 和 `run`
 会在 authority persistence 前 canonicalize 并解析必填 provider/model。worker 要求
-`FORGE_WORKER_REVIEW_PROVIDER` 与 `FORGE_WORKER_REVIEW_MODEL`，在 polling Temporal 前解析相同 canonical policy，并在 activity
-work 前拒绝 durable fingerprint mismatch。neutral composition 接收显式 path、policy 和 application-owned adapter factory，不再读取
+`FORGE_WORKER_REVIEW_PROVIDER` 与 `FORGE_WORKER_REVIEW_MODEL`，在 polling Temporal 前解析相同 canonical policy，并在
+blocked-repair resume、scheduler reevaluation 等 mutation entrypoint 前检查 durable run policy。错误 policy 的
+worker 不会将 BLOCKED repair 恢复或写入 resume dispatch。neutral composition 接收显式 path、policy 和
+application-owned adapter factory，不再读取
 deployment environment 或自行选择 provider/model。
 
 M3.14 Sequence C 为 **IMPLEMENTED / M3.12 PASS-CLOSED-FROZEN / AWAITING INDEPENDENT REVIEW**。由 worker 而不是

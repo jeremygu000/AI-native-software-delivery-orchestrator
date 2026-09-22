@@ -421,18 +421,23 @@ export async function createForgeRuntimeComposition(
   });
   const integration = overrides.integration ?? acceptedOutputIntegration;
 
+  const requireMatchingRunAuthority = async (runId: string) => {
+    const recovered = await persistence.recoverRun(runId);
+    if (recovered === undefined) {
+      throw new Error(`Run not found: ${runId}`);
+    }
+    if (
+      recovered.run.authority.verificationPolicyFingerprint !== verificationPolicyFingerprint ||
+      recovered.run.authority.codeReviewPolicyFingerprint !== activeReviewPolicyFingerprint
+    ) {
+      throw new Error(`Worker policy authority mismatch for ${runId}`);
+    }
+    return recovered;
+  };
+
   const recoverTaskContext = async (runId: string, taskId: string, attemptId?: string) => {
     const binding = await persistence.recoverTaskBinding(runId, taskId);
-    const recoveredRun = await persistence.recoverRun(runId);
-    if (recoveredRun !== undefined) {
-      if (
-        recoveredRun.run.authority.verificationPolicyFingerprint !==
-          verificationPolicyFingerprint ||
-        recoveredRun.run.authority.codeReviewPolicyFingerprint !== activeReviewPolicyFingerprint
-      ) {
-        throw new Error(`Worker policy authority mismatch for ${runId}`);
-      }
-    }
+    const recoveredRun = await requireMatchingRunAuthority(runId);
     const task = recoveredRun?.tasks.find((candidate) => candidate.id === taskId);
     const workspaceId = binding?.workspace.id;
     const workspace =
@@ -470,10 +475,7 @@ export async function createForgeRuntimeComposition(
   };
 
   const assertRunAcceptsMutations = async (runId: string): Promise<void> => {
-    const recovered = await persistence.recoverRun(runId);
-    if (recovered === undefined) {
-      throw new Error(`Run not found: ${runId}`);
-    }
+    const recovered = await requireMatchingRunAuthority(runId);
     if (recovered.run.state !== 'ACTIVE') {
       throw new Error(`Run does not accept mutations: ${runId}/${recovered.run.state}`);
     }
@@ -485,6 +487,7 @@ export async function createForgeRuntimeComposition(
       if (recovered?.run.state === 'CANCEL_REQUESTED') {
         return { runId: input.runId, authorizedTasks: [] };
       }
+      await requireMatchingRunAuthority(input.runId);
       const authorizations: readonly { taskId: string; attemptId: string }[] =
         await reevaluation.recoverAuthorizations(input.runId);
       return {

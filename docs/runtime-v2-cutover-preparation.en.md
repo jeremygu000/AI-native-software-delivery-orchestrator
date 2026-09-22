@@ -37,10 +37,14 @@ Reusable `libs/orchestration-runtime` application services remain on the product
 
 ## Retained Evidence
 
-Temporal and production-composition tests retain the unique durable assertions that justified the old
-differential suite: exact and mismatched repeated blocked-integration wake, repair-budget evidence without
-integration, repair `UNKNOWN` authority, `STALE` blocker repair resume, and feasible durable restart/wake
-recovery. The cutover regression additionally requires every retired path to be absent.
+Temporal and production-composition tests retain exact, mismatched and repeated blocked-integration wakes.
+A real local Temporal server test replaces worker A with worker B before waking integration; a separate
+temporary-SQLite test closes composition A and reopens the same database for composition B, where an invalid
+wake does nothing, an exact wake integrates, and a repeated wake does not repeat integration. Repair budget
+coverage retains completed repair, review, and verification evidence with no integration claim or
+`workspace-integrated` event. The core repair-execution test retains post-start `UNKNOWN` authority; this
+cutover does not claim a separate full-workflow repair-UNKNOWN nonterminal test. `STALE` blocker repair resume
+is tested through production composition. The cutover regression requires every retired path to be absent.
 
 ## Verification
 

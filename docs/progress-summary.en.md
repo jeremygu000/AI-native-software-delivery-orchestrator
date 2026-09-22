@@ -3085,16 +3085,22 @@ coverage exclusions, and the pnpm lockfile no longer retain those assets. Reusab
 remain in `libs/orchestration-runtime`, and the only production execution route remains the CLI launcher,
 Temporal workflow, and independently deployed worker.
 
-The retained production tests now directly protect the unique durable invariants previously covered by
-the differential suite: exact and mismatched repeated blocked-integration wakes, repair-budget evidence
-without integration, repair `UNKNOWN` authority, `STALE` blocker repair resumption, and restart recovery
-where a durable wake can be tested at the production boundary. The cutover manifest and its regression
-now assert that the retired paths are absent while preserving the recorded M3.12 external-smoke evidence.
+The retained production tests protect exact, mismatched, and repeated blocked-integration wakes. A local
+Temporal server test replaces worker A with worker B before the exact wake; a separate composition test
+closes one connection to a temporary SQLite authority database and reopens it for worker B, proving that a
+wrong wake leaves integration blocked and the exact wake integrates once even if repeated. A bounded repair
+test retains two completed repairs, three review and verification records, no integration claim, and no
+`workspace-integrated` event after the third recommendation exhausts the budget. Core repair-execution
+tests retain post-start `UNKNOWN` authority behavior; a full Temporal repair-UNKNOWN nonterminal scenario
+is not independently asserted here. The cutover manifest and its regression assert that the retired paths
+are absent while preserving the recorded M3.12 external-smoke evidence.
 
 Normal production review authority is now explicit rather than a composition default. CLI `plan`, `bind`,
 and `run` canonicalize and resolve their required provider/model before authority persistence. The worker
 requires `FORGE_WORKER_REVIEW_PROVIDER` and `FORGE_WORKER_REVIEW_MODEL`, resolves the same canonical policy before it
-polls Temporal, and rejects a durable fingerprint mismatch before activity work. The neutral composition
+polls Temporal, and checks durable run policy before mutation entrypoints including blocked-repair resumption
+and scheduler reevaluation. A worker with the wrong policy cannot resume a BLOCKED repair or persist its
+resume dispatch. The neutral composition
 receives explicit paths, policy, and application-owned adapter factories without reading deployment
 environment or selecting a provider/model itself.
 

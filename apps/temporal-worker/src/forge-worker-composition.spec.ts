@@ -49,6 +49,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   createForgeWorkerComposition,
+  createTestWorkerCompositionDeployment,
   verificationPolicyFingerprint,
   type ForgeWorkerCompositionOverrides
 } from './forge-worker-composition.js';
@@ -76,6 +77,7 @@ class MemoryPersistence
   readonly attempts: PersistedAgentExecutionAttempt[] = [];
   readonly impacts: PersistedTaskImpact[] = [];
   readonly reviews: PersistedTaskCodeReview[] = [];
+  readonly verificationEvidence: TaskVerificationEvidence[] = [];
   readonly repairAttempts: PersistedTaskRepairAttempt[] = [];
   readonly repairWorkItems: TaskRepairWorkItem[] = [];
   readonly leases: PersistedWriteLease[] = [];
@@ -147,9 +149,11 @@ class MemoryPersistence
     return this.reviews.filter((review) => review.runId === runId);
   }
 
-  async persistVerificationEvidence(): Promise<void> {}
+  async persistVerificationEvidence(evidence: TaskVerificationEvidence): Promise<void> {
+    this.verificationEvidence.push(evidence);
+  }
   async recoverVerificationEvidence(): Promise<readonly TaskVerificationEvidence[]> {
-    return [];
+    return this.verificationEvidence;
   }
   async persistConflict(): Promise<void> {}
   async recoverConflicts(): Promise<readonly PersistedTaskConflict[]> {
@@ -463,12 +467,26 @@ class MemoryPersistence
     maxRepairs: number;
     createWorkItem: (attempt: TaskRepairAttempt) => TaskRepairWorkItem;
   }): Promise<TaskRepairAttempt> {
-    if (request.maxRepairs < 1) {
+    const taskAttempts = this.repairAttempts.filter(
+      ({ runId, attempt }) =>
+        runId === request.attempt.runId && attempt.taskId === request.attempt.taskId
+    );
+    const existing = taskAttempts.find(
+      ({ attempt }) =>
+        attempt.parentReviewIteration === request.attempt.parentReviewIteration &&
+        JSON.stringify(attempt.parentReviewSubject) ===
+          JSON.stringify(request.attempt.parentReviewSubject)
+    );
+    if (existing !== undefined) {
+      return existing.attempt;
+    }
+    if (taskAttempts.length >= request.maxRepairs) {
       throw new Error('Repair budget exhausted');
     }
-    await this.persistRepairAttempt({ runId: request.attempt.runId, attempt: request.attempt });
-    await this.persistRepairWorkItem(request.createWorkItem(request.attempt));
-    return request.attempt;
+    const attempt = { ...request.attempt, repairIteration: taskAttempts.length + 1 };
+    await this.persistRepairAttempt({ runId: attempt.runId, attempt });
+    await this.persistRepairWorkItem(request.createWorkItem(attempt));
+    return attempt;
   }
 
   async close(): Promise<void> {}
@@ -1033,6 +1051,35 @@ describe('temporal worker production vertical slice', () => {
       }
     });
 
+    const mismatchedComposition = await createForgeWorkerComposition(
+      {
+        ...createTestWorkerCompositionDeployment(),
+        codeReviewPolicy: createCodeReviewPolicy({ provider: 'wrong', model: 'wrong' })
+      },
+      {
+        persistence,
+        builderExecution: unusedBuilderExecution(),
+        evaluation: unusedEvaluation(),
+        integration: unusedIntegration(),
+        repairExecution: unusedRepairExecution(),
+        repositoryGraph: emptyRepositoryGraph
+      }
+    );
+    await expect(
+      mismatchedComposition.forgeActivities.resumeBlockedRepair({
+        runId: 'run-1',
+        repairAttemptId: blockedRepair.id
+      })
+    ).rejects.toThrow('Worker policy authority mismatch for run-1');
+    expect(
+      persistence.repairAttempts.find(({ attempt }) => attempt.id === blockedRepair.id)?.attempt
+    ).toMatchObject({
+      state: 'BLOCKED',
+      revision: 3
+    });
+    expect(persistence.repairResumeDispatches).toHaveLength(0);
+    await mismatchedComposition.close();
+
     const composition = await createForgeWorkerComposition({
       persistence,
       builderExecution: unusedBuilderExecution(),
@@ -1268,6 +1315,156 @@ describe('temporal worker production vertical slice', () => {
     });
     expect(persistence.repairResumeDispatches).toHaveLength(1);
     await composition.close();
+  });
+
+  it('resumes a blocked integration exactly once after reopening the SQLite authority', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'forge-integration-restart-'));
+    directories.push(directory);
+    const databasePath = join(directory, 'run.sqlite');
+    const writer = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    const request = createRunRequest(['task-a']);
+    await writer.createRun(request);
+    const [binding] = request.taskBindings;
+    const workspace: TaskWorkspace = {
+      ...binding.workspace,
+      revision: 1,
+      phase: 'READY_TO_INTEGRATE'
+    };
+    const subject = {
+      builderAttemptId: 'builder-attempt-integration',
+      outputAttemptId: 'builder-attempt-integration',
+      workspaceId: workspace.id,
+      workspaceRevision: workspace.revision,
+      workspaceChangeFingerprint: 'sha256:'.concat('a'.repeat(64)),
+      impactFingerprint: 'sha256:'.concat('b'.repeat(64)),
+      verificationFingerprint: 'sha256:'.concat('c'.repeat(64))
+    };
+    await writer.persistWorkspace({ runId: 'run-1', workspace });
+    await writer.persistReview({
+      runId: 'run-1',
+      taskId: 'task-a',
+      iteration: 1,
+      subject,
+      review: { recommendation: 'accept', summary: 'accepted', findings: [] }
+    });
+    const compositionA = await createForgeWorkerComposition({
+      persistence: writer,
+      repositoryGraph: emptyRepositoryGraph,
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
+      repairExecution: unusedRepairExecution(),
+      integration: {
+        async integrate() {
+          const blocked: TaskWorkspace = {
+            ...workspace,
+            revision: 2,
+            phase: 'INTEGRATION_BLOCKED',
+            blocker: {
+              type: 'rebase-conflict',
+              detail: 'Concurrent change',
+              conflictPaths: ['fixture.ts']
+            }
+          };
+          await writer.persistWorkspace({ runId: 'run-1', workspace: blocked });
+          return { status: 'blocked', workspace: blocked };
+        }
+      },
+      workspaceManager: {
+        create: unexpectedExecution('workspace creation'),
+        commit: unexpectedExecution('workspace commit'),
+        integrate: unexpectedExecution('workspace integration'),
+        resumeIntegration: unexpectedExecution('workspace integration resume on worker A'),
+        abortIntegration: unexpectedExecution('workspace integration abort'),
+        dispose: unexpectedExecution('workspace disposal')
+      }
+    });
+    await expect(
+      compositionA.forgeActivities.integrateAcceptedOutput({
+        runId: 'run-1',
+        taskId: 'task-a',
+        workspaceId: workspace.id,
+        subjectRef: {
+          builderAttemptId: subject.builderAttemptId,
+          outputAttemptId: subject.outputAttemptId,
+          workspaceId: subject.workspaceId
+        }
+      })
+    ).resolves.toMatchObject({ status: 'blocked' });
+    await compositionA.close();
+
+    const reader = new DrizzleSqliteOrchestrationPersistence(databasePath);
+    let integrationCalls = 0;
+    const compositionB = await createForgeWorkerComposition({
+      persistence: reader,
+      repositoryGraph: emptyRepositoryGraph,
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
+      repairExecution: unusedRepairExecution(),
+      snapshots: {
+        async capture({ repositoryPath }) {
+          return {
+            repositoryId: 'repo-1',
+            repositoryRoot: repositoryPath,
+            baseCommit: 'a'.repeat(40),
+            workingTreeFingerprint: subject.workspaceChangeFingerprint,
+            dirty: true
+          };
+        }
+      },
+      workspaceManager: {
+        create: unexpectedExecution('workspace creation'),
+        commit: unexpectedExecution('workspace commit'),
+        integrate: unexpectedExecution('workspace integration'),
+        async resumeIntegration(blocked) {
+          integrationCalls += 1;
+          const integrated: TaskWorkspace = {
+            ...blocked,
+            revision: blocked.revision + 1,
+            phase: 'INTEGRATED',
+            integrationCommit: 'commit-task-a'
+          };
+          return { status: 'integrated' as const, workspace: integrated };
+        },
+        abortIntegration: unexpectedExecution('workspace integration abort'),
+        dispose: unexpectedExecution('workspace disposal')
+      }
+    });
+    const wake = {
+      runId: 'run-1',
+      taskId: 'task-a',
+      workspaceId: workspace.id,
+      subjectRef: {
+        builderAttemptId: subject.builderAttemptId,
+        outputAttemptId: subject.outputAttemptId,
+        workspaceId: subject.workspaceId
+      }
+    };
+    await expect(
+      compositionB.forgeActivities.resumeBlockedIntegration({
+        ...wake,
+        subjectRef: { ...wake.subjectRef, outputAttemptId: 'wrong-attempt' }
+      })
+    ).resolves.toMatchObject({ status: 'ignored', detail: 'admission-invalid' });
+    expect((await reader.recoverRun('run-1'))?.workspaces[0]?.workspace.phase).toBe(
+      'INTEGRATION_BLOCKED'
+    );
+    await expect(
+      compositionB.forgeActivities.resumeBlockedIntegration(wake)
+    ).resolves.toMatchObject({
+      status: 'integrated'
+    });
+    await expect(
+      compositionB.forgeActivities.resumeBlockedIntegration(wake)
+    ).resolves.toMatchObject({
+      status: 'integrated'
+    });
+    expect(integrationCalls).toBe(1);
+    expect((await reader.recoverRun('run-1'))?.workspaces[0]?.workspace.phase).toBe('INTEGRATED');
+    expect(await reader.recoverIntegration('run-1')).toMatchObject({
+      status: 'integrated',
+      outputAttemptId: subject.outputAttemptId
+    });
+    await compositionB.close();
   });
 
   it('reopens SQLite, hydrates active leases, and recovers the same durable resume authorization', async () => {
@@ -1605,7 +1802,7 @@ describe('temporal worker production vertical slice', () => {
     await compositionB.close();
   }, 60000);
 
-  it('uses one injected coding gateway for builder and repair sessions', async () => {
+  it('retains repair-budget evidence without integration using one coding gateway', async () => {
     const persistence = new MemoryPersistence();
     await persistence.createRun(createRunRequest(['task-a']));
     const sessionPrompts: string[] = [];
@@ -1676,20 +1873,17 @@ describe('temporal worker production vertical slice', () => {
         async review() {
           reviewCalls += 1;
           return {
-            recommendation: reviewCalls === 1 ? 'repair' : 'accept',
+            recommendation: 'repair',
             summary: 'gateway fixture review',
-            findings:
-              reviewCalls === 1
-                ? [
-                    {
-                      id: 'repair-required',
-                      severity: 'low' as const,
-                      fileIds: ['fixture.ts'],
-                      symbolIds: [],
-                      description: 'Exercise the repair coding session.'
-                    }
-                  ]
-                : []
+            findings: [
+              {
+                id: `repair-required-${reviewCalls}`,
+                severity: 'low' as const,
+                fileIds: ['fixture.ts'],
+                symbolIds: [],
+                description: 'Exercise the repair coding session.'
+              }
+            ]
           };
         }
       }
@@ -1729,10 +1923,53 @@ describe('temporal worker production vertical slice', () => {
       repairAttemptId: admitted.repairAttemptId
     });
 
-    expect(repaired.recommendation).toBe('accept');
-    expect(sessionPrompts).toHaveLength(2);
+    expect(repaired.recommendation).toBe('repair');
+    if (repaired.reviewId === undefined || repaired.subjectRef === undefined) {
+      throw new Error('Expected a durable repair review authority');
+    }
+    const admittedSecondRepair = await activities.admitRepair({
+      runId: 'run-1',
+      taskId: 'task-a',
+      reviewId: repaired.reviewId,
+      subjectRef: repaired.subjectRef
+    });
+    const repairedSecond = await activities.executeRepair({
+      runId: 'run-1',
+      taskId: 'task-a',
+      workspaceId: built.workspaceId,
+      builderAttemptId: built.attemptId,
+      impactId: built.impactId,
+      reviewId: repaired.reviewId,
+      repairAttemptId: admittedSecondRepair.repairAttemptId
+    });
+    expect(repairedSecond.recommendation).toBe('repair');
+    if (repairedSecond.reviewId === undefined || repairedSecond.subjectRef === undefined) {
+      throw new Error('Expected a durable second repair review authority');
+    }
+    await expect(
+      activities.admitRepair({
+        runId: 'run-1',
+        taskId: 'task-a',
+        reviewId: repairedSecond.reviewId,
+        subjectRef: repairedSecond.subjectRef
+      })
+    ).rejects.toThrow('Repair budget exhausted');
+    expect(persistence.repairAttempts).toHaveLength(2);
+    expect(persistence.repairAttempts.map(({ attempt }) => attempt.state)).toEqual([
+      'COMPLETED',
+      'COMPLETED'
+    ]);
+    expect(persistence.reviews).toHaveLength(3);
+    expect(persistence.verificationEvidence).toHaveLength(3);
+    expect(persistence.integrationClaims).toHaveLength(0);
+    expect(persistence.reevaluations.map(({ event }) => event.event.type)).not.toContain(
+      'workspace-integrated'
+    );
+    expect(persistence.state).toBe('ACTIVE');
+    expect(sessionPrompts).toHaveLength(3);
     expect(sessionPrompts[0]).not.toContain('Repair task findings');
     expect(sessionPrompts[1]).toContain('Repair task findings');
+    expect(sessionPrompts[2]).toContain('Repair task findings');
     await composition.close();
   });
 

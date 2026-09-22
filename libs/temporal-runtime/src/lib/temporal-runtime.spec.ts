@@ -1020,8 +1020,8 @@ describe('temporal-runtime Scenario A workflow', () => {
     }
   });
 
-  it('waits for an exact integration wake and resumes the blocked accepted output', async () => {
-    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+  it('resumes a durably blocked integration after worker replacement and an exact wake', async () => {
+    const environment = await TestWorkflowEnvironment.createLocal();
     const calls: string[] = [];
     const activities: ForgeActivities & BlockedIntegrationContinuationActivities = {
       async reevaluateRun(input) {
@@ -1086,7 +1086,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         throw new Error('resumeBlockedRepair should not be called');
       }
     };
-    const worker = await Worker.create({
+    const workerA = await Worker.create({
       connection: environment.nativeConnection,
       taskQueue: 'temporal-runtime-test-blocked-integration',
       workflowsPath: WORKFLOWS_PATH,
@@ -1094,7 +1094,10 @@ describe('temporal-runtime Scenario A workflow', () => {
     });
     const runId = `run-integration-${Date.now()}`;
     const client = new Client({ connection: environment.client.connection });
-    const workerPromise = worker.run();
+    const workerAPromise = workerA.run();
+    let workerAStopped = false;
+    let workerB: Worker | undefined;
+    let workerBPromise: Promise<void> | undefined;
     try {
       const handle = await client.workflow.start(forgeRunWorkflow, {
         taskQueue: 'temporal-runtime-test-blocked-integration',
@@ -1104,6 +1107,15 @@ describe('temporal-runtime Scenario A workflow', () => {
       await environment.sleep(200);
       expect(calls).toContain('integrateAcceptedOutput:task-integration');
       expect(calls).not.toContain('finalizeRunState');
+      workerA.shutdown();
+      workerAStopped = true;
+      workerB = await Worker.create({
+        connection: environment.nativeConnection,
+        taskQueue: 'temporal-runtime-test-blocked-integration',
+        workflowsPath: WORKFLOWS_PATH,
+        activities
+      });
+      workerBPromise = workerB.run();
       await handle.signal(integrationWakeSignal, {
         taskId: 'task-integration',
         workspaceId: 'workspace-integration',
@@ -1125,11 +1137,15 @@ describe('temporal-runtime Scenario A workflow', () => {
         'finalizeRunState'
       ]);
     } finally {
-      worker.shutdown();
-      await workerPromise;
+      if (!workerAStopped) {
+        workerA.shutdown();
+      }
+      await workerAPromise;
+      workerB?.shutdown();
+      await workerBPromise;
       await environment.teardown();
     }
-  });
+  }, 20_000);
 
   it('ignores mismatched wakes and remains blocked through a repeated integration block', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
