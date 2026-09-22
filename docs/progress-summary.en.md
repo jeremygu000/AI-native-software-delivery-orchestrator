@@ -2942,7 +2942,7 @@ Scope and remaining work:
 M3.11 is **PASS / CLOSED / FROZEN** following independent review. Changes to this process-boundary
 deployment contract now require a demonstrated regression or a new, separately designed stage.
 
-## M3.12: External-Effect Smoke Harness (In Progress)
+## M3.12: External-Effect Smoke Harness
 
 M3.12 begins with a deliberately opt-in runner for a real external-effect smoke. It is not part of
 the default test suite and does not call a provider unless an operator explicitly sets all of:
@@ -2984,10 +2984,12 @@ Verification so far:
   spawned worker completed through local Temporal, configured SQLite authority, real Pi adapters, Docker
   verification, and Git integration; the harness recorded `COMPLETED` with that exact identity.
 
-M3.12 is **REAL SMOKE PASS / AWAITING INDEPENDENT REVIEW / NOT CLOSED**. The recorded run used the exact,
+M3.12 is **PASS / CLOSED / FROZEN** following independent review. The recorded run used the exact,
 operator-confirmed `deepseek/deepseek-flash` identity. Its `DEEPSEEK_API_KEY` was injected only into the
 smoke subprocess and is not stored in repository evidence. The successful result recorded the exact
 provider/model and `COMPLETED` outcome. This does not alter frozen M3.10 or M3.11 runtime contracts.
+Changes to this external-effect boundary now require a demonstrated regression or a separately designed
+stage.
 
 ## M3.13: Observability and Provider-Neutral Read Model
 
@@ -3034,9 +3036,8 @@ Verification:
   separately rather than silently modifying inherited files.
 
 M3.13 is **PASS / CLOSED / FROZEN** following independent review. Changes to this durable read-model
-contract now require a demonstrated regression or a new, separately designed stage. M3.12 now has a
-successful authorized external-effect smoke recorded with its exact provider/model identity, but awaits
-independent review; no destructive M3.14 cutover work was performed.
+contract now require a demonstrated regression or a new, separately designed stage. M3.12 is now
+PASS/CLOSED/FROZEN after its independent review; no destructive M3.14 cutover work was performed.
 
 ## M3.14: Non-Destructive Cutover Readiness
 
@@ -3068,7 +3069,9 @@ Verification:
 - `pnpm check` still stops at pre-existing formatting issues outside this stage and is reported without
   modifying inherited files.
 
-M3.14 is **CUTOVER READY / M3.12 REAL SMOKE PASS / AWAITING DESTRUCTIVE-STAGE REVIEW**. Production roots
+M3.14 is **CUTOVER READY / M3.12 PASS-CLOSED-FROZEN / AWAITING DESTRUCTIVE-STAGE REVIEW**. Production roots
 are explicitly isolated from `/legacy` entrypoints. The successful M3.12 smoke satisfies that prerequisite,
 but no destructive cutover, legacy deletion, or Runtime V2 completion claim is permitted without a
-separately designed and reviewed destructive stage.
+separately designed and reviewed destructive stage. That stage must also make normal worker review-policy
+selection explicit deployment configuration and prove that it matches the CLI durable authority policy;
+the current smoke-only DeepSeek override does not satisfy that normal-production assertion.

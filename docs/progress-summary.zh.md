@@ -2604,7 +2604,7 @@ review，才会再次调用 reviewer，因此 review 已持久化后 Activity re
 独立 review 后，M3.11 已 **PASS / CLOSED / FROZEN**。除非证明存在 process-boundary deployment contract regression，
 或另行设计新的阶段，不得修改这个边界。
 
-## M3.12：外部副作用 Smoke Harness（进行中）
+## M3.12：外部副作用 Smoke Harness
 
 M3.12 先提供一个刻意 opt-in 的真实外部副作用 smoke runner。它不属于默认 test suite；只有 operator 显式提供以下
 全部配置时，才会调用 provider：
@@ -2638,10 +2638,11 @@ integrated working tree 干净。`pnpm smoke:m3.12` 会先构建 runnable artifa
   Temporal、configured SQLite authority、真实 Pi adapter、Docker verification 和 Git integration 成功完成；harness
   记录该精确 identity 的 `COMPLETED` 结果。
 
-M3.12 当前为 **REAL SMOKE PASS / AWAITING INDEPENDENT REVIEW / NOT CLOSED**。已记录的运行使用精确、由
+M3.12 经独立 review 后为 **PASS / CLOSED / FROZEN**。已记录的运行使用精确、由
 operator 确认的 `deepseek/deepseek-flash` identity。其 `DEEPSEEK_API_KEY` 只注入 smoke subprocess，不会写入
 repository evidence。成功结果记录了精确 provider/model 与 `COMPLETED` outcome。本变更不修改已经冻结的 M3.10 或
-M3.11 runtime contract。
+M3.11 runtime contract。后续对该 external-effect boundary 的修改必须由已证明的 regression 或单独设计的
+stage 驱动。
 
 ## M3.13：可观测性与 Provider-Neutral Read Model
 
@@ -2680,8 +2681,8 @@ order。它们明确禁止在 M3.12 记录成功的 authorized external-effect s
 - `pnpm check` 仍会在本阶段之外既有的 formatting issue 处停止，会如实报告，绝不静默修改 inherited file。
 
 M3.13 经独立 review 后为 **PASS / CLOSED / FROZEN**。对该 durable read-model contract 的后续修改必须由已证明的
-regression 或单独设计的新阶段驱动。M3.12 已记录成功的获授权 external-effect smoke 及其精确 provider/model identity，
-但仍等待独立 review；没有执行任何 destructive M3.14 cutover 工作。
+regression 或单独设计的新阶段驱动。M3.12 已在独立 review 后成为 PASS/CLOSED/FROZEN；没有执行任何
+destructive M3.14 cutover 工作。
 
 ## M3.14：非破坏性 Cutover Readiness
 
@@ -2708,6 +2709,8 @@ alternate runtime path。
   competing-lease differential 在 Temporal worker phase 及 isolated rerun 中超时，因此完整 suite 当前并非全绿；
 - `pnpm check` 仍在本阶段以外既有的 formatting issue 处停止，会如实报告且不修改 inherited file。
 
-M3.14 当前为 **CUTOVER READY / M3.12 REAL SMOKE PASS / AWAITING DESTRUCTIVE-STAGE REVIEW**。production root
+M3.14 当前为 **CUTOVER READY / M3.12 PASS-CLOSED-FROZEN / AWAITING DESTRUCTIVE-STAGE REVIEW**。production root
 已与 `/legacy` entrypoint 显式隔离。成功的 M3.12 smoke 已满足该 prerequisite，但在另行设计并审查 destructive stage
-前，不得执行 destructive cutover、legacy deletion，或宣称 Runtime V2 已完成。
+前，不得执行 destructive cutover、legacy deletion，或宣称 Runtime V2 已完成。该 stage 还必须将 normal worker
+review-policy selection 变为显式 deployment configuration，并证明它与 CLI durable authority policy 匹配；当前仅用于
+smoke 的 DeepSeek override 不满足这项 normal-production assertion。

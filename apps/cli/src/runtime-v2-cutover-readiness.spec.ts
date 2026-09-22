@@ -190,9 +190,7 @@ describe('Runtime V2 cutover readiness', () => {
   });
 
   it('records a non-destructive inventory and exact final cutover assertions', () => {
-    expect(manifest.status).toBe(
-      'CUTOVER_READY_M3_12_REAL_SMOKE_PASS_AWAITING_DESTRUCTIVE_STAGE_REVIEW'
-    );
+    expect(manifest.status).toBe('CUTOVER_READY_M3_12_CLOSED_AWAITING_DESTRUCTIVE_STAGE_REVIEW');
     expect(manifest.destructiveChangesPermitted).toBe(false);
     expect(manifest.productionRoute.launch).toContain('TemporalRunLauncher');
     expect(manifest.productionRoute.worker).toBe('apps/temporal-worker/src/main.ts');
@@ -252,19 +250,20 @@ describe('Runtime V2 cutover readiness', () => {
     }
     expect(manifest.blockers).toEqual([]);
     expect(manifest.m312ExternalSmoke).toMatchObject({
-      status: 'PASS_AWAITING_INDEPENDENT_REVIEW',
+      status: 'PASS_CLOSED_FROZEN',
       provider: 'deepseek',
       model: 'deepseek-flash',
       result: 'COMPLETED'
     });
     expect(manifest.finalCutoverAssertions).toEqual([
-      'M3.12 real external-effect smoke is recorded as PASS.',
+      'M3.12 remains PASS/CLOSED/FROZEN with its recorded real external-effect smoke.',
       'M3.13 remains CLOSED/FROZEN.',
       'Production package roots remain isolated from legacy-only module entries.',
       'forge run launches only through TemporalRunLauncher and startForgeRun.',
       'The independently deployed worker is the only production activity composition process.',
       'status and cancel use the configured SQLite authority database.',
       'ForgeReadModel remains provider-neutral.',
+      'Normal worker review policy selection is explicit deployment configuration and matches CLI durable authority.',
       'Every differential-only assertion has a durable replacement or explicit retirement decision.'
     ]);
   });

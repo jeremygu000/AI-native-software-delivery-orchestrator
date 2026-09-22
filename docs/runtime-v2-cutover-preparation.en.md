@@ -7,7 +7,7 @@ cutover gate are in `runtime-v2-destructive-cutover-manifest.json`, with an arch
 `apps/cli/src/runtime-v2-cutover-readiness.spec.ts`. This record explains those checks; it is not
 permission to remove a fallback, declare the Runtime V2 migration complete, or close the M3 programme.
 
-**Current status:** CUTOVER READY / M3.12 REAL SMOKE PASS / AWAITING DESTRUCTIVE-STAGE REVIEW. The
+**Current status:** CUTOVER READY / M3.12 PASS-CLOSED-FROZEN / AWAITING DESTRUCTIVE-STAGE REVIEW. The
 architecture regression verifies that production package roots are isolated from legacy-only entrypoints.
 The manifest records the successful authorized `deepseek/deepseek-flash` external-effect smoke, while
 keeping `destructiveChangesPermitted` set to `false`: deletion still requires a separately designed and
@@ -51,13 +51,16 @@ deployable worker is the sole production process that composes activities with
 
 Before any destructive M3.14 change, demonstrate all of the following:
 
-- M3.12 has a recorded successful, authorized real external-effect smoke. This is now satisfied by the
-  `deepseek/deepseek-flash` run recorded in the manifest.
+- M3.12 remains PASS/CLOSED/FROZEN. The recorded `deepseek/deepseek-flash` smoke satisfies its real
+  external-effect acceptance criterion.
 - The production CLI starts only the compact Temporal workflow and writes launch authority once.
 - A separately started worker can complete and recover a durable run from the configured authority
   database.
 - `forge status` and `forge cancel` operate on that configured authority database.
 - The provider-neutral read model remains sufficient for CLI operators and a future API/UI boundary.
+- Normal worker review-policy selection is explicit deployment configuration and matches the code-review
+  policy fingerprint written by the CLI authority path. The current hard-coded normal-worker default is
+  not sufficient evidence for this destructive-stage assertion.
 - Frozen legacy-versus-Temporal differential coverage can be retired or replaced without losing its
   authority assertions.
 

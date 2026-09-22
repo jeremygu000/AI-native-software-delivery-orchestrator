@@ -7,7 +7,7 @@
 `apps/cli/src/runtime-v2-cutover-readiness.spec.ts`。本文解释这些检查；它不授权删除 fallback、不声明
 Runtime V2 migration 已完成，也不关闭整个 M3 programme。
 
-**当前状态：** CUTOVER READY / M3.12 REAL SMOKE PASS / AWAITING DESTRUCTIVE-STAGE REVIEW。architecture
+**当前状态：** CUTOVER READY / M3.12 PASS-CLOSED-FROZEN / AWAITING DESTRUCTIVE-STAGE REVIEW。architecture
 regression 已验证 production package root 与 legacy-only entrypoint 隔离。manifest 已记录成功、获授权的
 `deepseek/deepseek-flash` external-effect smoke，但 `destructiveChangesPermitted` 仍固定为 `false`：删除仍须
 另行设计并审查 destructive stage。
@@ -45,12 +45,15 @@ worker composition；production package root 不 re-export legacy-only module；
 
 在任何 destructive M3.14 变更前，必须证明：
 
-- M3.12 已记录成功且获授权的真实 external-effect smoke。manifest 现记录了
-  `deepseek/deepseek-flash` 的成功运行。
+- M3.12 保持 PASS/CLOSED/FROZEN。manifest 记录的 `deepseek/deepseek-flash` smoke 已满足其真实
+  external-effect acceptance criterion。
 - production CLI 只启动 compact Temporal workflow，且只写入一次 launch authority。
 - 独立启动的 worker 能从 configured authority database 完成并恢复 durable run。
 - `forge status` 和 `forge cancel` 针对该 configured authority database 操作。
 - provider-neutral read model 对 CLI operator 以及未来 API/UI boundary 仍然足够。
+- normal worker 的 review-policy selection 必须是显式 deployment configuration，并与 CLI authority path
+  写入的 code-review policy fingerprint 一致。当前 hard-coded normal-worker default 不能作为该
+  destructive-stage assertion 的充分证据。
 - 冻结的 legacy-versus-Temporal differential coverage 可在不丢失 authority assertion 的前提下退休或替换。
 
 ## Deletion Plan
