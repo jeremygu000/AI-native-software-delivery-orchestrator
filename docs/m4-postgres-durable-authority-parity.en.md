@@ -1,0 +1,70 @@
+# M4.1A: Durable Persistence Contract and Parity Audit
+
+## Baseline and scope
+
+M4 starts from the frozen M3 closure commit `e58564010593d65d58f749c4dd74125368f31092` on
+`m4/postgres-durable-authority`. SQLite is the **reference for current Forge run authority behavior**,
+not a prescribed PostgreSQL implementation. M4.1A identifies parity gaps and extracts executable
+behavioral contracts; it does not change M3 authority semantics or enable PostgreSQL in the worker.
+Cross-run repository fencing, globally distributed write leases, and multi-run concurrency belong to
+M4.2/M4.3, not this audit.
+
+## Adapter inventory
+
+| Capability                  | SQLite (`DrizzleSqliteOrchestrationPersistence`)                            | PostgreSQL (`postgres-persistence`)                                                                                                                                                                                                                  |
+| --------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Forge run authority adapter | Implements `OrchestrationPersistence` and the activity/control-plane stores | **Missing.** `PostgresEvidenceStore` is only a TypeScript intersection describing a future adapter; no implementation or factory exists.                                                                                                             |
+| Connection                  | Opens a real SQLite database; can open two connections to the same file     | `connectPostgresEvidenceStore()` validates a connection-string prefix, schema identifier and nonblank role, then creates a `postgres` client with a bounded `close()`; opening does not establish a schema or role and does not verify connectivity. |
+| Durable schema              | SQLite tables, constraints and migration-on-open in the adapter             | No Forge tables, schema migration, row locking, indexes, search-path or role-isolation enforcement.                                                                                                                                                  |
+| Test database               | Local temporary file shared by two independent connections                  | No provisioned PostgreSQL service, schema lifecycle, or test role.                                                                                                                                                                                   |
+| Production route            | Worker and CLI explicitly use configured SQLite authority                   | No PostgreSQL selection/wiring.                                                                                                                                                                                                                      |
+
+The existing PostgreSQL configuration tests verify metadata validation and closing a candidate handle.
+They do **not** establish any Forge durability or authority parity.
+
+## Shared executable contract
+
+`libs/persistence/src/lib/durable-authority.contract.test.ts` defines one backend-neutral suite against
+the domain persistence interfaces. The SQLite instantiation opens **two independent connections to the
+same temporary database** in `durable-authority-parity.spec.ts`. The PostgreSQL instantiation in
+`libs/postgres-persistence/src/lib/durable-authority-parity.spec.ts` imports the **same suite**, but is
+explicitly skipped until an adapter and real PostgreSQL fixture exist. Skipped means **not verified**, not
+PASS; it does not fall back to SQLite or a fake PostgreSQL adapter. The existing detailed SQLite tests
+remain in place, and this suite is the common parity baseline for a subsequent M4.1 implementation.
+
+| Behavioral contract                                                             | SQLite reference                                                                                                                       | PostgreSQL gap                                                                                                                                                                |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Exact run authority creation, duplicate-ID rejection, task binding recovery     | Shared contract exercises creation/recovery and rejects replacement with different authority                                           | No run/binding tables or transactional creation.                                                                                                                              |
+| Sequence-one `run-started` initial dispatch; exact retry after attempt advanced | Shared contract requires `ensureInitialDispatch`, one event/decision, immutable attempt authority, and rejection of different evidence | No initial-dispatch transaction or immutable evidence comparison.                                                                                                             |
+| Builder PREPARING -> STARTING claim with revision CAS                           | Two connections compete for the same attempt; exactly one claims                                                                       | Must implement conditional update (e.g. `UPDATE ... WHERE state='PREPARING' AND revision=? RETURNING ...`) and transactional lease evidence; read-then-write is insufficient. |
+| Repair admission, immutable work item and bounded history                       | Competing connections return the same admitted attempt for the same review, one work item; next review exceeds budget                  | No per-task transactional budget gate or exact-review idempotency.                                                                                                            |
+| BLOCKED repair resume, revision CAS, lease release, unique dispatch             | Competing connections yield one resume, one version conflict, one revision-three dispatch                                              | Needs conditional update and unique `(run,repair,revision)` dispatch in the same transaction.                                                                                 |
+| Review and verification evidence                                                | Exact retries recover one record; conflicting subject or evidence rejects                                                              | No exact-subject/fingerprint validation or immutable evidence tables.                                                                                                         |
+| Workspace and impact recovery                                                   | Distinct connection recovers blocked workspace and structured `Set` impact                                                             | No durable encoding/decoding or corruption validation.                                                                                                                        |
+| Integration claim and cancellation settlement                                   | Claim identity is stable; cancellation remains visible, wrong settlement rejects; exact settlement clears claim                        | No integration claim CAS, identity validation or cancellation settlement transaction.                                                                                         |
+| Cancellation and normal terminal state                                          | ACTIVE -> CANCEL_REQUESTED -> CANCELLED and ACTIVE -> COMPLETED; terminal run cannot be overwritten                                    | No state-transition CAS / terminalization model.                                                                                                                              |
+| `ForgeReadModel` recovery prerequisites                                         | `recoverRun`, reviews, repair attempts, verification evidence and leases supplied by the SQLite adapter                                | No compatible recovery APIs or reconstructed durable collections.                                                                                                             |
+
+The shared contract is an initial executable subset of the complete SQLite behavior; it does not
+supersede SQLite's detailed tests. In particular, additional PostgreSQL parity tests must also cover
+partial initial evidence, builder/repair UNKNOWN settlement, lease version regressions, persisted
+reevaluation replay and runtime-conflict sequencing, verification fingerprint integrity and corruption,
+integration claim release versus settlement, and exact repair history across reopen. The current
+SQLite `finalizeCancellation()` itself transitions `CANCEL_REQUESTED` to `CANCELLED` even while an
+integration claim remains active; callers separately inspect/settle claims. M4.1 must preserve the
+observed contract rather than silently imposing different SQL semantics.
+
+## Exit conditions for PostgreSQL parity
+
+1. Define a concrete PostgreSQL adapter implementing the complete required domain persistence stores;
+   wire neither CLI nor worker until parity is established.
+2. Provision an isolated real PostgreSQL database/schema/role per test and verify search-path and role
+   isolation, migrations, uniqueness, and corruption handling.
+3. Replace the explicit PostgreSQL skip with an adapter factory that runs **this same contract suite**
+   against two independent PostgreSQL connections. No mock/in-memory substitute counts as parity.
+4. Extend the common contract to close the remaining listed gaps; enforce transaction and CAS guarantees
+   using PostgreSQL constraints, conditional updates, `RETURNING`, and locking where appropriate.
+5. Preserve frozen M3 SQLite semantics; defer cross-run repository fencing and multi-run acceptance to
+   M4.2 and M4.3 respectively.
+
+M4.1A status: **AUDITED / SHARED SQLITE CONTRACT EXECUTABLE / POSTGRESQL PARITY BLOCKED**.

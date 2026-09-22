@@ -2747,3 +2747,26 @@ evidence，也不改变 production Temporal route。
 M3.14 现为 **PASS / CLOSED / FROZEN**；Runtime V2 migration 已 **COMPLETE**，M3 为 **COMPLETE / FROZEN**。
 manifest 将 destructive cutover 记录为已执行、已独立复审，同时保留 M3.12 成功的真实 external-effect smoke。
 上述 production route 与可复用 application service 仍是后续架构；这份 closure 记录不授权额外删除。
+
+## M4.1A：PostgreSQL Durable Authority 契约盘点
+
+M4 在 `m4/postgres-durable-authority` 分支从冻结的 M3 commit `e585640` 开始。第一步不替换 SQLite，
+也不扩展 run authority；而是在 `docs/m4-postgres-durable-authority-parity.en.md` 及同步的中文版中比较
+SQLite 参照 adapter 与已有 `postgres-persistence` package。
+
+PostgreSQL package 当前只有配置校验和可关闭的候选 client，尚无 Forge 表、迁移或
+`OrchestrationPersistence` 实现。统一契约 `libs/persistence/src/lib/durable-authority.contract.test.ts`
+用同一临时文件的两个独立连接验证 SQLite：涵盖精确 run authority 和 task binding、initial dispatch
+重试、竞争的 builder claim、repair admission/预算和 resume-dispatch CAS、不可变 review/verification、
+workspace/impact 恢复、integration cancellation settlement 及终态。PostgreSQL 测试导入**同一套**
+契约，但在真实 adapter 与数据库 fixture 到位之前显式跳过；skip 不代表 parity。M4.1A 还列出后续需要
+纳入共同契约的 SQLite 行为，跨 run 写入 fencing 和多 run acceptance 分别留给 M4.2、M4.3。
+
+M4.1A 当前为 **AUDITED / SQLITE CONTRACT EXECUTABLE / POSTGRESQL PARITY BLOCKED**。这是独立的 M4
+阶段；M3 仍为 COMPLETE / FROZEN。共享契约的 SQLite 实例 8 项全部通过；PostgreSQL 实例明确显示 8 项
+跳过、1 项 fixture 待实现，不能视为 parity 通过。完整 `pnpm test` 已通过：非 worker 阶段 63 个测试文件，
+605 项通过、8 项跳过、1 项待实现；worker 阶段 3 个测试文件，22 项通过。`pnpm lint`、
+`pnpm typecheck`、`pnpm build`、改动文件格式检查和 diff 检查均通过。`pnpm check` 在全仓格式检查处
+被三个未改动文件阻断：`libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`、
+`libs/domain/src/lib/task-repair-attempt.ts` 和
+`libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`。

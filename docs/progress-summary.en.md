@@ -3115,3 +3115,30 @@ the Runtime V2 migration is **COMPLETE**, and M3 is **COMPLETE / FROZEN**. The m
 destructive cutover as executed and independently reviewed, while retaining the successful M3.12 real
 external-effect smoke. The production route and the surviving application services described above remain
 the ongoing architecture; the closure record does not authorize further deletion.
+
+## M4.1A: PostgreSQL Durable Authority Contract Audit
+
+M4 begins on `m4/postgres-durable-authority` from frozen M3 commit `e585640`. This first step does not
+replace SQLite or expand run authority. It compares the SQLite reference adapter with the existing
+`postgres-persistence` package and records the actual gap in
+`docs/m4-postgres-durable-authority-parity.en.md` (with a synchronized Chinese edition).
+
+The PostgreSQL package currently validates configuration and opens a closeable candidate client; it
+has no Forge tables, migrations, or `OrchestrationPersistence` implementation. A shared contract in
+`libs/persistence/src/lib/durable-authority.contract.test.ts` now exercises the SQLite adapter using
+two independent connections to one temporary file. It covers exact run authority and task bindings,
+initial dispatch retries, competing builder claims, repair admission/budget and resume-dispatch CAS,
+immutable review/verification, workspace/impact recovery, integration cancellation settlement, and
+terminalization. The PostgreSQL test imports the **same** suite but is explicitly skipped until a real
+PostgreSQL adapter and database fixture exist; no parity is claimed from the skip. M4.1A identifies
+additional SQLite contracts to promote later, and defers cross-run write fencing to M4.2 and multi-run
+acceptance to M4.3.
+
+M4.1A is **AUDITED / SQLITE CONTRACT EXECUTABLE / POSTGRESQL PARITY BLOCKED**. This is a new M4 stage;
+M3 remains COMPLETE / FROZEN. The shared contract passed all 8 SQLite cases; its PostgreSQL
+instantiation reports 8 skipped cases and 1 pending fixture check rather than claiming parity.
+The complete `pnpm test` run passed (63 non-worker test files, 605 passed, 8 skipped, 1 pending;
+plus 3 worker test files with 22 passed). `pnpm lint`, `pnpm typecheck`, `pnpm build`, scoped formatting,
+and diff checks passed. `pnpm check` stopped at repository-wide formatting in three unchanged files:
+`libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`, `libs/domain/src/lib/task-repair-attempt.ts`,
+and `libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`.
