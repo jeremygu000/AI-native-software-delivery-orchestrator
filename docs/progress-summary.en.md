@@ -3064,7 +3064,7 @@ Verification:
 - `pnpm check` still stops at pre-existing formatting issues outside this stage and is reported without
   modifying inherited files.
 
-M3.14 is **CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / AWAITING INDEPENDENT REVIEW**. Production
-roots are explicitly isolated from `/legacy` entrypoints, but M3.12 remains **IMPLEMENTATION PASS / READY
-FOR REAL SMOKE / BLOCKED-DEFERRED / NOT CLOSED** because provider quota is unavailable. No destructive
-cutover, legacy deletion, or Runtime V2 completion claim is permitted.
+M3.14 is **CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / NOT CLOSED** following independent review.
+Production roots are explicitly isolated from `/legacy` entrypoints, but M3.12 remains
+**IMPLEMENTATION PASS / READY FOR REAL SMOKE / BLOCKED-DEFERRED / NOT CLOSED** because provider quota is
+unavailable. No destructive cutover, legacy deletion, or Runtime V2 completion claim is permitted.

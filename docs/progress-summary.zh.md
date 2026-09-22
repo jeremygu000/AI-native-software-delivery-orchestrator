@@ -2704,6 +2704,6 @@ alternate runtime path。
   competing-lease differential 在 Temporal worker phase 及 isolated rerun 中超时，因此完整 suite 当前并非全绿；
 - `pnpm check` 仍在本阶段以外既有的 formatting issue 处停止，会如实报告且不修改 inherited file。
 
-M3.14 为 **CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / AWAITING INDEPENDENT REVIEW**。production root 已与
+M3.14 经独立 review 后为 **CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / NOT CLOSED**。production root 已与
 `/legacy` entrypoint 显式隔离，但 M3.12 仍为 **IMPLEMENTATION PASS / READY FOR REAL SMOKE / BLOCKED-DEFERRED /
 NOT CLOSED**，因为 provider quota 不可用。不得执行 destructive cutover、legacy deletion，或宣称 Runtime V2 已完成。
