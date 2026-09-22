@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { codeReviewPolicyFingerprint } from './code-review-policy.js';
+import { codeReviewPolicyFingerprint, createCodeReviewPolicy } from './code-review-policy.js';
 
 const policy = {
   version: 1,
@@ -15,6 +15,14 @@ const policy = {
 } as const;
 
 describe('CodeReviewPolicy', () => {
+  it('canonicalizes the selected deployment identity', () => {
+    expect(createCodeReviewPolicy({ provider: ' provider-a ', model: ' model-a ' })).toMatchObject({
+      reviewer: { model: { provider: 'provider-a', id: 'model-a' } }
+    });
+    expect(() => createCodeReviewPolicy({ provider: ' ', model: 'model-a' })).toThrow();
+    expect(() => createCodeReviewPolicy({ provider: 'provider-a', model: ' ' })).toThrow();
+  });
+
   it('fingerprints only semantic reviewer decision policy fields canonically', () => {
     expect(codeReviewPolicyFingerprint(policy)).toBe(
       codeReviewPolicyFingerprint({

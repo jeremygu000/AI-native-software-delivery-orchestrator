@@ -1131,6 +1131,130 @@ describe('temporal-runtime Scenario A workflow', () => {
     }
   });
 
+  it('ignores mismatched wakes and remains blocked through a repeated integration block', async () => {
+    const environment = await TestWorkflowEnvironment.createTimeSkipping();
+    const calls: string[] = [];
+    let integrationAttempts = 0;
+    const subject = {
+      builderAttemptId: 'attempt-integration-repeat',
+      outputAttemptId: 'attempt-integration-repeat',
+      workspaceId: 'workspace-integration-repeat'
+    };
+    const activities: ForgeActivities & BlockedIntegrationContinuationActivities = {
+      async reevaluateRun(input) {
+        calls.push('reevaluateRun');
+        return ReevaluateRunResultSchema.parse({
+          runId: input.runId,
+          authorizedTasks:
+            calls.filter((call) => call === 'reevaluateRun').length === 1
+              ? [{ taskId: 'task-integration-repeat', attemptId: subject.builderAttemptId }]
+              : []
+        });
+      },
+      async executeBuilder(input) {
+        calls.push(`executeBuilder:${input.taskId}`);
+        return ExecuteBuilderResultSchema.parse({
+          status: 'completed',
+          runId: input.runId,
+          taskId: input.taskId,
+          workspaceId: subject.workspaceId,
+          attemptId: input.attemptId,
+          impactId: 'impact-integration-repeat'
+        });
+      },
+      async evaluateBuilderOutput(input) {
+        calls.push(`evaluateBuilderOutput:${input.taskId}`);
+        return EvaluateBuilderOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          recommendation: 'accept',
+          verificationId: 'verification-integration-repeat',
+          subjectRef: subject,
+          reviewId: 'review-integration-repeat'
+        });
+      },
+      async admitRepair() {
+        throw new Error('admitRepair should not be called');
+      },
+      async executeRepair() {
+        throw new Error('executeRepair should not be called');
+      },
+      async integrateAcceptedOutput(input) {
+        integrationAttempts += 1;
+        calls.push(`integrateAcceptedOutput:${input.taskId}`);
+        return IntegrateAcceptedOutputResultSchema.parse({
+          runId: input.runId,
+          taskId: input.taskId,
+          status: 'blocked'
+        });
+      },
+      async resumeBlockedIntegration(input) {
+        integrationAttempts += 1;
+        calls.push(`resumeBlockedIntegration:${input.taskId}:${input.workspaceId}`);
+        return {
+          runId: input.runId,
+          taskId: input.taskId,
+          status: integrationAttempts === 2 ? ('blocked' as const) : ('integrated' as const)
+        };
+      },
+      async finalizeRunState(input) {
+        calls.push('finalizeRunState');
+        return FinalizeRunStateResultSchema.parse({ runId: input.runId, status: 'completed' });
+      },
+      async resumeBlockedRepair() {
+        throw new Error('resumeBlockedRepair should not be called');
+      }
+    };
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'temporal-runtime-test-repeated-blocked-integration',
+      workflowsPath: WORKFLOWS_PATH,
+      activities
+    });
+    const runId = `run-integration-repeat-${Date.now()}`;
+    const client = new Client({ connection: environment.client.connection });
+    const workerPromise = worker.run();
+    try {
+      const handle = await client.workflow.start(forgeRunWorkflow, {
+        taskQueue: 'temporal-runtime-test-repeated-blocked-integration',
+        args: [{ runId }],
+        workflowId: `workflow-${runId}`
+      });
+      await environment.sleep(200);
+      await handle.signal(integrationWakeSignal, {
+        taskId: 'wrong-task',
+        workspaceId: subject.workspaceId,
+        subjectRef: subject
+      });
+      await environment.sleep(100);
+      expect(calls).not.toContain(`resumeBlockedIntegration:wrong-task:${subject.workspaceId}`);
+
+      await handle.signal(integrationWakeSignal, {
+        taskId: 'task-integration-repeat',
+        workspaceId: subject.workspaceId,
+        subjectRef: subject
+      });
+      await environment.sleep(100);
+      expect(calls).toContain(
+        `resumeBlockedIntegration:task-integration-repeat:${subject.workspaceId}`
+      );
+      expect(calls).not.toContain('finalizeRunState');
+
+      await handle.signal(integrationWakeSignal, {
+        taskId: 'task-integration-repeat',
+        workspaceId: subject.workspaceId,
+        subjectRef: subject
+      });
+      await expect(handle.result()).resolves.toEqual({ runId, status: 'completed' });
+      expect(integrationAttempts).toBe(3);
+      expect(calls.filter((call) => call.startsWith('resumeBlockedIntegration:'))).toHaveLength(2);
+    } finally {
+      worker.shutdown();
+      await workerPromise;
+      await environment.teardown();
+    }
+  });
+
   it('reevaluates after builder execution and discovers dependent tasks', async () => {
     const environment = await TestWorkflowEnvironment.createTimeSkipping();
     const calls: string[] = [];

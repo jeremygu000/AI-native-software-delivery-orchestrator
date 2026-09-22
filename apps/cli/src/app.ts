@@ -22,6 +22,7 @@ import {
   AutonomousPlanPhase,
   AutonomousPlanningError,
   assertStableRepositorySnapshot,
+  createCodeReviewPolicy,
   createPlanApproval,
   createPlanArtifact,
   PlanExecutionBinder,
@@ -63,7 +64,6 @@ import {
 import {
   forgeRunWorkflowId,
   requestForgeRunCancellation,
-  resolveM312ExternalSmokeConfig,
   resolveTemporalConfig,
   startForgeRun
 } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
@@ -198,18 +198,13 @@ const verificationPolicy = {
   }
 } as const;
 
-const codeReviewPolicy = (provider: string, model: string) =>
-  ({
-    version: 1,
-    reviewer: {
-      implementation: 'pi-task-code-reviewer',
-      agentBackend: 'pi',
-      model: { provider, id: model },
-      toolProfile: 'workspace-read-only-v1',
-      outputSchemaVersion: 1,
-      promptVersion: 'v1'
-    }
-  }) as const;
+const resolveReviewPolicy = (provider: string, model: string) => {
+  const policy = createCodeReviewPolicy({ provider, model });
+  return {
+    policy,
+    model: new PiCodeReviewModelResolver().resolve(policy.reviewer.model)
+  };
+};
 
 const authorityDatabasePath = (runId: string, runDirectory: string): string => {
   const configured = process.env.FORGE_WORKER_DATABASE_PATH;
@@ -233,15 +228,7 @@ const createRepositoryPlan = async (request: {
   readonly reviewProvider: string;
   readonly reviewModel: string;
 }): Promise<PlanArtifact> => {
-  const externalSmoke =
-    process.env.FORGE_M312_EXTERNAL_SMOKE === '1' ? resolveM312ExternalSmokeConfig() : undefined;
-  const model =
-    externalSmoke === undefined
-      ? undefined
-      : new PiCodeReviewModelResolver().resolve({
-          provider: externalSmoke.provider,
-          id: externalSmoke.model
-        });
+  const { policy, model } = resolveReviewPolicy(request.reviewProvider, request.reviewModel);
   const planningGateway = new PiPlanningGatewayAdapter(undefined, { model });
   const snapshotProvider = new GitRepositorySnapshotProvider();
   const [content, registry, snapshotBeforeAnalysis] = await Promise.all([
@@ -283,7 +270,7 @@ const createRepositoryPlan = async (request: {
     repositorySnapshot,
     sharedResourcePolicy: registry.list(),
     verificationPolicy,
-    codeReviewPolicy: codeReviewPolicy(request.reviewProvider, request.reviewModel),
+    codeReviewPolicy: policy,
     preparedPlan
   });
   const artifactDirectory = await resolvePlanArtifactDirectory(
@@ -432,6 +419,7 @@ const bindRepositoryPlan = async (request: {
   readonly reviewProvider: string;
   readonly reviewModel: string;
 }): Promise<PlanExecutionIntent> => {
+  const { policy } = resolveReviewPolicy(request.reviewProvider, request.reviewModel);
   const [stores, registry] = await Promise.all([
     planStores(request),
     loadSharedResourceRegistry(request.sharedResourcesPath)
@@ -451,7 +439,7 @@ const bindRepositoryPlan = async (request: {
     repository: { repositoryPath: request.repositoryPath },
     sharedResourcePolicy: registry.list(),
     verificationPolicy,
-    codeReviewPolicy: codeReviewPolicy(request.reviewProvider, request.reviewModel)
+    codeReviewPolicy: policy
   });
 };
 
@@ -467,6 +455,7 @@ const runRepositoryPlan = async (request: {
   readonly reviewProvider: string;
   readonly reviewModel: string;
 }): Promise<unknown> => {
+  const { policy } = resolveReviewPolicy(request.reviewProvider, request.reviewModel);
   const configuredAuthorityDatabasePath = process.env.FORGE_WORKER_DATABASE_PATH;
   const workerRepositoryPath = process.env.FORGE_WORKER_REPOSITORY_PATH;
   if (
@@ -505,7 +494,7 @@ const runRepositoryPlan = async (request: {
       repository: { repositoryPath: request.repositoryPath },
       sharedResourcePolicy: registry.list(),
       verificationPolicy,
-      codeReviewPolicy: codeReviewPolicy(request.reviewProvider, request.reviewModel)
+      codeReviewPolicy: policy
     });
   const intent = await bind();
   const runDirectory = resolve(

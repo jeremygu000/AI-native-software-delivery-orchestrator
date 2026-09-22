@@ -3075,3 +3075,29 @@ but no destructive cutover, legacy deletion, or Runtime V2 completion claim is p
 separately designed and reviewed destructive stage. That stage must also make normal worker review-policy
 selection explicit deployment configuration and prove that it matches the CLI durable authority policy;
 the current smoke-only DeepSeek override does not satisfy that normal-production assertion.
+
+## M3.14 Sequence B: Destructive Runtime V2 Cutover
+
+Sequence B removes the retired in-process `OrchestrationRuntime`, `LocalRuntimeStarter`, their legacy
+entrypoints and tests, the legacy-versus-Temporal differential suite, and all frozen Temporal/Restate
+spike packages and harnesses. Package exports, workspace references, build and test scripts, Vitest
+coverage exclusions, and the pnpm lockfile no longer retain those assets. Reusable production services
+remain in `libs/orchestration-runtime`, and the only production execution route remains the CLI launcher,
+Temporal workflow, and independently deployed worker.
+
+The retained production tests now directly protect the unique durable invariants previously covered by
+the differential suite: exact and mismatched repeated blocked-integration wakes, repair-budget evidence
+without integration, repair `UNKNOWN` authority, `STALE` blocker repair resumption, and restart recovery
+where a durable wake can be tested at the production boundary. The cutover manifest and its regression
+now assert that the retired paths are absent while preserving the recorded M3.12 external-smoke evidence.
+
+Normal production review authority is now explicit rather than a composition default. CLI `plan`, `bind`,
+and `run` canonicalize and resolve their required provider/model before authority persistence. The worker
+requires `FORGE_WORKER_REVIEW_PROVIDER` and `FORGE_WORKER_REVIEW_MODEL`, resolves the same canonical policy before it
+polls Temporal, and rejects a durable fingerprint mismatch before activity work. The neutral composition
+receives explicit paths, policy, and application-owned adapter factories without reading deployment
+environment or selecting a provider/model itself.
+
+M3.14 Sequence C is **IMPLEMENTED / M3.12 PASS-CLOSED-FROZEN / AWAITING INDEPENDENT REVIEW**. The worker,
+not the neutral composition library, assembles Pi coding/review adapters from the resolved normal deployment
+identity. It does not remove M3.12 evidence or alter the production Temporal route.

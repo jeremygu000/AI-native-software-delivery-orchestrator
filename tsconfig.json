@@ -34,9 +34,6 @@
       "path": "./libs/postgres-persistence"
     },
     {
-      "path": "./libs/temporal-spike"
-    },
-    {
       "path": "./libs/workspace-git"
     },
     {
@@ -50,9 +47,6 @@
     },
     {
       "path": "./libs/run-preparation"
-    },
-    {
-      "path": "./libs/runtime-v2-spike-harness"
     },
     {
       "path": "./libs/forge-runtime-contracts"

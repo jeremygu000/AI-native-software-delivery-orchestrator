@@ -136,9 +136,6 @@ importers:
         specifier: ^1.24.0
         version: 1.24.0
     devDependencies:
-      '@ai-native-software-delivery-orchestrator/runtime-v2-spike-harness':
-        specifier: workspace:*
-        version: link:../../libs/runtime-v2-spike-harness
       '@temporalio/client':
         specifier: ^1.24.0
         version: 1.24.0
@@ -352,22 +349,6 @@ importers:
         specifier: ^1.17.1
         version: 1.17.1
 
-  libs/restate-spike:
-    dependencies:
-      '@ai-native-software-delivery-orchestrator/orchestration-runtime':
-        specifier: workspace:*
-        version: link:../orchestration-runtime
-      '@restatedev/restate-sdk':
-        specifier: ^1.17.1
-        version: 1.17.1
-      '@restatedev/restate-sdk-clients':
-        specifier: ^1.17.1
-        version: 1.17.1
-    devDependencies:
-      '@restatedev/restate-sdk-testcontainers':
-        specifier: ^1.17.1
-        version: 1.17.1
-
   libs/run-preparation:
     dependencies:
       '@ai-native-software-delivery-orchestrator/agent-runtime':
@@ -401,40 +382,6 @@ importers:
         specifier: workspace:*
         version: link:../domain
 
-  libs/runtime-v2-spike-harness:
-    dependencies:
-      '@ai-native-software-delivery-orchestrator/domain':
-        specifier: workspace:*
-        version: link:../domain
-      '@ai-native-software-delivery-orchestrator/orchestration-runtime':
-        specifier: workspace:*
-        version: link:../orchestration-runtime
-      '@ai-native-software-delivery-orchestrator/persistence':
-        specifier: workspace:*
-        version: link:../persistence
-      '@ai-native-software-delivery-orchestrator/restate-spike':
-        specifier: workspace:*
-        version: link:../restate-spike
-      '@ai-native-software-delivery-orchestrator/temporal-spike':
-        specifier: workspace:*
-        version: link:../temporal-spike
-    devDependencies:
-      '@restatedev/restate-sdk-clients':
-        specifier: ^1.17.1
-        version: 1.17.1
-      '@restatedev/restate-sdk-testcontainers':
-        specifier: ^1.17.1
-        version: 1.17.1
-      '@temporalio/client':
-        specifier: ^1.24.0
-        version: 1.24.0
-      '@temporalio/testing':
-        specifier: ^1.24.0
-        version: 1.24.0(@swc/helpers@0.5.23)(esbuild@0.28.2)
-      '@temporalio/worker':
-        specifier: ^1.24.0
-        version: 1.24.0(@swc/helpers@0.5.23)(esbuild@0.28.2)
-
   libs/scheduler:
     dependencies:
       '@ai-native-software-delivery-orchestrator/dag':
@@ -461,25 +408,6 @@ importers:
       '@temporalio/activity':
         specifier: ^1.24.0
         version: 1.24.0
-      '@temporalio/client':
-        specifier: ^1.24.0
-        version: 1.24.0
-      '@temporalio/worker':
-        specifier: ^1.24.0
-        version: 1.24.0(@swc/helpers@0.5.23)(esbuild@0.28.2)
-      '@temporalio/workflow':
-        specifier: ^1.24.0
-        version: 1.24.0
-    devDependencies:
-      '@temporalio/testing':
-        specifier: ^1.24.0
-        version: 1.24.0(@swc/helpers@0.5.23)(esbuild@0.28.2)
-
-  libs/temporal-spike:
-    dependencies:
-      '@ai-native-software-delivery-orchestrator/orchestration-runtime':
-        specifier: workspace:*
-        version: link:../orchestration-runtime
       '@temporalio/client':
         specifier: ^1.24.0
         version: 1.24.0

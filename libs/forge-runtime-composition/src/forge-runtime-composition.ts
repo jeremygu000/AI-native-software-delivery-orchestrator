@@ -1,13 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
 
 import {
   AgentToolRuntime,
-  PiAgentRunner,
-  PiCodingAgentGateway,
-  type PiSessionGateway,
-  PiTaskCodeReviewer,
-  PiCodeReviewModelResolver
+  type TaskCodeReviewTools
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import type {
   ActiveMutationClaimPersistence,
@@ -94,10 +89,6 @@ import {
   ForgeRunReevaluationService
 } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
-const RUNTIME_DATABASE_PATH =
-  process.env.FORGE_WORKER_DATABASE_PATH ?? resolve(process.cwd(), 'dist', 'forge-runtime.sqlite');
-const WORKER_REPOSITORY_PATH = process.env.FORGE_WORKER_REPOSITORY_PATH ?? process.cwd();
-
 const assertBuilderTuple = (
   binding: PersistedTaskExecutionBinding,
   attempt: AgentExecutionAttempt
@@ -119,18 +110,6 @@ const assertBuilderTuple = (
   }
 };
 
-const codeReviewPolicy = {
-  version: 1,
-  reviewer: {
-    implementation: 'pi-task-code-reviewer' as const,
-    agentBackend: 'pi' as const,
-    model: { provider: 'openai', id: 'gpt-4.1' },
-    toolProfile: 'workspace-read-only-v1' as const,
-    outputSchemaVersion: 1,
-    promptVersion: 'v1' as const
-  }
-} as const;
-
 const verificationPolicy = {
   version: 2,
   autonomousRules: ['package-script-required', 'free-form-command-forbidden'] as const,
@@ -149,7 +128,6 @@ const verificationPolicy = {
 } as const;
 
 export const verificationPolicyFingerprint = fingerprintPlanValue(verificationPolicy);
-export const reviewPolicyFingerprint = codeReviewPolicyFingerprint(codeReviewPolicy);
 
 const createVerificationEvidence = (request: {
   readonly id: string;
@@ -178,8 +156,8 @@ type ForgeWorkerPersistence = OrchestrationPersistence &
   };
 
 /**
- * Test-only injection seams. Production callers pass nothing and get real adapters and
- * services. Adapter seams keep the production Forge services in place while substituting
+ * Test-only injection seams. Production callers provide explicit deployment inputs. Adapter
+ * seams keep the production Forge services in place while substituting
  * external Git, agent, verification, and model effects. Whole-service seams remain for
  * focused activity tests that isolate a single worker boundary.
  */
@@ -189,17 +167,23 @@ export interface ForgeRuntimeCompositionOverrides {
   readonly snapshots?: RepositorySnapshotProvider;
   readonly reviewer?: TaskCodeReviewer;
   /**
-   * Optional review policy used by an explicitly authorized app-level deployment mode.
-   * Production callers leave this unset and retain the default policy.
+   * Application-owned adapter factory. It receives only durable review authority and
+   * read-only task tools; provider/model selection remains outside this composition.
    */
+  readonly reviewerFactory?: (input: {
+    readonly policy: CodeReviewPolicy;
+    readonly createTools: (
+      request: Parameters<TaskCodeReviewer['review']>[0]
+    ) => TaskCodeReviewTools;
+  }) => TaskCodeReviewer;
+  /** Explicit provider-neutral review authority selected by the application boundary. */
   readonly codeReviewPolicy?: CodeReviewPolicy;
   readonly verifier?: TaskVerifier;
   readonly builderAgentRunner?: AgentRunner;
-  /**
-   * Optional common gateway for builder and repair coding sessions. This keeps
-   * both paths on the same approved provider identity when an app supplies one.
-   */
-  readonly agentGateway?: PiSessionGateway;
+  /** Application-owned factory shared by builder and repair coding execution. */
+  readonly agentRunnerFactory?: (input: {
+    readonly createTools: (request: Parameters<AgentRunner['run']>[0]) => AgentToolRuntime;
+  }) => AgentRunner;
   readonly repairRunner?: TaskRepairRunner;
   readonly reconciler?: TaskImpactReconciler;
   readonly builderExecution?: Pick<ForgeBuilderExecutionService, 'execute'>;
@@ -220,22 +204,37 @@ export interface ActivityExecutionContext {
 
 export interface ForgeRuntimeCompositionOptions {
   readonly getActivityExecutionContext?: () => ActivityExecutionContext | undefined;
+  readonly databasePath?: string;
+  readonly repositoryPath?: string;
 }
 
 export async function createForgeRuntimeComposition(
   overrides: ForgeRuntimeCompositionOverrides = {},
   options: ForgeRuntimeCompositionOptions = {}
 ): Promise<ForgeRuntimeComposition> {
-  const activeCodeReviewPolicy = overrides.codeReviewPolicy ?? codeReviewPolicy;
+  const activeCodeReviewPolicy = overrides.codeReviewPolicy;
+  if (activeCodeReviewPolicy === undefined) {
+    throw new Error('Forge runtime composition requires an explicit code review policy');
+  }
   const activeReviewPolicyFingerprint = codeReviewPolicyFingerprint(activeCodeReviewPolicy);
   const currentActivityCancellationSignal = () =>
     options.getActivityExecutionContext?.()?.cancellationSignal;
-  const repository =
-    overrides.repositoryGraph === undefined
-      ? await analyzeRepository(WORKER_REPOSITORY_PATH)
-      : { graph: overrides.repositoryGraph };
+  const repository = await (overrides.repositoryGraph === undefined
+    ? (() => {
+        if (options.repositoryPath === undefined) {
+          throw new Error('Forge runtime composition requires an explicit repository path');
+        }
+        return analyzeRepository(options.repositoryPath);
+      })()
+    : { graph: overrides.repositoryGraph });
   const persistence =
-    overrides.persistence ?? new DrizzleSqliteOrchestrationPersistence(RUNTIME_DATABASE_PATH);
+    overrides.persistence ??
+    (() => {
+      if (options.databasePath === undefined) {
+        throw new Error('Forge runtime composition requires an explicit database path');
+      }
+      return new DrizzleSqliteOrchestrationPersistence(options.databasePath);
+    })();
   const writeGuards = new Map<string, InMemoryWriteGuard>();
   const writeGuardHydrations = new Map<string, Promise<InMemoryWriteGuard>>();
   const writeGuardForRunSync = (runId: string): InMemoryWriteGuard => {
@@ -283,27 +282,25 @@ export async function createForgeRuntimeComposition(
     });
   const subjects = new SnapshotTaskCodeReviewSubjectProvider();
 
-  const reviewCollector = new TaskCodeReviewCollector({
-    reviewer:
-      overrides.reviewer ??
-      new PiTaskCodeReviewer({
-        policy: activeCodeReviewPolicy,
-        modelResolver: new PiCodeReviewModelResolver(),
-        createTools: (request) =>
-          new AgentToolRuntime({
-            runId: request.runId,
-            taskId: request.task.id,
-            attemptId: request.builderAttempt.id,
-            agentId: request.builderAttempt.agentId,
-            workspacePath: request.workspace.workspacePath,
-            resolveResource: (path) => resources.resolve(path),
-            resolveFileId: (path) => resources.fileId(path),
-            persistence,
-            writeGuard: writeGuardForRunSync(request.runId)
-          })
-      }),
-    store: persistence
-  });
+  const createReviewTools = (request: Parameters<TaskCodeReviewer['review']>[0]) =>
+    new AgentToolRuntime({
+      runId: request.runId,
+      taskId: request.task.id,
+      attemptId: request.builderAttempt.id,
+      agentId: request.builderAttempt.agentId,
+      workspacePath: request.workspace.workspacePath,
+      resolveResource: (path) => resources.resolve(path),
+      resolveFileId: (path) => resources.fileId(path),
+      persistence,
+      writeGuard: writeGuardForRunSync(request.runId)
+    });
+  const reviewer =
+    overrides.reviewer ??
+    overrides.reviewerFactory?.({ policy: activeCodeReviewPolicy, createTools: createReviewTools });
+  if (reviewer === undefined) {
+    throw new Error('Forge runtime composition requires an explicit task code reviewer');
+  }
+  const reviewCollector = new TaskCodeReviewCollector({ reviewer, store: persistence });
 
   const verifier =
     overrides.verifier ??
@@ -333,28 +330,30 @@ export async function createForgeRuntimeComposition(
     createId: randomUUID
   });
 
+  const createAgentTools = (runId: string) => (request: Parameters<AgentRunner['run']>[0]) =>
+    new AgentToolRuntime({
+      runId: request.runId,
+      taskId: request.taskId,
+      attemptId: request.attempt.id,
+      agentId: request.attempt.agentId,
+      workspacePath: request.workspace.workspacePath,
+      resolveResource: (path) => resources.resolve(path),
+      resolveFileId: (path) => resources.fileId(path),
+      persistence,
+      writeGuard: writeGuardForRunSync(runId)
+    });
+  const createAgentRunner = (runId: string): AgentRunner => {
+    if (overrides.agentRunnerFactory === undefined) {
+      throw new Error('Forge runtime composition requires an explicit coding agent runner');
+    }
+    return overrides.agentRunnerFactory({ createTools: createAgentTools(runId) });
+  };
   const createBuilderExecution = (runId: string) =>
     new ForgeBuilderExecutionService({
       persistence,
       workspaceManager,
       writeGuard: writeGuardForRunSync(runId),
-      agentRunner:
-        overrides.builderAgentRunner ??
-        new PiAgentRunner({
-          gateway: overrides.agentGateway ?? new PiCodingAgentGateway(),
-          createTools: (request) =>
-            new AgentToolRuntime({
-              runId: request.runId,
-              taskId: request.taskId,
-              attemptId: request.attempt.id,
-              agentId: request.attempt.agentId,
-              workspacePath: request.workspace.workspacePath,
-              resolveResource: (path) => resources.resolve(path),
-              resolveFileId: (path) => resources.fileId(path),
-              persistence,
-              writeGuard: writeGuardForRunSync(request.runId)
-            })
-        }),
+      agentRunner: overrides.builderAgentRunner ?? createAgentRunner(runId),
       reconciler,
       claimStart: async ({ attempt, leases }) =>
         persistence.claimBuilderStart({ runId, attempt, leases }),
@@ -391,23 +390,7 @@ export async function createForgeRuntimeComposition(
       repairCoordinator,
       executionCoordinator: new RepairExecutionCoordinator({
         repairs: repairCoordinator,
-        runner:
-          overrides.repairRunner ??
-          new PiAgentRunner({
-            gateway: overrides.agentGateway ?? new PiCodingAgentGateway(),
-            createTools: (request) =>
-              new AgentToolRuntime({
-                runId: request.runId,
-                taskId: request.taskId,
-                attemptId: request.attempt.id,
-                agentId: request.attempt.agentId,
-                workspacePath: request.workspace.workspacePath,
-                resolveResource: (path) => resources.resolve(path),
-                resolveFileId: (path) => resources.fileId(path),
-                persistence,
-                writeGuard: writeGuardForRunSync(request.runId)
-              })
-          }),
+        runner: overrides.repairRunner ?? createAgentRunner(runId),
         reconciler,
         verifier,
         snapshots,

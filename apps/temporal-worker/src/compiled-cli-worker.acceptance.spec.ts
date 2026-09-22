@@ -287,6 +287,8 @@ const createFixture = async (
     FORGE_WORKER_DATABASE_PATH: databasePath,
     FORGE_WORKER_REPOSITORY_PATH: repository,
     FORGE_WORKER_COMPOSITION: 'acceptance',
+    FORGE_WORKER_REVIEW_PROVIDER: codeReviewPolicy.reviewer.model.provider,
+    FORGE_WORKER_REVIEW_MODEL: codeReviewPolicy.reviewer.model.id,
     TEMPORAL_SERVER_URL: `http://${environment.address}`,
     TEMPORAL_NAMESPACE: 'default',
     TEMPORAL_TASK_QUEUE: queue

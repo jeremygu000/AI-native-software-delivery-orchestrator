@@ -206,6 +206,8 @@ const main = async (): Promise<void> => {
       ...process.env,
       FORGE_WORKER_DATABASE_PATH: databasePath,
       FORGE_WORKER_REPOSITORY_PATH: repository,
+      FORGE_WORKER_REVIEW_PROVIDER: configuration.provider,
+      FORGE_WORKER_REVIEW_MODEL: configuration.model,
       TEMPORAL_SERVER_URL: `http://${environment.address}`,
       TEMPORAL_NAMESPACE: 'default',
       TEMPORAL_TASK_QUEUE: queue

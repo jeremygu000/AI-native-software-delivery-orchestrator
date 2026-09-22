@@ -21,6 +21,22 @@ export const codeReviewPolicySchema = z.object({
 
 export type CodeReviewPolicy = z.infer<typeof codeReviewPolicySchema>;
 
+export const createCodeReviewPolicy = (input: {
+  readonly provider: string;
+  readonly model: string;
+}): CodeReviewPolicy =>
+  codeReviewPolicySchema.parse({
+    version: 1,
+    reviewer: {
+      implementation: 'pi-task-code-reviewer',
+      agentBackend: 'pi',
+      model: { provider: input.provider, id: input.model },
+      toolProfile: 'workspace-read-only-v1',
+      outputSchemaVersion: 1,
+      promptVersion: 'v1'
+    }
+  });
+
 export const codeReviewPolicyFingerprint = (policy: CodeReviewPolicy): string =>
   `sha256:${createHash('sha256')
     .update(JSON.stringify(codeReviewPolicySchema.parse(policy)))

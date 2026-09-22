@@ -1,79 +1,50 @@
-# Runtime V2 Cutover Preparation
+# Runtime V2 Cutover Record
 
-## Purpose
+## Status
 
-This is a non-destructive M3.14 preparation record. The authoritative, machine-checkable inventory and
-cutover gate are in `runtime-v2-destructive-cutover-manifest.json`, with an architecture regression in
-`apps/cli/src/runtime-v2-cutover-readiness.spec.ts`. This record explains those checks; it is not
-permission to remove a fallback, declare the Runtime V2 migration complete, or close the M3 programme.
+M3.14 Sequence C is implemented and awaits independent review. The authoritative machine-checkable record is
+`runtime-v2-destructive-cutover-manifest.json`; its architecture regression is
+`apps/cli/src/runtime-v2-cutover-readiness.spec.ts`.
 
-**Current status:** CUTOVER READY / M3.12 PASS-CLOSED-FROZEN / AWAITING DESTRUCTIVE-STAGE REVIEW. The
-architecture regression verifies that production package roots are isolated from legacy-only entrypoints.
-The manifest records the successful authorized `deepseek/deepseek-flash` external-effect smoke, while
-keeping `destructiveChangesPermitted` set to `false`: deletion still requires a separately designed and
-reviewed destructive stage.
+M3.12 remains PASS/CLOSED/FROZEN. Its recorded `deepseek/deepseek-flash` external-effect smoke remains
+evidence and was not removed or rerun as part of this destructive cutover.
 
-## Current Production Route
+## Production Route
 
-The production deployment path is compiled `forge run` -> Temporal -> compiled Temporal worker ->
-Forge runtime composition. Its durable authority is the explicitly configured SQLite database.
-`forge status` reads a provider-neutral durable read model from that same authority database.
+The only production route is compiled `forge run` -> Temporal -> compiled Temporal worker -> Forge runtime
+composition. The configured SQLite database remains the durable authority, and `forge status` and
+`forge cancel` use that same authority. The worker receives its review policy and model through explicit
+deployment configuration: `FORGE_WORKER_REVIEW_PROVIDER` and `FORGE_WORKER_REVIEW_MODEL`. The CLI canonicalizes and
+resolves its required `--review-provider` and `--review-model` before plan, bind, or run authority is
+written. The worker independently canonicalizes and resolves its deployment identity before polling
+Temporal. A missing, blank, unavailable, or fingerprint-mismatched identity fails closed before useful
+work; the composition receives only the resulting provider-neutral policy and application-owned adapter
+factories.
+The composition also receives application-owned reviewer and coding-runner factories. It neither reads
+deployment environment variables nor creates Pi adapters or resolves a model itself; the worker is the
+sole production assembly boundary for those provider-specific concerns.
 
-## Legacy Inventory
+## Removed Assets
 
-The manifest classifies every retained path and records its callers and post-smoke deletion eligibility:
+Sequence B deleted the in-process `OrchestrationRuntime`, `LocalRuntimeStarter`, their `/legacy` exports and
+tests, the legacy-versus-Temporal differential suite, and the frozen `temporal-spike`, `restate-spike`, and
+`runtime-v2-spike-harness` workspaces. Package scripts, TypeScript references, Vitest coverage exclusions,
+package dependencies, and the pnpm lockfile no longer retain those assets.
 
-- `libs/orchestration-runtime/src/lib/orchestration-runtime.ts` is the legacy in-process runtime used
-  by the frozen M3.6-M3.9 differential evidence. It is differential-only and exposed only from
-  `@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy`.
-- `libs/run-preparation/src/lib/local-runtime-starter.ts` is a differential-only caller of the legacy
-  in-process runtime and is exposed only from
-  `@ai-native-software-delivery-orchestrator/run-preparation/legacy`.
-- `apps/temporal-worker/src/legacy-temporal-differential.spec.ts` executes the legacy runtime and the
-  Temporal path side by side to protect authority parity. It is differential-only and is invoked by the
-  dedicated legacy test command.
-- `libs/temporal-spike/` and `libs/restate-spike/` are frozen-prototype artifacts. They do not start
-  the production Forge worker.
-- `libs/runtime-v2-spike-harness/` is test-only support for the retained differential and prototype
-  evidence.
-- `libs/orchestration-runtime/src/lib/` is not a deletion candidate as a whole. Its reusable
-  application services, including `TaskOutputAdmissionCoordinator`, `RepairExecutionCoordinator`,
-  `ForgeRunProgressionService`, and `ForgeReadModel`, remain on the production route.
+Reusable `libs/orchestration-runtime` application services remain on the production route, including
+`TaskOutputAdmissionCoordinator`, `RepairExecutionCoordinator`, `ForgeRunProgressionService`, and
+`ForgeReadModel`.
 
-The executable architecture regression verifies that the compiled CLI imports neither
-`OrchestrationRuntime`, `LocalRuntimeStarter`, nor worker composition; that production package roots do
-not re-export legacy-only modules; that stale spike dependencies are absent from the CLI package; that
-`forge run` contains the `TemporalRunLauncher` and `startForgeRun` route; and that the independently
-deployable worker is the sole production process that composes activities with
-`createForgeWorkerComposition` and `createTemporalWorker`.
+## Retained Evidence
 
-## Cutover Assertions
+Temporal and production-composition tests retain the unique durable assertions that justified the old
+differential suite: exact and mismatched repeated blocked-integration wake, repair-budget evidence without
+integration, repair `UNKNOWN` authority, `STALE` blocker repair resume, and feasible durable restart/wake
+recovery. The cutover regression additionally requires every retired path to be absent.
 
-Before any destructive M3.14 change, demonstrate all of the following:
+## Verification
 
-- M3.12 remains PASS/CLOSED/FROZEN. The recorded `deepseek/deepseek-flash` smoke satisfies its real
-  external-effect acceptance criterion.
-- The production CLI starts only the compact Temporal workflow and writes launch authority once.
-- A separately started worker can complete and recover a durable run from the configured authority
-  database.
-- `forge status` and `forge cancel` operate on that configured authority database.
-- The provider-neutral read model remains sufficient for CLI operators and a future API/UI boundary.
-- Normal worker review-policy selection is explicit deployment configuration and matches the code-review
-  policy fingerprint written by the CLI authority path. The current hard-coded normal-worker default is
-  not sufficient evidence for this destructive-stage assertion.
-- Frozen legacy-versus-Temporal differential coverage can be retired or replaced without losing its
-  authority assertions.
-
-## Deletion Plan
-
-Once those assertions hold, a separately reviewed destructive stage may remove production-dead
-legacy scaffolding in this order:
-
-1. Replace frozen differential-only callers with durable contract fixtures where they preserve no
-   unique behavior.
-2. Remove unreferenced prototype packages and their build/test scripts.
-3. Remove the final legacy runtime only after no production or contract test imports it.
-4. Update architecture and progress documentation to state the final cutover boundary.
-
-Until then, this inventory, manifest, entrypoint separation, and regression are intentionally
-non-destructive. No listed path is deleted in M3.14.
+The destructive route was verified with `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, and the
+machine-checkable cutover regression. `pnpm check` is currently blocked only by pre-existing formatting
+issues in `pi-agent-runner.spec.ts`, `task-repair-attempt.ts`, and `repair-execution-coordinator.spec.ts`;
+none are part of this cutover.

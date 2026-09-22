@@ -93,6 +93,7 @@ const manifest = {
       };
     });
   })(),
+  retiredAssets: strings(manifestSource.retiredAssets, 'retiredAssets'),
   blockers: strings(manifestSource.blockers, 'blockers'),
   m312ExternalSmoke: record(manifestSource.m312ExternalSmoke, 'm312ExternalSmoke'),
   finalCutoverAssertions: strings(manifestSource.finalCutoverAssertions, 'finalCutoverAssertions')
@@ -115,6 +116,8 @@ describe('Runtime V2 cutover readiness', () => {
 
     expect(cliSource).toContain('TemporalRunLauncher');
     expect(cliSource).toContain('startForgeRun');
+    expect(cliSource).toContain('createCodeReviewPolicy');
+    expect(cliSource).toContain('PiCodeReviewModelResolver');
     expect(
       packageImports(
         'apps/cli/src/app.ts',
@@ -143,9 +146,19 @@ describe('Runtime V2 cutover readiness', () => {
 
   it('keeps activity composition in the independently deployable worker', () => {
     const workerSource = source('apps/temporal-worker/src/main.ts');
+    const workerCompositionSource = source('apps/temporal-worker/src/forge-worker-composition.ts');
+    const compositionSource = source(
+      'libs/forge-runtime-composition/src/forge-runtime-composition.ts'
+    );
 
     expect(workerSource).toContain('createForgeWorkerComposition');
     expect(workerSource).toContain('createTemporalWorker');
+    expect(workerSource).toContain('resolveWorkerReviewDeploymentConfig');
+    expect(workerCompositionSource).toContain('PiCodingAgentGateway');
+    expect(workerCompositionSource).toContain('PiTaskCodeReviewer');
+    expect(compositionSource).not.toContain('PiCodingAgentGateway');
+    expect(compositionSource).not.toContain('PiTaskCodeReviewer');
+    expect(compositionSource).not.toContain('PiCodeReviewModelResolver');
     expect(
       packageImports(
         'apps/temporal-worker/src/main.ts',
@@ -160,7 +173,7 @@ describe('Runtime V2 cutover readiness', () => {
     ).toBe(false);
   });
 
-  it('confines explicit legacy entries to differential and prototype evidence', () => {
+  it('removes explicit legacy entries and frozen prototype packages', () => {
     const runtimeLegacyConsumers = typescriptFiles('apps')
       .concat(typescriptFiles('libs'))
       .filter((path) =>
@@ -170,66 +183,14 @@ describe('Runtime V2 cutover readiness', () => {
         )
       );
 
-    expect(runtimeLegacyConsumers).toEqual([
-      'apps/temporal-worker/src/legacy-temporal-differential.spec.ts',
-      'libs/restate-spike/src/lib/restate-spike-activities.ts',
-      'libs/restate-spike/src/lib/shared-harness.ts',
-      'libs/run-preparation/src/lib/local-runtime-starter.ts',
-      'libs/runtime-v2-spike-harness/src/forge-scenario-service.ts',
-      'libs/runtime-v2-spike-harness/src/sqlite-outcome-collector.ts',
-      'libs/runtime-v2-spike-harness/tests/restate-real-authority.spec.ts',
-      'libs/runtime-v2-spike-harness/tests/temporal-real-authority.spec.ts',
-      'libs/temporal-spike/src/lib/outcome-collector.ts',
-      'libs/temporal-spike/src/lib/shared-harness.ts',
-      'libs/temporal-spike/src/lib/stub-scenario-service.ts',
-      'libs/temporal-spike/src/lib/temporal-spike-activities.spec.ts',
-      'libs/temporal-spike/src/lib/temporal-spike-activities.ts',
-      'libs/temporal-spike/src/lib/temporal-spike-worker.ts',
-      'libs/temporal-spike/src/lib/temporal-spike-workflow.spec.ts'
-    ]);
+    expect(runtimeLegacyConsumers).toEqual([]);
   });
 
-  it('records a non-destructive inventory and exact final cutover assertions', () => {
-    expect(manifest.status).toBe('CUTOVER_READY_M3_12_CLOSED_AWAITING_DESTRUCTIVE_STAGE_REVIEW');
-    expect(manifest.destructiveChangesPermitted).toBe(false);
+  it('records the completed destructive cutover while retaining M3.12 evidence', () => {
+    expect(manifest.status).toBe('SEQUENCE_C_IMPLEMENTED_AWAITING_INDEPENDENT_REVIEW');
+    expect(manifest.destructiveChangesPermitted).toBe(true);
     expect(manifest.productionRoute.launch).toContain('TemporalRunLauncher');
     expect(manifest.productionRoute.worker).toBe('apps/temporal-worker/src/main.ts');
-    expect(inventory('legacy-in-process-runtime')).toMatchObject({
-      path: 'libs/orchestration-runtime/src/lib/orchestration-runtime.ts',
-      classification: 'differential-only',
-      callers: ['libs/orchestration-runtime/src/legacy.ts'],
-      deleteAfterM312Pass: true
-    });
-    expect(inventory('local-runtime-starter')).toMatchObject({
-      path: 'libs/run-preparation/src/lib/local-runtime-starter.ts',
-      classification: 'differential-only',
-      callers: ['libs/run-preparation/src/legacy.ts'],
-      deleteAfterM312Pass: true
-    });
-    expect(inventory('legacy-temporal-differential')).toMatchObject({
-      path: 'apps/temporal-worker/src/legacy-temporal-differential.spec.ts',
-      classification: 'differential-only',
-      callers: ['package.json:test:temporal-worker:legacy'],
-      deleteAfterM312Pass: true
-    });
-    expect(inventory('temporal-spike')).toMatchObject({
-      path: 'libs/temporal-spike',
-      classification: 'frozen-prototype',
-      callers: ['libs/runtime-v2-spike-harness/tests/temporal-real-authority.spec.ts'],
-      deleteAfterM312Pass: true
-    });
-    expect(inventory('restate-spike')).toMatchObject({
-      path: 'libs/restate-spike',
-      classification: 'frozen-prototype',
-      callers: ['libs/runtime-v2-spike-harness/tests/restate-real-authority.spec.ts'],
-      deleteAfterM312Pass: true
-    });
-    expect(inventory('runtime-v2-spike-harness')).toMatchObject({
-      path: 'libs/runtime-v2-spike-harness',
-      classification: 'test-only',
-      callers: ['apps/temporal-worker/src/legacy-temporal-differential.spec.ts'],
-      deleteAfterM312Pass: true
-    });
     expect(inventory('forge-application-services')).toMatchObject({
       path: 'libs/orchestration-runtime/src/lib',
       classification: 'reusable-application-service',
@@ -245,8 +206,8 @@ describe('Runtime V2 cutover readiness', () => {
         'ForgeReadModel'
       ]
     });
-    for (const entry of manifest.inventory) {
-      expect(existsSync(resolve(workspaceRoot, entry.path))).toBe(true);
+    for (const path of manifest.retiredAssets) {
+      expect(existsSync(resolve(workspaceRoot, path))).toBe(false);
     }
     expect(manifest.blockers).toEqual([]);
     expect(manifest.m312ExternalSmoke).toMatchObject({
@@ -264,7 +225,9 @@ describe('Runtime V2 cutover readiness', () => {
       'status and cancel use the configured SQLite authority database.',
       'ForgeReadModel remains provider-neutral.',
       'Normal worker review policy selection is explicit deployment configuration and matches CLI durable authority.',
-      'Every differential-only assertion has a durable replacement or explicit retirement decision.'
+      'The legacy runtime, differential suite, spike packages, and their package/configuration references are absent.',
+      'Retained Temporal production tests cover exact and mismatched repeated blocked-integration wake, repair budget evidence without integration, repair UNKNOWN authority, STALE blocker repair resume, and feasible wrong-wake/restart recovery.',
+      'Forge runtime composition receives explicit application-owned reviewer and coding-runner factories; only the worker application assembles Pi adapters and resolved deployment identity.'
     ]);
   });
 });

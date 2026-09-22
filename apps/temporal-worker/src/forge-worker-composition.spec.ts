@@ -32,8 +32,15 @@ import type {
   WriteLease
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
-import type { PiSessionGateway } from '@ai-native-software-delivery-orchestrator/agent-runtime';
+import {
+  PiAgentRunner,
+  type PiSessionGateway
+} from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
+import {
+  codeReviewPolicyFingerprint,
+  createCodeReviewPolicy
+} from '@ai-native-software-delivery-orchestrator/planning';
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -42,10 +49,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   createForgeWorkerComposition,
-  reviewPolicyFingerprint,
   verificationPolicyFingerprint,
   type ForgeWorkerCompositionOverrides
 } from './forge-worker-composition.js';
+
+const reviewPolicyFingerprint = codeReviewPolicyFingerprint(
+  createCodeReviewPolicy({ provider: 'test', model: 'test' })
+);
 
 class MemoryPersistence
   implements
@@ -1144,6 +1154,122 @@ describe('temporal worker production vertical slice', () => {
     });
   }, 60000);
 
+  it('resumes a blocked repair when durable blocker evidence is STALE', async () => {
+    const persistence = new MemoryPersistence();
+    const request = createRunRequest(['task-a']);
+    await persistence.createRun(request);
+    const builderAttempt: AgentExecutionAttempt = {
+      id: 'builder-attempt-stale',
+      runId: 'run-1',
+      taskId: 'task-a',
+      agentId: 'agent-1',
+      workspaceId: 'workspace-task-a',
+      leasePlanFingerprint: taskLeasePlanFingerprint({
+        taskId: 'task-a',
+        source: 'manual',
+        predictedResources: []
+      }),
+      state: 'COMPLETED',
+      revision: 2,
+      startedAt: new Date(),
+      completedAt: new Date()
+    };
+    const workspace: TaskWorkspace = {
+      runId: 'run-1',
+      taskId: 'task-a',
+      id: 'workspace-task-a',
+      branchName: 'branch-task-a',
+      baseRef: 'main',
+      integrationRepositoryPath: '/repo/task-a',
+      workspacePath: '/workspace/task-a',
+      integrationRef: 'main',
+      revision: 1,
+      phase: 'READY_TO_INTEGRATE'
+    };
+    const subject = {
+      builderAttemptId: builderAttempt.id,
+      outputAttemptId: builderAttempt.id,
+      workspaceId: workspace.id,
+      workspaceRevision: 1,
+      workspaceChangeFingerprint: 'sha256:'.concat('a'.repeat(64)),
+      impactFingerprint: 'sha256:'.concat('b'.repeat(64)),
+      verificationFingerprint: 'sha256:'.concat('c'.repeat(64))
+    };
+    const repair: TaskRepairAttempt = {
+      id: 'repair-attempt-stale',
+      runId: 'run-1',
+      taskId: 'task-a',
+      agentId: 'agent-1',
+      workspaceId: workspace.id,
+      parentReviewIteration: 1,
+      parentReviewSubject: subject,
+      repairIteration: 1,
+      state: 'BLOCKED',
+      revision: 3,
+      startedAt: new Date(),
+      blocker: { type: 'lease', leaseId: 'lease-blocker-stale' }
+    };
+    persistence.attempts.push({ runId: 'run-1', attempt: builderAttempt });
+    persistence.workspaces.push({ runId: 'run-1', workspace });
+    persistence.impacts.push({ runId: 'run-1', taskId: 'task-a', impact: impactFor('task-a') });
+    persistence.reviews.push({
+      runId: 'run-1',
+      taskId: 'task-a',
+      iteration: 1,
+      subject,
+      review: { recommendation: 'repair', summary: 'needs repair', findings: [] }
+    });
+    persistence.repairAttempts.push({ runId: 'run-1', attempt: repair });
+    persistence.repairWorkItems.push({
+      runId: 'run-1',
+      taskId: 'task-a',
+      repairAttemptId: repair.id,
+      builderAttemptId: builderAttempt.id,
+      workspaceId: workspace.id,
+      leasePlanFingerprint: builderAttempt.leasePlanFingerprint,
+      impactFingerprint: subject.impactFingerprint,
+      parentReviewIteration: 1,
+      reviewIteration: 2,
+      verificationPolicyFingerprint,
+      codeReviewPolicyFingerprint: reviewPolicyFingerprint
+    });
+    persistence.leases.push({
+      runId: 'run-1',
+      lease: {
+        id: 'lease-blocker-stale',
+        runId: 'run-1',
+        agentId: 'agent-blocker',
+        taskId: 'task-z',
+        resource: { type: 'project', projectId: 'project-a' },
+        mode: 'exclusive',
+        version: 4,
+        state: 'STALE',
+        acquiredAt: new Date(),
+        lastHeartbeatAt: new Date()
+      }
+    });
+    const composition = await createForgeWorkerComposition({
+      persistence,
+      builderExecution: unusedBuilderExecution(),
+      evaluation: unusedEvaluation(),
+      integration: unusedIntegration(),
+      repairExecution: unusedRepairExecution(),
+      repositoryGraph: emptyRepositoryGraph
+    });
+    await expect(
+      composition.forgeActivities.resumeBlockedRepair({
+        runId: 'run-1',
+        repairAttemptId: repair.id
+      })
+    ).resolves.toMatchObject({
+      status: 'resumed',
+      repairAttemptId: repair.id,
+      taskId: 'task-a'
+    });
+    expect(persistence.repairResumeDispatches).toHaveLength(1);
+    await composition.close();
+  });
+
   it('reopens SQLite, hydrates active leases, and recovers the same durable resume authorization', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'forge-worker-restart-'));
     directories.push(directory);
@@ -1494,7 +1620,8 @@ describe('temporal worker production vertical slice', () => {
     const composition = await createForgeWorkerComposition({
       persistence,
       repositoryGraph: emptyRepositoryGraph,
-      agentGateway,
+      agentRunnerFactory: ({ createTools }) =>
+        new PiAgentRunner({ gateway: agentGateway, createTools }),
       workspaceManager: {
         async create(workspace) {
           return { ...workspace, revision: 1, phase: 'READY_TO_INTEGRATE' };

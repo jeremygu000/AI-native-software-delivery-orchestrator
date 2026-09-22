@@ -6,6 +6,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 
 import { createForgeWorkerComposition } from './forge-worker-composition.js';
+import { resolveWorkerReviewDeploymentConfig } from './review-deployment-config.js';
 
 async function main(): Promise<void> {
   if (
@@ -26,7 +27,13 @@ async function main(): Promise<void> {
     taskQueue: process.env.TEMPORAL_TASK_QUEUE ?? 'forge-run'
   });
 
-  const composition = await createForgeWorkerComposition();
+  const review = resolveWorkerReviewDeploymentConfig();
+  const composition = await createForgeWorkerComposition({
+    databasePath: process.env.FORGE_WORKER_DATABASE_PATH,
+    repositoryPath: process.env.FORGE_WORKER_REPOSITORY_PATH,
+    codeReviewPolicy: review.policy,
+    reviewModel: review.model
+  });
   const handle = await createTemporalWorker(config, {
     forgeActivities: composition.forgeActivities
   });

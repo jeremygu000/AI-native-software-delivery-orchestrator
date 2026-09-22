@@ -2714,3 +2714,26 @@ M3.14 当前为 **CUTOVER READY / M3.12 PASS-CLOSED-FROZEN / AWAITING DESTRUCTIV
 前，不得执行 destructive cutover、legacy deletion，或宣称 Runtime V2 已完成。该 stage 还必须将 normal worker
 review-policy selection 变为显式 deployment configuration，并证明它与 CLI durable authority policy 匹配；当前仅用于
 smoke 的 DeepSeek override 不满足这项 normal-production assertion。
+
+## M3.14 Sequence B：Destructive Runtime V2 Cutover
+
+Sequence B 删除已退休的 in-process `OrchestrationRuntime`、`LocalRuntimeStarter`、它们的 legacy entrypoint
+与测试、legacy-versus-Temporal differential suite，以及全部 frozen Temporal/Restate spike package 和 harness。
+package export、workspace reference、build/test script、Vitest coverage exclusion 与 pnpm lockfile 均不再保留这些
+asset。可复用的 production service 继续保留在 `libs/orchestration-runtime`；唯一的 production execution route
+仍是 CLI launcher、Temporal workflow 与独立部署的 worker。
+
+保留的 production test 现在直接保护原 differential suite 独有的 durable invariant：精确与不匹配且重复的
+blocked-integration wake、没有 integration 的 repair-budget evidence、repair `UNKNOWN` authority、`STALE`
+blocker repair resume，以及可在 production boundary 测试的 restart recovery。cutover manifest 与对应 regression
+现在断言 retired path 已不存在，同时保留记录的 M3.12 external-smoke evidence。
+
+normal production review authority 现在是显式配置，而不是 composition default。CLI 的 `plan`、`bind` 和 `run`
+会在 authority persistence 前 canonicalize 并解析必填 provider/model。worker 要求
+`FORGE_WORKER_REVIEW_PROVIDER` 与 `FORGE_WORKER_REVIEW_MODEL`，在 polling Temporal 前解析相同 canonical policy，并在 activity
+work 前拒绝 durable fingerprint mismatch。neutral composition 接收显式 path、policy 和 application-owned adapter factory，不再读取
+deployment environment 或自行选择 provider/model。
+
+M3.14 Sequence C 为 **IMPLEMENTED / M3.12 PASS-CLOSED-FROZEN / AWAITING INDEPENDENT REVIEW**。由 worker 而不是
+neutral composition library 根据已解析的 normal deployment identity 装配 Pi coding/review adapter。它不删除 M3.12
+evidence，也不改变 production Temporal route。

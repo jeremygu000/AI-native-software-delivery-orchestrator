@@ -1,7 +1,7 @@
 {
   "stage": "M3.14",
-  "status": "CUTOVER_READY_M3_12_CLOSED_AWAITING_DESTRUCTIVE_STAGE_REVIEW",
-  "destructiveChangesPermitted": false,
+  "status": "SEQUENCE_C_IMPLEMENTED_AWAITING_INDEPENDENT_REVIEW",
+  "destructiveChangesPermitted": true,
   "blockers": [],
   "m312ExternalSmoke": {
     "status": "PASS_CLOSED_FROZEN",
@@ -16,49 +16,17 @@
     "worker": "apps/temporal-worker/src/main.ts",
     "authority": "Configured absolute SQLite authority database"
   },
+  "retiredAssets": [
+    "libs/orchestration-runtime/src/lib/orchestration-runtime.ts",
+    "libs/orchestration-runtime/src/legacy.ts",
+    "libs/run-preparation/src/lib/local-runtime-starter.ts",
+    "libs/run-preparation/src/legacy.ts",
+    "apps/temporal-worker/src/legacy-temporal-differential.spec.ts",
+    "libs/temporal-spike",
+    "libs/restate-spike",
+    "libs/runtime-v2-spike-harness"
+  ],
   "inventory": [
-    {
-      "id": "legacy-in-process-runtime",
-      "path": "libs/orchestration-runtime/src/lib/orchestration-runtime.ts",
-      "classification": "differential-only",
-      "callers": ["libs/orchestration-runtime/src/legacy.ts"],
-      "deleteAfterM312Pass": true
-    },
-    {
-      "id": "local-runtime-starter",
-      "path": "libs/run-preparation/src/lib/local-runtime-starter.ts",
-      "classification": "differential-only",
-      "callers": ["libs/run-preparation/src/legacy.ts"],
-      "deleteAfterM312Pass": true
-    },
-    {
-      "id": "legacy-temporal-differential",
-      "path": "apps/temporal-worker/src/legacy-temporal-differential.spec.ts",
-      "classification": "differential-only",
-      "callers": ["package.json:test:temporal-worker:legacy"],
-      "deleteAfterM312Pass": true
-    },
-    {
-      "id": "temporal-spike",
-      "path": "libs/temporal-spike",
-      "classification": "frozen-prototype",
-      "callers": ["libs/runtime-v2-spike-harness/tests/temporal-real-authority.spec.ts"],
-      "deleteAfterM312Pass": true
-    },
-    {
-      "id": "restate-spike",
-      "path": "libs/restate-spike",
-      "classification": "frozen-prototype",
-      "callers": ["libs/runtime-v2-spike-harness/tests/restate-real-authority.spec.ts"],
-      "deleteAfterM312Pass": true
-    },
-    {
-      "id": "runtime-v2-spike-harness",
-      "path": "libs/runtime-v2-spike-harness",
-      "classification": "test-only",
-      "callers": ["apps/temporal-worker/src/legacy-temporal-differential.spec.ts"],
-      "deleteAfterM312Pass": true
-    },
     {
       "id": "forge-application-services",
       "path": "libs/orchestration-runtime/src/lib",
@@ -85,6 +53,8 @@
     "status and cancel use the configured SQLite authority database.",
     "ForgeReadModel remains provider-neutral.",
     "Normal worker review policy selection is explicit deployment configuration and matches CLI durable authority.",
-    "Every differential-only assertion has a durable replacement or explicit retirement decision."
+    "The legacy runtime, differential suite, spike packages, and their package/configuration references are absent.",
+    "Retained Temporal production tests cover exact and mismatched repeated blocked-integration wake, repair budget evidence without integration, repair UNKNOWN authority, STALE blocker repair resume, and feasible wrong-wake/restart recovery.",
+    "Forge runtime composition receives explicit application-owned reviewer and coding-runner factories; only the worker application assembles Pi adapters and resolved deployment identity."
   ]
 }
