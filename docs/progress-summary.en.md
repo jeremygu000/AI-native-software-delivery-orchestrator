@@ -3054,7 +3054,7 @@ the compiled CLI has no legacy runtime, `LocalRuntimeStarter`, worker-compositio
 dependency; production package roots isolate reusable services from explicit `/legacy` entrypoints;
 `forge run` uses `TemporalRunLauncher` and `startForgeRun`; and the independently deployable worker
 alone composes Temporal activities. The same test requires the manifest to stay non-destructive and
-retain the full inventory and eight final cutover assertions.
+retain the full inventory and nine final cutover assertions.
 
 The cutover preparation documents now explain the manifest, direct callers, deletion order, and the
 strict gate. M3.14 performs no deletion and introduces no alternate runtime path.

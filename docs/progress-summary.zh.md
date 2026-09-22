@@ -2695,7 +2695,7 @@ service 被明确保留，不能与 legacy in-process `OrchestrationRuntime` 混
 `apps/cli/src/runtime-v2-cutover-readiness.spec.ts` 使 production boundary 可执行验证：compiled CLI 不含 legacy
 runtime、`LocalRuntimeStarter`、worker-composition 或 stale spike dependency；production package root 将可复用
 service 与显式 `/legacy` entrypoint 隔离；`forge run` 使用 `TemporalRunLauncher` 与 `startForgeRun`；只有独立部署的
-worker 组合 Temporal activity。同一测试还要求 manifest 保持 non-destructive，并保留完整 inventory 与 8 条最终
+worker 组合 Temporal activity。同一测试还要求 manifest 保持 non-destructive，并保留完整 inventory 与 9 条最终
 cutover assertion。
 
 cutover preparation 文档现在说明 manifest、直接 caller、deletion order 与严格 gate。M3.14 不删除任何内容，也不引入
