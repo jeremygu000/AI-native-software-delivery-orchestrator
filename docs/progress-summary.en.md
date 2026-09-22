@@ -3159,3 +3159,10 @@ builder claim now includes a real proposed lease, and the shared suite checks th
 rejects the claim without persisting that lease or advancing the PREPARING builder; the recovered run
 must remain CANCEL_REQUESTED. SQLite passes all 10 shared cases; PostgreSQL still skips all 10 with
 one pending fixture. M4.1A remains awaiting independent review of this final contract correction.
+
+Independent review of `348f823` confirmed that the nonempty-lease cancellation-first case closes
+the remaining P1, with no P0/P1 findings. **M4.1A Durable Persistence Contract Audit is PASS / CLOSED.**
+The SQLite reference passes 10/10 shared contracts; PostgreSQL remains **NOT IMPLEMENTED / NOT
+VERIFIED** (10 skipped, 1 pending fixture requirement). The common contract is the acceptance
+baseline for M4.1B's real PostgreSQL adapter and database fixture, including controlled overlapping
+transactions. M4.1 as a whole and PostgreSQL parity are not closed; frozen M3 behavior is unchanged.

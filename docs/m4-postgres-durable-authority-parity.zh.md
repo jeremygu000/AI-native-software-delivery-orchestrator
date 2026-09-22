@@ -76,4 +76,6 @@ claim-versus-claim 和 cancellation-versus-claim 窗口重叠，并证明唯一�
    后续 claim 不得留下任何持久化 mutation authority。
 5. 保持冻结的 M3 SQLite 语义；跨 run repository fencing 和多 run acceptance 分别留待 M4.2 与 M4.3。
 
-M4.1A 状态：**AUDITED / SHARED SQLITE CONTRACT EXECUTABLE / POSTGRESQL PARITY BLOCKED**。
+独立复审 `348f823` 后，M4.1A 状态为 **PASS / CLOSED**。SQLite 参照 adapter 的 10 项共享
+authority 契约全部通过。PostgreSQL 仍是 10 项显式跳过、1 项 fixture 待实现：authority adapter
+**尚未实现 / 尚未验证**，parity 仍受阻于 M4.1B。关闭的仅是审计，不是 PostgreSQL parity 或整个 M4.1。

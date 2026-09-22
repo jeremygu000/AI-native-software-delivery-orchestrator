@@ -92,4 +92,7 @@ deterministic loser. This is same-run authority parity, not M4.2 cross-run repos
 5. Preserve frozen M3 SQLite semantics; defer cross-run repository fencing and multi-run acceptance to
    M4.2 and M4.3 respectively.
 
-M4.1A status: **AUDITED / SHARED SQLITE CONTRACT EXECUTABLE / POSTGRESQL PARITY BLOCKED**.
+M4.1A status after independent review of `348f823`: **PASS / CLOSED**. The SQLite reference
+passes all 10 shared authority contracts. PostgreSQL reports 10 skipped contracts and one pending
+fixture requirement: its authority adapter is **NOT IMPLEMENTED / NOT VERIFIED**, and parity remains
+blocked on M4.1B. This closes the audit only, not PostgreSQL parity or M4.1 as a whole.

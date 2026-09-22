@@ -2784,3 +2784,9 @@ M4.1A 的这次修复仍待独立复审；未实现 PostgreSQL，也未修改 M3
 lease，共享 suite 要求取消后该 claim 被拒绝、lease 不落库、builder 保持 PREPARING，且 run 仍为
 CANCEL_REQUESTED。SQLite 共享契约仍为 10 项通过；PostgreSQL 仍为 10 项显式跳过、1 项 fixture
 待实现。M4.1A 的这项契约补正仍待独立复审。
+
+独立复审 `348f823` 确认非空 lease 的 cancellation-first 契约关闭了最后一个 P1，没有 P0/P1。
+**M4.1A Durable Persistence Contract Audit 现为 PASS / CLOSED。** SQLite 参照 adapter 的
+10 项共享契约全部通过；PostgreSQL 仍为 **尚未实现 / 尚未验证**（10 项跳过，1 项 fixture
+待实现）。这套共享契约是 M4.1B 真实 PostgreSQL adapter 与数据库 fixture 的验收基线，仍须加入
+可控重叠事务测试；整个 M4.1 和 PostgreSQL parity 尚未关闭，冻结的 M3 行为不变。
