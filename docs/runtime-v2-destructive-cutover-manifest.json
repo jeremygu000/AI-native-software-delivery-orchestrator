@@ -1,7 +1,10 @@
 {
   "stage": "M3.14",
-  "status": "SEQUENCE_C_IMPLEMENTED_AWAITING_INDEPENDENT_REVIEW",
-  "destructiveChangesPermitted": true,
+  "status": "PASS_CLOSED_FROZEN",
+  "destructiveCutover": {
+    "executed": true,
+    "independentlyReviewed": true
+  },
   "blockers": [],
   "m312ExternalSmoke": {
     "status": "PASS_CLOSED_FROZEN",

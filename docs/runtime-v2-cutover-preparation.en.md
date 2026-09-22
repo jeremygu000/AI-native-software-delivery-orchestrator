@@ -2,9 +2,11 @@
 
 ## Status
 
-M3.14 Sequence C is implemented and awaits independent review. The authoritative machine-checkable record is
+M3.14 is **PASS / CLOSED / FROZEN** following independent review of `ba640de`. The Runtime V2 migration
+is **COMPLETE**, and M3 is **COMPLETE / FROZEN**. The authoritative machine-checkable record is
 `runtime-v2-destructive-cutover-manifest.json`; its architecture regression is
-`apps/cli/src/runtime-v2-cutover-readiness.spec.ts`.
+`apps/cli/src/runtime-v2-cutover-readiness.spec.ts`. The manifest records that the destructive cutover
+was executed and independently reviewed; it does not grant permission for future deletions.
 
 M3.12 remains PASS/CLOSED/FROZEN. Its recorded `deepseek/deepseek-flash` external-effect smoke remains
 evidence and was not removed or rerun as part of this destructive cutover.

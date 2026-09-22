@@ -2739,6 +2739,11 @@ worker 不会将 BLOCKED repair 恢复或写入 resume dispatch。neutral compos
 application-owned adapter factory，不再读取
 deployment environment 或自行选择 provider/model。
 
-M3.14 Sequence C 为 **IMPLEMENTED / M3.12 PASS-CLOSED-FROZEN / AWAITING INDEPENDENT REVIEW**。由 worker 而不是
+独立复审前，M3.14 Sequence C 为 **IMPLEMENTED / M3.12 PASS-CLOSED-FROZEN / AWAITING INDEPENDENT REVIEW**。由 worker 而不是
 neutral composition library 根据已解析的 normal deployment identity 装配 Pi coding/review adapter。它不删除 M3.12
 evidence，也不改变 production Temporal route。
+
+对 `ba640de` 的独立复审确认了最终 worker replacement 证据和 manifest 的 evidence 记录准确性，且不再有 P0 或 P1。
+M3.14 现为 **PASS / CLOSED / FROZEN**；Runtime V2 migration 已 **COMPLETE**，M3 为 **COMPLETE / FROZEN**。
+manifest 将 destructive cutover 记录为已执行、已独立复审，同时保留 M3.12 成功的真实 external-effect smoke。
+上述 production route 与可复用 application service 仍是后续架构；这份 closure 记录不授权额外删除。

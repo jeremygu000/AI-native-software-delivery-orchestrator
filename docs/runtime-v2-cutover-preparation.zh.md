@@ -2,9 +2,11 @@
 
 ## 状态
 
-M3.14 Sequence C 已实施，正在等待 independent review。权威的 machine-checkable 记录位于
+M3.14 经对 `ba640de` 的独立复审后为 **PASS / CLOSED / FROZEN**。Runtime V2 migration 已 **COMPLETE**，
+M3 为 **COMPLETE / FROZEN**。权威的 machine-checkable 记录位于
 `runtime-v2-destructive-cutover-manifest.json`；其 architecture regression 位于
-`apps/cli/src/runtime-v2-cutover-readiness.spec.ts`。
+`apps/cli/src/runtime-v2-cutover-readiness.spec.ts`。manifest 记录 destructive cutover 已执行并通过独立复审，
+并不授权今后的其他删除操作。
 
 M3.12 仍为 PASS/CLOSED/FROZEN。已记录的 `deepseek/deepseek-flash` external-effect smoke 仍是 evidence，未在这次
 destructive cutover 中删除或重跑。

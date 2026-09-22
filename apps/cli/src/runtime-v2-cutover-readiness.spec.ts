@@ -64,12 +64,16 @@ const manifestSource = record(
   'root'
 );
 const productionRouteSource = record(manifestSource.productionRoute, 'productionRoute');
+const destructiveCutoverSource = record(manifestSource.destructiveCutover, 'destructiveCutover');
 const manifest = {
   status: string(manifestSource.status, 'status'),
-  destructiveChangesPermitted: boolean(
-    manifestSource.destructiveChangesPermitted,
-    'destructiveChangesPermitted'
-  ),
+  destructiveCutover: {
+    executed: boolean(destructiveCutoverSource.executed, 'destructiveCutover.executed'),
+    independentlyReviewed: boolean(
+      destructiveCutoverSource.independentlyReviewed,
+      'destructiveCutover.independentlyReviewed'
+    )
+  },
   productionRoute: {
     launch: string(productionRouteSource.launch, 'productionRoute.launch'),
     worker: string(productionRouteSource.worker, 'productionRoute.worker')
@@ -187,8 +191,8 @@ describe('Runtime V2 cutover readiness', () => {
   });
 
   it('records the completed destructive cutover while retaining M3.12 evidence', () => {
-    expect(manifest.status).toBe('SEQUENCE_C_IMPLEMENTED_AWAITING_INDEPENDENT_REVIEW');
-    expect(manifest.destructiveChangesPermitted).toBe(true);
+    expect(manifest.status).toBe('PASS_CLOSED_FROZEN');
+    expect(manifest.destructiveCutover).toEqual({ executed: true, independentlyReviewed: true });
     expect(manifest.productionRoute.launch).toContain('TemporalRunLauncher');
     expect(manifest.productionRoute.worker).toBe('apps/temporal-worker/src/main.ts');
     expect(inventory('forge-application-services')).toMatchObject({

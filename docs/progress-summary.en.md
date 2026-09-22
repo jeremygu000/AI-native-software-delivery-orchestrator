@@ -3105,6 +3105,13 @@ resume dispatch. The neutral composition
 receives explicit paths, policy, and application-owned adapter factories without reading deployment
 environment or selecting a provider/model itself.
 
-M3.14 Sequence C is **IMPLEMENTED / M3.12 PASS-CLOSED-FROZEN / AWAITING INDEPENDENT REVIEW**. The worker,
+Before independent review, M3.14 Sequence C was **IMPLEMENTED / M3.12 PASS-CLOSED-FROZEN / AWAITING INDEPENDENT REVIEW**. The worker,
 not the neutral composition library, assembles Pi coding/review adapters from the resolved normal deployment
 identity. It does not remove M3.12 evidence or alter the production Temporal route.
+
+Independent review of `ba640de` confirmed the final worker-replacement proof and the accuracy of the
+manifest's evidence record, with no remaining P0 or P1 findings. M3.14 is now **PASS / CLOSED / FROZEN**;
+the Runtime V2 migration is **COMPLETE**, and M3 is **COMPLETE / FROZEN**. The manifest records the
+destructive cutover as executed and independently reviewed, while retaining the successful M3.12 real
+external-effect smoke. The production route and the surviving application services described above remain
+the ongoing architecture; the closure record does not authorize further deletion.
