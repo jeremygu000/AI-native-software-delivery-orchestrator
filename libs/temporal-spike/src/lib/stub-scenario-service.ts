@@ -1,4 +1,4 @@
-import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 
 export const createStubTemporalSpikeScenarioService = (): DurableExecutionScenarioService => ({
   executeBuilder: async () => ({

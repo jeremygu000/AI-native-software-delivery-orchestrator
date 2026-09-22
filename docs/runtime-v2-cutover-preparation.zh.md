@@ -7,9 +7,9 @@
 `apps/cli/src/runtime-v2-cutover-readiness.spec.ts`。本文解释这些检查；它不授权删除 fallback、不声明
 Runtime V2 migration 已完成，也不关闭整个 M3 programme。
 
-**当前状态：** CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / NOT CLOSED。manifest 将
-`destructiveChangesPermitted` 固定为 `false`，直到 M3.12 记录成功且获授权、使用 `openai/gpt-4.1` 的
-external-effect smoke。
+**当前状态：** CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / NOT CLOSED。architecture regression 已验证
+production package root 与 legacy-only entrypoint 隔离。manifest 将 `destructiveChangesPermitted` 固定为 `false`，
+直到 M3.12 记录成功、获授权并使用 `openai/gpt-4.1` 的 external-effect smoke。
 
 ## 当前 Production Route
 
@@ -22,9 +22,10 @@ provider-neutral durable read model。
 manifest 对每个保留路径分类，并记录其 caller 与通过 smoke 后的删除资格：
 
 - `libs/orchestration-runtime/src/lib/orchestration-runtime.ts` 是 legacy in-process runtime，用于已冻结的
-  M3.6-M3.9 differential evidence，分类为 differential-only。
+  M3.6-M3.9 differential evidence，分类为 differential-only，只能从
+  `@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy` 导入。
 - `libs/run-preparation/src/lib/local-runtime-starter.ts` 是 legacy in-process runtime 的
-  differential-only caller。
+  differential-only caller，只能从 `@ai-native-software-delivery-orchestrator/run-preparation/legacy` 导入。
 - `apps/temporal-worker/src/legacy-temporal-differential.spec.ts` 并行执行 legacy runtime 和 Temporal path，
   保护 authority parity，分类为 differential-only，并由专门的 legacy test command 调用。
 - `libs/temporal-spike/` 和 `libs/restate-spike/` 是 frozen-prototype artifact；它们不会启动 production Forge
@@ -35,7 +36,8 @@ manifest 对每个保留路径分类，并记录其 caller 与通过 smoke 后�
   `ForgeReadModel`，继续位于 production route。
 
 可执行的 architecture regression 验证 compiled CLI 不 import `OrchestrationRuntime`、`LocalRuntimeStarter` 或
-worker composition；`forge run` 包含 `TemporalRunLauncher` 与 `startForgeRun` route；独立部署的 worker 是唯一使用
+worker composition；production package root 不 re-export legacy-only module；CLI package 没有 stale spike dependency；
+`forge run` 包含 `TemporalRunLauncher` 与 `startForgeRun` route；独立部署的 worker 是唯一使用
 `createForgeWorkerComposition` 与 `createTemporalWorker` 组合 activity 的 production process。
 
 ## Cutover Assertions
@@ -58,4 +60,4 @@ worker composition；`forge run` 包含 `TemporalRunLauncher` 与 `startForgeRun
 3. 只有在没有 production 或 contract test import 后，移除最终 legacy runtime。
 4. 更新 architecture 和 progress documentation，说明最终 cutover boundary。
 
-在此之前，本 inventory、manifest 与 regression 有意保持 non-destructive。M3.14 不删除任何列出的路径。
+在此之前，本 inventory、manifest、entrypoint separation 与 regression 有意保持 non-destructive。M3.14 不删除任何列出的路径。

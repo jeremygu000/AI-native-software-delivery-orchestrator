@@ -14,21 +14,14 @@
       "id": "legacy-in-process-runtime",
       "path": "libs/orchestration-runtime/src/lib/orchestration-runtime.ts",
       "classification": "differential-only",
-      "callers": [
-        "libs/orchestration-runtime/src/lib/orchestration-runtime.spec.ts",
-        "libs/run-preparation/src/lib/local-runtime-starter.ts",
-        "apps/temporal-worker/src/legacy-temporal-differential.spec.ts"
-      ],
+      "callers": ["libs/orchestration-runtime/src/legacy.ts"],
       "deleteAfterM312Pass": true
     },
     {
       "id": "local-runtime-starter",
       "path": "libs/run-preparation/src/lib/local-runtime-starter.ts",
       "classification": "differential-only",
-      "callers": [
-        "libs/run-preparation/src/index.ts",
-        "libs/run-preparation/src/lib/local-runtime-starter.spec.ts"
-      ],
+      "callers": ["libs/run-preparation/src/legacy.ts"],
       "deleteAfterM312Pass": true
     },
     {
@@ -42,10 +35,7 @@
       "id": "temporal-spike",
       "path": "libs/temporal-spike",
       "classification": "frozen-prototype",
-      "callers": [
-        "apps/cli/package.json",
-        "libs/runtime-v2-spike-harness/tests/temporal-real-authority.spec.ts"
-      ],
+      "callers": ["libs/runtime-v2-spike-harness/tests/temporal-real-authority.spec.ts"],
       "deleteAfterM312Pass": true
     },
     {
@@ -82,7 +72,7 @@
   "finalCutoverAssertions": [
     "M3.12 real external-effect smoke is recorded as PASS.",
     "M3.13 remains CLOSED/FROZEN.",
-    "The compiled CLI has no legacy runtime, LocalRuntimeStarter, or worker-composition dependency.",
+    "Production package roots remain isolated from legacy-only module entries.",
     "forge run launches only through TemporalRunLauncher and startForgeRun.",
     "The independently deployed worker is the only production activity composition process.",
     "status and cancel use the configured SQLite authority database.",

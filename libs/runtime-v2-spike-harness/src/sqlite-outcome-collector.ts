@@ -4,7 +4,7 @@ import type {
   PersistedTaskRepairAttempt,
   PersistedWriteLease
 } from '@ai-native-software-delivery-orchestrator/domain';
-import type { DurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import type { DurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 
 export interface SqliteSpikeFixture {

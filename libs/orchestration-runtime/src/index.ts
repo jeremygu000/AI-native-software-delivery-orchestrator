@@ -1,4 +1,3 @@
-export * from './lib/orchestration-runtime.js';
 export { TaskCodeReviewCollector } from './lib/task-code-review-collector.js';
 export {
   TaskRepairAdmissionError,
@@ -51,6 +50,11 @@ export {
 } from './lib/forge-run-reevaluation-service.js';
 export { ForgeReadModel } from './lib/forge-read-model.js';
 export type {
+  RecoveredRuntimeRun,
+  RuntimeTaskBinding,
+  StartRuntimeRunRequest
+} from './lib/runtime-contracts.js';
+export type {
   ForgeAttemptSummary,
   ForgeBlockingReference,
   ForgeBlockingReason,
@@ -64,10 +68,3 @@ export type {
   ForgeTimelineEntry,
   ForgeVerificationReference
 } from './lib/forge-read-model.js';
-export type { DurableExecutionScenarioService } from './lib/durable-execution-spike-contract.js';
-export {
-  assertDurableExecutionSpikeOutcome,
-  DurableExecutionSpikeAuthorityError,
-  type DurableExecutionSpikeDriver,
-  type DurableExecutionSpikeOutcome
-} from './lib/durable-execution-spike-contract.js';

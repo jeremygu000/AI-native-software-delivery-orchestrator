@@ -8,7 +8,7 @@ import type {
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { isWritableResourceCoveredBy } from '@ai-native-software-delivery-orchestrator/domain';
 
-import { RepositoryResourceResolver } from './local-runtime-starter.js';
+import { RepositoryResourceResolver } from './repository-resource-resolver.js';
 
 const compareText = (left: string, right: string): number =>
   left < right ? -1 : left > right ? 1 : 0;

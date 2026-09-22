@@ -13,7 +13,7 @@ import {
   type WriteLease
 } from '@ai-native-software-delivery-orchestrator/domain';
 
-import type { RuntimeTaskBinding } from './orchestration-runtime.js';
+import type { RuntimeTaskBinding } from './runtime-contracts.js';
 
 type BuilderPersistence = Pick<
   OrchestrationPersistence,

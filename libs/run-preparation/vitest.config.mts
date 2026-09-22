@@ -8,6 +8,10 @@ export default defineConfig({
   resolve: {
     conditions: ['@ai-native-software-delivery-orchestrator/source'],
     alias: {
+      '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy': resolve(
+        import.meta.dirname,
+        '../orchestration-runtime/src/legacy.ts'
+      ),
       '@ai-native-software-delivery-orchestrator/agent-runtime': resolve(
         import.meta.dirname,
         '../agent-runtime/src/index.ts'

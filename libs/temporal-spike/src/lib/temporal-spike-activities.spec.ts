@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createTemporalSpikeActivities } from './temporal-spike-activities.js';
 import { createStubTemporalSpikeScenarioService } from './stub-scenario-service.js';
-import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 
 describe('TemporalSpikeActivity', () => {
   describe('createTemporalSpikeActivities', () => {

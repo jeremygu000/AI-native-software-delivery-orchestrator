@@ -7,7 +7,7 @@ import {
   type TaskRepairAttempt,
   type TaskVerificationEvidence
 } from '@ai-native-software-delivery-orchestrator/domain';
-import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 import type { SqliteSpikeFixture } from './sqlite-outcome-collector.js';
 
 const FINGERPRINT_BASE = 'sha256:' + 'a'.repeat(64);

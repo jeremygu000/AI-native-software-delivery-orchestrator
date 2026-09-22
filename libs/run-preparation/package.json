@@ -12,6 +12,12 @@
       "@ai-native-software-delivery-orchestrator/source": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./legacy": {
+      "types": "./dist/legacy.d.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/legacy.ts",
+      "import": "./dist/legacy.js",
+      "default": "./dist/legacy.js"
     }
   },
   "dependencies": {

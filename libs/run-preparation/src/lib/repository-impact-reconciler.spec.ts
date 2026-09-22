@@ -5,8 +5,8 @@ import type {
 import type { RepositoryGraph } from '@ai-native-software-delivery-orchestrator/domain';
 import { describe, expect, it } from 'vitest';
 
-import { RepositoryResourceResolver } from './local-runtime-starter.js';
 import { RepositoryImpactReconciler } from './repository-impact-reconciler.js';
+import { RepositoryResourceResolver } from './repository-resource-resolver.js';
 
 const graph: RepositoryGraph = {
   repositoryPath: '/repository',

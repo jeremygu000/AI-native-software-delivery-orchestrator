@@ -21,14 +21,16 @@ import {
 } from '@ai-native-software-delivery-orchestrator/run-preparation';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
 import {
-  assertDurableExecutionSpikeOutcome,
-  OrchestrationRuntime,
   RepairExecutionCoordinator,
   TaskCodeReviewCollector,
   TaskOutputAdmissionCoordinator,
-  TaskRepairCoordinator,
-  type DurableExecutionSpikeOutcome
+  TaskRepairCoordinator
 } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import {
+  assertDurableExecutionSpikeOutcome,
+  OrchestrationRuntime,
+  type DurableExecutionSpikeOutcome
+} from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 import { collectDurableExecutionOutcomeFromSqlite } from '@ai-native-software-delivery-orchestrator/runtime-v2-spike-harness';
 import {
   forgeRunWorkflowId,

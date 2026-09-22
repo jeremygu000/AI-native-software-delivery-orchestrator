@@ -14,7 +14,7 @@ import {
   ForgeBuilderExecutionError,
   ForgeBuilderExecutionService
 } from './forge-builder-execution-service.js';
-import type { RuntimeTaskBinding } from './orchestration-runtime.js';
+import type { RuntimeTaskBinding } from './runtime-contracts.js';
 
 const task: TaskContract = {
   id: 'task-1',

@@ -8,7 +8,7 @@ import { runTemporalSpikeWorkflow, repairWakeSignal } from './temporal-spike-wor
 import { createInMemoryEvidenceStore, InMemoryEvidenceStore } from './in-memory-evidence-store.js';
 import { createMockActivities } from './mock-activities.js';
 import { collectDurableExecutionOutcome } from './outcome-collector.js';
-import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 
 const environments: { readonly environment: TestWorkflowEnvironment; readonly worker: Worker }[] =
   [];

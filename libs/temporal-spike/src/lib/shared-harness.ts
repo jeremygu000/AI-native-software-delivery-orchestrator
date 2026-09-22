@@ -1,8 +1,8 @@
 import type {
   DurableExecutionSpikeDriver,
   DurableExecutionSpikeOutcome
-} from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
-import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+} from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
+import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 
 export { assertDurableExecutionSpikeOutcome };
 export type { DurableExecutionSpikeDriver, DurableExecutionSpikeOutcome };

@@ -3,7 +3,7 @@ import {
   DurableExecutionSpikeAuthorityError,
   type DurableExecutionSpikeDriver,
   type DurableExecutionSpikeOutcome
-} from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+} from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 
 export { assertDurableExecutionSpikeOutcome, DurableExecutionSpikeAuthorityError };
 export type { DurableExecutionSpikeDriver, DurableExecutionSpikeOutcome };

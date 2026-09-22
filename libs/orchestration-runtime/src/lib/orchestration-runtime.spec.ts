@@ -45,10 +45,9 @@ import {
   FakeAgentRunner,
   FakeTaskVerifier,
   OrchestrationRuntime,
-  OrchestrationRuntimeInputError,
-  type RuntimeTaskBinding,
-  type StartRuntimeRunRequest
+  OrchestrationRuntimeInputError
 } from './orchestration-runtime.js';
+import type { RuntimeTaskBinding, StartRuntimeRunRequest } from './runtime-contracts.js';
 import { RepairExecutionCoordinator } from './repair-execution-coordinator.js';
 import { TaskCodeReviewCollector } from './task-code-review-collector.js';
 import { TaskOutputAdmissionCoordinator } from './task-output-admission-coordinator.js';

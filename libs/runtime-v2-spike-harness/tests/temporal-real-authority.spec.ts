@@ -16,7 +16,7 @@ import {
   collectDurableExecutionOutcomeFromSqlite,
   type SqliteSpikeFixture
 } from '../src/index.js';
-import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(currentDirectory, '../../..');

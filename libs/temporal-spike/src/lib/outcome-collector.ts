@@ -1,4 +1,4 @@
-import type { DurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import type { DurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 
 export interface BuilderAttemptEvidence {
   readonly id: string;

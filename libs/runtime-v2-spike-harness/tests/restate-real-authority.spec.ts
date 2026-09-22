@@ -12,7 +12,7 @@ import {
   collectDurableExecutionOutcomeFromSqlite,
   type SqliteSpikeFixture
 } from '../src/index.js';
-import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import { assertDurableExecutionSpikeOutcome } from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 
 const TESTCONTAINERS_START_TIMEOUT = 120_000;
 

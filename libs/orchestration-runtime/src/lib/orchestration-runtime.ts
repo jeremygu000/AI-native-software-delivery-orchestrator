@@ -10,7 +10,6 @@ import {
 import type {
   AgentRunner,
   AgentExecutionAttempt,
-  CreatePersistedRunRequest,
   OrchestrationPersistence,
   PersistedTaskExecutionBinding,
   PersistedReevaluation,
@@ -29,14 +28,19 @@ import type {
   TaskVerifier,
   TaskLeasePlan,
   WritableResource,
-  WriteLease,
   WorkspaceManager,
+  WriteLease,
   WriteGuard
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { RepairExecutionCoordinator } from './repair-execution-coordinator.js';
 import { TaskRepairCoordinator } from './task-repair-coordinator.js';
 import { TaskOutputAdmissionCoordinator } from './task-output-admission-coordinator.js';
 import { runtimeScopeExpansionConflicts } from './runtime-scope-conflicts.js';
+import type {
+  RecoveredRuntimeRun,
+  RuntimeTaskBinding,
+  StartRuntimeRunRequest
+} from './runtime-contracts.js';
 
 const compareIds = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const sameRuntimeEvidence = (left: unknown, right: unknown): boolean =>
@@ -70,30 +74,6 @@ const serializeRunLifecycle = async <T>(
     }
   }
 };
-
-export interface RuntimeTaskBinding {
-  readonly taskId: string;
-  readonly agentId: string;
-  readonly leasePlan: TaskLeasePlan;
-  readonly impact?: TaskImpact;
-  readonly commandPolicy?: Parameters<AgentRunner['run']>[0]['commandPolicy'];
-  readonly trustedCommandPath?: string;
-  readonly workspace: Parameters<WorkspaceManager['create']>[0];
-}
-
-export interface StartRuntimeRunRequest extends Omit<CreatePersistedRunRequest, 'taskBindings'> {
-  readonly taskBindings: readonly RuntimeTaskBinding[];
-}
-
-export interface RecoveredRuntimeRun {
-  readonly run: RecoveredRun['run'];
-  readonly snapshot: SchedulerSnapshot;
-  readonly workspaces: RecoveredRun['workspaces'];
-  readonly leases: RecoveredRun['leases'];
-  readonly attempts: RecoveredRun['attempts'];
-  readonly repairAttempts: readonly import('@ai-native-software-delivery-orchestrator/domain').PersistedTaskRepairAttempt[];
-  readonly repairWorkItems: readonly import('@ai-native-software-delivery-orchestrator/domain').TaskRepairWorkItem[];
-}
 
 export class OrchestrationRuntimeInputError extends Error {
   constructor(message: string) {

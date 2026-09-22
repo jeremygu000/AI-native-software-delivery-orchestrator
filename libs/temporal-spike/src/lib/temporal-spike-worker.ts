@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createTemporalSpikeActivities } from './temporal-spike-activities.js';
 import { createStubTemporalSpikeScenarioService } from './stub-scenario-service.js';
 import type { TemporalSpikeConfiguration } from './temporal-spike-driver.js';
-import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import type { DurableExecutionScenarioService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime/legacy';
 
 export const createTemporalSpikeWorker = async (
   configuration: TemporalSpikeConfiguration,

@@ -22,11 +22,9 @@ import type { StartRuntimeRunRequest } from '@ai-native-software-delivery-orches
 import { GitIntegrationCheckoutProvisioner } from '@ai-native-software-delivery-orchestrator/workspace-git';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  LocalRuntimeStarter,
-  SandboxedPackageScriptVerifier,
-  RepositoryResourceResolver
-} from './local-runtime-starter.js';
+import { LocalRuntimeStarter } from './local-runtime-starter.js';
+import { RepositoryResourceResolver } from './repository-resource-resolver.js';
+import { SandboxedPackageScriptVerifier } from './sandboxed-package-script-verifier.js';
 
 const directories: string[] = [];
 const verificationPolicy = {
