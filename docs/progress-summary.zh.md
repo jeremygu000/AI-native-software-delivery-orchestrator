@@ -2779,3 +2779,8 @@ mutation evidence。Parity 盘点明确写入这三种 claim 与 `requestCancell
 `Promise.all` 仅验证可观察结果，不能证明事务重叠；真实 PostgreSQL parity 还需人为控制重叠并验证
 确定的失败方。目前 SQLite 共享契约 10 项通过，PostgreSQL 10 项显式跳过、1 项 fixture 待实现。
 M4.1A 的这次修复仍待独立复审；未实现 PostgreSQL，也未修改 M3 语义。
+
+下一轮复审发现 cancellation-first 契约仍漏查 builder lease 副作用。现在 builder claim 携带真实候选
+lease，共享 suite 要求取消后该 claim 被拒绝、lease 不落库、builder 保持 PREPARING，且 run 仍为
+CANCEL_REQUESTED。SQLite 共享契约仍为 10 项通过；PostgreSQL 仍为 10 项显式跳过、1 项 fixture
+待实现。M4.1A 的这项契约补正仍待独立复审。

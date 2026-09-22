@@ -51,7 +51,8 @@ adapter 代跑。SQLite 既有细粒度测试继续保留；共享 suite 是后�
   必须在同一事务中条件检查 repair revision 与 run 的 ACTIVE 状态。
 - `requestCancellation()` 一旦持久化 CANCEL_REQUESTED，随后 `claimBuilderStart`、
   `claimRepairStart`、`claimIntegrationStart` 均须拒绝，且不留下新的 mutation evidence。
-  PostgreSQL 必须让这三种 ACTIVE-run mutation claim 与 cancellation **原子串行化**；
+  builder claim 携带非空 lease plan；拒绝后 builder 仍为 PREPARING、候选 lease 不存在，run 仍为
+  CANCEL_REQUESTED。PostgreSQL 必须让这三种 ACTIVE-run mutation claim 与 cancellation **原子串行化**；
   先读取 ACTIVE、待另一个事务取消后再无条件写入 claim，会违反冻结的 M3 authority。
 
 共享 suite 只是完整 SQLite 行为的首批可执行子集，不能取代原有细粒度测试。后续 PostgreSQL parity

@@ -3153,3 +3153,9 @@ SQLite `Promise.all` checks observable outcomes, not overlapping transactions; r
 parity requires controlled overlap and a deterministic loser. SQLite now passes 10 shared cases;
 PostgreSQL reports 10 skipped cases and 1 pending fixture check. M4.1A remains pending review of
 this remediation; no PostgreSQL implementation or M3 semantic change was introduced.
+
+The next review identified one remaining side-effect gap in the cancellation-first contract. The
+builder claim now includes a real proposed lease, and the shared suite checks that cancellation
+rejects the claim without persisting that lease or advancing the PREPARING builder; the recovered run
+must remain CANCEL_REQUESTED. SQLite passes all 10 shared cases; PostgreSQL still skips all 10 with
+one pending fixture. M4.1A remains awaiting independent review of this final contract correction.

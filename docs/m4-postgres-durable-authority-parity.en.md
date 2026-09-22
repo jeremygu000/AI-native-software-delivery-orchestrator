@@ -57,7 +57,9 @@ Two further **same-run authority** contracts are now executable in this shared s
   an ACTIVE-run check in one transaction.
 - Once `requestCancellation()` has durably changed the run to CANCEL_REQUESTED, subsequent
   `claimBuilderStart`, `claimRepairStart`, and `claimIntegrationStart` all reject without new mutation
-  evidence. PostgreSQL must serialize **all three** ACTIVE-run mutation claims atomically against
+  evidence. The builder claim carries a nonempty lease plan; its rejection leaves both the builder
+  PREPARING and the proposed lease absent, while the run remains CANCEL_REQUESTED. PostgreSQL must
+  serialize **all three** ACTIVE-run mutation claims atomically against
   cancellation. Reading ACTIVE before another transaction cancels and then unconditionally writing
   a claim would violate frozen M3 authority.
 

@@ -379,7 +379,20 @@ export const durableAuthorityContract = (
               revision: 2,
               startedAt: new Date('2026-09-01T00:02:00.000Z')
             },
-            leases: []
+            leases: [
+              {
+                id: 'contract-cancelled-builder-lease',
+                runId: 'contract-run',
+                agentId: 'agent-1',
+                taskId: 'task-1',
+                resource: { type: 'project', projectId: 'project-1' },
+                mode: 'exclusive',
+                version: 1,
+                state: 'ACTIVE',
+                acquiredAt: new Date('2026-09-01T00:02:00.000Z'),
+                lastHeartbeatAt: new Date('2026-09-01T00:02:00.000Z')
+              }
+            ]
           })
         ).rejects.toThrow();
         await expect(
@@ -407,7 +420,15 @@ export const durableAuthorityContract = (
         await expect(fixture.peer.recoverRepairAttempts('contract-run')).resolves.toMatchObject([
           { attempt: { id: admitted.id, state: 'PREPARING', revision: 1 } }
         ]);
+        await expect(fixture.peer.recoverLeases('contract-run')).resolves.not.toContainEqual(
+          expect.objectContaining({
+            lease: expect.objectContaining({ id: 'contract-cancelled-builder-lease' })
+          })
+        );
         await expect(fixture.peer.hasActiveIntegrationClaim('contract-run')).resolves.toBe(false);
+        await expect(fixture.peer.recoverRun('contract-run')).resolves.toMatchObject({
+          run: { state: 'CANCEL_REQUESTED' }
+        });
       } finally {
         await fixture.close();
       }
