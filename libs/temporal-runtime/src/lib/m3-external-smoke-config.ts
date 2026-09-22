@@ -1,7 +1,12 @@
 export interface M312ExternalSmokeConfig {
-  readonly provider: 'openai';
-  readonly model: 'gpt-4.1';
+  readonly provider: 'deepseek';
+  readonly model: 'deepseek-flash';
 }
+
+const approvedIdentity = {
+  provider: 'deepseek',
+  model: 'deepseek-flash'
+} as const;
 
 const required = (environment: NodeJS.ProcessEnv, name: string): string => {
   const value = environment[name]?.trim();
@@ -27,12 +32,13 @@ export const resolveM312ExternalSmokeConfig = (
   if (environment.FORGE_M312_CODING_AGENT_CONFIRMED !== '1') {
     throw new Error('M3.12 external smoke requires FORGE_M312_CODING_AGENT_CONFIRMED=1');
   }
+  required(environment, 'DEEPSEEK_API_KEY');
   const provider = required(environment, 'FORGE_M312_REVIEW_PROVIDER');
   const model = required(environment, 'FORGE_M312_REVIEW_MODEL');
-  if (provider !== 'openai' || model !== 'gpt-4.1') {
+  if (provider !== approvedIdentity.provider || model !== approvedIdentity.model) {
     throw new Error(
-      'M3.12 external smoke only supports FORGE_M312_REVIEW_PROVIDER=openai and FORGE_M312_REVIEW_MODEL=gpt-4.1'
+      'M3.12 external smoke only supports FORGE_M312_REVIEW_PROVIDER=deepseek and FORGE_M312_REVIEW_MODEL=deepseek-flash'
     );
   }
-  return { provider, model };
+  return approvedIdentity;
 };

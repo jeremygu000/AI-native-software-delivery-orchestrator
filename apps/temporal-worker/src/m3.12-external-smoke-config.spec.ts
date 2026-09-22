@@ -20,15 +20,16 @@ describe('resolveM312ExternalSmokeConfig', () => {
         FORGE_M312_CREDENTIALS_CONFIRMED: '1',
         FORGE_M312_CODING_AGENT_CONFIRMED: '1'
       })
-    ).toThrow('FORGE_M312_REVIEW_PROVIDER');
+    ).toThrow('DEEPSEEK_API_KEY');
   });
 
-  it('rejects blank and non-production model identities before any smoke effect', () => {
+  it('rejects blank and unapproved model identities before any smoke effect', () => {
     const authorized = {
       FORGE_M312_EXTERNAL_SMOKE: '1',
       FORGE_M312_CREDENTIALS_CONFIRMED: '1',
       FORGE_M312_CODING_AGENT_CONFIRMED: '1',
-      FORGE_M312_REVIEW_PROVIDER: 'openai'
+      DEEPSEEK_API_KEY: 'test-key',
+      FORGE_M312_REVIEW_PROVIDER: 'deepseek'
     };
     expect(() =>
       resolveM312ExternalSmokeConfig({ ...authorized, FORGE_M312_REVIEW_MODEL: ' ' })
@@ -36,20 +37,21 @@ describe('resolveM312ExternalSmokeConfig', () => {
     expect(() =>
       resolveM312ExternalSmokeConfig({
         ...authorized,
-        FORGE_M312_REVIEW_MODEL: 'claude-sonnet'
+        FORGE_M312_REVIEW_MODEL: 'deepseek-v4-pro'
       })
     ).toThrow('only supports');
   });
 
-  it('returns the fixed production model identity for every external role', () => {
+  it('returns the approved explicit DeepSeek identity for every external role', () => {
     expect(
       resolveM312ExternalSmokeConfig({
         FORGE_M312_EXTERNAL_SMOKE: '1',
         FORGE_M312_CREDENTIALS_CONFIRMED: '1',
         FORGE_M312_CODING_AGENT_CONFIRMED: '1',
-        FORGE_M312_REVIEW_PROVIDER: 'openai',
-        FORGE_M312_REVIEW_MODEL: 'gpt-4.1'
+        DEEPSEEK_API_KEY: 'test-key',
+        FORGE_M312_REVIEW_PROVIDER: 'deepseek',
+        FORGE_M312_REVIEW_MODEL: 'deepseek-flash'
       })
-    ).toEqual({ provider: 'openai', model: 'gpt-4.1' });
+    ).toEqual({ provider: 'deepseek', model: 'deepseek-flash' });
   });
 });

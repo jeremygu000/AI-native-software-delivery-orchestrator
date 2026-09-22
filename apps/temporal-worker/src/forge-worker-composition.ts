@@ -103,7 +103,20 @@ const workerOverrides = (): ForgeRuntimeCompositionOverrides => {
       provider: externalSmoke.provider,
       id: externalSmoke.model
     });
-    return { agentGateway: new PiCodingAgentGateway(undefined, { model }) };
+    return {
+      agentGateway: new PiCodingAgentGateway(undefined, { model }),
+      codeReviewPolicy: {
+        version: 1,
+        reviewer: {
+          implementation: 'pi-task-code-reviewer',
+          agentBackend: 'pi',
+          model: { provider: externalSmoke.provider, id: externalSmoke.model },
+          toolProfile: 'workspace-read-only-v1',
+          outputSchemaVersion: 1,
+          promptVersion: 'v1'
+        }
+      }
+    };
   }
   const mode = process.env.FORGE_WORKER_COMPOSITION;
   if (mode === undefined || mode === 'production') {

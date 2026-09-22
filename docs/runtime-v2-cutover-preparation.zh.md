@@ -7,9 +7,10 @@
 `apps/cli/src/runtime-v2-cutover-readiness.spec.ts`。本文解释这些检查；它不授权删除 fallback、不声明
 Runtime V2 migration 已完成，也不关闭整个 M3 programme。
 
-**当前状态：** CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / NOT CLOSED。architecture regression 已验证
-production package root 与 legacy-only entrypoint 隔离。manifest 将 `destructiveChangesPermitted` 固定为 `false`，
-直到 M3.12 记录成功、获授权并使用 `openai/gpt-4.1` 的 external-effect smoke。
+**当前状态：** CUTOVER READY / M3.12 REAL SMOKE PASS / AWAITING DESTRUCTIVE-STAGE REVIEW。architecture
+regression 已验证 production package root 与 legacy-only entrypoint 隔离。manifest 已记录成功、获授权的
+`deepseek/deepseek-flash` external-effect smoke，但 `destructiveChangesPermitted` 仍固定为 `false`：删除仍须
+另行设计并审查 destructive stage。
 
 ## 当前 Production Route
 
@@ -44,7 +45,8 @@ worker composition；production package root 不 re-export legacy-only module；
 
 在任何 destructive M3.14 变更前，必须证明：
 
-- M3.12 已记录成功且获授权的真实 external-effect smoke。
+- M3.12 已记录成功且获授权的真实 external-effect smoke。manifest 现记录了
+  `deepseek/deepseek-flash` 的成功运行。
 - production CLI 只启动 compact Temporal workflow，且只写入一次 launch authority。
 - 独立启动的 worker 能从 configured authority database 完成并恢复 durable run。
 - `forge status` 和 `forge cancel` 针对该 configured authority database 操作。

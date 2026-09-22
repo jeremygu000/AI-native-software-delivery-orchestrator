@@ -2950,15 +2950,16 @@ the default test suite and does not call a provider unless an operator explicitl
 - `FORGE_M312_EXTERNAL_SMOKE=1` to authorize this particular external smoke execution;
 - `FORGE_M312_CREDENTIALS_CONFIRMED=1` to attest that provider-owned credentials are configured;
 - `FORGE_M312_CODING_AGENT_CONFIRMED=1` to attest that the real coding agent is authorized;
-- `FORGE_M312_REVIEW_PROVIDER=openai` and `FORGE_M312_REVIEW_MODEL=gpt-4.1`, the currently fixed
-  production review identity.
+- `DEEPSEEK_API_KEY`, plus `FORGE_M312_REVIEW_PROVIDER=deepseek` and
+  `FORGE_M312_REVIEW_MODEL=deepseek-flash`, the explicitly approved identity for the current
+  closure run.
 
 The runner fails before creating a Temporal server, worker, Git fixture, Docker container, or model
-session when any of those values is absent, blank, or differs from the fixed production identity. The
-same resolved Pi model is supplied explicitly to planning, semantic review, builder coding, repair
-coding, and task code review; no smoke role may fall back to Pi's implicit default model. Builder and
-repair runners share one provider-neutral gateway override, so a nondeterministic repair
-recommendation cannot select an implicit model. It always creates a disposable temporary Git
+session when any of those values is absent, blank, differs from the approved identity, or cannot be
+resolved by Pi's local model registry. The same resolved Pi model and durable review policy are supplied explicitly to planning, semantic review,
+builder coding, repair coding, and task code review; no smoke role may fall back to Pi's implicit
+default model. Builder and repair runners share one provider-neutral gateway override, so a
+nondeterministic repair recommendation cannot select an implicit model. It always creates a disposable temporary Git
 repository rather than targeting this orchestrator repository. When explicitly authorized, it runs
 the production path: compiled `forge plan` with semantic review, approval, compiled `forge run`, a
 separately spawned compiled worker, real Pi coding and review adapters, a real Docker verifier, Git
@@ -2970,21 +2971,23 @@ invokes this guarded runner;
 
 Verification so far:
 
-- unit tests prove missing authorization, credential attestation, coding-agent attestation, provider,
-  blank model, or unsupported model configuration fails closed;
+- unit tests prove missing authorization, credential attestation, coding-agent attestation, DeepSeek
+  credential, provider, blank model, or any other unapproved model configuration
+  fails closed;
 - a composition regression forces a `repair` recommendation and proves that the same injected coding
   gateway serves both the builder and repair sessions; Pi gateway tests separately prove the explicit
   resolved model reaches each session factory;
 - the compiled runner itself was invoked without authorization and stopped with
   `M3.12 external smoke requires FORGE_M312_EXTERNAL_SMOKE=1`, before any external provider or Docker
   operation;
-- no real provider/model smoke has been executed yet because this environment has no authorized
-  credential configuration.
+- an authorized real smoke completed with `deepseek/deepseek-flash`: compiled CLI and independently
+  spawned worker completed through local Temporal, configured SQLite authority, real Pi adapters, Docker
+  verification, and Git integration; the harness recorded `COMPLETED` with that exact identity.
 
-M3.12 is **IMPLEMENTATION PASS / READY FOR REAL SMOKE / BLOCKED-DEFERRED / NOT CLOSED**. The currently
-authorized provider quota is unavailable, so no real provider/model smoke was run or claimed. It must
-remain open until an operator runs an authorized smoke successfully and records its result. It does not
-alter frozen M3.10 or M3.11 runtime contracts.
+M3.12 is **REAL SMOKE PASS / AWAITING INDEPENDENT REVIEW / NOT CLOSED**. The recorded run used the exact,
+operator-confirmed `deepseek/deepseek-flash` identity. Its `DEEPSEEK_API_KEY` was injected only into the
+smoke subprocess and is not stored in repository evidence. The successful result recorded the exact
+provider/model and `COMPLETED` outcome. This does not alter frozen M3.10 or M3.11 runtime contracts.
 
 ## M3.13: Observability and Provider-Neutral Read Model
 
@@ -3031,8 +3034,9 @@ Verification:
   separately rather than silently modifying inherited files.
 
 M3.13 is **PASS / CLOSED / FROZEN** following independent review. Changes to this durable read-model
-contract now require a demonstrated regression or a new, separately designed stage. M3.12 remains
-blocked-deferred and open; no destructive M3.14 cutover work was performed.
+contract now require a demonstrated regression or a new, separately designed stage. M3.12 now has a
+successful authorized external-effect smoke recorded with its exact provider/model identity, but awaits
+independent review; no destructive M3.14 cutover work was performed.
 
 ## M3.14: Non-Destructive Cutover Readiness
 
@@ -3064,7 +3068,7 @@ Verification:
 - `pnpm check` still stops at pre-existing formatting issues outside this stage and is reported without
   modifying inherited files.
 
-M3.14 is **CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / NOT CLOSED** following independent review.
-Production roots are explicitly isolated from `/legacy` entrypoints, but M3.12 remains
-**IMPLEMENTATION PASS / READY FOR REAL SMOKE / BLOCKED-DEFERRED / NOT CLOSED** because provider quota is
-unavailable. No destructive cutover, legacy deletion, or Runtime V2 completion claim is permitted.
+M3.14 is **CUTOVER READY / M3.12 REAL SMOKE PASS / AWAITING DESTRUCTIVE-STAGE REVIEW**. Production roots
+are explicitly isolated from `/legacy` entrypoints. The successful M3.12 smoke satisfies that prerequisite,
+but no destructive cutover, legacy deletion, or Runtime V2 completion claim is permitted without a
+separately designed and reviewed destructive stage.

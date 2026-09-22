@@ -36,7 +36,8 @@ import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-deliv
 import { analyzeRepository } from '@ai-native-software-delivery-orchestrator/repository-analysis';
 import {
   codeReviewPolicyFingerprint,
-  fingerprintPlanValue
+  fingerprintPlanValue,
+  type CodeReviewPolicy
 } from '@ai-native-software-delivery-orchestrator/planning';
 import {
   RepositoryImpactReconciler,
@@ -187,6 +188,11 @@ export interface ForgeRuntimeCompositionOverrides {
   readonly workspaceManager?: WorkspaceManager;
   readonly snapshots?: RepositorySnapshotProvider;
   readonly reviewer?: TaskCodeReviewer;
+  /**
+   * Optional review policy used by an explicitly authorized app-level deployment mode.
+   * Production callers leave this unset and retain the default policy.
+   */
+  readonly codeReviewPolicy?: CodeReviewPolicy;
   readonly verifier?: TaskVerifier;
   readonly builderAgentRunner?: AgentRunner;
   /**
@@ -220,6 +226,8 @@ export async function createForgeRuntimeComposition(
   overrides: ForgeRuntimeCompositionOverrides = {},
   options: ForgeRuntimeCompositionOptions = {}
 ): Promise<ForgeRuntimeComposition> {
+  const activeCodeReviewPolicy = overrides.codeReviewPolicy ?? codeReviewPolicy;
+  const activeReviewPolicyFingerprint = codeReviewPolicyFingerprint(activeCodeReviewPolicy);
   const currentActivityCancellationSignal = () =>
     options.getActivityExecutionContext?.()?.cancellationSignal;
   const repository =
@@ -279,7 +287,7 @@ export async function createForgeRuntimeComposition(
     reviewer:
       overrides.reviewer ??
       new PiTaskCodeReviewer({
-        policy: codeReviewPolicy,
+        policy: activeCodeReviewPolicy,
         modelResolver: new PiCodeReviewModelResolver(),
         createTools: (request) =>
           new AgentToolRuntime({
@@ -437,7 +445,7 @@ export async function createForgeRuntimeComposition(
       if (
         recoveredRun.run.authority.verificationPolicyFingerprint !==
           verificationPolicyFingerprint ||
-        recoveredRun.run.authority.codeReviewPolicyFingerprint !== reviewPolicyFingerprint
+        recoveredRun.run.authority.codeReviewPolicyFingerprint !== activeReviewPolicyFingerprint
       ) {
         throw new Error(`Worker policy authority mismatch for ${runId}`);
       }
@@ -672,7 +680,7 @@ export async function createForgeRuntimeComposition(
           parentReviewIteration: attempt.parentReviewIteration,
           reviewIteration: review.iteration + 1,
           verificationPolicyFingerprint,
-          codeReviewPolicyFingerprint: reviewPolicyFingerprint
+          codeReviewPolicyFingerprint: activeReviewPolicyFingerprint
         })
       });
       return {

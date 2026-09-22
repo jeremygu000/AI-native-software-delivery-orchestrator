@@ -94,6 +94,7 @@ const manifest = {
     });
   })(),
   blockers: strings(manifestSource.blockers, 'blockers'),
+  m312ExternalSmoke: record(manifestSource.m312ExternalSmoke, 'm312ExternalSmoke'),
   finalCutoverAssertions: strings(manifestSource.finalCutoverAssertions, 'finalCutoverAssertions')
 };
 
@@ -189,7 +190,9 @@ describe('Runtime V2 cutover readiness', () => {
   });
 
   it('records a non-destructive inventory and exact final cutover assertions', () => {
-    expect(manifest.status).toBe('CUTOVER_READY_BLOCKED_ON_M3_12_REAL_SMOKE');
+    expect(manifest.status).toBe(
+      'CUTOVER_READY_M3_12_REAL_SMOKE_PASS_AWAITING_DESTRUCTIVE_STAGE_REVIEW'
+    );
     expect(manifest.destructiveChangesPermitted).toBe(false);
     expect(manifest.productionRoute.launch).toContain('TemporalRunLauncher');
     expect(manifest.productionRoute.worker).toBe('apps/temporal-worker/src/main.ts');
@@ -247,9 +250,13 @@ describe('Runtime V2 cutover readiness', () => {
     for (const entry of manifest.inventory) {
       expect(existsSync(resolve(workspaceRoot, entry.path))).toBe(true);
     }
-    expect(manifest.blockers).toEqual([
-      'M3.12 must record a successful authorized openai/gpt-4.1 external-effect smoke.'
-    ]);
+    expect(manifest.blockers).toEqual([]);
+    expect(manifest.m312ExternalSmoke).toMatchObject({
+      status: 'PASS_AWAITING_INDEPENDENT_REVIEW',
+      provider: 'deepseek',
+      model: 'deepseek-flash',
+      result: 'COMPLETED'
+    });
     expect(manifest.finalCutoverAssertions).toEqual([
       'M3.12 real external-effect smoke is recorded as PASS.',
       'M3.13 remains CLOSED/FROZEN.',

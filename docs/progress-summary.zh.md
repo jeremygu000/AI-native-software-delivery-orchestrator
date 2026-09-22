@@ -2612,14 +2612,14 @@ M3.12 先提供一个刻意 opt-in 的真实外部副作用 smoke runner。它�
 - `FORGE_M312_EXTERNAL_SMOKE=1`：授权本次特定的 external smoke；
 - `FORGE_M312_CREDENTIALS_CONFIRMED=1`：确认 provider-owned credential 已配置；
 - `FORGE_M312_CODING_AGENT_CONFIRMED=1`：确认允许真实 coding agent 执行；
-- `FORGE_M312_REVIEW_PROVIDER=openai` 与 `FORGE_M312_REVIEW_MODEL=gpt-4.1`：当前固定的 production
-  review identity。
+- `DEEPSEEK_API_KEY`，以及 `FORGE_M312_REVIEW_PROVIDER=deepseek` 与
+  `FORGE_M312_REVIEW_MODEL=deepseek-flash`：当前 closure run 获明确批准的 identity。
 
 任一值缺失或为空时，runner 会在创建 Temporal server、worker、Git fixture、Docker container 或 model session
-之前失败；若 provider/model 不等于固定 production identity 也会在此前失败。规划、semantic review、builder coding、repair
-coding 与 task code review 都显式使用同一个已解析 Pi model，任何 smoke role 都不能回退到 Pi 的隐式默认 model。builder 和
-repair runner 共用一个 provider-neutral gateway override，因此即使 nondeterministic review 建议 repair，也不会选择隐式
-model。它始终创建 disposable temporary Git repository，而不会把本 orchestrator repository 当作目标。获得明确授权后，runner
+之前失败；若 provider/model 不等于获批准 identity，或 Pi 的本地 model registry 无法解析该 identity，也会在此前失败。规划、semantic review、builder coding、repair
+coding 与 task code review 都显式使用同一个已解析 Pi model 和 durable review policy，任何 smoke role 都不能回退到 Pi 的隐式
+默认 model。builder 和 repair runner 共用一个 provider-neutral gateway override，因此即使 nondeterministic review 建议 repair，也
+不会选择隐式 model。它始终创建 disposable temporary Git repository，而不会把本 orchestrator repository 当作目标。获得明确授权后，runner
 执行 production path：带 semantic review 的 compiled `forge plan`、approval、compiled `forge run`、独立启动的 compiled
 worker、真实 Pi coding/review adapter、真实 Docker verifier、Git integration，以及 durable Temporal/SQLite completion check。
 harness 比较 fixture base commit 与 integrated checkout 的 `HEAD`，要求该范围中只有 `src/index.ts`、文件内容精确匹配且
@@ -2628,17 +2628,20 @@ integrated working tree 干净。`pnpm smoke:m3.12` 会先构建 runnable artifa
 
 当前 verification：
 
-- unit test 已证明缺少 authorization、credential attestation、coding-agent attestation、provider、空 model 或不受支持
-  model 配置时会 fail closed；
+- unit test 已证明缺少 authorization、credential attestation、coding-agent attestation、DeepSeek credential、provider、空 model
+  或其他未获批准 model 配置时会 fail closed；
 - composition regression 会强制产生 `repair` recommendation，并证明同一个注入的 coding gateway 同时服务 builder 和
   repair session；Pi gateway test 则独立证明显式解析的 model 会传入每个 session factory；
 - 已在没有 authorization 的情况下调用 compiled runner；它以
   `M3.12 external smoke requires FORGE_M312_EXTERNAL_SMOKE=1` 停止，未执行任何外部 provider 或 Docker 操作；
-- 当前环境没有经过授权的 credential configuration，因此尚未执行真实 provider/model smoke。
+- 一次使用 `deepseek/deepseek-flash` 的获授权真实 smoke 已完成：compiled CLI 与独立启动的 worker 经由 local
+  Temporal、configured SQLite authority、真实 Pi adapter、Docker verification 和 Git integration 成功完成；harness
+  记录该精确 identity 的 `COMPLETED` 结果。
 
-M3.12 当前为 **IMPLEMENTATION PASS / READY FOR REAL SMOKE / BLOCKED-DEFERRED / NOT CLOSED**。已获授权的
-provider quota 当前不可用，因此没有执行或宣称执行真实 provider/model smoke。只有 operator 成功运行获授权 smoke 并
-记录结果后才能关闭；它不修改已经冻结的 M3.10 或 M3.11 runtime contract。
+M3.12 当前为 **REAL SMOKE PASS / AWAITING INDEPENDENT REVIEW / NOT CLOSED**。已记录的运行使用精确、由
+operator 确认的 `deepseek/deepseek-flash` identity。其 `DEEPSEEK_API_KEY` 只注入 smoke subprocess，不会写入
+repository evidence。成功结果记录了精确 provider/model 与 `COMPLETED` outcome。本变更不修改已经冻结的 M3.10 或
+M3.11 runtime contract。
 
 ## M3.13：可观测性与 Provider-Neutral Read Model
 
@@ -2677,7 +2680,8 @@ order。它们明确禁止在 M3.12 记录成功的 authorized external-effect s
 - `pnpm check` 仍会在本阶段之外既有的 formatting issue 处停止，会如实报告，绝不静默修改 inherited file。
 
 M3.13 经独立 review 后为 **PASS / CLOSED / FROZEN**。对该 durable read-model contract 的后续修改必须由已证明的
-regression 或单独设计的新阶段驱动。M3.12 仍是 blocked-deferred 且未关闭；没有执行任何 destructive M3.14 cutover 工作。
+regression 或单独设计的新阶段驱动。M3.12 已记录成功的获授权 external-effect smoke 及其精确 provider/model identity，
+但仍等待独立 review；没有执行任何 destructive M3.14 cutover 工作。
 
 ## M3.14：非破坏性 Cutover Readiness
 
@@ -2704,6 +2708,6 @@ alternate runtime path。
   competing-lease differential 在 Temporal worker phase 及 isolated rerun 中超时，因此完整 suite 当前并非全绿；
 - `pnpm check` 仍在本阶段以外既有的 formatting issue 处停止，会如实报告且不修改 inherited file。
 
-M3.14 经独立 review 后为 **CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / NOT CLOSED**。production root 已与
-`/legacy` entrypoint 显式隔离，但 M3.12 仍为 **IMPLEMENTATION PASS / READY FOR REAL SMOKE / BLOCKED-DEFERRED /
-NOT CLOSED**，因为 provider quota 不可用。不得执行 destructive cutover、legacy deletion，或宣称 Runtime V2 已完成。
+M3.14 当前为 **CUTOVER READY / M3.12 REAL SMOKE PASS / AWAITING DESTRUCTIVE-STAGE REVIEW**。production root
+已与 `/legacy` entrypoint 显式隔离。成功的 M3.12 smoke 已满足该 prerequisite，但在另行设计并审查 destructive stage
+前，不得执行 destructive cutover、legacy deletion，或宣称 Runtime V2 已完成。

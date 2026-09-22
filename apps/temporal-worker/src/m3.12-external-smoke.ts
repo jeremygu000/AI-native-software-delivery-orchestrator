@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { TestWorkflowEnvironment } from '@temporalio/testing';
+import { PiCodeReviewModelResolver } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 
 import { resolveM312ExternalSmokeConfig } from './m3.12-external-smoke-config.js';
 
@@ -146,6 +147,11 @@ const ensurePrerequisites = (): void => {
 
 const main = async (): Promise<void> => {
   const configuration = resolveM312ExternalSmokeConfig();
+  // Resolve locally before any fixture, Temporal, Docker, or provider effect.
+  new PiCodeReviewModelResolver().resolve({
+    provider: configuration.provider,
+    id: configuration.model
+  });
   ensurePrerequisites();
   const root = await mkdtemp(join(tmpdir(), 'forge-m312-external-'));
   const repository = join(root, 'repository');
@@ -284,7 +290,13 @@ const main = async (): Promise<void> => {
       throw new Error('External smoke completed without the expected integrated fixture change');
     }
     process.stdout.write(
-      `${JSON.stringify({ status: 'COMPLETED', runId, fixture: keepFixture ? root : undefined })}\n`
+      `${JSON.stringify({
+        status: 'COMPLETED',
+        runId,
+        provider: configuration.provider,
+        model: configuration.model,
+        fixture: keepFixture ? root : undefined
+      })}\n`
     );
   } finally {
     if (worker !== undefined) {

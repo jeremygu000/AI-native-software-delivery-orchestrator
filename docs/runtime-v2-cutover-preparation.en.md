@@ -7,10 +7,11 @@ cutover gate are in `runtime-v2-destructive-cutover-manifest.json`, with an arch
 `apps/cli/src/runtime-v2-cutover-readiness.spec.ts`. This record explains those checks; it is not
 permission to remove a fallback, declare the Runtime V2 migration complete, or close the M3 programme.
 
-**Current status:** CUTOVER READY / BLOCKED ON M3.12 REAL SMOKE / NOT CLOSED. The architecture
-regression verifies that production package roots are isolated from legacy-only entrypoints. The manifest
-keeps `destructiveChangesPermitted` set to `false` until M3.12 records a successful authorized
-external-effect smoke using `openai/gpt-4.1`.
+**Current status:** CUTOVER READY / M3.12 REAL SMOKE PASS / AWAITING DESTRUCTIVE-STAGE REVIEW. The
+architecture regression verifies that production package roots are isolated from legacy-only entrypoints.
+The manifest records the successful authorized `deepseek/deepseek-flash` external-effect smoke, while
+keeping `destructiveChangesPermitted` set to `false`: deletion still requires a separately designed and
+reviewed destructive stage.
 
 ## Current Production Route
 
@@ -50,7 +51,8 @@ deployable worker is the sole production process that composes activities with
 
 Before any destructive M3.14 change, demonstrate all of the following:
 
-- M3.12 has a recorded successful, authorized real external-effect smoke.
+- M3.12 has a recorded successful, authorized real external-effect smoke. This is now satisfied by the
+  `deepseek/deepseek-flash` run recorded in the manifest.
 - The production CLI starts only the compact Temporal workflow and writes launch authority once.
 - A separately started worker can complete and recover a durable run from the configured authority
   database.
