@@ -18,6 +18,10 @@ PostgreSQL。跨 run 的 repository fencing、全局分布式 write lease 和多
 | 生产路由                    | CLI/worker 使用显式配置的 SQLite authority            | 尚未接入 PostgreSQL。                                                                                                                                        |
 
 现有 PostgreSQL 测试只覆盖配置元数据与候选连接关闭，**不**证明任何 Forge durable authority parity。
+候选 `PostgresEvidenceStore` 类型本身也不完整：目前未包含 `ActiveMutationClaimPersistence`、
+`CancellationPersistence`、`CancellationSettlementPersistence`、
+`IntegrationMutationClaimPersistence`、`TaskRepairWorkItemAdmissionStore` 和
+`TaskRepairResumeStore`。后续 adapter 必须实现完整的 worker authority 接口。
 
 ## 共享可执行契约
 
@@ -40,19 +44,35 @@ adapter 代跑。SQLite 既有细粒度测试继续保留；共享 suite 是后�
 | cancellation 与普通 terminal state                                      | ACTIVE -> CANCEL_REQUESTED -> CANCELLED、ACTIVE -> COMPLETED；terminal 不可覆盖         | 缺少状态迁移 CAS 与终态模型。                                                                                                                   |
 | `ForgeReadModel` 恢复前提                                               | SQLite 提供 `recoverRun`、review、repair、verification、lease 等数据                    | 没有兼容的恢复 API 或重建集合。                                                                                                                 |
 
+共享 suite 还新增两项**同一 run 的 authority** 行为契约：
+
+- `claimRepairStart` 将已准入的 repair 从 PREPARING revision N 推进到 STARTING revision N+1。
+  两个独立连接竞争同一 claim，仅一个成功，失败方不产生额外 attempt 或 work item。PostgreSQL
+  必须在同一事务中条件检查 repair revision 与 run 的 ACTIVE 状态。
+- `requestCancellation()` 一旦持久化 CANCEL_REQUESTED，随后 `claimBuilderStart`、
+  `claimRepairStart`、`claimIntegrationStart` 均须拒绝，且不留下新的 mutation evidence。
+  PostgreSQL 必须让这三种 ACTIVE-run mutation claim 与 cancellation **原子串行化**；
+  先读取 ACTIVE、待另一个事务取消后再无条件写入 claim，会违反冻结的 M3 authority。
+
 共享 suite 只是完整 SQLite 行为的首批可执行子集，不能取代原有细粒度测试。后续 PostgreSQL parity
 仍须覆盖 partial initial evidence、builder/repair UNKNOWN settlement、lease version regression、
 reevaluation replay 与 runtime-conflict sequence、verification fingerprint integrity 与 corruption、
 integration claim release 与 settlement 区别、跨连接的 repair history。当前 SQLite
 `finalizeCancellation()` 即使存在 active integration claim，也会将 `CANCEL_REQUESTED` 转为 `CANCELLED`；
 调用方另行查询和处理 claim。M4.1 应记录并保持这个已观察到的行为，不能暗中改写 SQL 语义。
+SQLite 的两个连接能验证外部可观察的单赢家/失败方及取消优先行为，但其同步事务意味着这里的
+`Promise.all` **不能**证明两个数据库事务真正重叠。PostgreSQL parity 必须人为控制独立事务在
+claim-versus-claim 和 cancellation-versus-claim 窗口重叠，并证明唯一持久化赢家与确定的失败方。
+这是同一 run 的 authority parity，不属于 M4.2 的跨 run repository fencing。
 
 ## PostgreSQL parity 退出条件
 
 1. 建立完整实现 domain 所需存储接口的 PostgreSQL adapter；parity 完成之前不接入 CLI/worker。
 2. 为测试提供隔离的真实 PostgreSQL 数据库/schema/role，验证 search-path、role 隔离、迁移、唯一性及损坏记录处理。
 3. 以两个独立 PostgreSQL 连接运行**同一套**共享契约，替换目前明确的 PostgreSQL skip；mock 或内存实现不算 parity。
-4. 扩充共同契约以覆盖剩余差距，使用 PostgreSQL 约束、条件更新、`RETURNING` 和必要的锁保证事务/CAS。
+4. 扩充共同契约以覆盖剩余差距，使用 PostgreSQL 约束、条件更新、`RETURNING` 和必要的锁保证事务/CAS；
+   增加可控重叠事务测试，让 builder、repair、integration claim 与 cancellation 竞争：取消先赢时，
+   后续 claim 不得留下任何持久化 mutation authority。
 5. 保持冻结的 M3 SQLite 语义；跨 run repository fencing 和多 run acceptance 分别留待 M4.2 与 M4.3。
 
 M4.1A 状态：**AUDITED / SHARED SQLITE CONTRACT EXECUTABLE / POSTGRESQL PARITY BLOCKED**。

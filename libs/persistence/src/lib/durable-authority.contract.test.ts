@@ -324,6 +324,95 @@ export const durableAuthorityContract = (
       }
     });
 
+    it('permits exactly one repair PREPARING claim across independent connections', async () => {
+      const fixture = await create();
+      try {
+        await fixture.store.createRun(runRequest());
+        const admitted = await fixture.store.admitRepairAttemptWithWorkItem({
+          attempt: repairAttempt('repair-first'),
+          maxRepairs: 1,
+          createWorkItem: repairWorkItem
+        });
+        const starting = {
+          ...admitted,
+          state: 'STARTING' as const,
+          revision: admitted.revision + 1,
+          startedAt: new Date('2026-09-01T00:02:00.000Z')
+        };
+        const outcomes = await Promise.allSettled([
+          fixture.store.claimRepairStart({ runId: 'contract-run', attempt: starting }),
+          fixture.peer.claimRepairStart({ runId: 'contract-run', attempt: starting })
+        ]);
+        expect(outcomes.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+        expect(outcomes.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+        await expect(fixture.peer.recoverRepairAttempts('contract-run')).resolves.toMatchObject([
+          { attempt: { id: admitted.id, state: 'STARTING', revision: 2 } }
+        ]);
+        await expect(fixture.peer.recoverRepairWorkItems('contract-run')).resolves.toEqual([
+          repairWorkItem(admitted)
+        ]);
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('rejects all new mutation claims after cancellation holds durable run authority', async () => {
+      const fixture = await create();
+      try {
+        await fixture.store.createRun(runRequest());
+        await fixture.store.ensureInitialDispatch(initialDispatch());
+        const admitted = await fixture.store.admitRepairAttemptWithWorkItem({
+          attempt: repairAttempt('repair-first'),
+          maxRepairs: 1,
+          createWorkItem: repairWorkItem
+        });
+        await expect(fixture.peer.requestCancellation('contract-run')).resolves.toEqual({
+          status: 'requested',
+          state: 'CANCEL_REQUESTED'
+        });
+        await expect(
+          fixture.store.claimBuilderStart({
+            runId: 'contract-run',
+            attempt: {
+              ...initialDispatch().attempts[0].attempt,
+              state: 'STARTING',
+              revision: 2,
+              startedAt: new Date('2026-09-01T00:02:00.000Z')
+            },
+            leases: []
+          })
+        ).rejects.toThrow();
+        await expect(
+          fixture.store.claimRepairStart({
+            runId: 'contract-run',
+            attempt: {
+              ...admitted,
+              state: 'STARTING',
+              revision: 2,
+              startedAt: new Date('2026-09-01T00:02:00.000Z')
+            }
+          })
+        ).rejects.toThrow();
+        await expect(
+          fixture.store.claimIntegrationStart({
+            runId: 'contract-run',
+            taskId: 'task-1',
+            workspaceId: 'workspace-1',
+            outputAttemptId: 'contract-builder'
+          })
+        ).rejects.toThrow();
+        await expect(fixture.peer.recoverAttempts('contract-run')).resolves.toMatchObject([
+          { attempt: { id: 'contract-builder', state: 'PREPARING', revision: 1 } }
+        ]);
+        await expect(fixture.peer.recoverRepairAttempts('contract-run')).resolves.toMatchObject([
+          { attempt: { id: admitted.id, state: 'PREPARING', revision: 1 } }
+        ]);
+        await expect(fixture.peer.hasActiveIntegrationClaim('contract-run')).resolves.toBe(false);
+      } finally {
+        await fixture.close();
+      }
+    });
+
     it('resumes a blocked repair with a released lease once and records one dispatch', async () => {
       const fixture = await create();
       try {

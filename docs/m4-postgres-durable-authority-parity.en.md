@@ -21,6 +21,10 @@ M4.2/M4.3, not this audit.
 
 The existing PostgreSQL configuration tests verify metadata validation and closing a candidate handle.
 They do **not** establish any Forge durability or authority parity.
+The candidate `PostgresEvidenceStore` type is itself incomplete: it does not yet include
+`ActiveMutationClaimPersistence`, `CancellationPersistence`, `CancellationSettlementPersistence`,
+`IntegrationMutationClaimPersistence`, `TaskRepairWorkItemAdmissionStore`, or
+`TaskRepairResumeStore`. The eventual adapter must implement the complete worker authority surface.
 
 ## Shared executable contract
 
@@ -45,6 +49,18 @@ remain in place, and this suite is the common parity baseline for a subsequent M
 | Cancellation and normal terminal state                                          | ACTIVE -> CANCEL_REQUESTED -> CANCELLED and ACTIVE -> COMPLETED; terminal run cannot be overwritten                                    | No state-transition CAS / terminalization model.                                                                                                                              |
 | `ForgeReadModel` recovery prerequisites                                         | `recoverRun`, reviews, repair attempts, verification evidence and leases supplied by the SQLite adapter                                | No compatible recovery APIs or reconstructed durable collections.                                                                                                             |
 
+Two further **same-run authority** contracts are now executable in this shared suite:
+
+- `claimRepairStart` moves an admitted repair from PREPARING revision N to STARTING revision N+1.
+  Two independent connections attempt the same claim; exactly one succeeds, and the loser leaves
+  no extra attempt or work item. PostgreSQL needs conditional CAS of the repair revision **and**
+  an ACTIVE-run check in one transaction.
+- Once `requestCancellation()` has durably changed the run to CANCEL_REQUESTED, subsequent
+  `claimBuilderStart`, `claimRepairStart`, and `claimIntegrationStart` all reject without new mutation
+  evidence. PostgreSQL must serialize **all three** ACTIVE-run mutation claims atomically against
+  cancellation. Reading ACTIVE before another transaction cancels and then unconditionally writing
+  a claim would violate frozen M3 authority.
+
 The shared contract is an initial executable subset of the complete SQLite behavior; it does not
 supersede SQLite's detailed tests. In particular, additional PostgreSQL parity tests must also cover
 partial initial evidence, builder/repair UNKNOWN settlement, lease version regressions, persisted
@@ -53,6 +69,11 @@ integration claim release versus settlement, and exact repair history across reo
 SQLite `finalizeCancellation()` itself transitions `CANCEL_REQUESTED` to `CANCELLED` even while an
 integration claim remains active; callers separately inspect/settle claims. M4.1 must preserve the
 observed contract rather than silently imposing different SQL semantics.
+The two SQLite connections establish observable single-winner/loser and cancellation-first behavior,
+but SQLite's synchronous transactions mean `Promise.all` here does **not** prove two database
+transactions overlap. PostgreSQL parity needs deliberately overlapping independent transactions
+at both claim-versus-claim and cancellation-versus-claim windows, with one durable winner and a
+deterministic loser. This is same-run authority parity, not M4.2 cross-run repository fencing.
 
 ## Exit conditions for PostgreSQL parity
 
@@ -64,6 +85,8 @@ observed contract rather than silently imposing different SQL semantics.
    against two independent PostgreSQL connections. No mock/in-memory substitute counts as parity.
 4. Extend the common contract to close the remaining listed gaps; enforce transaction and CAS guarantees
    using PostgreSQL constraints, conditional updates, `RETURNING`, and locking where appropriate.
+   Add a controlled overlapping-transaction test seam for builder, repair, and integration claims
+   racing cancellation: when cancellation wins first, later claims leave no durable mutation authority.
 5. Preserve frozen M3 SQLite semantics; defer cross-run repository fencing and multi-run acceptance to
    M4.2 and M4.3 respectively.
 

@@ -2770,3 +2770,12 @@ M4.1A 当前为 **AUDITED / SQLITE CONTRACT EXECUTABLE / POSTGRESQL PARITY BLOCK
 被三个未改动文件阻断：`libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`、
 `libs/domain/src/lib/task-repair-attempt.ts` 和
 `libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`。
+
+独立复审 `4cef6a4` 后，共享 suite 又补充了 repair start 的原子 PREPARING-to-STARTING claim：
+SQLite 两个连接只能出现一个 revision-CAS 赢家，不能留下额外的 attempt 或 work item。另一契约验证
+cancellation 先获得持久化 authority 后，builder、repair、integration 三种 claim 均拒绝且不新增
+mutation evidence。Parity 盘点明确写入这三种 claim 与 `requestCancellation()` 的 PostgreSQL
+事务/CAS 缺口，以及 `PostgresEvidenceStore` 候选类型本身接口不完整的问题。同步 SQLite 上的
+`Promise.all` 仅验证可观察结果，不能证明事务重叠；真实 PostgreSQL parity 还需人为控制重叠并验证
+确定的失败方。目前 SQLite 共享契约 10 项通过，PostgreSQL 10 项显式跳过、1 项 fixture 待实现。
+M4.1A 的这次修复仍待独立复审；未实现 PostgreSQL，也未修改 M3 语义。

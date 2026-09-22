@@ -3142,3 +3142,14 @@ plus 3 worker test files with 22 passed). `pnpm lint`, `pnpm typecheck`, `pnpm b
 and diff checks passed. `pnpm check` stopped at repository-wide formatting in three unchanged files:
 `libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`, `libs/domain/src/lib/task-repair-attempt.ts`,
 and `libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`.
+
+After independent review of `4cef6a4`, the shared suite also requires an atomic repair-start
+PREPARING-to-STARTING claim: two SQLite connections observe exactly one revision-CAS winner, without
+extra attempt or work-item evidence. A separate contract checks that once cancellation has durable
+authority, builder, repair, and integration claims all reject without new mutation evidence. The
+parity audit records the missing PostgreSQL transaction/CAS boundary for **all three** claims versus
+`requestCancellation()`, and the incomplete `PostgresEvidenceStore` candidate type. Synchronous
+SQLite `Promise.all` checks observable outcomes, not overlapping transactions; real PostgreSQL
+parity requires controlled overlap and a deterministic loser. SQLite now passes 10 shared cases;
+PostgreSQL reports 10 skipped cases and 1 pending fixture check. M4.1A remains pending review of
+this remediation; no PostgreSQL implementation or M3 semantic change was introduced.
