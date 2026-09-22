@@ -54,7 +54,7 @@
     "ForgeReadModel remains provider-neutral.",
     "Normal worker review policy selection is explicit deployment configuration and matches CLI durable authority.",
     "The legacy runtime, differential suite, spike packages, and their package/configuration references are absent.",
-    "Retained Temporal production tests cover exact and mismatched repeated blocked-integration wake, repair budget evidence without integration, repair UNKNOWN authority, STALE blocker repair resume, and feasible wrong-wake/restart recovery.",
+    "Retained production evidence covers exact, mismatched, and repeated blocked-integration wakes; worker replacement after STOPPED and SQLite reopen continuation; repair-budget evidence without integration; core post-start repair UNKNOWN authority; and STALE blocker repair resume.",
     "Forge runtime composition receives explicit application-owned reviewer and coding-runner factories; only the worker application assembles Pi adapters and resolved deployment identity."
   ]
 }

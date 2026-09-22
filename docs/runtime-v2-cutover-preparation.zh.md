@@ -35,7 +35,7 @@ dependency 与 pnpm lockfile 均不再保留这些 asset。
 ## 保留 Evidence
 
 Temporal 与 production-composition test 保留精确、不匹配且重复的 blocked-integration wake。一个真实 local Temporal
-server 测试在 wake 前以 worker B 替换 worker A；另一个临时 SQLite 测试关闭 composition A 并通过同一数据库重建
+server 测试等待 worker A 达到 STOPPED 后才启动 worker B，并标记精确 wake 后的 resume activity 由 B 执行；另一个临时 SQLite 测试关闭 composition A 并通过同一数据库重建
 composition B，验证错误 wake 不起作用、精确 wake 完成 integration、重复 wake 不重复集成。repair-budget 测试保留
 已完成 repair、review 和 verification evidence，且没有 integration claim 或 `workspace-integrated` event。核心
 repair-execution 测试保留 post-start `UNKNOWN` authority；此 cutover 不声称已另行验证完整 workflow 的 repair-UNKNOWN

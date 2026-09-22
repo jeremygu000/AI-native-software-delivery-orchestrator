@@ -2723,8 +2723,8 @@ package export、workspace reference、build/test script、Vitest coverage exclu
 asset。可复用的 production service 继续保留在 `libs/orchestration-runtime`；唯一的 production execution route
 仍是 CLI launcher、Temporal workflow 与独立部署的 worker。
 
-保留的 production test 保护精确、不匹配及重复的 blocked-integration wake。一个 local Temporal server 测试在精确
-wake 前用 worker B 替换 worker A；另一 composition 测试关闭临时 SQLite authority database 的第一个连接并为
+保留的 production test 保护精确、不匹配及重复的 blocked-integration wake。一个 local Temporal server 测试等待
+worker A 达到 STOPPED 后才启动 worker B，并明确标记精确 wake 后的 resume activity 由 B 执行；另一 composition 测试关闭临时 SQLite authority database 的第一个连接并为
 worker B 重新打开，证明错误 wake 不解除阻塞，精确 wake 仅集成一次，重复 wake 不重复执行。bounded repair 测试在第三次
 repair recommendation 耗尽预算后，仍保留两个已完成 repair、三条 review 与 verification evidence，且没有
 integration claim 或 `workspace-integrated` event。核心 repair-execution 测试保留 post-start `UNKNOWN` authority

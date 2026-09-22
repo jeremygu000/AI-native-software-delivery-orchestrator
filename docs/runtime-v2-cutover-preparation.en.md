@@ -38,7 +38,8 @@ Reusable `libs/orchestration-runtime` application services remain on the product
 ## Retained Evidence
 
 Temporal and production-composition tests retain exact, mismatched and repeated blocked-integration wakes.
-A real local Temporal server test replaces worker A with worker B before waking integration; a separate
+A real local Temporal server test awaits worker A reaching STOPPED before starting worker B and attributes
+the exact-wake resume activity to B; a separate
 temporary-SQLite test closes composition A and reopens the same database for composition B, where an invalid
 wake does nothing, an exact wake integrates, and a repeated wake does not repeat integration. Repair budget
 coverage retains completed repair, review, and verification evidence with no integration claim or

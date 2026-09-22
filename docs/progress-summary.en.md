@@ -3086,7 +3086,8 @@ remain in `libs/orchestration-runtime`, and the only production execution route 
 Temporal workflow, and independently deployed worker.
 
 The retained production tests protect exact, mismatched, and repeated blocked-integration wakes. A local
-Temporal server test replaces worker A with worker B before the exact wake; a separate composition test
+Temporal server test waits for worker A to reach STOPPED before starting worker B and attributes the exact
+wake's resume activity to B; a separate composition test
 closes one connection to a temporary SQLite authority database and reopens it for worker B, proving that a
 wrong wake leaves integration blocked and the exact wake integrates once even if repeated. A bounded repair
 test retains two completed repairs, three review and verification records, no integration claim, and no

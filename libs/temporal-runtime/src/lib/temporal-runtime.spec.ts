@@ -1067,7 +1067,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         throw new Error('executeRepair should not be called');
       },
       async integrateAcceptedOutput(input) {
-        calls.push(`integrateAcceptedOutput:${input.taskId}`);
+        calls.push(`worker-a:integrateAcceptedOutput:${input.taskId}`);
         return IntegrateAcceptedOutputResultSchema.parse({
           runId: input.runId,
           taskId: input.taskId,
@@ -1075,7 +1075,7 @@ describe('temporal-runtime Scenario A workflow', () => {
         });
       },
       async resumeBlockedIntegration(input) {
-        calls.push(`resumeBlockedIntegration:${input.taskId}:${input.workspaceId}`);
+        calls.push(`worker-a:resumeBlockedIntegration:${input.taskId}:${input.workspaceId}`);
         return { runId: input.runId, taskId: input.taskId, status: 'integrated' as const };
       },
       async finalizeRunState(input) {
@@ -1105,15 +1105,23 @@ describe('temporal-runtime Scenario A workflow', () => {
         workflowId: `workflow-${runId}`
       });
       await environment.sleep(200);
-      expect(calls).toContain('integrateAcceptedOutput:task-integration');
+      expect(calls).toContain('worker-a:integrateAcceptedOutput:task-integration');
       expect(calls).not.toContain('finalizeRunState');
       workerA.shutdown();
+      await workerAPromise;
       workerAStopped = true;
+      expect(workerA.getState()).toBe('STOPPED');
       workerB = await Worker.create({
         connection: environment.nativeConnection,
         taskQueue: 'temporal-runtime-test-blocked-integration',
         workflowsPath: WORKFLOWS_PATH,
-        activities
+        activities: {
+          ...activities,
+          async resumeBlockedIntegration(input) {
+            calls.push(`worker-b:resumeBlockedIntegration:${input.taskId}:${input.workspaceId}`);
+            return { runId: input.runId, taskId: input.taskId, status: 'integrated' as const };
+          }
+        }
       });
       workerBPromise = workerB.run();
       await handle.signal(integrationWakeSignal, {
@@ -1131,8 +1139,8 @@ describe('temporal-runtime Scenario A workflow', () => {
         'executeBuilder:task-integration',
         'reevaluateRun',
         'evaluateBuilderOutput:task-integration',
-        'integrateAcceptedOutput:task-integration',
-        'resumeBlockedIntegration:task-integration:workspace-integration',
+        'worker-a:integrateAcceptedOutput:task-integration',
+        'worker-b:resumeBlockedIntegration:task-integration:workspace-integration',
         'reevaluateRun',
         'finalizeRunState'
       ]);
