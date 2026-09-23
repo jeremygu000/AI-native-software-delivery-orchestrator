@@ -122,3 +122,34 @@ above is a historical audit snapshot. Before selecting a PostgreSQL production r
 ownership/migrations and role privileges; broaden common parity around UNKNOWN settlement,
 corruption of other evidence, conflict sequencing/replay, and ForgeReadModel recovery. M4.1B is
 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**.
+
+### Review remediation: evidence validation and reopened recovery
+
+The same backend-neutral contract now exercises **16 cases on each backend**, using test-only direct
+corruption of binding and verification records to prove recovery fails closed. New cases reject
+malformed scheduler events, snapshots, task decisions, and runtime conflicts with an incorrect
+effective sequence; impact, conflict, and workspace identities that disagree with their run or task;
+missing or key-mismatched bindings; and verification evidence whose self-fingerprint disagrees with
+otherwise schema-valid content. The PostgreSQL adapter validates these values before writing and
+requires recovered bindings to match both their row keys and the complete task set of a run.
+
+The shared suite also exercises cancellation settlement for both builder and repair attempts marked
+UNKNOWN. Settlement before cancellation rejects; an incorrect attempt revision cannot mutate leases;
+the exact revision marks the matching attempt CANCELLED and releases its matching active lease while
+an unrelated lease remains active. A PostgreSQL-only test closes and reopens an adapter, then projects
+the recovered run through `ForgeReadModel`, checking builder and repair lineage, review and
+verification references, leases, blocking reason, timeline, and correlation identifiers. Together
+with the existing five PostgreSQL-only tests, the focused run passes **38 tests** (16 shared cases
+per backend and six PostgreSQL-only cases). The SQLite production route and frozen M3 semantics are
+unchanged.
+
+This is not permission to deploy PostgreSQL. The adapter currently creates two tables on connect;
+there is no versioned, migration-owner-managed schema or startup compatibility check. Before a
+production route, introduce reviewed migrations and a recorded schema version, verify that the
+application rejects unsupported versions, and separate the migration-owner role from a least-
+privileged runtime role with only the necessary data permissions and no startup DDL. Test that
+schema installation, role privileges, and upgrades work on a real database. The PostgreSQL
+`recoverRun` transaction provides a consistent snapshot for that single call, **not** an atomic
+snapshot across the four separate recovery calls made by `ForgeReadModel`. M4.1B remains
+**IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; CLI and worker continue to use SQLite, and
+M4.2/M4.3 remain outside this stage.

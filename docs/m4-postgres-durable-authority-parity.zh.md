@@ -100,3 +100,28 @@ fencing 与 M4.3 多 run 并发属于后续阶段。上方 M4.1A 差距表是历
 生产路由前，还需审查 schema 归属/迁移、role 权限，以及扩充 UNKNOWN settlement、其他证据损坏、
 conflict sequence/replay、ForgeReadModel 恢复等共同契约。M4.1B 当前为
 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**。
+
+### 复审补正：证据校验与重开连接后的恢复
+
+同一套 backend-neutral 契约现在对每种 backend 执行 **16 项用例**，通过仅用于测试的 binding、
+verification 记录直接损坏，证明恢复必须 fail closed。新增用例拒绝格式错误的 scheduler event、
+snapshot、task decision，effective sequence 错误的 runtime conflict；run 或 task 身份不符的
+impact、conflict、workspace；缺失或行键不符的 binding；以及结构合法但自指纹错误的 verification
+证据。PostgreSQL adapter 在写入前校验证据，恢复时要求 binding 同时符合行键和 run 的完整 task 集合。
+
+共享契约还分别验证 UNKNOWN builder 和 repair attempt 的取消结算：请求取消前不得结算，错误
+revision 不能修改 lease；精确 revision 将对应 attempt 标为 CANCELLED，释放匹配的 active lease，
+但保留无关 lease 的 ACTIVE 状态。PostgreSQL 专属用例关闭并重开 adapter 后，使用
+`ForgeReadModel` 投影已恢复的 run，检查 builder/repair 血缘、review/verification 引用、lease、
+阻塞原因、时间线和关联标识。与原有五项 PostgreSQL 专属用例合计，定向测试 **38 项通过**
+（每种 backend 各 16 项共享契约，另有六项 PostgreSQL 专属用例）。SQLite 生产路由和冻结的 M3
+语义均未变。
+
+这些证据**不授权 PostgreSQL 生产切换**。目前 adapter 仍在连接时创建两张表，没有版本化、
+由 migration owner 管理的 schema，也没有启动时的版本兼容检查。启用生产路由前，必须引入
+可复审的迁移与记录在库中的 schema 版本，拒绝不兼容版本；把 migration-owner role 和仅具
+必要数据权限、启动时不能执行 DDL 的最小权限 runtime role 分离；并在真实数据库验证建表、
+权限与升级。PostgreSQL `recoverRun` 的事务只保证**单次调用**的一致快照，不代表
+`ForgeReadModel` 四次独立恢复调用共享原子快照。M4.1B 仍为
+**IMPLEMENTED / AWAITING INDEPENDENT REVIEW**；CLI/worker 继续使用 SQLite，M4.2/M4.3
+不在本阶段范围内。

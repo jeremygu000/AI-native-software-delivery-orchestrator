@@ -312,6 +312,9 @@ importers:
         specifier: ^3.4.9
         version: 3.4.9
     devDependencies:
+      '@ai-native-software-delivery-orchestrator/orchestration-runtime':
+        specifier: workspace:*
+        version: link:../orchestration-runtime
       '@ai-native-software-delivery-orchestrator/scheduler':
         specifier: workspace:*
         version: link:../scheduler

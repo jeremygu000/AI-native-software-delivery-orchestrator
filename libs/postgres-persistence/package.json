@@ -19,6 +19,7 @@
     "postgres": "^3.4.9"
   },
   "devDependencies": {
+    "@ai-native-software-delivery-orchestrator/orchestration-runtime": "workspace:*",
     "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*"
   }
 }

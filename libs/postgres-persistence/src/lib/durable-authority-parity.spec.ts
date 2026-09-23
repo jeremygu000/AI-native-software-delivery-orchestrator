@@ -6,6 +6,8 @@ import { join } from 'node:path';
 
 import postgres from 'postgres';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
+import { ForgeReadModel } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import { taskVerificationEvidenceFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 
 import {
@@ -92,6 +94,26 @@ const createFixture = async (): Promise<DurableAuthorityFixture & { schema: stri
       store,
       peer,
       schema,
+      corruptRecord: async (kind, key, transform) => {
+        const rows = await admin.unsafe(
+          `select payload from "${schema}".forge_records where run_id=$1 and kind=$2 and key=$3`,
+          ['contract-run', kind, key]
+        );
+        if (rows.length !== 1 || typeof rows[0]?.payload !== 'string') {
+          throw new Error(`Missing ${kind} corruption fixture: ${key}`);
+        }
+        const value: unknown = JSON.parse(rows[0].payload);
+        await admin.unsafe(
+          `update "${schema}".forge_records set payload=$4 where run_id=$1 and kind=$2 and key=$3`,
+          ['contract-run', kind, key, JSON.stringify(transform(value))]
+        );
+      },
+      removeRecord: async (kind, key) => {
+        await admin.unsafe(
+          `delete from "${schema}".forge_records where run_id=$1 and kind=$2 and key=$3`,
+          ['contract-run', kind, key]
+        );
+      },
       close: async () => {
         await Promise.all([store.close(), peer.close()]);
         await admin.unsafe(`drop schema "${schema}" cascade`);
@@ -174,6 +196,146 @@ it('replays recorded scheduler decisions and reconstructs them after reopening',
       await expect(
         reopened.replayRun('replay-run', new DeterministicScheduler())
       ).resolves.toHaveLength(1);
+    } finally {
+      await reopened.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+it('projects recovered builder, repair, lease, review, verification, timeline, and blocking evidence', async () => {
+  const fixture = await createFixture();
+  try {
+    const runId = 'read-model-run';
+    const request = durableAuthorityRunRequest(runId);
+    await fixture.store.createRun(request);
+    await fixture.store.ensureInitialDispatch(durableAuthorityInitialDispatch(runId));
+    const builder = durableAuthorityInitialDispatch(runId).attempts[0].attempt;
+    await fixture.store.persistLease({
+      runId,
+      lease: {
+        id: 'blocked-lease',
+        runId,
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        resource: { type: 'project', projectId: 'project-1' },
+        mode: 'exclusive',
+        version: 1,
+        state: 'ACTIVE',
+        acquiredAt: new Date('2026-09-01T00:02:00.000Z'),
+        lastHeartbeatAt: new Date('2026-09-01T00:02:00.000Z')
+      }
+    });
+    const repair = await fixture.store.admitRepairAttemptWithWorkItem({
+      attempt: { ...durableAuthorityRepairAttempt('read-repair'), runId },
+      maxRepairs: 1,
+      createWorkItem: (attempt) => ({ ...durableAuthorityRepairWorkItem(attempt), runId })
+    });
+    const verified = {
+      id: 'read-verification',
+      runId,
+      taskId: 'task-1',
+      attemptId: repair.id,
+      workspaceId: 'workspace-1',
+      workspaceRevision: 1,
+      workspaceChangeFingerprint: `sha256:${'c'.repeat(64)}`,
+      verificationPolicyFingerprint: request.run.authority.verificationPolicyFingerprint,
+      status: 'passed' as const,
+      verifiedAt: '2026-09-01T00:04:00.000Z'
+    };
+    await fixture.store.persistVerificationEvidence({
+      ...verified,
+      fingerprint: taskVerificationEvidenceFingerprint(verified)
+    });
+    await fixture.store.persistReview({
+      runId,
+      taskId: 'task-1',
+      iteration: 2,
+      subject: { ...repair.parentReviewSubject, outputAttemptId: repair.id },
+      review: { recommendation: 'accept', summary: 'Repair accepted.', findings: [] }
+    });
+    await fixture.store.persistReevaluation({
+      event: {
+        runId,
+        sequence: 2,
+        occurredAt: '2026-09-01T00:05:00.000Z',
+        event: { type: 'lease-blocked', taskId: 'task-1', leaseId: 'blocked-lease' }
+      },
+      decision: {
+        runId,
+        sequence: 2,
+        inputSnapshot: { taskStates: [{ taskId: 'task-1', state: 'RUNNING' }], runtimeBlocks: [] },
+        decision: {
+          taskDecisions: [
+            {
+              taskId: 'task-1',
+              action: 'block',
+              fromState: 'RUNNING',
+              toState: 'BLOCKED',
+              reasons: [
+                { type: 'runtime-blocked', blockers: [{ type: 'lease', leaseId: 'blocked-lease' }] }
+              ]
+            }
+          ]
+        }
+      },
+      transitions: [
+        { runId, sequence: 2, taskId: 'task-1', fromState: 'RUNNING', toState: 'BLOCKED' }
+      ]
+    });
+    const reopened = await PostgresOrchestrationPersistence.connect({
+      connectionString,
+      schema: fixture.schema,
+      role
+    });
+    try {
+      const result = await new ForgeReadModel({
+        persistence: reopened,
+        workflowId: (id) => `forge-run:${id}`
+      }).read(runId);
+      expect(result).toMatchObject({
+        runId,
+        correlation: { runId, workflowId: `forge-run:${runId}` },
+        leases: [
+          {
+            id: 'blocked-lease',
+            state: 'ACTIVE',
+            resource: { type: 'project', projectId: 'project-1' }
+          }
+        ],
+        timeline: [
+          { sequence: 1, type: 'run-started' },
+          { sequence: 2, type: 'lease-blocked', correlation: { taskId: 'task-1' } }
+        ],
+        tasks: [
+          {
+            id: 'task-1',
+            state: 'BLOCKED',
+            currentBlockingReason: {
+              type: 'runtime-blocked',
+              blockers: [{ type: 'lease', leaseId: 'blocked-lease' }]
+            },
+            attempts: [
+              { id: builder.id, kind: 'builder' },
+              {
+                id: repair.id,
+                kind: 'repair',
+                correlation: { attemptId: builder.id, repairAttemptId: repair.id }
+              }
+            ],
+            verification: [
+              {
+                id: 'read-verification',
+                correlation: { attemptId: builder.id, repairAttemptId: repair.id }
+              }
+            ],
+            reviews: [
+              { iteration: 2, correlation: { attemptId: builder.id, repairAttemptId: repair.id } }
+            ]
+          }
+        ]
+      });
     } finally {
       await reopened.close();
     }

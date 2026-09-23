@@ -3186,3 +3186,15 @@ baseline, not the new adapter. CLI and worker still use SQLite; M4.2/M4.3 remain
 M4.1B is **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**. Its real PostgreSQL cases pass, but no
 PostgreSQL production route is enabled. The bilingual parity audit describes remaining schema,
 migration, and broader evidence/recovery review items. M3 remains COMPLETE / FROZEN.
+
+Review remediation extends the single shared suite to **16 contracts per backend**. SQLite and a
+real PostgreSQL fixture now reject malformed reevaluations and identity-mismatched evidence, plus
+missing or corrupted task bindings and invalid verification fingerprints. Both backends prove exact
+UNKNOWN builder/repair cancellation settlement without releasing unrelated leases. A PostgreSQL
+reopen test recovers the full provider-neutral Forge read model, including repair lineage, blockers,
+and timeline. The focused parity run passes **38 tests** (32 shared and six PostgreSQL-only), and
+the full repository test run, lint, typecheck, and build pass. The production CLI/worker remain on
+SQLite. Versioned migrations, schema compatibility checks, and a separate least-privileged runtime
+role without startup DDL are **required before** a PostgreSQL production route; a single-call
+`recoverRun` snapshot does not make all read-model recovery calls atomic. M4.1B remains
+**IMPLEMENTED / AWAITING INDEPENDENT REVIEW**, not closed.

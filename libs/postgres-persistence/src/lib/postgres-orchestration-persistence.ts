@@ -324,23 +324,36 @@ export class PostgresOrchestrationPersistence
     });
   }
   async recoverTaskBindings(runId: string): Promise<readonly PersistedTaskExecutionBinding[]> {
-    return (await this.#rows(this.#sql, runId, 'binding')).map(({ payload }) =>
-      parsed(payload, (value) => persistedTaskExecutionBindingSchema.parse(value))
+    return (await this.#rows(this.#sql, runId, 'binding')).map((row) => this.#binding(runId, row));
+  }
+  #binding(
+    runId: string,
+    row: { readonly key: string; readonly payload: string }
+  ): PersistedTaskExecutionBinding {
+    const binding = parsed(row.payload, (value) =>
+      persistedTaskExecutionBindingSchema.parse(value)
     );
+    if (binding.runId !== runId || binding.taskId !== row.key) {
+      throw new Error('Persisted task binding row identity mismatch');
+    }
+    return binding;
   }
   async recoverTaskBinding(
     runId: string,
     taskId: string
   ): Promise<PersistedTaskExecutionBinding | undefined> {
     const payload = await this.#row(this.#sql, runId, 'binding', taskId);
-    return payload === undefined
-      ? undefined
-      : parsed(payload, (value) => persistedTaskExecutionBindingSchema.parse(value));
+    return payload === undefined ? undefined : this.#binding(runId, { key: taskId, payload });
   }
 
   async #reevaluate(tx: Query, record: PersistedReevaluation): Promise<boolean> {
     const runId = record.event.runId;
     const sequence = record.event.sequence;
+    schedulerEventSchema.parse(record.event.event);
+    schedulerSnapshotSchema.parse(record.decision.inputSnapshot);
+    for (const decision of record.decision.decision.taskDecisions) {
+      schedulerTaskDecisionSchema.parse(decision);
+    }
     if (
       sequence < 1 ||
       !Number.isInteger(sequence) ||
@@ -365,6 +378,12 @@ export class PostgresOrchestrationPersistence
       canonical(actual.toSorted((a, b) => a.taskId.localeCompare(b.taskId)))
     ) {
       throw new Error('Persisted transitions must match scheduler decision');
+    }
+    for (const conflict of record.runtimeConflicts ?? []) {
+      this.#validateConflict(conflict);
+      if (conflict.runId !== runId || conflict.effectiveFromSequence !== sequence) {
+        throw new Error('Runtime conflict must become effective at reevaluation sequence');
+      }
     }
     const previous = await this.#rows(tx, runId, 'event');
     if (sequence > previous.length + 1) {
@@ -1038,20 +1057,43 @@ export class PostgresOrchestrationPersistence
     );
   }
   async recoverVerificationEvidence(runId: string): Promise<readonly TaskVerificationEvidence[]> {
-    return (await this.#rows(this.#sql, runId, 'verification')).map(({ payload }) =>
-      parsed(payload, (value) => taskVerificationEvidenceSchema.parse(value))
-    );
+    return (await this.#rows(this.#sql, runId, 'verification')).map(({ payload }) => {
+      const evidence = parsed(payload, (value) => taskVerificationEvidenceSchema.parse(value));
+      assertTaskVerificationEvidenceIntegrity(evidence);
+      return evidence;
+    });
   }
 
   async persistImpact(record: PersistedTaskImpact): Promise<void> {
+    if (
+      record.taskId !== record.impact.predicted.taskId ||
+      (record.impact.observed !== undefined && record.taskId !== record.impact.observed.taskId)
+    ) {
+      throw new Error('Task impact key must match payload task ID');
+    }
+    taskImpactSchema.parse(record.impact);
     await this.#locked(record.runId, async (tx) =>
       this.#put(tx, record.runId, 'impact', record.taskId, record)
     );
   }
   async persistConflict(record: PersistedTaskConflict): Promise<void> {
+    this.#validateConflict(record);
     await this.#locked(record.runId, async (tx) => this.#conflict(tx, record));
   }
+  #validateConflict(record: PersistedTaskConflict): void {
+    if (record.taskA !== record.conflict.taskA || record.taskB !== record.conflict.taskB) {
+      throw new Error('Task conflict keys must match payload task IDs');
+    }
+    if (
+      record.effectiveFromSequence !== undefined &&
+      (!Number.isInteger(record.effectiveFromSequence) || record.effectiveFromSequence < 1)
+    ) {
+      throw new Error('Runtime conflict effective sequence must be positive');
+    }
+    taskConflictSchema.parse(record.conflict);
+  }
   async #conflict(tx: Query, record: PersistedTaskConflict): Promise<void> {
+    this.#validateConflict(record);
     const key = `${record.taskA}:${record.taskB}`;
     const old = await this.#row(tx, record.runId, 'conflict', key);
     if (
@@ -1064,6 +1106,10 @@ export class PostgresOrchestrationPersistence
     await this.#put(tx, record.runId, 'conflict', key, record);
   }
   async persistWorkspace(record: PersistedTaskWorkspace): Promise<void> {
+    if (record.workspace.runId !== record.runId) {
+      throw new Error('Workspace run ID must match persistence run ID');
+    }
+    taskWorkspaceSchema.parse(record.workspace);
     await this.#locked(record.runId, async (tx) =>
       this.#revision(tx, record.runId, 'workspace', record.workspace.id, record.workspace)
     );
@@ -1129,9 +1175,19 @@ export class PostgresOrchestrationPersistence
               state: runState(rows[0]?.state)
             },
             tasks: taskSpecificationSchema.parse({ tasks: initial.tasks }).tasks,
-            taskBindings: await read('binding', (value) =>
-              persistedTaskExecutionBindingSchema.parse(value)
-            ),
+            taskBindings: await (async () => {
+              const tasks = taskSpecificationSchema.parse({ tasks: initial.tasks }).tasks;
+              const bindings = (await this.#rows(tx, runId, 'binding')).map((row) =>
+                this.#binding(runId, row)
+              );
+              if (
+                bindings.length !== tasks.length ||
+                tasks.some((task) => !bindings.some((binding) => binding.taskId === task.id))
+              ) {
+                throw new Error('Recovered task bindings must match recovered task set');
+              }
+              return bindings;
+            })(),
             hardConflicts: taskConflictSchema
               .array()
               .parse(initial.hardConflicts)

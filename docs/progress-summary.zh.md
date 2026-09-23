@@ -2807,3 +2807,13 @@ CLI/worker 仍然使用 SQLite；M4.2/M4.3 是后续独立范围。
 M4.1B 当前为 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**。真实 PostgreSQL 用例通过，但未启用
 PostgreSQL 生产路由。双语 parity 盘点说明 schema、迁移及更广的证据/恢复契约仍须审查。
 M3 保持 COMPLETE / FROZEN。
+
+复审补正将同一套共享 suite 扩至**每种 backend 16 项契约**。SQLite 和真实 PostgreSQL fixture
+现在都会拒绝格式错误的 reevaluation、身份不符的证据、缺失或损坏的 task binding，以及无效的
+verification 自指纹；两种 backend 均证明 UNKNOWN builder/repair 精确取消结算不会释放无关 lease。
+PostgreSQL 重开连接的用例恢复完整的 provider-neutral Forge read model，包括 repair 血缘、
+阻塞原因和时间线。定向 parity 运行 **38 项通过**（32 项共享用例、六项 PostgreSQL 专属）；
+仓库全量测试、lint、typecheck、build 通过。生产 CLI/worker 仍使用 SQLite。在切换 PostgreSQL
+生产路由前，**必须**建立版本化迁移、schema 兼容检查，以及与 migration owner 分离、启动时无
+DDL 权限的最小权限 runtime role；单次 `recoverRun` 快照不能保证 read model 的多次恢复调用
+具有原子性。M4.1B 仍为 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**，尚未关闭。

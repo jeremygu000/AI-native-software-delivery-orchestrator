@@ -1,13 +1,16 @@
 import type {
   ActiveMutationClaimPersistence,
   CancellationPersistence,
+  CancellationSettlementPersistence,
   CreatePersistedRunRequest,
   IntegrationMutationClaimPersistence,
   OrchestrationPersistence,
   PersistedDispatch,
+  PersistedTaskConflict,
   PersistedTaskRepairAttempt,
   TaskCodeReviewStore,
   TaskRepairResumeStore,
+  TaskRepairAttemptStore,
   TaskRepairWorkItemAdmissionStore,
   TaskRepairWorkItemStore,
   TaskVerificationEvidenceStore
@@ -18,11 +21,13 @@ import { describe, expect, it } from 'vitest';
 export type DurableAuthorityStore = OrchestrationPersistence &
   ActiveMutationClaimPersistence &
   CancellationPersistence &
+  CancellationSettlementPersistence &
   IntegrationMutationClaimPersistence &
   TaskCodeReviewStore &
   TaskRepairWorkItemAdmissionStore &
   TaskRepairResumeStore &
   TaskRepairWorkItemStore &
+  TaskRepairAttemptStore &
   TaskVerificationEvidenceStore & {
     ensureInitialDispatch: NonNullable<OrchestrationPersistence['ensureInitialDispatch']>;
   };
@@ -31,6 +36,13 @@ export interface DurableAuthorityFixture {
   readonly store: DurableAuthorityStore;
   /** An independent connection to the same durable authority. */
   readonly peer: DurableAuthorityStore;
+  /** Test-only direct evidence mutation; bypasses adapter validation to exercise recovery. */
+  corruptRecord(
+    kind: 'binding' | 'verification',
+    key: string,
+    transform: (value: unknown) => unknown
+  ): Promise<void>;
+  removeRecord(kind: 'binding', key: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -192,6 +204,30 @@ export const durableAuthorityRepairWorkItem = (attempt: PersistedTaskRepairAttem
   reviewIteration: attempt.parentReviewIteration + 1,
   verificationPolicyFingerprint: digest('9'),
   codeReviewPolicyFingerprint: digest('a')
+});
+
+const runtimeConflict = (): PersistedTaskConflict => ({
+  runId: 'contract-run',
+  taskA: 'task-1',
+  taskB: 'task-2',
+  effectiveFromSequence: 1,
+  conflict: {
+    taskA: 'task-1',
+    taskB: 'task-2',
+    score: 100,
+    severity: 'hard',
+    reasons: [
+      { type: 'same-file', score: 100, detail: 'Shared resource.', resourceIds: ['src/index.ts'] }
+    ],
+    constraints: [
+      {
+        type: 'runtime-scope-expansion',
+        detail: 'Scope expanded.',
+        resourceIds: ['src/index.ts']
+      }
+    ],
+    recommendedAction: 'serialize'
+  }
 });
 
 /** Backend-neutral behavioral suite. Every adapter must run these exact assertions. */
@@ -588,6 +624,264 @@ export const durableAuthorityContract = (
         await fixture.close();
       }
     });
+
+    it('rejects malformed reevaluation and runtime conflict evidence at the write boundary', async () => {
+      const fixture = await create();
+      try {
+        await fixture.store.createRun(durableAuthorityRunRequest());
+        const reevaluation = durableAuthorityInitialDispatch().reevaluation;
+        const malformedEvent: unknown = {
+          ...reevaluation,
+          event: { ...reevaluation.event, event: { type: 'invalid-event' } }
+        };
+        const malformedSnapshot: unknown = {
+          ...reevaluation,
+          decision: { ...reevaluation.decision, inputSnapshot: { taskStates: [] } }
+        };
+        const malformedDecision: unknown = {
+          ...reevaluation,
+          decision: {
+            ...reevaluation.decision,
+            decision: {
+              taskDecisions: [
+                { ...reevaluation.decision.decision.taskDecisions[0], action: 'invalid' }
+              ]
+            }
+          }
+        };
+        for (const malformed of [malformedEvent, malformedSnapshot, malformedDecision]) {
+          // Deliberately bypass the TypeScript contract to exercise the persistence input boundary.
+          await expect(
+            fixture.store.persistReevaluation(
+              // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+              malformed as Parameters<DurableAuthorityStore['persistReevaluation']>[0]
+            )
+          ).rejects.toThrow();
+        }
+        await expect(
+          fixture.store.persistReevaluation({
+            ...reevaluation,
+            runtimeConflicts: [{ ...runtimeConflict(), effectiveFromSequence: 2 }]
+          })
+        ).rejects.toThrow();
+        await expect(
+          fixture.store.persistReevaluation({
+            ...reevaluation,
+            runtimeConflicts: [{ ...runtimeConflict(), taskB: 'different' }]
+          })
+        ).rejects.toThrow();
+        await expect(fixture.peer.recoverRun('contract-run')).resolves.toMatchObject({
+          events: [],
+          decisions: []
+        });
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('rejects impact, conflict, and workspace identity mismatch before writing', async () => {
+      const fixture = await create();
+      try {
+        await fixture.store.createRun(durableAuthorityRunRequest());
+        const impact = {
+          predicted: {
+            taskId: 'task-1',
+            projectsRead: new Set<string>(),
+            projectsWritten: new Set<string>(),
+            explicitProjectsWritten: new Set<string>(),
+            filesRead: new Set<string>(),
+            filesWritten: new Set<string>(),
+            explicitFilesWritten: new Set<string>(),
+            globFilesWritten: new Set<string>(),
+            symbolDerivedFilesWritten: new Set<string>(),
+            symbolsRead: new Set<string>(),
+            symbolsWritten: new Set<string>(),
+            sharedResources: new Set<string>(),
+            sharedResourceAccesses: [],
+            downstreamProjects: new Set<string>(),
+            riskSignals: []
+          }
+        };
+        await expect(
+          fixture.store.persistImpact({ runId: 'contract-run', taskId: 'different', impact })
+        ).rejects.toThrow();
+        await expect(
+          fixture.store.persistConflict({ ...runtimeConflict(), taskA: 'different' })
+        ).rejects.toThrow();
+        await expect(
+          fixture.store.persistConflict({ ...runtimeConflict(), effectiveFromSequence: 0 })
+        ).rejects.toThrow();
+        await expect(
+          fixture.store.persistWorkspace({
+            runId: 'contract-run',
+            workspace: {
+              ...durableAuthorityRunRequest().taskBindings[0].workspace,
+              runId: 'different',
+              revision: 1,
+              phase: 'READY_TO_INTEGRATE'
+            }
+          })
+        ).rejects.toThrow();
+        await expect(fixture.peer.recoverRun('contract-run')).resolves.toMatchObject({
+          impacts: [],
+          conflicts: [],
+          workspaces: []
+        });
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('rejects deleted and key-mismatched binding evidence on recovery', async () => {
+      const fixture = await create();
+      try {
+        await fixture.store.createRun(durableAuthorityRunRequest());
+        await fixture.corruptRecord('binding', 'task-1', (value) => ({
+          ...Object(value),
+          taskId: 'different'
+        }));
+        await expect(fixture.peer.recoverTaskBindings('contract-run')).rejects.toThrow();
+        await expect(fixture.peer.recoverRun('contract-run')).rejects.toThrow();
+        await fixture.removeRecord('binding', 'task-1');
+        await expect(fixture.peer.recoverRun('contract-run')).rejects.toThrow();
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('rejects schema-valid verification evidence with a corrupted self fingerprint', async () => {
+      const fixture = await create();
+      try {
+        await fixture.store.createRun(durableAuthorityRunRequest());
+        const payload = {
+          id: 'verification-1',
+          runId: 'contract-run',
+          taskId: 'task-1',
+          attemptId: 'contract-builder',
+          workspaceId: 'workspace-1',
+          workspaceRevision: 1,
+          workspaceChangeFingerprint: digest('c'),
+          verificationPolicyFingerprint: digest('9'),
+          status: 'passed' as const,
+          verifiedAt: '2026-09-01T00:02:00.000Z'
+        };
+        await fixture.store.persistVerificationEvidence({
+          ...payload,
+          fingerprint: taskVerificationEvidenceFingerprint(payload)
+        });
+        await fixture.corruptRecord('verification', 'contract-builder', (value) => ({
+          ...Object(value),
+          fingerprint: digest('f')
+        }));
+        await expect(fixture.peer.recoverVerificationEvidence('contract-run')).rejects.toThrow(
+          'Verification evidence fingerprint does not match its content'
+        );
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it.each(['builder', 'repair'] as const)(
+      'settles only confirmed UNKNOWN %s attempts and their matching active leases',
+      async (kind) => {
+        const fixture = await create();
+        try {
+          await fixture.store.createRun(durableAuthorityRunRequest());
+          const common = {
+            runId: 'contract-run',
+            taskId: 'task-1',
+            agentId: 'agent-1',
+            workspaceId: 'workspace-1',
+            state: 'UNKNOWN' as const,
+            revision: 2,
+            startedAt: new Date('2026-09-01T00:02:00.000Z'),
+            completedAt: new Date('2026-09-01T00:03:00.000Z'),
+            failure: { type: 'unknown-outcome' as const, detail: 'Connection lost.' }
+          };
+          const attemptId = kind === 'builder' ? 'unknown-builder' : 'unknown-repair';
+          if (kind === 'builder') {
+            await fixture.store.persistAttempt({
+              runId: 'contract-run',
+              attempt: { ...common, id: attemptId, leasePlanFingerprint: digest('b') }
+            });
+          } else {
+            await fixture.store.persistRepairAttempt({
+              runId: 'contract-run',
+              attempt: {
+                ...durableAuthorityRepairAttempt(attemptId),
+                ...common,
+                id: attemptId
+              }
+            });
+          }
+          const lease = {
+            runId: 'contract-run',
+            taskId: 'task-1',
+            agentId: 'agent-1',
+            resource: { type: 'project' as const, projectId: 'project-1' },
+            mode: 'exclusive' as const,
+            version: 1,
+            state: 'ACTIVE' as const,
+            acquiredAt: new Date('2026-09-01T00:02:00.000Z'),
+            lastHeartbeatAt: new Date('2026-09-01T00:02:00.000Z')
+          };
+          await fixture.store.persistLease({
+            runId: 'contract-run',
+            lease: { ...lease, id: 'matching-lease' }
+          });
+          await fixture.store.persistLease({
+            runId: 'contract-run',
+            lease: { ...lease, id: 'unrelated-lease', agentId: 'other-agent' }
+          });
+          const settle = (revision: number) =>
+            kind === 'builder'
+              ? fixture.peer.settleUnknownBuilderCancellation({
+                  runId: 'contract-run',
+                  attemptId,
+                  expectedRevision: revision,
+                  detail: 'Stopped.'
+                })
+              : fixture.peer.settleUnknownRepairCancellation({
+                  runId: 'contract-run',
+                  attemptId,
+                  expectedRevision: revision,
+                  detail: 'Stopped.'
+                });
+          await expect(settle(2)).rejects.toThrow();
+          await fixture.peer.requestCancellation('contract-run');
+          await expect(settle(1)).resolves.toEqual({
+            status: 'version-conflict',
+            actualRevision: 2
+          });
+          await expect(fixture.peer.recoverLeases('contract-run')).resolves.toMatchObject([
+            { lease: { id: 'matching-lease', state: 'ACTIVE', version: 1 } },
+            { lease: { id: 'unrelated-lease', state: 'ACTIVE', version: 1 } }
+          ]);
+          await expect(settle(2)).resolves.toEqual({ status: 'settled', attemptId });
+          const recovered =
+            kind === 'builder'
+              ? await fixture.store.recoverAttempts('contract-run')
+              : await fixture.store.recoverRepairAttempts('contract-run');
+          expect(recovered).toMatchObject([
+            {
+              attempt: {
+                id: attemptId,
+                state: 'CANCELLED',
+                revision: 3,
+                failure: { type: 'cancelled' }
+              }
+            }
+          ]);
+          await expect(fixture.store.recoverLeases('contract-run')).resolves.toMatchObject([
+            { lease: { id: 'matching-lease', state: 'RELEASED', version: 2 } },
+            { lease: { id: 'unrelated-lease', state: 'ACTIVE', version: 1 } }
+          ]);
+          await expect(settle(3)).resolves.toEqual({ status: 'not-unknown', state: 'CANCELLED' });
+        } finally {
+          await fixture.close();
+        }
+      }
+    );
 
     it('serializes integration claims with cancellation and settles only the exact mutation', async () => {
       const fixture = await create();
