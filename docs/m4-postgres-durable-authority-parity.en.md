@@ -123,7 +123,7 @@ ownership/migrations and role privileges; broaden common parity around UNKNOWN s
 corruption of other evidence, conflict sequencing/replay, and ForgeReadModel recovery. M4.1B is
 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**.
 
-### Review remediation: evidence validation and reopened recovery
+### Review remediation: evidence validation and fresh-connection recovery
 
 The same backend-neutral contract now exercises **16 cases on each backend**, using test-only direct
 corruption of binding and verification records to prove recovery fails closed. New cases reject
@@ -136,8 +136,8 @@ requires recovered bindings to match both their row keys and the complete task s
 The shared suite also exercises cancellation settlement for both builder and repair attempts marked
 UNKNOWN. Settlement before cancellation rejects; an incorrect attempt revision cannot mutate leases;
 the exact revision marks the matching attempt CANCELLED and releases its matching active lease while
-an unrelated lease remains active. A PostgreSQL-only test closes and reopens an adapter, then projects
-the recovered run through `ForgeReadModel`, checking builder and repair lineage, review and
+an unrelated lease remains active. A PostgreSQL-only test opens a fresh adapter/connection against
+the persisted schema, then projects the recovered run through `ForgeReadModel`, checking builder and repair lineage, review and
 verification references, leases, blocking reason, timeline, and correlation identifiers. Together
 with the existing five PostgreSQL-only tests, the focused run passes **38 tests** (16 shared cases
 per backend and six PostgreSQL-only cases). The SQLite production route and frozen M3 semantics are
@@ -150,6 +150,9 @@ application rejects unsupported versions, and separate the migration-owner role 
 privileged runtime role with only the necessary data permissions and no startup DDL. Test that
 schema installation, role privileges, and upgrades work on a real database. The PostgreSQL
 `recoverRun` transaction provides a consistent snapshot for that single call, **not** an atomic
-snapshot across the four separate recovery calls made by `ForgeReadModel`. M4.1B remains
-**IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; CLI and worker continue to use SQLite, and
-M4.2/M4.3 remain outside this stage.
+snapshot across the four separate recovery calls made by `ForgeReadModel`. Independent review of
+`a6c1884` found no P0/P1: **M4.1B is PASS / CLOSED**. CLI and worker continue to use SQLite;
+the PostgreSQL production route is **NOT READY / NOT ENABLED**, and M4.1 overall is **NOT CLOSED**.
+The versioned migration system, schema compatibility gate, migration-owner/runtime-role separation,
+least-privilege grants, and real upgrade acceptance remain prerequisites for a future M4.1C
+operational-schema stage. M4.2/M4.3 remain outside this stage.

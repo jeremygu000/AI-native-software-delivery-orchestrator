@@ -3198,3 +3198,12 @@ SQLite. Versioned migrations, schema compatibility checks, and a separate least-
 role without startup DDL are **required before** a PostgreSQL production route; a single-call
 `recoverRun` snapshot does not make all read-model recovery calls atomic. M4.1B remains
 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**, not closed.
+
+Independent review of `a6c1884` found no P0/P1 and confirmed the shared corruption and UNKNOWN
+settlement contracts, real overlapping PostgreSQL transaction tests, and fresh-connection
+`ForgeReadModel` recovery. **M4.1B is PASS / CLOSED**, alongside the already closed M4.1A audit.
+This closes the adapter-and-fixture stage, not M4.1 overall: the PostgreSQL production route is
+**NOT READY / NOT ENABLED**, and CLI/worker remain SQLite-backed. Before any production selection,
+M4.1C must introduce versioned migrations, a fail-closed schema compatibility gate, separate
+migration-owner and least-privileged runtime roles without startup DDL, and real upgrade and
+privilege acceptance. The read model's separate recovery calls still do not share an atomic snapshot.

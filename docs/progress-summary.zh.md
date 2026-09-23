@@ -2817,3 +2817,11 @@ PostgreSQL 重开连接的用例恢复完整的 provider-neutral Forge read mode
 生产路由前，**必须**建立版本化迁移、schema 兼容检查，以及与 migration owner 分离、启动时无
 DDL 权限的最小权限 runtime role；单次 `recoverRun` 快照不能保证 read model 的多次恢复调用
 具有原子性。M4.1B 仍为 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**，尚未关闭。
+
+独立复审 `a6c1884` 未发现 P0/P1，确认共享损坏证据与 UNKNOWN 结算契约、真实 PostgreSQL
+事务重叠测试，以及新连接上的 `ForgeReadModel` 恢复。**M4.1B 现为 PASS / CLOSED**，M4.1A
+审计也已关闭。这只关闭 adapter 与真实 fixture 阶段，**整个 M4.1 尚未关闭**：PostgreSQL
+生产路由 **NOT READY / NOT ENABLED**，CLI/worker 仍使用 SQLite。任何生产切换前，后续
+M4.1C 必须实现版本化迁移、fail-closed schema 兼容闸门、独立的 migration-owner 和无启动
+DDL 权限的最小权限 runtime role，并完成真实升级与权限验收。read model 的独立恢复调用仍不
+共享原子快照。
