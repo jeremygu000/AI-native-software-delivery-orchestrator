@@ -156,3 +156,37 @@ the PostgreSQL production route is **NOT READY / NOT ENABLED**, and M4.1 overall
 The versioned migration system, schema compatibility gate, migration-owner/runtime-role separation,
 least-privilege grants, and real upgrade acceptance remain prerequisites for a future M4.1C
 operational-schema stage. M4.2/M4.3 remain outside this stage.
+
+## M4.1C: Operational schema and restricted runtime (awaiting independent review)
+
+Schema installation is now an explicit migration-owner operation, separate from opening an authority
+adapter. `migratePostgresAuthoritySchema()` creates a versioned ledger with checksums: version 1
+installs the run and evidence tables, and version 2 adds the evidence lookup index. Installation and
+upgrade run in a transaction protected by a schema-specific advisory lock. Repeating a completed
+migration is a no-op; a downgrade, unknown or altered ledger entry, pre-existing unmanaged tables,
+and the wrong schema owner fail closed. The installer grants a distinct runtime role schema usage,
+read-only access to the ledger, and the required data-table operations. It does not grant the
+runtime role schema ownership or DDL privileges.
+
+`PostgresOrchestrationPersistence.connect()` no longer creates tables or repairs schemas. Its
+read-only startup gate checks the configured PostgreSQL identity, schema and table ownership,
+column types/nullability, primary and foreign key constraints, the required index definition,
+exact ledger version/checksums, and effective runtime permissions. The runtime role must
+not be superuser, migration-owner member, database/schema creator, or able to create temporary
+tables. Missing schema objects, a future or tampered ledger, a missing index, or missing data-table
+privileges reject startup without DDL. The migration-owner credential is never used by the
+authority adapter.
+
+The real PostgreSQL fixture now provisions separate migration-owner and restricted runtime roles,
+installs a fresh schema for each case, and opens two independent runtime connections. All **16
+shared backend-neutral authority contracts** and the existing PostgreSQL-specific recovery and
+controlled-transaction-overlap tests run under that restricted role. Additional real-server tests
+cover version-1 installation followed by version-2 upgrade with preserved run data, repeated
+installation and downgrade rejection, missing/future/tampered ledger, denied DDL and ledger writes,
+revoked runtime UPDATE, a dropped required index, changed column nullability, a removed primary
+key, and a same-named index on the wrong columns. The PostgreSQL-specific suite has **29
+passing tests**, including the 16 shared cases; the separate SQLite instantiation also remains
+executable. This stage changes neither the frozen M3 authority semantics nor the production route:
+CLI and worker still use SQLite. M4.1C is **IMPLEMENTED / AWAITING INDEPENDENT REVIEW** and M4.1
+overall remains **OPEN**. Explicit application routing belongs to M4.1D; cross-run fencing and
+multi-run concurrency remain M4.2/M4.3.

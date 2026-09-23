@@ -61,6 +61,7 @@ import {
   assertPostgresEvidenceStoreConfiguration,
   type PostgresEvidenceStoreConfiguration
 } from './postgres-evidence-store.js';
+import { assertPostgresAuthoritySchema } from './postgres-authority-schema.js';
 
 type Sql = ReturnType<typeof postgres>;
 type TransactionSql = postgres.TransactionSql;
@@ -191,23 +192,7 @@ export class PostgresOrchestrationPersistence
     assertPostgresEvidenceStoreConfiguration(configuration);
     const store = new PostgresOrchestrationPersistence(configuration);
     try {
-      const identity = await store.#sql`select current_user as name`;
-      if (identity[0]?.name !== configuration.role) {
-        throw new Error('PostgreSQL authority role mismatch');
-      }
-      const schema =
-        await store.#sql`select 1 from pg_namespace where nspname = ${configuration.schema}`;
-      if (schema.length !== 1) {
-        throw new Error('PostgreSQL authority schema does not exist');
-      }
-      await store.#sql.unsafe(`create table if not exists ${store.#schema}.forge_runs (
-        id text primary key, state text not null, payload text not null
-      )`);
-      await store.#sql.unsafe(`create table if not exists ${store.#schema}.forge_records (
-        run_id text not null references ${store.#schema}.forge_runs(id),
-        kind text not null, key text not null, payload text not null,
-        primary key (run_id, kind, key)
-      )`);
+      await assertPostgresAuthoritySchema(store.#sql, configuration);
       return store;
     } catch (error) {
       await store.close();

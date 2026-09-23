@@ -128,3 +128,29 @@ review/verification 引用、lease、
 **NOT READY / NOT ENABLED**，整个 M4.1 **NOT CLOSED**。版本化迁移、schema 兼容性闸门、
 migration-owner/runtime-role 分离、最小权限授权和真实升级验收仍是后续 M4.1C operational-schema
 阶段的前置条件。M4.2/M4.3 不在本阶段范围内。
+
+## M4.1C：可运维的 schema 与受限 runtime（待独立复审）
+
+现在只有独立的迁移所有者操作 `migratePostgresAuthoritySchema()` 才能安装 schema：带校验和的
+版本账本记录 v1 的 run/evidence 表及 v2 的查询索引。安装、升级在事务和 schema 专属 advisory
+lock 中完成；已完成版本可重复运行而不改写数据，降级、未来版本或被篡改的账本、未纳入管理的
+既有表、错误的 schema 所有者均拒绝。迁移者向不同的 runtime role 授予 schema 使用权、账本只读
+权限及数据表所需的读写权限，不授予 schema 所有权或 DDL 权限。
+
+`PostgresOrchestrationPersistence.connect()` 不再创建表或修复 schema。它以只读启动检查核对
+当前数据库身份、schema/表所有者、列类型与非空约束、主键与外键、必需索引的实际定义、准确
+的版本与校验和，以及 runtime 的实际权限。
+runtime 不得为超级用户、迁移所有者成员、数据库或 schema 的创建者，也不得创建临时表。
+缺失的对象、未来或被篡改的账本、缺失索引或缺少数据表权限都使启动失败，且不执行 DDL；
+authority adapter 不使用迁移所有者凭据。
+
+真实 PostgreSQL fixture 为每项用例建立全新 schema，分别使用迁移所有者和受限 runtime
+身份，并开启两个独立 runtime 连接。同一套 **16 项后端中立 authority 契约**及已有的
+PostgreSQL 恢复与受控事务重叠测试均在受限身份下运行。额外的真实数据库测试覆盖 v1 安装
+后升级到 v2 且保留 run 数据、重复安装与拒绝降级、账本缺失／未来版本／校验和损坏、DDL 和
+账本写入被拒、撤销 UPDATE 权限、删除必需索引、修改列的非空约束、删除主键以及同名索引
+改指错误列。PostgreSQL 专项 suite 当前 **29 项通过**，
+其中包括 16 项共享契约；SQLite 对同一共享 suite 的实例仍可执行。M3 的 authority 语义与
+生产路由均未改变：CLI 和 worker 继续使用 SQLite。M4.1C 为**已实现／待独立复审**，整个
+M4.1 仍**进行中**。应用的显式 PostgreSQL 路由属于 M4.1D；跨 run fencing 与多 run 并发
+分别属于 M4.2/M4.3。

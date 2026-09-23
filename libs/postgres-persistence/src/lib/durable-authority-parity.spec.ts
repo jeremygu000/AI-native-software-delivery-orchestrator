@@ -19,10 +19,17 @@ import {
   type DurableAuthorityFixture
 } from '../../../persistence/src/lib/durable-authority.contract.test.js';
 import { PostgresOrchestrationPersistence } from './postgres-orchestration-persistence.js';
+import {
+  migratePostgresAuthoritySchema,
+  POSTGRES_AUTHORITY_SCHEMA_VERSION
+} from './postgres-authority-schema.js';
 
 let directory: string;
 let connectionString: string;
 let role: string;
+let runtimeRole: string;
+let runtimeConnectionString: string;
+let ownerConnectionString: string;
 const port = async (): Promise<number> =>
   new Promise((resolve, reject) => {
     const server = createServer();
@@ -61,7 +68,20 @@ beforeAll(async () => {
   const admin = postgres(connectionString, { onnotice: () => undefined });
   try {
     const identity = await admin`select current_user as name`;
-    role = String(identity[0]?.name);
+    const adminRole = String(identity[0]?.name);
+    role = `forge_migrator_${process.pid}`;
+    runtimeRole = `forge_runtime_${process.pid}`;
+    await admin.unsafe(`create role "${role}" login`);
+    await admin.unsafe(`create role "${runtimeRole}" login`);
+    await admin`revoke create on database postgres from public`;
+    await admin`revoke temporary on database postgres from public`;
+    await admin`revoke create on schema public from public`;
+    await admin.unsafe(`grant create on database postgres to "${role}"`);
+    ownerConnectionString = `postgresql://${role}@127.0.0.1:${assignedPort}/postgres`;
+    runtimeConnectionString = `postgresql://${runtimeRole}@127.0.0.1:${assignedPort}/postgres`;
+    if (adminRole === role || adminRole === runtimeRole) {
+      throw new Error('Fixture migration and runtime roles must not be superusers');
+    }
   } finally {
     await admin.end();
   }
@@ -83,11 +103,14 @@ let fixtureOrdinal = 0;
 const createFixture = async (): Promise<DurableAuthorityFixture & { schema: string }> => {
   const schema = `forge_contract_${++fixtureOrdinal}`;
   const admin = postgres(connectionString, { onnotice: () => undefined });
-  await admin.unsafe(`create schema "${schema}"`);
-  const configuration = { connectionString, schema, role };
+  const configuration = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
   let store: PostgresOrchestrationPersistence | undefined;
   let peer: PostgresOrchestrationPersistence | undefined;
   try {
+    await migratePostgresAuthoritySchema(
+      { connectionString: ownerConnectionString, schema, role },
+      runtimeRole
+    );
     store = await PostgresOrchestrationPersistence.connect(configuration);
     peer = await PostgresOrchestrationPersistence.connect(configuration);
     return {
@@ -129,15 +152,233 @@ const createFixture = async (): Promise<DurableAuthorityFixture & { schema: stri
 
 durableAuthorityContract('PostgreSQL isolated server', createFixture);
 
+it('installs, upgrades, and safely reruns migrations without losing persisted authority', async () => {
+  const schema = `forge_upgrade_${++fixtureOrdinal}`;
+  const migration = { connectionString: ownerConnectionString, schema, role };
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  try {
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 1);
+    await expect(PostgresOrchestrationPersistence.connect(runtime)).rejects.toThrow(
+      'schema version is incompatible'
+    );
+    const owner = postgres(ownerConnectionString);
+    try {
+      await owner.unsafe(
+        `insert into "${schema}".forge_runs (id,state,payload) values ($1,$2,$3)`,
+        ['preserved-run', 'ACTIVE', JSON.stringify({ run: { id: 'preserved-run' } })]
+      );
+    } finally {
+      await owner.end();
+    }
+    await migratePostgresAuthoritySchema(migration, runtimeRole);
+    await migratePostgresAuthoritySchema(migration, runtimeRole);
+    const adapter = await PostgresOrchestrationPersistence.connect(runtime);
+    try {
+      const rows = await admin.unsafe(
+        `select state from "${schema}".forge_runs where id='preserved-run'`
+      );
+      expect(rows[0]?.state).toBe('ACTIVE');
+      const versions = await admin.unsafe(
+        `select version from "${schema}".forge_schema_migrations order by version`
+      );
+      expect(versions.map((row) => row.version)).toEqual([1, POSTGRES_AUTHORITY_SCHEMA_VERSION]);
+      await adapter.createRun(durableAuthorityRunRequest('after-upgrade'));
+      await expect(adapter.recoverRun('after-upgrade')).resolves.toMatchObject({
+        run: { id: 'after-upgrade' }
+      });
+    } finally {
+      await adapter.close();
+    }
+    await expect(migratePostgresAuthoritySchema(migration, runtimeRole, 1)).rejects.toThrow(
+      'cannot downgrade'
+    );
+  } finally {
+    await admin.unsafe(`drop schema if exists "${schema}" cascade`);
+    await admin.end();
+  }
+});
+
+it('refuses missing, future, and altered migration metadata without repairing the schema', async () => {
+  const fixture = await createFixture();
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  const runtime = {
+    connectionString: runtimeConnectionString,
+    schema: fixture.schema,
+    role: runtimeRole
+  };
+  try {
+    await admin.unsafe(
+      `insert into "${fixture.schema}".forge_schema_migrations (version, checksum) values (3,'future')`
+    );
+    await expect(PostgresOrchestrationPersistence.connect(runtime)).rejects.toThrow(
+      'schema version is incompatible'
+    );
+    await admin.unsafe(`delete from "${fixture.schema}".forge_schema_migrations where version=3`);
+    await admin.unsafe(
+      `update "${fixture.schema}".forge_schema_migrations set checksum='tampered' where version=1`
+    );
+    await expect(PostgresOrchestrationPersistence.connect(runtime)).rejects.toThrow(
+      'migration ledger is incompatible'
+    );
+    await admin.unsafe(`drop table "${fixture.schema}".forge_schema_migrations`);
+    await expect(PostgresOrchestrationPersistence.connect(runtime)).rejects.toThrow(
+      'object is missing'
+    );
+    const remaining = await admin.unsafe(
+      `select count(*)::int as count from "${fixture.schema}".forge_runs`
+    );
+    expect(remaining[0]?.count).toBe(0);
+  } finally {
+    await fixture.close();
+    await admin.end();
+  }
+});
+
+it('separates the installer from the restricted runtime role in real PostgreSQL', async () => {
+  const fixture = await createFixture();
+  const runtimeSql = postgres(runtimeConnectionString);
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  try {
+    await expect(
+      runtimeSql.unsafe(`create table "${fixture.schema}".forbidden (id int)`)
+    ).rejects.toThrow();
+    await expect(
+      runtimeSql.unsafe(`alter table "${fixture.schema}".forge_runs add column forbidden int`)
+    ).rejects.toThrow();
+    await expect(
+      runtimeSql.unsafe(`drop table "${fixture.schema}".forge_records`)
+    ).rejects.toThrow();
+    await expect(
+      runtimeSql.unsafe(`update "${fixture.schema}".forge_schema_migrations set version=88`)
+    ).rejects.toThrow();
+    await expect(
+      runtimeSql.unsafe(`delete from "${fixture.schema}".forge_schema_migrations`)
+    ).rejects.toThrow();
+    await expect(
+      runtimeSql.unsafe(
+        `insert into "${fixture.schema}".forge_schema_migrations (version,checksum) values (88,'bad')`
+      )
+    ).rejects.toThrow();
+    await expect(runtimeSql.unsafe('create schema forbidden_runtime')).rejects.toThrow();
+    await expect(
+      runtimeSql.unsafe('create temp table forbidden_runtime (id int)')
+    ).rejects.toThrow();
+    await expect(
+      runtimeSql.unsafe('create table public.forbidden_runtime (id int)')
+    ).rejects.toThrow();
+    await expect(
+      migratePostgresAuthoritySchema(
+        { connectionString: runtimeConnectionString, schema: fixture.schema, role: runtimeRole },
+        runtimeRole
+      )
+    ).rejects.toThrow('must be distinct');
+    const privileges = await admin.unsafe(
+      `select has_schema_privilege($1,$2,'CREATE') as can_create, has_table_privilege($1,$3,'SELECT,INSERT,UPDATE,DELETE') as can_mutate`,
+      [runtimeRole, fixture.schema, `${fixture.schema}.forge_records`]
+    );
+    expect(privileges[0]).toMatchObject({ can_create: false, can_mutate: true });
+    await fixture.store.createRun(durableAuthorityRunRequest('restricted-run'));
+    await expect(fixture.peer.recoverRun('restricted-run')).resolves.toMatchObject({
+      run: { id: 'restricted-run' }
+    });
+  } finally {
+    await runtimeSql.end();
+    await admin.end();
+    await fixture.close();
+  }
+});
+
+it('refuses missing objects and incompatible runtime privileges without startup DDL', async () => {
+  const fixture = await createFixture();
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  const runtime = {
+    connectionString: runtimeConnectionString,
+    schema: fixture.schema,
+    role: runtimeRole
+  };
+  try {
+    await admin.unsafe(`revoke update on "${fixture.schema}".forge_records from "${runtimeRole}"`);
+    await expect(PostgresOrchestrationPersistence.connect(runtime)).rejects.toThrow(
+      'runtime privileges are incompatible'
+    );
+    await admin.unsafe(`grant update on "${fixture.schema}".forge_records to "${runtimeRole}"`);
+    const owner = postgres(ownerConnectionString);
+    try {
+      await owner.unsafe(`drop index "${fixture.schema}".forge_records_kind_run_idx`);
+    } finally {
+      await owner.end();
+    }
+    await expect(PostgresOrchestrationPersistence.connect(runtime)).rejects.toThrow(
+      'missing required index'
+    );
+    const index = await admin.unsafe(
+      `select 1 from pg_indexes where schemaname=$1 and indexname='forge_records_kind_run_idx'`,
+      [fixture.schema]
+    );
+    expect(index.length).toBe(0);
+  } finally {
+    await fixture.close();
+    await admin.end();
+  }
+});
+
+it.each([
+  {
+    name: 'changed column nullability',
+    alter: (schema: string) =>
+      `alter table "${schema}".forge_runs alter column state drop not null`,
+    message: 'table columns are incompatible'
+  },
+  {
+    name: 'missing evidence primary key',
+    alter: (schema: string) =>
+      `alter table "${schema}".forge_records drop constraint forge_records_pkey`,
+    message: 'table constraints are incompatible'
+  },
+  {
+    name: 'same-named index on the wrong columns',
+    alter: (schema: string) =>
+      `drop index "${schema}".forge_records_kind_run_idx; create index forge_records_kind_run_idx on "${schema}".forge_records (payload)`,
+    message: 'required index or its definition is incompatible'
+  }
+])('rejects $name at runtime startup without repairing it', async ({ alter, message }) => {
+  const fixture = await createFixture();
+  const owner = postgres(ownerConnectionString);
+  try {
+    await owner.unsafe(alter(fixture.schema));
+    await expect(
+      PostgresOrchestrationPersistence.connect({
+        connectionString: runtimeConnectionString,
+        schema: fixture.schema,
+        role: runtimeRole
+      })
+    ).rejects.toThrow(message);
+    await expect(
+      migratePostgresAuthoritySchema(
+        {
+          connectionString: ownerConnectionString,
+          schema: fixture.schema,
+          role
+        },
+        runtimeRole
+      )
+    ).rejects.toThrow(message);
+  } finally {
+    await owner.end();
+    await fixture.close();
+  }
+});
+
 it('fails closed on missing schema, wrong role, and malformed persisted run evidence', async () => {
   const fixture = await createFixture();
   const admin = postgres(connectionString, { onnotice: () => undefined });
   try {
     await expect(
       PostgresOrchestrationPersistence.connect({
-        connectionString,
+        connectionString: runtimeConnectionString,
         schema: 'forge_missing_schema',
-        role
+        role: runtimeRole
       })
     ).rejects.toThrow('schema does not exist');
     await expect(
@@ -184,9 +425,9 @@ it('replays recorded scheduler decisions and reconstructs them after reopening',
       fixture.peer.replayRun('replay-run', new DeterministicScheduler())
     ).resolves.toHaveLength(1);
     const reopened = await PostgresOrchestrationPersistence.connect({
-      connectionString,
+      connectionString: runtimeConnectionString,
       schema: fixture.schema,
-      role
+      role: runtimeRole
     });
     try {
       await expect(reopened.recoverRun('replay-run')).resolves.toMatchObject({
@@ -285,9 +526,9 @@ it('projects recovered builder, repair, lease, review, verification, timeline, a
       ]
     });
     const reopened = await PostgresOrchestrationPersistence.connect({
-      connectionString,
+      connectionString: runtimeConnectionString,
       schema: fixture.schema,
-      role
+      role: runtimeRole
     });
     try {
       const result = await new ForgeReadModel({

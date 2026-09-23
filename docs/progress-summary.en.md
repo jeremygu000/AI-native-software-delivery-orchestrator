@@ -3207,3 +3207,27 @@ This closes the adapter-and-fixture stage, not M4.1 overall: the PostgreSQL prod
 M4.1C must introduce versioned migrations, a fail-closed schema compatibility gate, separate
 migration-owner and least-privileged runtime roles without startup DDL, and real upgrade and
 privilege acceptance. The read model's separate recovery calls still do not share an atomic snapshot.
+
+## M4.1C: PostgreSQL Operational Schema and Runtime Roles
+
+The PostgreSQL adapter now opens only a previously installed, compatible authority schema. A
+separate migration-owner API installs version 1 (run and evidence tables) and version 2 (lookup
+index), records checksums in a migration ledger, and applies upgrades transactionally under a
+schema-specific advisory lock. Repeat installation is safe; unsupported versions, tampering,
+unmanaged tables, wrong ownership, and downgrade requests fail closed. The migration role grants a
+distinct runtime role only schema usage, ledger read access, and necessary data-table permissions.
+Normal `PostgresOrchestrationPersistence.connect()` executes no DDL and rejects insufficient or
+excessive effective privileges, missing objects, altered column or primary/foreign-key definitions,
+an incompatible index definition, or an incompatible migration ledger before
+serving authority operations.
+
+The local PostgreSQL acceptance fixture now provisions those two roles and installs a fresh
+schema per test. Its independent restricted runtime connections pass the **16 shared SQLite/PG
+contracts** plus PostgreSQL-specific overlap, recovery, and schema-lifecycle cases: **29 PostgreSQL
+tests passed** in the focused suite. Real-database tests also cover v1-to-v2 upgrade with preserved
+data, repeat and downgrade, missing/future/tampered ledger, denied schema/table/temporary DDL and
+ledger writes, revoked runtime permission, missing index, changed column nullability, dropped
+primary key, and an incorrectly redefined same-named index. This makes schema operation
+reviewable without enabling PostgreSQL in the CLI or worker. M4.1C is **IMPLEMENTED / AWAITING
+INDEPENDENT REVIEW**; M4.1 remains **OPEN** and production routing is deferred to M4.1D. M3
+remains COMPLETE / FROZEN; M4.2/M4.3 cross-run capabilities are not part of this stage.

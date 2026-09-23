@@ -2825,3 +2825,23 @@ DDL 权限的最小权限 runtime role；单次 `recoverRun` 快照不能保证 
 M4.1C 必须实现版本化迁移、fail-closed schema 兼容闸门、独立的 migration-owner 和无启动
 DDL 权限的最小权限 runtime role，并完成真实升级与权限验收。read model 的独立恢复调用仍不
 共享原子快照。
+
+## M4.1C：PostgreSQL 可运维 schema 与 runtime 身份
+
+PostgreSQL adapter 现在只打开已安装且版本兼容的 authority schema。独立的迁移所有者 API
+安装 v1 的 run/evidence 表、v2 的查询索引，并在带校验和的账本中记录版本；升级由事务和
+schema 专属 advisory lock 保护。重复安装安全；不支持的版本、账本篡改、未管理的旧表、
+错误的所有权和降级请求均拒绝。迁移者只向不同的 runtime role 授予 schema 使用权、账本
+只读及必要的数据表权限。正常 `PostgresOrchestrationPersistence.connect()` 不执行 DDL，
+在提供 authority 操作前拒绝权限过多或不足、对象缺失、列或主外键被改动、同名但定义错误
+的索引和不兼容的迁移账本。
+
+本地 PostgreSQL 验收 fixture 现在分别配置迁移者与受限 runtime，每个用例安装全新 schema。
+两个独立的受限 runtime 连接运行 **16 项 SQLite/PG 共用契约**，另有 PostgreSQL 事务
+重叠、恢复和 schema 生命周期测试：定向 suite 中 **29 项 PostgreSQL 测试通过**。真实数据库
+测试还验证 v1 升级 v2 后数据保留、重复安装与拒绝降级、账本缺失／未来版本／损坏、schema
+和表及临时对象的 DDL 被拒、账本不可写、撤销 runtime 权限、必需索引缺失、列的非空
+约束变更、主键删除，以及同名索引被改指错误列。此阶段让
+schema 运维边界可独立复审，尚未为 CLI 或 worker 启用 PostgreSQL。M4.1C 状态为
+**已实现／待独立复审**，M4.1 仍**进行中**，应用的显式路由留给 M4.1D。M3 保持
+COMPLETE / FROZEN；M4.2/M4.3 的跨 run 能力不属于本阶段。

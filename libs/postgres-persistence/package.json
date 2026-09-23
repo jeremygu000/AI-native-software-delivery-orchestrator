@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@ai-native-software-delivery-orchestrator/orchestration-runtime": "workspace:*",
-    "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*"
+    "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*",
+    "@types/node": "^26.6.2"
   }
 }
