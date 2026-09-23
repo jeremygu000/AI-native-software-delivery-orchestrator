@@ -96,3 +96,29 @@ M4.1A status after independent review of `348f823`: **PASS / CLOSED**. The SQLit
 passes all 10 shared authority contracts. PostgreSQL reports 10 skipped contracts and one pending
 fixture requirement: its authority adapter is **NOT IMPLEMENTED / NOT VERIFIED**, and parity remains
 blocked on M4.1B. This closes the audit only, not PostgreSQL parity or M4.1 as a whole.
+
+## M4.1B: Real PostgreSQL authority adapter and fixture (awaiting review)
+
+`PostgresOrchestrationPersistence` implements Forge run, dispatch, attempt, repair, review,
+verification, workspace, integration, and cancellation stores without replacing the separate
+candidate `connectPostgresEvidenceStore()` API. Connection checks the configured role against
+`current_user` and verifies the schema before creating run and keyed-evidence tables. Each same-run
+mutation locks the run row using `SELECT ... FOR UPDATE` inside a transaction, so state checks,
+revision checks, and writes share a serialization boundary. Exact initial-dispatch retries validate
+immutable attempt authority even after its lifecycle advances. `recoverRun` uses a consistent
+`REPEATABLE READ READ ONLY` snapshot and validates reconstructed authority evidence.
+
+The PostgreSQL fixture starts a real isolated local server using `initdb` and `pg_ctl`, gives each
+case its own schema, and opens two independent connections. It executes the **same 10 shared
+contracts** as SQLite without skips or fallback. Five additional PostgreSQL tests reject wrong
+roles, missing schemas, corrupted runs, and partial initial authority; prove replay and recovery
+after reopening; and establish one winner from two genuinely blocked builder claims and zero
+mutation side effects when cancellation commits before three blocked claims. `pg_blocking_pids`
+confirms real transaction overlap.
+
+This is **single-run adapter evidence**, not a production cutover. CLI and worker remain SQLite-backed;
+M4.2 cross-run repository fencing and M4.3 multi-run concurrency remain separate. The M4.1A gap table
+above is a historical audit snapshot. Before selecting a PostgreSQL production route, review schema
+ownership/migrations and role privileges; broaden common parity around UNKNOWN settlement,
+corruption of other evidence, conflict sequencing/replay, and ForgeReadModel recovery. M4.1B is
+**IMPLEMENTED / AWAITING INDEPENDENT REVIEW**.

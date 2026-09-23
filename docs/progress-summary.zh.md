@@ -2790,3 +2790,20 @@ CANCEL_REQUESTED。SQLite 共享契约仍为 10 项通过；PostgreSQL 仍为 10
 10 项共享契约全部通过；PostgreSQL 仍为 **尚未实现 / 尚未验证**（10 项跳过，1 项 fixture
 待实现）。这套共享契约是 M4.1B 真实 PostgreSQL adapter 与数据库 fixture 的验收基线，仍须加入
 可控重叠事务测试；整个 M4.1 和 PostgreSQL parity 尚未关闭，冻结的 M3 行为不变。
+
+## M4.1B：真实 PostgreSQL Durable Authority Adapter
+
+M4.1B 在 `libs/postgres-persistence` 增加 `PostgresOrchestrationPersistence`，没有修改冻结的 SQLite
+运行时。adapter 校验所选 PostgreSQL role/schema，存储 run 与带唯一键的 evidence，并在每个写事务中
+锁定 run 行，使取消、builder/repair revision claim、integration claim、repair 预算/恢复以及初始
+dispatch 共用同一 run 的串行化边界。一致的只读快照重建 run，供 provider-neutral ForgeReadModel 使用。
+
+fixture 在本机启动隔离的 PostgreSQL 服务，每项测试使用新 schema；两个独立连接现在执行与 SQLite
+**同一套 10 项共享契约**。另有五项 PostgreSQL 专属测试覆盖错误 schema/role/损坏 run、缺失初始
+证据和重开连接后的 replay，并以 `pg_blocking_pids` 证实两个 builder claim，以及取消与 builder/repair/integration
+claim 的真实事务重叠。上方的 skipped 计数记录 M4.1A 历史审计基线，不是新 adapter 的结果。
+CLI/worker 仍然使用 SQLite；M4.2/M4.3 是后续独立范围。
+
+M4.1B 当前为 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**。真实 PostgreSQL 用例通过，但未启用
+PostgreSQL 生产路由。双语 parity 盘点说明 schema、迁移及更广的证据/恢复契约仍须审查。
+M3 保持 COMPLETE / FROZEN。

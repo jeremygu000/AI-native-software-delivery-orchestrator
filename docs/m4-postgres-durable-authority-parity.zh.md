@@ -79,3 +79,24 @@ claim-versus-claim 和 cancellation-versus-claim 窗口重叠，并证明唯一�
 独立复审 `348f823` 后，M4.1A 状态为 **PASS / CLOSED**。SQLite 参照 adapter 的 10 项共享
 authority 契约全部通过。PostgreSQL 仍是 10 项显式跳过、1 项 fixture 待实现：authority adapter
 **尚未实现 / 尚未验证**，parity 仍受阻于 M4.1B。关闭的仅是审计，不是 PostgreSQL parity 或整个 M4.1。
+
+## M4.1B：真实 PostgreSQL authority adapter 与 fixture（待独立复审）
+
+`PostgresOrchestrationPersistence` 实现 Forge run、dispatch、attempt、repair、review、verification、
+workspace、integration 和 cancellation 存储接口，原有候选 `connectPostgresEvidenceStore()` API 未被
+替换。连接时检查配置 role 与 `current_user` 一致、schema 存在，然后建立 run 和带唯一键的 evidence 表。
+同一 run 的写操作在事务里先用 `SELECT ... FOR UPDATE` 锁定 run 行，因此状态判断、revision 判断和
+写入共用串行化边界。初始 dispatch 精确重试会验证已经推进的 attempt 的不可变 authority。
+`recoverRun` 使用一致的 `REPEATABLE READ READ ONLY` 快照重建并校验 authority 证据。
+
+PostgreSQL fixture 以 `initdb`、`pg_ctl` 启动隔离的本机真实服务，每个用例使用新 schema 和两个
+独立连接，执行与 SQLite **同一套 10 项共享契约**，不跳过、不回退。另有五项 PostgreSQL 专属
+测试覆盖错误 role、缺失 schema、损坏 run、残缺初始 authority、重开连接后的 replay/恢复；同时证明
+两个真正阻塞的 builder claim 只有一个成功，以及取消先提交时三种被阻塞的 mutation claim 不留下副作用。
+`pg_blocking_pids` 用来确认事务真实重叠。
+
+这只是**单 run adapter 证据**，并非生产切换：CLI/worker 仍使用 SQLite；M4.2 跨 run repository
+fencing 与 M4.3 多 run 并发属于后续阶段。上方 M4.1A 差距表是历史审计快照。选择 PostgreSQL
+生产路由前，还需审查 schema 归属/迁移、role 权限，以及扩充 UNKNOWN settlement、其他证据损坏、
+conflict sequence/replay、ForgeReadModel 恢复等共同契约。M4.1B 当前为
+**IMPLEMENTED / AWAITING INDEPENDENT REVIEW**。

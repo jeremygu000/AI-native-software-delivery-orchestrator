@@ -311,6 +311,10 @@ importers:
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
+    devDependencies:
+      '@ai-native-software-delivery-orchestrator/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
 
   libs/repository-analysis:
     dependencies:

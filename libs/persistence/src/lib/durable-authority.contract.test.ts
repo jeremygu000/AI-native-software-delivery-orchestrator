@@ -36,7 +36,7 @@ export interface DurableAuthorityFixture {
 
 const digest = (digit: string): string => `sha256:${digit.repeat(64)}`;
 
-const runRequest = (runId = 'contract-run'): CreatePersistedRunRequest => ({
+export const durableAuthorityRunRequest = (runId = 'contract-run'): CreatePersistedRunRequest => ({
   run: {
     id: runId,
     repositoryId: 'contract-repository',
@@ -98,7 +98,7 @@ const runRequest = (runId = 'contract-run'): CreatePersistedRunRequest => ({
   scheduleOptions: { maxConcurrency: 1 }
 });
 
-const initialDispatch = (runId = 'contract-run'): PersistedDispatch => ({
+export const durableAuthorityInitialDispatch = (runId = 'contract-run'): PersistedDispatch => ({
   reevaluation: {
     event: {
       runId,
@@ -161,7 +161,10 @@ const reviewSubject = {
   verificationFingerprint: digest('e')
 };
 
-const repairAttempt = (id: string, iteration = 1): PersistedTaskRepairAttempt['attempt'] => ({
+export const durableAuthorityRepairAttempt = (
+  id: string,
+  iteration = 1
+): PersistedTaskRepairAttempt['attempt'] => ({
   id,
   runId: 'contract-run',
   taskId: 'task-1',
@@ -177,7 +180,7 @@ const repairAttempt = (id: string, iteration = 1): PersistedTaskRepairAttempt['a
   revision: 1
 });
 
-const repairWorkItem = (attempt: PersistedTaskRepairAttempt['attempt']) => ({
+export const durableAuthorityRepairWorkItem = (attempt: PersistedTaskRepairAttempt['attempt']) => ({
   runId: attempt.runId,
   taskId: attempt.taskId,
   repairAttemptId: attempt.id,
@@ -200,7 +203,7 @@ export const durableAuthorityContract = (
     it('stores exact run authority and task bindings; duplicate IDs cannot replace them', async () => {
       const fixture = await create();
       try {
-        const request = runRequest();
+        const request = durableAuthorityRunRequest();
         await fixture.store.createRun(request);
         await expect(fixture.store.recoverTaskBindings(request.run.id)).resolves.toEqual(
           request.taskBindings
@@ -229,8 +232,8 @@ export const durableAuthorityContract = (
     it('commits sequence-one dispatch once and preserves an already claimed builder', async () => {
       const fixture = await create();
       try {
-        await fixture.store.createRun(runRequest());
-        const dispatch = initialDispatch();
+        await fixture.store.createRun(durableAuthorityRunRequest());
+        const dispatch = durableAuthorityInitialDispatch();
         await fixture.store.ensureInitialDispatch(dispatch);
         const started = {
           ...dispatch.attempts[0].attempt,
@@ -269,10 +272,10 @@ export const durableAuthorityContract = (
     it('permits exactly one builder PREPARING claim across independent connections', async () => {
       const fixture = await create();
       try {
-        await fixture.store.createRun(runRequest());
-        await fixture.store.ensureInitialDispatch(initialDispatch());
+        await fixture.store.createRun(durableAuthorityRunRequest());
+        await fixture.store.ensureInitialDispatch(durableAuthorityInitialDispatch());
         const starting = {
-          ...initialDispatch().attempts[0].attempt,
+          ...durableAuthorityInitialDispatch().attempts[0].attempt,
           state: 'STARTING' as const,
           revision: 2,
           startedAt: new Date('2026-09-01T00:02:00.000Z')
@@ -294,28 +297,28 @@ export const durableAuthorityContract = (
     it('admits one repair per parent review and enforces the budget atomically', async () => {
       const fixture = await create();
       try {
-        await fixture.store.createRun(runRequest());
+        await fixture.store.createRun(durableAuthorityRunRequest());
         const [first, retry] = await Promise.all([
           fixture.store.admitRepairAttemptWithWorkItem({
-            attempt: repairAttempt('repair-first'),
+            attempt: durableAuthorityRepairAttempt('repair-first'),
             maxRepairs: 1,
-            createWorkItem: repairWorkItem
+            createWorkItem: durableAuthorityRepairWorkItem
           }),
           fixture.peer.admitRepairAttemptWithWorkItem({
-            attempt: repairAttempt('repair-retry'),
+            attempt: durableAuthorityRepairAttempt('repair-retry'),
             maxRepairs: 1,
-            createWorkItem: repairWorkItem
+            createWorkItem: durableAuthorityRepairWorkItem
           })
         ]);
         expect(retry.id).toBe(first.id);
         expect(await fixture.peer.recoverRepairWorkItems('contract-run')).toEqual([
-          repairWorkItem(first)
+          durableAuthorityRepairWorkItem(first)
         ]);
         await expect(
           fixture.store.admitRepairAttemptWithWorkItem({
-            attempt: repairAttempt('repair-second', 2),
+            attempt: durableAuthorityRepairAttempt('repair-second', 2),
             maxRepairs: 1,
-            createWorkItem: repairWorkItem
+            createWorkItem: durableAuthorityRepairWorkItem
           })
         ).rejects.toThrow();
         await expect(fixture.store.recoverRepairAttempts('contract-run')).resolves.toHaveLength(1);
@@ -327,11 +330,11 @@ export const durableAuthorityContract = (
     it('permits exactly one repair PREPARING claim across independent connections', async () => {
       const fixture = await create();
       try {
-        await fixture.store.createRun(runRequest());
+        await fixture.store.createRun(durableAuthorityRunRequest());
         const admitted = await fixture.store.admitRepairAttemptWithWorkItem({
-          attempt: repairAttempt('repair-first'),
+          attempt: durableAuthorityRepairAttempt('repair-first'),
           maxRepairs: 1,
-          createWorkItem: repairWorkItem
+          createWorkItem: durableAuthorityRepairWorkItem
         });
         const starting = {
           ...admitted,
@@ -349,7 +352,7 @@ export const durableAuthorityContract = (
           { attempt: { id: admitted.id, state: 'STARTING', revision: 2 } }
         ]);
         await expect(fixture.peer.recoverRepairWorkItems('contract-run')).resolves.toEqual([
-          repairWorkItem(admitted)
+          durableAuthorityRepairWorkItem(admitted)
         ]);
       } finally {
         await fixture.close();
@@ -359,12 +362,12 @@ export const durableAuthorityContract = (
     it('rejects all new mutation claims after cancellation holds durable run authority', async () => {
       const fixture = await create();
       try {
-        await fixture.store.createRun(runRequest());
-        await fixture.store.ensureInitialDispatch(initialDispatch());
+        await fixture.store.createRun(durableAuthorityRunRequest());
+        await fixture.store.ensureInitialDispatch(durableAuthorityInitialDispatch());
         const admitted = await fixture.store.admitRepairAttemptWithWorkItem({
-          attempt: repairAttempt('repair-first'),
+          attempt: durableAuthorityRepairAttempt('repair-first'),
           maxRepairs: 1,
-          createWorkItem: repairWorkItem
+          createWorkItem: durableAuthorityRepairWorkItem
         });
         await expect(fixture.peer.requestCancellation('contract-run')).resolves.toEqual({
           status: 'requested',
@@ -374,7 +377,7 @@ export const durableAuthorityContract = (
           fixture.store.claimBuilderStart({
             runId: 'contract-run',
             attempt: {
-              ...initialDispatch().attempts[0].attempt,
+              ...durableAuthorityInitialDispatch().attempts[0].attempt,
               state: 'STARTING',
               revision: 2,
               startedAt: new Date('2026-09-01T00:02:00.000Z')
@@ -437,11 +440,11 @@ export const durableAuthorityContract = (
     it('resumes a blocked repair with a released lease once and records one dispatch', async () => {
       const fixture = await create();
       try {
-        await fixture.store.createRun(runRequest());
+        await fixture.store.createRun(durableAuthorityRunRequest());
         const admitted = await fixture.store.admitRepairAttemptWithWorkItem({
-          attempt: repairAttempt('repair-first'),
+          attempt: durableAuthorityRepairAttempt('repair-first'),
           maxRepairs: 1,
-          createWorkItem: repairWorkItem
+          createWorkItem: durableAuthorityRepairWorkItem
         });
         const blocked = {
           ...admitted,
@@ -497,7 +500,7 @@ export const durableAuthorityContract = (
     it('recovers exact review, verification, impact, and workspace evidence without replacement', async () => {
       const fixture = await create();
       try {
-        await fixture.store.createRun(runRequest());
+        await fixture.store.createRun(durableAuthorityRunRequest());
         const review = {
           runId: 'contract-run',
           taskId: 'task-1',
@@ -560,7 +563,7 @@ export const durableAuthorityContract = (
         await fixture.store.persistWorkspace({
           runId: 'contract-run',
           workspace: {
-            ...runRequest().taskBindings[0].workspace,
+            ...durableAuthorityRunRequest().taskBindings[0].workspace,
             revision: 1,
             phase: 'INTEGRATION_BLOCKED',
             blocker: {
@@ -589,7 +592,7 @@ export const durableAuthorityContract = (
     it('serializes integration claims with cancellation and settles only the exact mutation', async () => {
       const fixture = await create();
       try {
-        await fixture.store.createRun(runRequest());
+        await fixture.store.createRun(durableAuthorityRunRequest());
         const claim = {
           runId: 'contract-run',
           taskId: 'task-1',
@@ -632,7 +635,7 @@ export const durableAuthorityContract = (
     it('terminalizes only an active run and recovers its durable terminal state', async () => {
       const fixture = await create();
       try {
-        await fixture.store.createRun(runRequest());
+        await fixture.store.createRun(durableAuthorityRunRequest());
         await fixture.store.updateRunState('contract-run', 'COMPLETED');
         await expect(fixture.peer.recoverRun('contract-run')).resolves.toMatchObject({
           run: { state: 'COMPLETED' }

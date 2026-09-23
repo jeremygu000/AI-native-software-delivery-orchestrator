@@ -3166,3 +3166,23 @@ The SQLite reference passes 10/10 shared contracts; PostgreSQL remains **NOT IMP
 VERIFIED** (10 skipped, 1 pending fixture requirement). The common contract is the acceptance
 baseline for M4.1B's real PostgreSQL adapter and database fixture, including controlled overlapping
 transactions. M4.1 as a whole and PostgreSQL parity are not closed; frozen M3 behavior is unchanged.
+
+## M4.1B: Real PostgreSQL Durable Authority Adapter
+
+M4.1B adds `PostgresOrchestrationPersistence` in `libs/postgres-persistence` without changing the
+frozen SQLite runtime. The adapter checks the selected PostgreSQL role/schema, stores run and keyed
+evidence, and locks a run row inside each write transaction. Cancellation, builder/repair revision
+claims, integration claims, repair budgets/resumes, and initial dispatch therefore share one
+same-run serialization boundary. A consistent read-only snapshot reconstructs the run for the
+provider-neutral ForgeReadModel.
+
+The fixture starts an isolated local PostgreSQL server with a fresh schema per test. Two independent
+connections now execute the **same 10 shared contracts** as SQLite. Five additional PostgreSQL-only
+tests exercise invalid schema/role/corrupted run, missing initial evidence, and replay after reopen; they use
+`pg_blocking_pids` to prove actual overlap for competing builder claims and cancellation versus
+builder/repair/integration claims. The historical skipped-suite count above records M4.1A's audit
+baseline, not the new adapter. CLI and worker still use SQLite; M4.2/M4.3 remain separate.
+
+M4.1B is **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**. Its real PostgreSQL cases pass, but no
+PostgreSQL production route is enabled. The bilingual parity audit describes remaining schema,
+migration, and broader evidence/recovery review items. M3 remains COMPLETE / FROZEN.
