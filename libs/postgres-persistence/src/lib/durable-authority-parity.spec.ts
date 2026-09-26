@@ -276,6 +276,169 @@ it('removes excessive table grants on migration rerun and requires exact runtime
   }
 });
 
+it.each([
+  { table: 'forge_schema_migrations', privilege: 'INSERT(version)', column: 'INSERT' },
+  { table: 'forge_schema_migrations', privilege: 'UPDATE(checksum)', column: 'UPDATE' },
+  { table: 'forge_schema_migrations', privilege: 'REFERENCES(version)', column: 'REFERENCES' },
+  { table: 'forge_runs', privilege: 'REFERENCES(id)', column: 'REFERENCES' },
+  { table: 'forge_records', privilege: 'REFERENCES(run_id)', column: 'REFERENCES' }
+])(
+  'rejects column-level $column on $table and removes it on migration rerun',
+  async ({ table, privilege, column }) => {
+    const fixture = await createFixture();
+    const owner = postgres(ownerConnectionString);
+    const runtimeSql = postgres(runtimeConnectionString);
+    try {
+      await owner.unsafe(`grant ${privilege} on "${fixture.schema}".${table} to "${runtimeRole}"`);
+      const rows = await runtimeSql.unsafe(
+        `select has_any_column_privilege(current_user, $1, $2) as allowed,
+        has_table_privilege(current_user, $1, $2) as table_allowed`,
+        [`${fixture.schema}.${table}`, column]
+      );
+      expect(rows[0]?.allowed).toBe(true);
+      expect(rows[0]?.table_allowed).toBe(false);
+      if (table === 'forge_schema_migrations' && column === 'UPDATE') {
+        await expect(
+          runtimeSql.begin(async (tx) => {
+            await tx.unsafe(
+              `update "${fixture.schema}".forge_schema_migrations set checksum='tampered' where version=1`
+            );
+            throw new Error('rollback privilege probe');
+          })
+        ).rejects.toThrow('rollback privilege probe');
+      }
+      await expect(
+        PostgresOrchestrationPersistence.connect({
+          connectionString: runtimeConnectionString,
+          schema: fixture.schema,
+          role: runtimeRole
+        })
+      ).rejects.toThrow('runtime privileges are incompatible');
+      await migratePostgresAuthoritySchema(
+        { connectionString: ownerConnectionString, schema: fixture.schema, role },
+        runtimeRole
+      );
+      const after = await runtimeSql.unsafe(
+        `select has_any_column_privilege(current_user, $1, $2) as allowed`,
+        [`${fixture.schema}.${table}`, column]
+      );
+      expect(after[0]?.allowed).toBe(false);
+      const reopened = await PostgresOrchestrationPersistence.connect({
+        connectionString: runtimeConnectionString,
+        schema: fixture.schema,
+        role: runtimeRole
+      });
+      await reopened.close();
+    } finally {
+      await runtimeSql.end();
+      await owner.end();
+      await fixture.close();
+    }
+  }
+);
+
+it.each([
+  { table: 'forge_schema_migrations', privilege: 'SELECT' },
+  { table: 'forge_schema_migrations', privilege: 'SELECT(checksum)' },
+  { table: 'forge_runs', privilege: 'UPDATE' },
+  { table: 'forge_records', privilege: 'DELETE' }
+])(
+  'rejects $privilege grant option on $table and removes it on migration rerun',
+  async ({ table, privilege }) => {
+    const fixture = await createFixture();
+    const owner = postgres(ownerConnectionString);
+    try {
+      await owner.unsafe(
+        `grant ${privilege} on "${fixture.schema}".${table} to "${runtimeRole}" with grant option`
+      );
+      await expect(
+        PostgresOrchestrationPersistence.connect({
+          connectionString: runtimeConnectionString,
+          schema: fixture.schema,
+          role: runtimeRole
+        })
+      ).rejects.toThrow('runtime privileges are incompatible');
+      await migratePostgresAuthoritySchema(
+        { connectionString: ownerConnectionString, schema: fixture.schema, role },
+        runtimeRole
+      );
+      const reopened = await PostgresOrchestrationPersistence.connect({
+        connectionString: runtimeConnectionString,
+        schema: fixture.schema,
+        role: runtimeRole
+      });
+      await reopened.close();
+    } finally {
+      await owner.end();
+      await fixture.close();
+    }
+  }
+);
+
+it('rejects non-inherited role membership that can be activated with SET ROLE', async () => {
+  const fixture = await createFixture();
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  const extraRole = `forge_extra_${process.pid}_${fixtureOrdinal}`;
+  let membershipGranted = false;
+  try {
+    await admin.unsafe(`create role "${extraRole}" noinherit`);
+    await admin.unsafe(`grant "${extraRole}" to "${runtimeRole}"`);
+    membershipGranted = true;
+    await expect(
+      PostgresOrchestrationPersistence.connect({
+        connectionString: runtimeConnectionString,
+        schema: fixture.schema,
+        role: runtimeRole
+      })
+    ).rejects.toThrow('runtime role is not least privileged');
+    await admin.unsafe(`revoke "${extraRole}" from "${runtimeRole}"`);
+    membershipGranted = false;
+    const reopened = await PostgresOrchestrationPersistence.connect({
+      connectionString: runtimeConnectionString,
+      schema: fixture.schema,
+      role: runtimeRole
+    });
+    await reopened.close();
+  } finally {
+    if (membershipGranted) {
+      await admin.unsafe(`revoke "${extraRole}" from "${runtimeRole}"`);
+    }
+    await admin.unsafe(`drop role if exists "${extraRole}"`);
+    await admin.end();
+    await fixture.close();
+  }
+});
+
+it('rejects schema USAGE with grant option and removes it on migration rerun', async () => {
+  const fixture = await createFixture();
+  const owner = postgres(ownerConnectionString);
+  try {
+    await owner.unsafe(
+      `grant usage on schema "${fixture.schema}" to "${runtimeRole}" with grant option`
+    );
+    await expect(
+      PostgresOrchestrationPersistence.connect({
+        connectionString: runtimeConnectionString,
+        schema: fixture.schema,
+        role: runtimeRole
+      })
+    ).rejects.toThrow('runtime privileges are incompatible');
+    await migratePostgresAuthoritySchema(
+      { connectionString: ownerConnectionString, schema: fixture.schema, role },
+      runtimeRole
+    );
+    const reopened = await PostgresOrchestrationPersistence.connect({
+      connectionString: runtimeConnectionString,
+      schema: fixture.schema,
+      role: runtimeRole
+    });
+    await reopened.close();
+  } finally {
+    await owner.end();
+    await fixture.close();
+  }
+});
+
 it('refuses missing, future, and altered migration metadata without repairing the schema', async () => {
   const fixture = await createFixture();
   const admin = postgres(connectionString, { onnotice: () => undefined });

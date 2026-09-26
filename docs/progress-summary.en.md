@@ -3240,3 +3240,15 @@ unexpected triggers/rules, and a changed ledger timestamp default. Unsupported m
 versions fail before schema creation. Real PostgreSQL regression tests cover excess-grant repair,
 each structural alteration, and unsupported targets; **39 PostgreSQL-specific tests pass**. This
 is a review candidate, not M4.1C closure or PostgreSQL production enablement.
+
+The remaining review finding concerned effective PostgreSQL privileges: a table-level check can
+miss column-only writes to the migration ledger and delegated permissions. M4.1C startup now
+rejects forbidden column grants, grant options on permitted schema/table/column operations, and
+any other role membership that could be activated with `SET ROLE`. Direct extra grants are
+removed by migration reruns; role membership requires credential administration. PostgreSQL
+server support is explicitly limited to versions 14–16 so the PostgreSQL 17 `MAINTAIN` privilege
+cannot bypass an unextended gate. Real PG14 tests demonstrate the column-only ledger write,
+fail-closed startup, migration cleanup, other column and grant-option excess, and role-membership
+rejection. **50 PostgreSQL-specific cases pass**, including 16 shared SQLite/PG contracts. M4.1C
+remains **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; production CLI/worker routing stays on
+SQLite and M4.1D has not begun.

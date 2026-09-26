@@ -169,3 +169,18 @@ M4.1 仍**进行中**。应用的显式 PostgreSQL 路由属于 M4.1D；跨 run 
 逐项篡改这些属性，证明两个入口均拒绝且不自动修复。PostgreSQL 专项 suite 现有 **39 项
 通过**；共享的后端中立契约未修改。M4.1C 仍为**已实现／待独立复审**；CLI 和 worker 继续
 使用 SQLite。
+
+### M4.1C 有效权限复审加固（待独立复审）
+
+runtime 启动闸门现在检查凭据的**实际有效权限**，不再只看表级 GRANT：拒绝只读账本上的列级
+`INSERT`／`UPDATE`／`REFERENCES`、两张数据表上的列级 `REFERENCES`、所有允许的表操作
+及 schema `USAGE` 的 `WITH GRANT OPTION`，以及任何其他角色成员关系（包括不自动继承但
+可通过 `SET ROLE` 激活的角色）。迁移重跑仍可归一化直接授予 runtime／PUBLIC 的权限；
+runtime 的角色成员关系需要另行移除。
+
+明确只支持 **PostgreSQL 14–16**：迁移与 adapter 启动均拒绝范围外的主版本；如需支持
+PostgreSQL 17 或更新版本，须先将新增 `MAINTAIN` 权限纳入有效权限闸门。真实 PG14 回归证明
+账本的列级 `UPDATE(checksum)` 即使表级 UPDATE 为 false 也能修改账本，启动会拒绝此权限，
+迁移重跑后多余授权消失。用例还覆盖其他列级越权、表／列授权转授权、schema 转授权及角色
+成员关系。PostgreSQL 专项 suite 现为 **50 项通过**（16 项共享契约、34 项 PG 专项）；
+M4.1C 仍为**已实现／待独立复审**，CLI／worker 仍使用 SQLite，M4.1D 路由未启用。

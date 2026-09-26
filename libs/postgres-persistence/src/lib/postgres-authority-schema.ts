@@ -37,6 +37,15 @@ const checksum = (statements: readonly string[]): string =>
   createHash('sha256').update(statements.join('\n')).digest('hex');
 const quote = (identifier: string): string => `"${identifier}"`;
 
+// PostgreSQL 17 adds MAINTAIN; extend the privilege audit before supporting it.
+const assertSupportedServerVersion = async (sql: TransactionSql | Sql): Promise<void> => {
+  const rows = await sql`select current_setting('server_version_num')::integer as version`;
+  const version = Number(rows[0]?.version);
+  if (!Number.isInteger(version) || version < 140000 || version >= 170000) {
+    throw new Error('PostgreSQL authority requires server major version 14 through 16');
+  }
+};
+
 const expectedColumns = {
   forge_schema_migrations: [
     ['version', 'integer', true],
@@ -190,6 +199,7 @@ export const migratePostgresAuthoritySchema = async (
   const schema = quote(configuration.schema);
   try {
     await sql.begin(async (tx) => {
+      await assertSupportedServerVersion(tx);
       const identity = await tx`select current_user as name`;
       if (identity[0]?.name !== configuration.role) {
         throw new Error('PostgreSQL migration owner role mismatch');
@@ -288,6 +298,7 @@ export const assertPostgresAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration
 ): Promise<void> => {
+  await assertSupportedServerVersion(sql);
   const schema = quote(configuration.schema);
   const identity = await sql`select current_user as name`;
   if (identity[0]?.name !== configuration.role) {
@@ -301,6 +312,9 @@ export const assertPostgresAuthoritySchema = async (
   const identityPrivileges = await sql`select
     rolsuper, rolcreatedb, rolcreaterole,
     pg_has_role(current_user, ${metadata[0].owner}::name, 'MEMBER') as migration_member,
+    exists (select 1 from pg_roles other
+      where other.oid <> current_user::regrole
+        and pg_has_role(current_user::regrole::oid, other.oid, 'MEMBER')) as other_membership,
     has_database_privilege(current_user, current_database(), 'CREATE') as create_database,
     has_database_privilege(current_user, current_database(), 'TEMP') as create_temp
     from pg_roles where rolname = current_user`;
@@ -309,6 +323,7 @@ export const assertPostgresAuthoritySchema = async (
     identityPrivileges[0].rolcreatedb !== false ||
     identityPrivileges[0].rolcreaterole !== false ||
     identityPrivileges[0].migration_member !== false ||
+    identityPrivileges[0].other_membership !== false ||
     identityPrivileges[0].create_database !== false ||
     identityPrivileges[0].create_temp !== false
   ) {
@@ -349,6 +364,7 @@ export const assertPostgresAuthoritySchema = async (
   }
   const privileges = await sql`select
     has_schema_privilege(current_user, ${configuration.schema}, 'USAGE') as usage,
+    has_schema_privilege(current_user, ${configuration.schema}, 'USAGE WITH GRANT OPTION') as usage_grant,
     has_schema_privilege(current_user, ${configuration.schema}, 'CREATE') as create_schema,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'SELECT') as ledger_read,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'INSERT') as ledger_insert,
@@ -370,10 +386,24 @@ export const assertPostgresAuthoritySchema = async (
     has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'DELETE') as records_delete,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'TRUNCATE') as records_truncate,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'REFERENCES') as records_references,
-    has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'TRIGGER') as records_trigger`;
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'TRIGGER') as records_trigger,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'INSERT') as ledger_column_insert,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'UPDATE') as ledger_column_update,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'REFERENCES') as ledger_column_references,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'REFERENCES') as runs_column_references,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'REFERENCES') as records_column_references,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'SELECT WITH GRANT OPTION') as ledger_grant_select,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'SELECT WITH GRANT OPTION') as runs_grant_select,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'INSERT WITH GRANT OPTION') as runs_grant_insert,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'UPDATE WITH GRANT OPTION') as runs_grant_update,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'SELECT WITH GRANT OPTION') as records_grant_select,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'INSERT WITH GRANT OPTION') as records_grant_insert,
+    has_any_column_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'UPDATE WITH GRANT OPTION') as records_grant_update,
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'DELETE WITH GRANT OPTION') as records_grant_delete`;
   const p = privileges[0];
   if (
     p?.usage !== true ||
+    p.usage_grant !== false ||
     p.create_schema === true ||
     p.ledger_read !== true ||
     p.ledger_insert !== false ||
@@ -382,6 +412,10 @@ export const assertPostgresAuthoritySchema = async (
     p.ledger_truncate !== false ||
     p.ledger_references !== false ||
     p.ledger_trigger !== false ||
+    p.ledger_column_insert !== false ||
+    p.ledger_column_update !== false ||
+    p.ledger_column_references !== false ||
+    p.ledger_grant_select !== false ||
     p.runs_select !== true ||
     p.runs_insert !== true ||
     p.runs_update !== true ||
@@ -389,13 +423,22 @@ export const assertPostgresAuthoritySchema = async (
     p.runs_truncate !== false ||
     p.runs_references !== false ||
     p.runs_trigger !== false ||
+    p.runs_column_references !== false ||
+    p.runs_grant_select !== false ||
+    p.runs_grant_insert !== false ||
+    p.runs_grant_update !== false ||
     p.records_select !== true ||
     p.records_insert !== true ||
     p.records_update !== true ||
     p.records_delete !== true ||
     p.records_truncate !== false ||
     p.records_references !== false ||
-    p.records_trigger !== false
+    p.records_trigger !== false ||
+    p.records_column_references !== false ||
+    p.records_grant_select !== false ||
+    p.records_grant_insert !== false ||
+    p.records_grant_update !== false ||
+    p.records_grant_delete !== false
   ) {
     throw new Error('PostgreSQL authority runtime privileges are incompatible');
   }

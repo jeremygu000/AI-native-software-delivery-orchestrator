@@ -208,3 +208,22 @@ rewrite rules on authority tables. Real-database tests change each of these prop
 both paths reject the tampered schema without repair. The PostgreSQL-specific suite now has **39
 passing tests**; the shared backend-neutral contracts are unchanged. M4.1C remains
 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; the CLI and worker continue to use SQLite.
+
+### M4.1C effective-privilege review hardening (awaiting independent review)
+
+The runtime startup gate now checks the **effective** authority available to its credential, not
+only table-level grants. It rejects column-level `INSERT`, `UPDATE`, or `REFERENCES` on the
+read-only ledger, column-level `REFERENCES` on either data table, `WITH GRANT OPTION` on every
+allowed table operation and schema `USAGE`, and any membership in another role (including a
+non-inherited membership that permits `SET ROLE`). Migration reruns still canonicalize direct
+runtime/PUBLIC grants; membership must be removed from the runtime credential separately.
+
+The supported server-major range is explicitly **PostgreSQL 14–16**. Both migration and adapter
+startup reject other majors; supporting PostgreSQL 17 or newer first requires extending the
+effective-privilege gate for its `MAINTAIN` privilege. Real PostgreSQL 14 regressions prove a
+column-only ledger `UPDATE(checksum)` can change the ledger despite a false table-level UPDATE
+probe, that startup rejects it, and that a migration rerun removes it. The suite also covers other
+forbidden column grants, table/column grant options, schema grant option, and role membership.
+The PostgreSQL-specific suite now has **50 passing tests** (16 shared contracts and 34 PG-only
+cases). M4.1C remains **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; CLI and worker still use
+SQLite, and M4.1D routing is not enabled.
