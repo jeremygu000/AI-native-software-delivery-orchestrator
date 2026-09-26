@@ -154,3 +154,18 @@ PostgreSQL 恢复与受控事务重叠测试均在受限身份下运行。额外
 生产路由均未改变：CLI 和 worker 继续使用 SQLite。M4.1C 为**已实现／待独立复审**，整个
 M4.1 仍**进行中**。应用的显式 PostgreSQL 路由属于 M4.1D；跨 run fencing 与多 run 并发
 分别属于 M4.2/M4.3。
+
+### M4.1C 复审加固（待独立复审）
+
+迁移入口现在在连接或创建 schema 之前拒绝不支持的运行时目标版本，包括零、未来版本及非数字
+输入。迁移重复执行时，先撤销 `PUBLIC` 和 runtime role 的全部表权限，再只授予：账本
+`SELECT`、run 表 `SELECT/INSERT/UPDATE`、evidence 表
+`SELECT/INSERT/UPDATE/DELETE`。启动检查拒绝多余的 `DELETE`、`TRUNCATE`、
+`REFERENCES`、`TRIGGER` 权限，也拒绝缺少必要权限。真实 PostgreSQL 测试先授予多余权限，
+确认启动失败，再重跑迁移并确认多余授权消失、启动成功。
+
+迁移校验和普通启动都要求 authority 表是永久普通表、禁用 RLS 与 FORCE RLS、账本时间戳
+保留 `now()` 默认值，并且 authority 表无用户自定义 trigger 或 rewrite rule。真实数据库测试
+逐项篡改这些属性，证明两个入口均拒绝且不自动修复。PostgreSQL 专项 suite 现有 **39 项
+通过**；共享的后端中立契约未修改。M4.1C 仍为**已实现／待独立复审**；CLI 和 worker 继续
+使用 SQLite。

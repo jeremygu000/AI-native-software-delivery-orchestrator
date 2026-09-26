@@ -2845,3 +2845,10 @@ schema 专属 advisory lock 保护。重复安装安全；不支持的版本、�
 schema 运维边界可独立复审，尚未为 CLI 或 worker 启用 PostgreSQL。M4.1C 状态为
 **已实现／待独立复审**，M4.1 仍**进行中**，应用的显式路由留给 M4.1D。M3 保持
 COMPLETE / FROZEN；M4.2/M4.3 的跨 run 能力不属于本阶段。
+
+独立复审指出 M4.1C 还需要三类控制。迁移者现在重整 runtime 的精确表权限（账本只读、run
+表读／写入／更新、records 表读／写入／更新／删除），启动闸门拒绝多余授权。schema 检查
+还区分永久普通表与 unlogged 或分区表，拒绝 RLS、额外的 trigger/rule 和账本时间戳默认值
+变更。迁移入口在创建 schema 前拒绝不支持的目标版本。真实 PostgreSQL 回归覆盖多余授权的
+重整、上述结构篡改及非法版本；**39 项 PostgreSQL 专项测试通过**。本轮仍是待独立复审的
+实现，不代表 M4.1C 已关闭或 PostgreSQL 生产路由已启用。

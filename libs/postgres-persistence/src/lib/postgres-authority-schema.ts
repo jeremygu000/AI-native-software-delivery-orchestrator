@@ -65,6 +65,50 @@ const assertAuthorityShape = async (
     version >= 1
       ? ['forge_schema_migrations', 'forge_runs', 'forge_records']
       : ['forge_schema_migrations'];
+  const relations = await sql`select c.relname as name, c.relkind as kind,
+    c.relpersistence as persistence, c.relrowsecurity as row_security,
+    c.relforcerowsecurity as force_row_security
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
+    order by c.relname`;
+  if (
+    JSON.stringify(
+      relations.map((relation) => [
+        relation.name,
+        relation.kind,
+        relation.persistence,
+        relation.row_security,
+        relation.force_row_security
+      ])
+    ) !== JSON.stringify(tables.toSorted().map((table) => [table, 'r', 'p', false, false]))
+  ) {
+    throw new Error('PostgreSQL authority relation semantics are incompatible');
+  }
+  const defaults = await sql`select c.relname as table_name, a.attname as column_name,
+    pg_get_expr(d.adbin, d.adrelid) as expression
+    from pg_attrdef d join pg_attribute a on a.attrelid = d.adrelid and a.attnum = d.adnum
+    join pg_class c on c.oid = d.adrelid join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
+    order by c.relname, a.attname`;
+  if (
+    defaults.length !== 1 ||
+    defaults[0]?.table_name !== 'forge_schema_migrations' ||
+    defaults[0].column_name !== 'applied_at' ||
+    defaults[0].expression !== 'now()'
+  ) {
+    throw new Error('PostgreSQL authority column defaults are incompatible');
+  }
+  const triggers = await sql`select 1 from pg_trigger t join pg_class c on c.oid = t.tgrelid
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
+      and not t.tgisinternal limit 1`;
+  const rules = await sql`select 1 from pg_rewrite r join pg_class c on c.oid = r.ev_class
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
+    limit 1`;
+  if (triggers.length > 0 || rules.length > 0) {
+    throw new Error('PostgreSQL authority triggers or rules are incompatible');
+  }
   const columns = await sql`select c.relname as table_name, a.attname as column_name,
     format_type(a.atttypid, a.atttypmod) as data_type, a.attnotnull as not_null
     from pg_class c join pg_namespace n on n.oid = c.relnamespace
@@ -136,6 +180,9 @@ export const migratePostgresAuthoritySchema = async (
   targetVersion: PostgresAuthoritySchemaVersion = POSTGRES_AUTHORITY_SCHEMA_VERSION
 ): Promise<void> => {
   assertPostgresEvidenceStoreConfiguration(configuration);
+  if (!migrations.some((migration) => migration.version === targetVersion)) {
+    throw new Error('Unsupported PostgreSQL authority schema target version');
+  }
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(runtimeRole) || runtimeRole === configuration.role) {
     throw new Error('PostgreSQL migration owner and runtime roles must be distinct identifiers');
   }
@@ -228,9 +275,12 @@ const grantRuntimePrivileges = async (
   await tx.unsafe(`revoke all on ${schema}.forge_schema_migrations from public`);
   await tx.unsafe(`revoke all on ${schema}.forge_schema_migrations from ${role}`);
   await tx.unsafe(`grant select on ${schema}.forge_schema_migrations to ${role}`);
-  await tx.unsafe(
-    `grant select, insert, update, delete on ${schema}.forge_runs, ${schema}.forge_records to ${role}`
-  );
+  for (const table of ['forge_runs', 'forge_records']) {
+    await tx.unsafe(`revoke all on ${schema}.${table} from public`);
+    await tx.unsafe(`revoke all on ${schema}.${table} from ${role}`);
+  }
+  await tx.unsafe(`grant select, insert, update on ${schema}.forge_runs to ${role}`);
+  await tx.unsafe(`grant select, insert, update, delete on ${schema}.forge_records to ${role}`);
 };
 
 /** Read-only startup gate: schema installation is exclusively a migration-owner operation. */
@@ -304,30 +354,48 @@ export const assertPostgresAuthoritySchema = async (
     has_table_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'INSERT') as ledger_insert,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'UPDATE') as ledger_update,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'DELETE') as ledger_delete,
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'TRUNCATE') as ledger_truncate,
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'REFERENCES') as ledger_references,
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_schema_migrations`}, 'TRIGGER') as ledger_trigger,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'SELECT') as runs_select,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'INSERT') as runs_insert,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'UPDATE') as runs_update,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'DELETE') as runs_delete,
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'TRUNCATE') as runs_truncate,
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'REFERENCES') as runs_references,
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_runs`}, 'TRIGGER') as runs_trigger,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'SELECT') as records_select,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'INSERT') as records_insert,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'UPDATE') as records_update,
-    has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'DELETE') as records_delete`;
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'DELETE') as records_delete,
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'TRUNCATE') as records_truncate,
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'REFERENCES') as records_references,
+    has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'TRIGGER') as records_trigger`;
   const p = privileges[0];
   if (
     p?.usage !== true ||
     p.create_schema === true ||
     p.ledger_read !== true ||
-    p.ledger_insert === true ||
-    p.ledger_update === true ||
-    p.ledger_delete === true ||
+    p.ledger_insert !== false ||
+    p.ledger_update !== false ||
+    p.ledger_delete !== false ||
+    p.ledger_truncate !== false ||
+    p.ledger_references !== false ||
+    p.ledger_trigger !== false ||
     p.runs_select !== true ||
     p.runs_insert !== true ||
     p.runs_update !== true ||
-    p.runs_delete !== true ||
+    p.runs_delete !== false ||
+    p.runs_truncate !== false ||
+    p.runs_references !== false ||
+    p.runs_trigger !== false ||
     p.records_select !== true ||
     p.records_insert !== true ||
     p.records_update !== true ||
-    p.records_delete !== true
+    p.records_delete !== true ||
+    p.records_truncate !== false ||
+    p.records_references !== false ||
+    p.records_trigger !== false
   ) {
     throw new Error('PostgreSQL authority runtime privileges are incompatible');
   }

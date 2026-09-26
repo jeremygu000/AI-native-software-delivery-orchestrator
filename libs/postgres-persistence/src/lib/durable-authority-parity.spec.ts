@@ -199,6 +199,83 @@ it('installs, upgrades, and safely reruns migrations without losing persisted au
   }
 });
 
+it.each([0, 3, Number.NaN])(
+  'rejects unsupported runtime migration target %s before creating schema objects',
+  async (target) => {
+    const schema = `forge_bad_target_${++fixtureOrdinal}`;
+    const migration = { connectionString: ownerConnectionString, schema, role };
+    const admin = postgres(connectionString);
+    try {
+      await expect(
+        Reflect.apply(migratePostgresAuthoritySchema, undefined, [migration, runtimeRole, target])
+      ).rejects.toThrow('Unsupported PostgreSQL authority schema target version');
+      const schemas = await admin`select 1 from pg_namespace where nspname = ${schema}`;
+      expect(schemas).toHaveLength(0);
+    } finally {
+      await admin.end();
+    }
+  }
+);
+
+it('removes excessive table grants on migration rerun and requires exact runtime privileges', async () => {
+  const fixture = await createFixture();
+  const owner = postgres(ownerConnectionString);
+  const admin = postgres(connectionString);
+  const runtime = {
+    connectionString: runtimeConnectionString,
+    schema: fixture.schema,
+    role: runtimeRole
+  };
+  try {
+    const tables = `"${fixture.schema}".forge_runs, "${fixture.schema}".forge_records`;
+    await owner.unsafe(`grant delete on "${fixture.schema}".forge_runs to "${runtimeRole}"`);
+    await owner.unsafe(`grant truncate, references, trigger on ${tables} to "${runtimeRole}"`);
+    await owner.unsafe(`grant truncate on "${fixture.schema}".forge_records to public`);
+    await expect(PostgresOrchestrationPersistence.connect(runtime)).rejects.toThrow(
+      'runtime privileges are incompatible'
+    );
+    await migratePostgresAuthoritySchema(
+      { connectionString: ownerConnectionString, schema: fixture.schema, role },
+      runtimeRole
+    );
+    const privileges = await admin.unsafe(
+      `select has_table_privilege($1,$2,'DELETE') as runs_delete,
+        has_table_privilege($1,$2,'TRUNCATE') as runs_truncate,
+        has_table_privilege($1,$2,'REFERENCES') as runs_references,
+        has_table_privilege($1,$2,'TRIGGER') as runs_trigger,
+        has_table_privilege($1,$3,'DELETE') as records_delete,
+        has_table_privilege($1,$3,'TRUNCATE') as records_truncate,
+        has_table_privilege($1,$3,'REFERENCES') as records_references,
+        has_table_privilege($1,$3,'TRIGGER') as records_trigger`,
+      [runtimeRole, `${fixture.schema}.forge_runs`, `${fixture.schema}.forge_records`]
+    );
+    expect(privileges[0]).toMatchObject({
+      runs_delete: false,
+      runs_truncate: false,
+      runs_references: false,
+      runs_trigger: false,
+      records_delete: true,
+      records_truncate: false,
+      records_references: false,
+      records_trigger: false
+    });
+    const publicGrants = await admin.unsafe(
+      `select relname, coalesce((select bool_or(a.grantee = 0) from aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a), false) as public_grant
+       from pg_class c join pg_namespace n on n.oid = c.relnamespace
+       where n.nspname = $1 and c.relname in ('forge_runs','forge_records')`,
+      [fixture.schema]
+    );
+    expect(publicGrants).toHaveLength(2);
+    expect(publicGrants.every((row) => row.public_grant === false)).toBe(true);
+    const reopened = await PostgresOrchestrationPersistence.connect(runtime);
+    await reopened.close();
+  } finally {
+    await admin.end();
+    await owner.end();
+    await fixture.close();
+  }
+});
+
 it('refuses missing, future, and altered migration metadata without repairing the schema', async () => {
   const fixture = await createFixture();
   const admin = postgres(connectionString, { onnotice: () => undefined });
@@ -324,6 +401,39 @@ it('refuses missing objects and incompatible runtime privileges without startup 
 });
 
 it.each([
+  {
+    name: 'unlogged migration ledger',
+    alter: (schema: string) => `alter table "${schema}".forge_schema_migrations set unlogged`,
+    message: 'relation semantics are incompatible'
+  },
+  {
+    name: 'row-level security enabled on runs',
+    alter: (schema: string) => `alter table "${schema}".forge_runs enable row level security`,
+    message: 'relation semantics are incompatible'
+  },
+  {
+    name: 'force row-level security on runs',
+    alter: (schema: string) => `alter table "${schema}".forge_runs force row level security`,
+    message: 'relation semantics are incompatible'
+  },
+  {
+    name: 'removed migration timestamp default',
+    alter: (schema: string) =>
+      `alter table "${schema}".forge_schema_migrations alter column applied_at drop default`,
+    message: 'column defaults are incompatible'
+  },
+  {
+    name: 'user-defined authority trigger',
+    alter: (schema: string) =>
+      `create function "${schema}".authority_noop() returns trigger language plpgsql as $$ begin return new; end $$; create trigger authority_noop before update on "${schema}".forge_runs for each row execute function "${schema}".authority_noop()`,
+    message: 'triggers or rules are incompatible'
+  },
+  {
+    name: 'user-defined authority rule',
+    alter: (schema: string) =>
+      `create rule authority_noop as on update to "${schema}".forge_runs do instead nothing`,
+    message: 'triggers or rules are incompatible'
+  },
   {
     name: 'changed column nullability',
     alter: (schema: string) =>

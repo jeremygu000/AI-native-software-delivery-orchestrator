@@ -190,3 +190,21 @@ executable. This stage changes neither the frozen M3 authority semantics nor the
 CLI and worker still use SQLite. M4.1C is **IMPLEMENTED / AWAITING INDEPENDENT REVIEW** and M4.1
 overall remains **OPEN**. Explicit application routing belongs to M4.1D; cross-run fencing and
 multi-run concurrency remain M4.2/M4.3.
+
+### M4.1C review hardening (awaiting independent review)
+
+The migration API now rejects unsupported runtime target versions (including zero, a future
+version, and non-numeric input) before connecting or creating a schema. Migration reruns revoke
+all table grants from `PUBLIC` and the runtime role before granting the exact required set:
+ledger `SELECT`; run table `SELECT/INSERT/UPDATE`; evidence table
+`SELECT/INSERT/UPDATE/DELETE`. Startup rejects excess `DELETE`, `TRUNCATE`, `REFERENCES`, or
+`TRIGGER` privileges, as well as missing required privileges. A real PostgreSQL test first grants
+excess authority, checks startup rejects it, reruns the migration, and checks the grants are
+removed and startup succeeds.
+
+Both migration verification and normal startup also require ordinary permanent tables with RLS
+and FORCE RLS disabled, the ledger timestamp's `now()` default, and no user-defined triggers or
+rewrite rules on authority tables. Real-database tests change each of these properties and prove
+both paths reject the tampered schema without repair. The PostgreSQL-specific suite now has **39
+passing tests**; the shared backend-neutral contracts are unchanged. M4.1C remains
+**IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; the CLI and worker continue to use SQLite.

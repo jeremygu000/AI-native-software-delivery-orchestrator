@@ -3231,3 +3231,12 @@ primary key, and an incorrectly redefined same-named index. This makes schema op
 reviewable without enabling PostgreSQL in the CLI or worker. M4.1C is **IMPLEMENTED / AWAITING
 INDEPENDENT REVIEW**; M4.1 remains **OPEN** and production routing is deferred to M4.1D. M3
 remains COMPLETE / FROZEN; M4.2/M4.3 cross-run capabilities are not part of this stage.
+
+Independent review identified three additional M4.1C startup and migration controls. The
+installer now reconciles exact runtime table privileges (ledger read-only, runs read/insert/update,
+records read/insert/update/delete) and the runtime gate rejects excess grants. Schema checks now
+also distinguish permanent ordinary tables from unlogged or partitioned relations, reject RLS,
+unexpected triggers/rules, and a changed ledger timestamp default. Unsupported migration target
+versions fail before schema creation. Real PostgreSQL regression tests cover excess-grant repair,
+each structural alteration, and unsupported targets; **39 PostgreSQL-specific tests pass**. This
+is a review candidate, not M4.1C closure or PostgreSQL production enablement.
