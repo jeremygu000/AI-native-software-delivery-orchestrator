@@ -20,6 +20,7 @@ import {
 } from '../../../persistence/src/lib/durable-authority.contract.test.js';
 import { PostgresOrchestrationPersistence } from './postgres-orchestration-persistence.js';
 import {
+  assertPostgresAuthoritySchema,
   migratePostgresAuthoritySchema,
   POSTGRES_AUTHORITY_SCHEMA_VERSION
 } from './postgres-authority-schema.js';
@@ -381,9 +382,23 @@ it('rejects non-inherited role membership that can be activated with SET ROLE', 
   const extraRole = `forge_extra_${process.pid}_${fixtureOrdinal}`;
   let membershipGranted = false;
   try {
-    await admin.unsafe(`create role "${extraRole}" noinherit`);
+    await admin.unsafe(`create role "${extraRole}"`);
+    await admin.unsafe(`alter role "${runtimeRole}" noinherit`);
     await admin.unsafe(`grant "${extraRole}" to "${runtimeRole}"`);
     membershipGranted = true;
+    const runtime = postgres(runtimeConnectionString);
+    try {
+      const permissions = await runtime`select
+        pg_has_role(current_user, ${extraRole}, 'USAGE') as inherited,
+        pg_has_role(current_user, ${extraRole}, 'MEMBER') as member`;
+      expect(permissions[0]).toMatchObject({ inherited: false, member: true });
+      await runtime.unsafe(`set role "${extraRole}"`);
+      const assumed = await runtime`select current_user as name`;
+      expect(assumed[0]?.name).toBe(extraRole);
+      await runtime`set role none`;
+    } finally {
+      await runtime.end();
+    }
     await expect(
       PostgresOrchestrationPersistence.connect({
         connectionString: runtimeConnectionString,
@@ -403,7 +418,60 @@ it('rejects non-inherited role membership that can be activated with SET ROLE', 
     if (membershipGranted) {
       await admin.unsafe(`revoke "${extraRole}" from "${runtimeRole}"`);
     }
+    await admin.unsafe(`alter role "${runtimeRole}" inherit`);
     await admin.unsafe(`drop role if exists "${extraRole}"`);
+    await admin.end();
+    await fixture.close();
+  }
+});
+
+it('rejects an assumed runtime role whose session can restore a privileged login', async () => {
+  const fixture = await createFixture();
+  const admin = postgres(connectionString);
+  const proxyRole = `forge_proxy_${process.pid}_${fixtureOrdinal}`;
+  let created = false;
+  try {
+    await admin.unsafe(`create role "${proxyRole}" login createdb`);
+    created = true;
+    await admin.unsafe(`grant "${runtimeRole}" to "${proxyRole}"`);
+    const proxyConnectionString = connectionString.replace(
+      'postgresql://',
+      `postgresql://${proxyRole}@`
+    );
+    const proxy = postgres(proxyConnectionString);
+    try {
+      await proxy.unsafe(`set role "${runtimeRole}"`);
+      const identity =
+        await proxy`select current_user as current_name, session_user as session_name`;
+      expect(identity[0]).toMatchObject({
+        current_name: runtimeRole,
+        session_name: proxyRole
+      });
+      await expect(
+        assertPostgresAuthoritySchema(proxy, {
+          connectionString: proxyConnectionString,
+          schema: fixture.schema,
+          role: runtimeRole
+        })
+      ).rejects.toThrow('PostgreSQL authority role mismatch');
+      await proxy`set role none`;
+      const restored = await proxy`select current_user as current_name`;
+      expect(restored[0]?.current_name).toBe(proxyRole);
+    } finally {
+      await proxy.end();
+    }
+    const assumedRoleConnectionString = `${proxyConnectionString}?options=${encodeURIComponent(`-c role=${runtimeRole}`)}`;
+    await expect(
+      PostgresOrchestrationPersistence.connect({
+        connectionString: assumedRoleConnectionString,
+        schema: fixture.schema,
+        role: runtimeRole
+      })
+    ).rejects.toThrow('PostgreSQL authority role mismatch');
+  } finally {
+    if (created) {
+      await admin.unsafe(`drop role "${proxyRole}"`);
+    }
     await admin.end();
     await fixture.close();
   }

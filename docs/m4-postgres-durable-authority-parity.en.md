@@ -227,3 +227,20 @@ forbidden column grants, table/column grant options, schema grant option, and ro
 The PostgreSQL-specific suite now has **50 passing tests** (16 shared contracts and 34 PG-only
 cases). M4.1C remains **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; CLI and worker still use
 SQLite, and M4.1D routing is not enabled.
+
+### M4.1C session identity review remediation (awaiting independent review)
+
+PostgreSQL distinguishes the login identity (`session_user`) from the effective identity
+(`current_user`). A privileged login can assume the restricted runtime role with `SET ROLE` and
+later regain its login privileges with `SET ROLE NONE`. The read-only runtime startup gate now
+requires **both** identities to equal the configured runtime role before checking its grants. It
+does not support a login-wrapper role that assumes the runtime role.
+
+In a real PostgreSQL 14 fixture, a separate LOGIN role with `CREATEDB` assumes the runtime role:
+the test confirms the different session/effective identities, proves the login can be restored,
+and verifies that both the startup gate and adapter connection reject the assumed-role session.
+The role-membership regression also sets `NOINHERIT` on the **member** runtime role, verifies
+`USAGE=false` and `MEMBER=true`, and proves `SET ROLE` can still activate the membership before
+startup rejects it. The PostgreSQL suite now has **51 passing tests** (16 shared and 35 PG-only).
+M4.1C remains **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; CLI and worker still use SQLite,
+and M4.1D routing has not begun.

@@ -184,3 +184,17 @@ PostgreSQL 17 或更新版本，须先将新增 `MAINTAIN` 权限纳入有效权
 迁移重跑后多余授权消失。用例还覆盖其他列级越权、表／列授权转授权、schema 转授权及角色
 成员关系。PostgreSQL 专项 suite 现为 **50 项通过**（16 项共享契约、34 项 PG 专项）；
 M4.1C 仍为**已实现／待独立复审**，CLI／worker 仍使用 SQLite，M4.1D 路由未启用。
+
+### M4.1C 会话身份复审修正（待独立复审）
+
+PostgreSQL 将登录身份 `session_user` 与当前权限身份 `current_user` 分开：高权限登录角色可以
+通过 `SET ROLE` 暂时成为受限 runtime，再用 `SET ROLE NONE` 恢复登录角色的权限。只读的
+runtime 启动闸门现在要求**两种身份都等于**所配置的 runtime 角色，然后才检查权限；不支持由
+其他登录角色代为登录并切换为 runtime 角色的部署模式。
+
+真实 PostgreSQL 14 fixture 使用带 `CREATEDB` 权限的独立 LOGIN 角色切换成 runtime，验证
+会话身份与当前身份不同、登录权限能够恢复，且启动闸门和 adapter 连接均拒绝这种会话。
+成员关系测试还将 `NOINHERIT` 正确设置在作为成员的 runtime 角色上，证明
+`USAGE=false`、`MEMBER=true`，且仍可通过 `SET ROLE` 激活成员角色，随后启动被拒绝。
+PostgreSQL 专项 suite 现有 **51 项通过**（16 项共享契约、35 项 PG 专项）。M4.1C 仍为
+**已实现／待独立复审**，CLI／worker 仍使用 SQLite，M4.1D 路由尚未开始。

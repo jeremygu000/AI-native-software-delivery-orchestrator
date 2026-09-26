@@ -300,8 +300,11 @@ export const assertPostgresAuthoritySchema = async (
 ): Promise<void> => {
   await assertSupportedServerVersion(sql);
   const schema = quote(configuration.schema);
-  const identity = await sql`select current_user as name`;
-  if (identity[0]?.name !== configuration.role) {
+  const identity = await sql`select current_user as current_name, session_user as session_name`;
+  if (
+    identity[0]?.current_name !== configuration.role ||
+    identity[0]?.session_name !== configuration.role
+  ) {
     throw new Error('PostgreSQL authority role mismatch');
   }
   const metadata =

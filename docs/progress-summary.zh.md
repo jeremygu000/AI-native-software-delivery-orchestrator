@@ -2860,3 +2860,11 @@ COMPLETE / FROZEN；M4.2/M4.3 的跨 run 能力不属于本阶段。
 绕过尚未扩展的闸门。真实 PG14 测试证明列级账本修改、启动拒绝、迁移清除，以及其他列级／
 转授权和成员关系拒绝；**50 项 PostgreSQL 专项测试通过**，其中 16 项为 SQLite／PG 共用
 契约。M4.1C 仍为**已实现／待独立复审**；生产 CLI／worker 仍使用 SQLite，M4.1D 尚未开始。
+
+随后的独立复审发现：仅检查 `current_user` 不能证明实际 PostgreSQL 登录凭据受限。高权限
+`session_user` 可以通过 `SET ROLE` 临时切换为 runtime，再恢复自己的权限。M4.1C 的启动
+闸门现在要求会话身份和当前权限身份**同时等于**配置的 runtime 角色。真实 PostgreSQL 测试
+证明高权限 LOGIN 角色切换为 runtime 后，启动检查和 adapter 均拒绝连接；修正后的 PG14
+`NOINHERIT` 测试证明不自动继承的成员关系仍可通过 `SET ROLE` 激活并被拒绝。
+**51 项 PostgreSQL 测试通过**（16 项共享契约、35 项 PG 专项）。M4.1C 仍待独立复审，
+生产 SQLite 路由和未来的 M4.1D 路由均未改变。
