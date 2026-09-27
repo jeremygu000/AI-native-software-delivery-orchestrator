@@ -187,7 +187,7 @@ M4.1C 仍为**已实现／待独立复审**，CLI／worker 仍使用 SQLite，M4
 
 ### M4.1C 会话身份复审修正（待独立复审）
 
-PostgreSQL 将登录身份 `session_user` 与当前权限身份 `current_user` 分开：高权限登录角色可以
+PostgreSQL 将通常代表初始会话身份的 `session_user` 与当前权限身份 `current_user` 分开：高权限登录角色可以
 通过 `SET ROLE` 暂时成为受限 runtime，再用 `SET ROLE NONE` 恢复登录角色的权限。只读的
 runtime 启动闸门现在要求**两种身份都等于**所配置的 runtime 角色，然后才检查权限；不支持由
 其他登录角色代为登录并切换为 runtime 角色的部署模式。
@@ -198,3 +198,18 @@ runtime 启动闸门现在要求**两种身份都等于**所配置的 runtime �
 `USAGE=false`、`MEMBER=true`，且仍可通过 `SET ROLE` 激活成员角色，随后启动被拒绝。
 PostgreSQL 专项 suite 现有 **51 项通过**（16 项共享契约、35 项 PG 专项）。M4.1C 仍为
 **已实现／待独立复审**，CLI／worker 仍使用 SQLite，M4.1D 路由尚未开始。
+
+### M4.1C 真实连接凭据复审修正（待独立复审）
+
+`session_user` 也不是不可变的：超级用户可以执行 `SET SESSION AUTHORIZATION`，让两个 SQL
+身份同时显示为受限 runtime，再通过 `RESET SESSION AUTHORIZATION` 恢复原始高权限身份。
+因此 runtime adapter 现在在**建立连接池之前**校验连接 URL：用户名必须明确是配置的 runtime
+角色，且 URL 不得带任何查询参数，包括可切换角色的 PostgreSQL 连接启动参数。只读 schema
+启动闸门也独立执行相同的 URL 校验、检查 PostgreSQL 客户端连接池实际选用的登录用户，并保留
+两个 SQL 身份的检查；这里明确不支持代理登录或连接启动覆写。
+
+真实 PostgreSQL 14 回归证明超级用户登录后能使两个 SQL 身份都表现为 runtime，随后仍可
+恢复超级用户身份；schema 闸门拒绝此代理凭据，adapter 入口拒绝同类 URL 启动参数。省略
+runtime 用户名或携带任何 URL 启动参数也会被拒绝。PostgreSQL 专项 suite 现有 **53 项通过**
+（16 项共享契约、37 项 PG 专项）。M4.1C 仍为**已实现／待独立复审**，CLI／worker 仍使用
+SQLite，M4.1D 生产路由尚未开始。

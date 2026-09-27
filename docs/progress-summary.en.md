@@ -3253,8 +3253,8 @@ rejection. **50 PostgreSQL-specific cases pass**, including 16 shared SQLite/PG 
 remains **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; production CLI/worker routing stays on
 SQLite and M4.1D has not begun.
 
-The next independent review found that checking only `current_user` did not prove the actual
-PostgreSQL login was restricted: a privileged `session_user` could assume the runtime role with
+The next independent review found that checking only `current_user` did not prove the PostgreSQL
+session was restricted: a privileged session identity could assume the runtime role with
 `SET ROLE` and later restore its own privileges. M4.1C startup now requires the session and
 effective identities both to equal the configured runtime role. A real PostgreSQL fixture proves
 that a privileged LOGIN role assuming runtime is rejected by the startup gate and adapter, while
@@ -3262,3 +3262,13 @@ the corrected PG14 `NOINHERIT` test proves non-inherited membership remains acti
 `SET ROLE` and is rejected. **51 PostgreSQL tests pass** (16 shared and 35 PG-only); M4.1C still
 awaits independent review, and neither the production SQLite route nor the planned M4.1D route
 has changed.
+
+Another independent review identified that `session_user` itself can be changed by a superuser
+using `SET SESSION AUTHORIZATION`; checking both SQL identities alone did not prove the
+authenticated connection was a restricted runtime login. M4.1C now requires an explicit matching
+runtime username in the adapter connection URL and rejects all URL query parameters before
+connecting. The schema gate also checks the client pool's effective login option, followed by
+both SQL identities. Real PostgreSQL 14 tests demonstrate the session-authorization impersonation and
+restoration, fail-closed startup, and missing/overridden username rejection. **53 PostgreSQL
+cases pass** (16 shared and 37 PG-only). M4.1C remains **IMPLEMENTED / AWAITING INDEPENDENT
+REVIEW**; production CLI and worker still use SQLite and M4.1D has not begun.

@@ -230,8 +230,8 @@ SQLite, and M4.1D routing is not enabled.
 
 ### M4.1C session identity review remediation (awaiting independent review)
 
-PostgreSQL distinguishes the login identity (`session_user`) from the effective identity
-(`current_user`). A privileged login can assume the restricted runtime role with `SET ROLE` and
+PostgreSQL distinguishes the normally initial session identity (`session_user`) from the effective
+identity (`current_user`). A privileged login can assume the restricted runtime role with `SET ROLE` and
 later regain its login privileges with `SET ROLE NONE`. The read-only runtime startup gate now
 requires **both** identities to equal the configured runtime role before checking its grants. It
 does not support a login-wrapper role that assumes the runtime role.
@@ -244,3 +244,21 @@ The role-membership regression also sets `NOINHERIT` on the **member** runtime r
 startup rejects it. The PostgreSQL suite now has **51 passing tests** (16 shared and 35 PG-only).
 M4.1C remains **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; CLI and worker still use SQLite,
 and M4.1D routing has not begun.
+
+### M4.1C authenticated-credential review remediation (awaiting independent review)
+
+`session_user` is mutable too: a superuser can use `SET SESSION AUTHORIZATION` to make both SQL
+identities appear to be the restricted runtime, then `RESET SESSION AUTHORIZATION` to regain its
+original privileges. Therefore the runtime adapter now validates its connection URL **before
+opening a pool**: the URL must explicitly name the configured runtime role as its username, and
+must have no query parameters (including PostgreSQL startup options that could assume a role).
+The startup schema gate independently enforces the same URL rule, checks the PostgreSQL client
+pool's effective login option, and still checks both SQL identities. This deliberately does not
+support proxy logins or connection startup overrides.
+
+The PostgreSQL 14 regression demonstrates a superuser login making both SQL identities look
+like runtime, then restoring its superuser identity. The schema gate rejects the proxy credential,
+and adapter startup rejects the equivalent URL startup-option attempt. Missing runtime usernames
+and any URL startup parameters also fail closed. The suite now has **53 PostgreSQL cases** (16
+shared contracts plus 37 PG-only). M4.1C remains **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**;
+CLI and worker still use SQLite, and M4.1D production routing has not begun.

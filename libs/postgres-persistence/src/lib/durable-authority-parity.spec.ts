@@ -449,11 +449,11 @@ it('rejects an assumed runtime role whose session can restore a privileged login
       });
       await expect(
         assertPostgresAuthoritySchema(proxy, {
-          connectionString: proxyConnectionString,
+          connectionString: runtimeConnectionString,
           schema: fixture.schema,
           role: runtimeRole
         })
-      ).rejects.toThrow('PostgreSQL authority role mismatch');
+      ).rejects.toThrow('PostgreSQL authority connection login role mismatch');
       await proxy`set role none`;
       const restored = await proxy`select current_user as current_name`;
       expect(restored[0]?.current_name).toBe(proxyRole);
@@ -467,12 +467,88 @@ it('rejects an assumed runtime role whose session can restore a privileged login
         schema: fixture.schema,
         role: runtimeRole
       })
-    ).rejects.toThrow('PostgreSQL authority role mismatch');
+    ).rejects.toThrow('PostgreSQL authority requires an explicit runtime login');
   } finally {
     if (created) {
       await admin.unsafe(`drop role "${proxyRole}"`);
     }
     await admin.end();
+    await fixture.close();
+  }
+});
+
+it('rejects a privileged login even after changing both SQL identities to runtime', async () => {
+  const fixture = await createFixture();
+  const admin = postgres(connectionString);
+  const proxyRole = `forge_session_proxy_${process.pid}_${fixtureOrdinal}`;
+  let created = false;
+  try {
+    await admin.unsafe(`create role "${proxyRole}" login superuser`);
+    created = true;
+    const proxyConnectionString = connectionString.replace(
+      'postgresql://',
+      `postgresql://${proxyRole}@`
+    );
+    const proxy = postgres(proxyConnectionString);
+    try {
+      await proxy.unsafe(`set session authorization "${runtimeRole}"`);
+      const assumed =
+        await proxy`select current_user as current_name, session_user as session_name`;
+      expect(assumed[0]).toMatchObject({ current_name: runtimeRole, session_name: runtimeRole });
+      await expect(
+        assertPostgresAuthoritySchema(proxy, {
+          connectionString: proxyConnectionString,
+          schema: fixture.schema,
+          role: runtimeRole
+        })
+      ).rejects.toThrow('PostgreSQL authority requires an explicit runtime login');
+      await expect(
+        assertPostgresAuthoritySchema(proxy, {
+          connectionString: runtimeConnectionString,
+          schema: fixture.schema,
+          role: runtimeRole
+        })
+      ).rejects.toThrow('PostgreSQL authority connection login role mismatch');
+      await proxy`reset session authorization`;
+      const restored =
+        await proxy`select current_user as current_name, session_user as session_name`;
+      expect(restored[0]).toMatchObject({ current_name: proxyRole, session_name: proxyRole });
+    } finally {
+      await proxy.end();
+    }
+    await expect(
+      PostgresOrchestrationPersistence.connect({
+        connectionString: `${proxyConnectionString}?options=${encodeURIComponent(`-c session_authorization=${runtimeRole}`)}`,
+        schema: fixture.schema,
+        role: runtimeRole
+      })
+    ).rejects.toThrow('PostgreSQL authority requires an explicit runtime login');
+  } finally {
+    if (created) {
+      await admin.unsafe(`drop role "${proxyRole}"`);
+    }
+    await admin.end();
+    await fixture.close();
+  }
+});
+
+it('requires an explicit runtime login without startup query parameters', async () => {
+  const fixture = await createFixture();
+  try {
+    for (const candidate of [
+      connectionString,
+      `${runtimeConnectionString}?options=${encodeURIComponent(`-c session_authorization=${runtimeRole}`)}`,
+      `${runtimeConnectionString}?user=forge_proxy`
+    ]) {
+      await expect(
+        PostgresOrchestrationPersistence.connect({
+          connectionString: candidate,
+          schema: fixture.schema,
+          role: runtimeRole
+        })
+      ).rejects.toThrow('PostgreSQL authority requires an explicit runtime login');
+    }
+  } finally {
     await fixture.close();
   }
 });
@@ -728,7 +804,7 @@ it('fails closed on missing schema, wrong role, and malformed persisted run evid
         schema: fixture.schema,
         role: 'forge_wrong_role'
       })
-    ).rejects.toThrow('role mismatch');
+    ).rejects.toThrow('requires an explicit runtime login');
     await fixture.store.createRun(durableAuthorityRunRequest('corrupted-run'));
     await admin.unsafe(
       `update "${fixture.schema}".forge_runs set payload = '{broken' where id = $1`,

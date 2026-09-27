@@ -37,6 +37,19 @@ const checksum = (statements: readonly string[]): string =>
   createHash('sha256').update(statements.join('\n')).digest('hex');
 const quote = (identifier: string): string => `"${identifier}"`;
 
+/** The runtime adapter accepts only an explicit login, never role-assumption startup options. */
+export const assertPostgresAuthorityLogin = (
+  configuration: PostgresEvidenceStoreConfiguration
+): void => {
+  assertPostgresEvidenceStoreConfiguration(configuration);
+  const url = new URL(configuration.connectionString);
+  if (decodeURIComponent(url.username) !== configuration.role || url.searchParams.size !== 0) {
+    throw new Error(
+      'PostgreSQL authority requires an explicit runtime login without startup options'
+    );
+  }
+};
+
 // PostgreSQL 17 adds MAINTAIN; extend the privilege audit before supporting it.
 const assertSupportedServerVersion = async (sql: TransactionSql | Sql): Promise<void> => {
   const rows = await sql`select current_setting('server_version_num')::integer as version`;
@@ -298,6 +311,10 @@ export const assertPostgresAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration
 ): Promise<void> => {
+  assertPostgresAuthorityLogin(configuration);
+  if (sql.options.user !== configuration.role) {
+    throw new Error('PostgreSQL authority connection login role mismatch');
+  }
   await assertSupportedServerVersion(sql);
   const schema = quote(configuration.schema);
   const identity = await sql`select current_user as current_name, session_user as session_name`;

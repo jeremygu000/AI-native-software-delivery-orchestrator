@@ -57,11 +57,11 @@ import {
   writeLeaseSchema
 } from '@ai-native-software-delivery-orchestrator/domain';
 
+import type { PostgresEvidenceStoreConfiguration } from './postgres-evidence-store.js';
 import {
-  assertPostgresEvidenceStoreConfiguration,
-  type PostgresEvidenceStoreConfiguration
-} from './postgres-evidence-store.js';
-import { assertPostgresAuthoritySchema } from './postgres-authority-schema.js';
+  assertPostgresAuthorityLogin,
+  assertPostgresAuthoritySchema
+} from './postgres-authority-schema.js';
 
 type Sql = ReturnType<typeof postgres>;
 type TransactionSql = postgres.TransactionSql;
@@ -189,7 +189,7 @@ export class PostgresOrchestrationPersistence
   static async connect(
     configuration: PostgresEvidenceStoreConfiguration
   ): Promise<PostgresOrchestrationPersistence> {
-    assertPostgresEvidenceStoreConfiguration(configuration);
+    assertPostgresAuthorityLogin(configuration);
     const store = new PostgresOrchestrationPersistence(configuration);
     try {
       await assertPostgresAuthoritySchema(store.#sql, configuration);
