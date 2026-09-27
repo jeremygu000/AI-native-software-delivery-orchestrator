@@ -255,8 +255,9 @@ M4.1D 当前为**已实现／待独立复审**，尚未关闭；M4.1A–C 和 M3
 本阶段不增加跨 run repository fencing 或多 run 并发控制；未来 TLS 与连接安全配置
 应使用明确的强类型 adapter 配置，不能通过绕过登录闸门的 URL 查询参数实现。
 
-验证结果：工厂／CLI／composition 定向测试 50 项通过；编译产物 Temporal worker 阶段的
-composition 15 项、进程验收 5 项、smoke 配置 3 项均通过。Lint、typecheck、build 通过。
+验证结果：工厂／CLI／composition 定向测试 52 项通过（工厂 5、CLI 32、composition 15）。
+编译产物 Temporal worker 阶段的 composition 15 项、进程验收 5 项、smoke 配置 3 项
+均通过。Lint、typecheck、build 通过。
 非 worker 全套阶段有 668 项通过，但未改动的 Restate 容器测试无法找到可用的容器运行时，
 因此未能完成整套测试。仓库级 `pnpm check` 在三个未改动文件的格式检查处停止：
 `libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`、
@@ -271,3 +272,10 @@ backend** 都必须提供该身份；只有历史上**未设置 backend** 的 SQ
 数据库 A 的预期身份却指向 SQLite 数据库 B 的 worker。编译产物 SQLite 进程验收也验证这种
 错误路径的 worker 在连接 Temporal 前退出。PostgreSQL 路由及 M4.1C 启动闸门没有变化。
 M4.1D 仍为**已实现／待独立复审**，M4.1 整体仍为**进行中**。
+
+### M4.1D 独立复审关闭记录
+
+对显式 SQLite 身份修正的独立复审未发现 P0 或 P1 问题。
+**M4.1D 与 M4.1 现均为 PASS / CLOSED / FROZEN。**
+M3 及 M4.1A–C 继续冻结；M4.2、M4.3 尚未开始。历史上未设置 backend 的 SQLite 兼容
+路径仍可使用，而两个显式选择的 backend 都必须提供匹配的部署身份。

@@ -3307,8 +3307,8 @@ M4.1D is **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**, so M4.1 overall is still
 M3 and M4.1A–C remain frozen. Repository fencing, multi-run concurrency, and API/UI work remain
 outside this stage; TLS configuration requires a separately typed adapter policy.
 
-Verification for this implementation: 50 focused factory/CLI/composition tests passed; the
-compiled Temporal-worker phase passed 15 composition tests, 5 process-acceptance tests, and 3
+Verification: 52 focused factory/CLI/composition tests passed (5 factory, 32 CLI, 15 composition).
+The compiled Temporal-worker phase passed 15 composition tests, 5 process-acceptance tests, and 3
 smoke-configuration tests. Lint, typecheck, and build passed. The non-worker test phase passed
 668 tests, but the full suite could not complete because the unchanged Restate container test
 could not find a container runtime. `pnpm check` stops at pre-existing formatting issues in
@@ -3323,3 +3323,8 @@ or `postgres`; only backend-unset legacy SQLite may omit it. A supplied identity
 Factory tests prove a worker pointed at SQLite B cannot use CLI SQLite A's expected identity, and
 the compiled SQLite acceptance proves that worker exits before Temporal polling. M4.1D remains
 **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**, and M4.1 remains **OPEN**.
+
+Independent review of the explicit SQLite identity fix found no P0 or P1 issues.
+**M4.1D and M4.1 are PASS / CLOSED / FROZEN.** M3 and M4.1A–C remain frozen; M4.2 and M4.3
+have not begun. The backend-unset SQLite compatibility behavior remains intact, and both
+explicit backend selections now require a matching `FORGE_AUTHORITY_ID`.

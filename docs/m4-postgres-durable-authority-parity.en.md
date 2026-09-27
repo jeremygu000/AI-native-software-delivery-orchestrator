@@ -310,11 +310,12 @@ frozen semantics. This stage does not add repository-wide fencing or multi-run c
 and connection-security policy need an explicit typed adapter configuration in a later review,
 not URL query parameters that bypass the credential gate.
 
-Verification: the focused factory/CLI/composition suite passed 50 tests, and the compiled
-Temporal-worker phase passed 15 composition, 5 process-acceptance, and 3 smoke-configuration
-tests. Lint, typecheck, and build passed. The non-worker full-suite phase passed 668 tests but
-could not complete because the unchanged Restate container test could not find a working container
-runtime. Repository-wide `pnpm check` stops at formatting issues in three untouched files:
+Verification: the focused factory/CLI/composition suite passed 52 tests (5 factory, 32 CLI,
+15 composition). The compiled Temporal-worker phase passed 15 composition, 5 process-acceptance,
+and 3 smoke-configuration tests. Lint, typecheck, and build passed. The non-worker full-suite
+phase passed 668 tests but could not complete because the unchanged Restate container test could
+not find a working container runtime. Repository-wide `pnpm check` stops at formatting issues in
+three untouched files:
 `libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`,
 `libs/domain/src/lib/task-repair-attempt.ts`, and
 `libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`.
@@ -330,3 +331,10 @@ configured for SQLite database B with the expected identity of CLI database A. T
 SQLite worker acceptance also starts a worker with that wrong path and verifies it exits before
 connecting to Temporal. PostgreSQL routing and its M4.1C startup gate are unchanged. M4.1D
 remains **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; M4.1 overall remains **OPEN**.
+
+### M4.1D independent review closure
+
+Independent review of the explicit SQLite identity correction found no P0 or P1 issues.
+**M4.1D and M4.1 are PASS / CLOSED / FROZEN.** M3 and M4.1A–C remain frozen;
+M4.2 and M4.3 have not begun. The historical backend-unset SQLite compatibility path remains
+available, while both explicitly selected backends require matching deployment identity.

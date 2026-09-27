@@ -2907,8 +2907,9 @@ M4.1D 目前是**已实现／待独立复审**，M4.1 整体仍为**进行中**�
 冻结。本阶段不包含跨 run repository fencing、多 run 并发或 API/UI；TLS 连接配置
 需要另行设计强类型 adapter 策略。
 
-本次实现的验证结果：工厂／CLI／composition 定向测试 50 项通过；编译产物 Temporal
-worker 阶段的 composition 15 项、进程验收 5 项、smoke 配置 3 项均通过。Lint、typecheck
+验证结果：工厂／CLI／composition 定向测试 52 项通过（工厂 5、CLI 32、composition 15）。
+编译产物 Temporal worker 阶段的 composition 15 项、进程验收 5 项、smoke 配置 3 项均通过。
+Lint、typecheck
 和 build 通过。非 worker 测试阶段有 668 项通过，但未改动的 Restate 容器测试因环境找不到
 可用容器运行时而失败，因此全套测试未完成。`pnpm check` 仍在三个原有、未改动文件的格式
 问题处停止：`libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`、
@@ -2920,3 +2921,8 @@ M4.1D 的独立复审发现：显式 SQLite 部署路径可省略 `FORGE_AUTHORI
 预期身份；仅历史上未设置 backend 的 SQLite 路径允许省略，而且提供时也一定校验。工厂测试
 证明指向 SQLite B 的 worker 不能使用 CLI SQLite A 的身份；编译产物验收证明该 worker 在
 Temporal polling 之前退出。M4.1D 仍为**已实现／待独立复审**，M4.1 整体仍为**进行中**。
+
+对显式 SQLite 身份修正的独立复审未发现 P0 或 P1 问题。
+**M4.1D 和 M4.1 现均为 PASS / CLOSED / FROZEN**。M3 与 M4.1A–C 继续冻结，
+M4.2、M4.3 尚未开始。未设置 backend 的历史
+SQLite 兼容路径仍然可用，而两种显式 backend 均要求匹配的 `FORGE_AUTHORITY_ID`。
