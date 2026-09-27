@@ -576,6 +576,13 @@ describe('compiled CLI and Temporal worker process boundary', () => {
       backend: 'sqlite',
       databasePath: fixture.databasePath
     });
+    const wrongSqliteWorker = capture(globalThis.process.execPath, [workerPath], {
+      ...fixture.env,
+      FORGE_WORKER_DATABASE_PATH: join(fixture.root, 'wrong.sqlite'),
+      TEMPORAL_SERVER_URL: 'http://127.0.0.1:1'
+    });
+    expect((await wrongSqliteWorker.exited).code).toBe(1);
+    expect(wrongSqliteWorker.output()).toContain('FORGE_AUTHORITY_ID does not match');
     const process = worker(fixture);
     try {
       await approveAndRun(fixture);

@@ -66,9 +66,10 @@ export function authorityConfigurationFingerprint(configuration: AuthorityConfig
 
 const assertDeploymentIdentity = (
   configuration: AuthorityConfiguration,
-  expected: string | undefined
+  expected: string | undefined,
+  allowMissingLegacySqliteIdentity = false
 ): void => {
-  if (configuration.backend !== 'postgres' && expected === undefined) {
+  if (allowMissingLegacySqliteIdentity && expected === undefined) {
     return;
   }
   if (expected !== authorityConfigurationFingerprint(configuration)) {
@@ -107,7 +108,7 @@ export function resolveAuthorityConfiguration(
       throw new Error('SQLite authority requires an absolute FORGE_WORKER_DATABASE_PATH');
     }
     const configuration = { backend: 'sqlite' as const, databasePath };
-    assertDeploymentIdentity(configuration, environment.FORGE_AUTHORITY_ID);
+    assertDeploymentIdentity(configuration, environment.FORGE_AUTHORITY_ID, backend === undefined);
     return configuration;
   }
   if (backend === 'postgres') {

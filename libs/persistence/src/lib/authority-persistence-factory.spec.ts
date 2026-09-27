@@ -65,6 +65,56 @@ describe('production authority routing', () => {
     ).toThrow('SQLite authority requires an absolute');
   });
 
+  it('requires deployment identity for explicit SQLite but preserves backend-unset compatibility', () => {
+    expect(() =>
+      resolveAuthorityConfiguration({
+        FORGE_AUTHORITY_BACKEND: 'sqlite',
+        FORGE_WORKER_DATABASE_PATH: sqlite
+      })
+    ).toThrow('FORGE_AUTHORITY_ID does not match');
+    expect(resolveAuthorityConfiguration({ FORGE_WORKER_DATABASE_PATH: sqlite })).toEqual({
+      backend: 'sqlite',
+      databasePath: sqlite
+    });
+    const expected = authorityConfigurationFingerprint({ backend: 'sqlite', databasePath: sqlite });
+    expect(
+      resolveAuthorityConfiguration({
+        FORGE_AUTHORITY_BACKEND: 'sqlite',
+        FORGE_WORKER_DATABASE_PATH: sqlite,
+        FORGE_AUTHORITY_ID: expected
+      })
+    ).toEqual({ backend: 'sqlite', databasePath: sqlite });
+    expect(() =>
+      resolveAuthorityConfiguration({
+        FORGE_WORKER_DATABASE_PATH: join(process.cwd(), 'fixture', 'other.sqlite'),
+        FORGE_AUTHORITY_ID: expected
+      })
+    ).toThrow('FORGE_AUTHORITY_ID does not match');
+  });
+
+  it('rejects a worker configured for SQLite B with the expected identity of CLI SQLite A', () => {
+    const cliDatabase = join(process.cwd(), 'authority', 'A.sqlite');
+    const workerDatabase = join(process.cwd(), 'authority', 'B.sqlite');
+    const expected = authorityConfigurationFingerprint({
+      backend: 'sqlite',
+      databasePath: cliDatabase
+    });
+    expect(
+      resolveAuthorityConfiguration({
+        FORGE_AUTHORITY_BACKEND: 'sqlite',
+        FORGE_WORKER_DATABASE_PATH: cliDatabase,
+        FORGE_AUTHORITY_ID: expected
+      })
+    ).toEqual({ backend: 'sqlite', databasePath: cliDatabase });
+    expect(() =>
+      resolveAuthorityConfiguration({
+        FORGE_AUTHORITY_BACKEND: 'sqlite',
+        FORGE_WORKER_DATABASE_PATH: workerDatabase,
+        FORGE_AUTHORITY_ID: expected
+      })
+    ).toThrow('FORGE_AUTHORITY_ID does not match');
+  });
+
   it('binds both processes to one backend, database, schema and role without exposing credentials', () => {
     const configuration = resolveAuthorityConfiguration({
       ...postgres,

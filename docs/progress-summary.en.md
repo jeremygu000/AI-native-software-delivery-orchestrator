@@ -3315,3 +3315,11 @@ could not find a container runtime. `pnpm check` stops at pre-existing formattin
 `libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`,
 `libs/domain/src/lib/task-repair-attempt.ts`, and
 `libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`.
+
+Independent review of M4.1D found that the explicit SQLite deployment path could omit
+`FORGE_AUTHORITY_ID`, bypassing the identity contract for independently deployed processes. The
+factory now requires the expected identity whenever `FORGE_AUTHORITY_BACKEND` is set to `sqlite`
+or `postgres`; only backend-unset legacy SQLite may omit it. A supplied identity is never ignored.
+Factory tests prove a worker pointed at SQLite B cannot use CLI SQLite A's expected identity, and
+the compiled SQLite acceptance proves that worker exits before Temporal polling. M4.1D remains
+**IMPLEMENTED / AWAITING INDEPENDENT REVIEW**, and M4.1 remains **OPEN**.

@@ -262,3 +262,12 @@ composition 15 项、进程验收 5 项、smoke 配置 3 项均通过。Lint、t
 `libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`、
 `libs/domain/src/lib/task-repair-attempt.ts`、
 `libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`。
+
+### M4.1D 显式 SQLite 部署身份复审修正
+
+独立复审指出新加入的显式 SQLite 路由仍可缺少 `FORGE_AUTHORITY_ID`。现在**两个显式选择的
+backend** 都必须提供该身份；只有历史上**未设置 backend** 的 SQLite 兼容路径允许省略。
+若提供身份，即使走兼容路径也必须通过校验。工厂回归分别覆盖这两种情况，并拒绝使用 CLI
+数据库 A 的预期身份却指向 SQLite 数据库 B 的 worker。编译产物 SQLite 进程验收也验证这种
+错误路径的 worker 在连接 Temporal 前退出。PostgreSQL 路由及 M4.1C 启动闸门没有变化。
+M4.1D 仍为**已实现／待独立复审**，M4.1 整体仍为**进行中**。

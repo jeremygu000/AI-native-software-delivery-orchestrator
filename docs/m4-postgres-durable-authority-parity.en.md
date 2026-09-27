@@ -318,3 +318,15 @@ runtime. Repository-wide `pnpm check` stops at formatting issues in three untouc
 `libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`,
 `libs/domain/src/lib/task-repair-attempt.ts`, and
 `libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`.
+
+### M4.1D explicit SQLite deployment-identity review remediation
+
+Independent review identified one gap in the new SQLite route: an explicitly selected
+`FORGE_AUTHORITY_BACKEND=sqlite` previously accepted a missing `FORGE_AUTHORITY_ID`. The identity
+is now mandatory for **both explicitly selected backends**, while only the historical
+backend-unset SQLite compatibility route may omit it. A supplied identity is always checked,
+including on the compatibility route. A factory regression checks both cases and rejects a worker
+configured for SQLite database B with the expected identity of CLI database A. The compiled
+SQLite worker acceptance also starts a worker with that wrong path and verifies it exits before
+connecting to Temporal. PostgreSQL routing and its M4.1C startup gate are unchanged. M4.1D
+remains **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**; M4.1 overall remains **OPEN**.

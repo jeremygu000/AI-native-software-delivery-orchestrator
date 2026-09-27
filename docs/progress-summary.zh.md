@@ -2914,3 +2914,9 @@ worker 阶段的 composition 15 项、进程验收 5 项、smoke 配置 3 项均
 问题处停止：`libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`、
 `libs/domain/src/lib/task-repair-attempt.ts`、
 `libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`。
+
+M4.1D 的独立复审发现：显式 SQLite 部署路径可省略 `FORGE_AUTHORITY_ID`，使独立进程绕过
+部署身份约定。现在只要明确设置 `FORGE_AUTHORITY_BACKEND=sqlite` 或 `postgres` 就必须提供
+预期身份；仅历史上未设置 backend 的 SQLite 路径允许省略，而且提供时也一定校验。工厂测试
+证明指向 SQLite B 的 worker 不能使用 CLI SQLite A 的身份；编译产物验收证明该 worker 在
+Temporal polling 之前退出。M4.1D 仍为**已实现／待独立复审**，M4.1 整体仍为**进行中**。
