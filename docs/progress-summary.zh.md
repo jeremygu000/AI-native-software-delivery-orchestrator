@@ -2876,3 +2876,8 @@ URL 明确使用与配置一致的 runtime 用户名，且在连接前拒绝所�
 恢复、启动拒绝及缺失或覆写用户名的拒绝。**53 项 PostgreSQL 测试通过**（16 项共享契约、
 37 项 PG 专项）。M4.1C 仍为**已实现／待独立复审**；生产 CLI／worker 继续使用 SQLite，
 M4.1D 尚未开始。
+
+对受限 runtime 登录凭据修正的独立复审未发现 P0 或 P1 问题。**M4.1C 现为 PASS / CLOSED /
+FROZEN**。M4.1 整体仍为**进行中**：M4.1D 尚未开始，生产 CLI 与 worker 均继续使用
+SQLite，PostgreSQL 生产路由尚未启用。未来的 TLS 与连接安全选项应通过明确的强类型
+adapter 配置表达，而不是通过可能绕过登录闸门的 URL 查询参数表达。

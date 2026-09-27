@@ -3272,3 +3272,9 @@ both SQL identities. Real PostgreSQL 14 tests demonstrate the session-authorizat
 restoration, fail-closed startup, and missing/overridden username rejection. **53 PostgreSQL
 cases pass** (16 shared and 37 PG-only). M4.1C remains **IMPLEMENTED / AWAITING INDEPENDENT
 REVIEW**; production CLI and worker still use SQLite and M4.1D has not begun.
+
+Independent review of the authenticated-runtime-credential correction found no P0 or P1 issues.
+**M4.1C is PASS / CLOSED / FROZEN.** M4.1 overall is still **OPEN**: M4.1D has not begun,
+and neither the CLI nor the worker has been routed to PostgreSQL. Both production processes
+continue to use SQLite. Future TLS and connection-security options must be modeled as explicit
+typed adapter configuration rather than URL query parameters that bypass the login gate.

@@ -262,3 +262,11 @@ and adapter startup rejects the equivalent URL startup-option attempt. Missing r
 and any URL startup parameters also fail closed. The suite now has **53 PostgreSQL cases** (16
 shared contracts plus 37 PG-only). M4.1C remains **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**;
 CLI and worker still use SQLite, and M4.1D production routing has not begun.
+
+### M4.1C independent review closure
+
+Independent review of the authenticated-runtime-credential correction found no P0 or P1 issues.
+M4.1C is **PASS / CLOSED / FROZEN**. M4.1 overall remains **OPEN**: M4.1D has not begun,
+and the production CLI and worker still use SQLite; PostgreSQL production routing is not enabled.
+Any future TLS or connection-security configuration belongs in an explicit typed adapter contract,
+not in URL query parameters that weaken the runtime-login gate.

@@ -213,3 +213,10 @@ PostgreSQL 专项 suite 现有 **51 项通过**（16 项共享契约、35 项 PG
 runtime 用户名或携带任何 URL 启动参数也会被拒绝。PostgreSQL 专项 suite 现有 **53 项通过**
 （16 项共享契约、37 项 PG 专项）。M4.1C 仍为**已实现／待独立复审**，CLI／worker 仍使用
 SQLite，M4.1D 生产路由尚未开始。
+
+### M4.1C 独立复审结论
+
+对受限 runtime 连接凭据修正的独立复审未发现 P0 或 P1 问题。M4.1C 现为
+**PASS / CLOSED / FROZEN**。M4.1 整体仍为**进行中**：M4.1D 尚未开始，生产 CLI 和
+worker 继续使用 SQLite，PostgreSQL 生产路由尚未启用。未来如需 TLS 或连接安全配置，
+应使用明确的强类型 adapter 配置，不应放宽 runtime 登录闸门以允许 URL 查询参数。
