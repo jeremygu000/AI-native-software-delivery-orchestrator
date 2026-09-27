@@ -136,6 +136,9 @@ importers:
         specifier: ^1.24.0
         version: 1.24.0
     devDependencies:
+      '@ai-native-software-delivery-orchestrator/postgres-persistence':
+        specifier: workspace:*
+        version: link:../../libs/postgres-persistence
       '@temporalio/client':
         specifier: ^1.24.0
         version: 1.24.0
@@ -267,6 +270,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/planning':
         specifier: workspace:*
         version: link:../planning
+      '@ai-native-software-delivery-orchestrator/postgres-persistence':
+        specifier: workspace:*
+        version: link:../postgres-persistence
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3

@@ -971,7 +971,7 @@ describe('forge status', () => {
           '/run-authority'
         ])
       ).rejects.toMatchObject({ code: 'commander.error' });
-      expect(errorOutput).toContain('Operational commands require an absolute');
+      expect(errorOutput).toContain('SQLite authority requires an absolute');
     } finally {
       if (original === undefined) {
         delete process.env.FORGE_WORKER_DATABASE_PATH;

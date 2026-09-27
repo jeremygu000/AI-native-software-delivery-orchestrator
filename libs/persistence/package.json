@@ -17,6 +17,7 @@
   "dependencies": {
     "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
     "@ai-native-software-delivery-orchestrator/planning": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/postgres-persistence": "workspace:*",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "0.45.2"
   },

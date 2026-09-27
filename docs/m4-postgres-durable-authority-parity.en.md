@@ -270,3 +270,51 @@ M4.1C is **PASS / CLOSED / FROZEN**. M4.1 overall remains **OPEN**: M4.1D has no
 and the production CLI and worker still use SQLite; PostgreSQL production routing is not enabled.
 Any future TLS or connection-security configuration belongs in an explicit typed adapter contract,
 not in URL query parameters that weaken the runtime-login gate.
+
+## M4.1D — explicit production authority routing (awaiting independent review)
+
+The CLI and independently started Temporal worker now select their durable store through the
+same `resolveAuthorityConfiguration` / `openAuthorityPersistence` boundary in `libs/persistence`.
+`FORGE_AUTHORITY_BACKEND=sqlite` selects an absolute `FORGE_WORKER_DATABASE_PATH`; when the backend
+variable is absent, existing SQLite deployments and per-run operational commands retain their
+SQLite compatibility behavior. A PostgreSQL setting without `FORGE_AUTHORITY_BACKEND=postgres` is
+rejected rather than silently interpreted as SQLite. For PostgreSQL, both processes require
+`FORGE_POSTGRES_CONNECTION_STRING`, `FORGE_POSTGRES_SCHEMA`, `FORGE_POSTGRES_ROLE`, and
+`FORGE_AUTHORITY_ID`; a SQLite path alongside these settings is rejected. The identity is the
+`sha256:` fingerprint returned by `authorityConfigurationFingerprint` over the backend, database
+host/port/name, schema, and role. It omits credentials; provide the same fingerprint to both
+processes. Changing a database, schema, role, or backend without changing the expected fingerprint
+fails before work. This guards accidental deployment mismatch, not a deliberately forged value.
+
+Migration remains an explicit owner operation: deploy the versioned schema with
+`migratePostgresAuthoritySchema` before starting either process. The factory opens PostgreSQL only
+through `PostgresOrchestrationPersistence.connect`, which rejects missing migrations, wrong role,
+unexpected privileges, and invalid schema without creating objects. `forge run` preflights this
+connection before plan binding and checkout provisioning. Launch, `forge status`, `forge cancel`,
+unknown-attempt cancellation settlement, and integration cancellation settlement then all open
+the configured authority; the worker injects the same store into provider-neutral composition.
+The CLI does not start a worker, and Temporal workflow arguments remain compact run identifiers.
+
+The compiled-process acceptance test starts a local Temporal server, an owner-migrated PostgreSQL
+14 fixture with a restricted runtime role, a separate CLI, and a separate worker. A third database
+connection verifies durable completion and a single initial run-started event. The CLI status
+observes that PostgreSQL run; a terminal cancel rejects cancellation of the completed run. A
+second, independently launched PostgreSQL run is cancelled by the CLI after launch exits: status
+and another connection observe `CANCEL_REQUESTED`, and a separate worker finalizes `CANCELLED`.
+A wrong-schema CLI and wrong-backend worker are rejected through the deployment
+identity. The existing compiled SQLite process test now selects SQLite explicitly with the same
+identity mechanism; the older no-backend SQLite route remains covered by factory tests.
+
+M4.1D is **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**, not closed. M4.1A–C and M3 retain their
+frozen semantics. This stage does not add repository-wide fencing or multi-run concurrency; TLS
+and connection-security policy need an explicit typed adapter configuration in a later review,
+not URL query parameters that bypass the credential gate.
+
+Verification: the focused factory/CLI/composition suite passed 50 tests, and the compiled
+Temporal-worker phase passed 15 composition, 5 process-acceptance, and 3 smoke-configuration
+tests. Lint, typecheck, and build passed. The non-worker full-suite phase passed 668 tests but
+could not complete because the unchanged Restate container test could not find a working container
+runtime. Repository-wide `pnpm check` stops at formatting issues in three untouched files:
+`libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`,
+`libs/domain/src/lib/task-repair-attempt.ts`, and
+`libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`.

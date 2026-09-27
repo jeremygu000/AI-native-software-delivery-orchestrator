@@ -13,6 +13,10 @@ import {
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import { resolveM312ExternalSmokeConfig } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 import {
+  openAuthorityPersistence,
+  type AuthorityConfiguration
+} from '@ai-native-software-delivery-orchestrator/persistence';
+import {
   createCodeReviewPolicy,
   type CodeReviewPolicy
 } from '@ai-native-software-delivery-orchestrator/planning';
@@ -104,7 +108,7 @@ const acceptanceOverrides = (): ForgeRuntimeCompositionOverrides => ({
 });
 
 export interface ForgeWorkerCompositionDeployment {
-  readonly databasePath: string;
+  readonly authority: AuthorityConfiguration;
   readonly repositoryPath: string;
   readonly codeReviewPolicy: CodeReviewPolicy;
   readonly reviewModel: PiSessionModel;
@@ -112,7 +116,7 @@ export interface ForgeWorkerCompositionDeployment {
 
 const isDeployment = (
   value: ForgeWorkerCompositionDeployment | ForgeRuntimeCompositionOverrides
-): value is ForgeWorkerCompositionDeployment => 'databasePath' in value;
+): value is ForgeWorkerCompositionDeployment => 'authority' in value;
 
 const createProductionAdapters = (policy: CodeReviewPolicy, model: PiSessionModel) => {
   const gateway = new PiCodingAgentGateway(undefined, { model });
@@ -142,7 +146,7 @@ const createProductionAdapters = (policy: CodeReviewPolicy, model: PiSessionMode
 };
 
 export const createTestWorkerCompositionDeployment = (): ForgeWorkerCompositionDeployment => ({
-  databasePath: ':memory:',
+  authority: { backend: 'sqlite', databasePath: ':memory:' },
   repositoryPath: process.cwd(),
   codeReviewPolicy: createCodeReviewPolicy({ provider: 'test', model: 'test' }),
   reviewModel: undefined
@@ -187,20 +191,29 @@ export async function createForgeWorkerComposition(
     ? deploymentOrOverrides
     : createTestWorkerCompositionDeployment();
   const overrides = isDeployment(deploymentOrOverrides) ? explicitOverrides : deploymentOrOverrides;
-  const composition = await createForgeRuntimeComposition(
-    { ...workerOverrides(deployment), ...overrides },
-    {
-      databasePath: deployment.databasePath,
-      repositoryPath: deployment.repositoryPath,
-      getActivityExecutionContext: () => {
-        try {
-          return { cancellationSignal: Context.current().cancellationSignal };
-        } catch {
-          return undefined;
+  const persistence =
+    overrides.persistence ?? (await openAuthorityPersistence(deployment.authority));
+  let composition: ForgeRuntimeComposition;
+  try {
+    composition = await createForgeRuntimeComposition(
+      { ...workerOverrides(deployment), ...overrides, persistence },
+      {
+        repositoryPath: deployment.repositoryPath,
+        getActivityExecutionContext: () => {
+          try {
+            return { cancellationSignal: Context.current().cancellationSignal };
+          } catch {
+            return undefined;
+          }
         }
       }
+    );
+  } catch (error) {
+    if (overrides.persistence === undefined) {
+      await persistence.close?.();
     }
-  );
+    throw error;
+  }
   return {
     ...composition,
     forgeActivities: {

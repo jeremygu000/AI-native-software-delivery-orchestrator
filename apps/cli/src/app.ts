@@ -32,7 +32,8 @@ import {
   type PlanArtifact
 } from '@ai-native-software-delivery-orchestrator/planning';
 import {
-  DrizzleSqliteOrchestrationPersistence,
+  openAuthorityPersistence,
+  resolveAuthorityConfiguration,
   JsonFilePlanApprovalStore,
   JsonFilePlanArtifactStore,
   resolvePlanArtifactDirectory
@@ -206,16 +207,10 @@ const resolveReviewPolicy = (provider: string, model: string) => {
   };
 };
 
-const authorityDatabasePath = (runId: string, runDirectory: string): string => {
-  const configured = process.env.FORGE_WORKER_DATABASE_PATH;
-  if (configured === undefined) {
-    return join(runDirectory, runId, 'run.sqlite');
-  }
-  if (configured.trim().length === 0 || !isAbsolute(configured)) {
-    throw new Error('Operational commands require an absolute FORGE_WORKER_DATABASE_PATH');
-  }
-  return configured;
-};
+const operationalAuthority = (runId: string, runDirectory: string) =>
+  openAuthorityPersistence(
+    resolveAuthorityConfiguration(process.env, join(runDirectory, runId, 'run.sqlite'))
+  );
 
 const createRepositoryPlan = async (request: {
   readonly specificationPath: string;
@@ -302,30 +297,36 @@ const cancelRun =
     readonly runId: string;
     readonly runDirectory: string;
   }): Promise<{ readonly runId: string; readonly state: string }> => {
-    const databasePath = authorityDatabasePath(request.runId, request.runDirectory);
-    const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
-    const cancellation = await persistence.requestCancellation(request.runId);
-    if (cancellation.status === 'terminal') {
-      throw new Error(`Cannot cancel run ${request.runId} in state ${cancellation.state}`);
+    const persistence = await operationalAuthority(request.runId, request.runDirectory);
+    try {
+      const cancellation = await persistence.requestCancellation(request.runId);
+      if (cancellation.status === 'terminal') {
+        throw new Error(`Cannot cancel run ${request.runId} in state ${cancellation.state}`);
+      }
+      await requestWorkflowCancellation(request.runId);
+      return { runId: request.runId, state: 'CANCEL_REQUESTED' };
+    } finally {
+      await persistence.close();
     }
-    await requestWorkflowCancellation(request.runId);
-    return { runId: request.runId, state: 'CANCEL_REQUESTED' };
   };
 
 const statusRun = async (request: {
   readonly runId: string;
   readonly runDirectory: string;
 }): Promise<RunStatusResult> => {
-  const databasePath = authorityDatabasePath(request.runId, request.runDirectory);
-  const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
-  const readModel = await new ForgeReadModel({
-    persistence,
-    workflowId: forgeRunWorkflowId
-  }).read(request.runId);
-  if (readModel === undefined) {
-    throw new Error(`Run not found: ${request.runId}`);
+  const persistence = await operationalAuthority(request.runId, request.runDirectory);
+  try {
+    const readModel = await new ForgeReadModel({
+      persistence,
+      workflowId: forgeRunWorkflowId
+    }).read(request.runId);
+    if (readModel === undefined) {
+      throw new Error(`Run not found: ${request.runId}`);
+    }
+    return readModel;
+  } finally {
+    await persistence.close();
   }
-  return readModel;
 };
 
 const settleCancellation = async (request: {
@@ -336,21 +337,24 @@ const settleCancellation = async (request: {
   readonly expectedRevision: number;
   readonly detail: string;
 }): Promise<{ readonly attemptId: string; readonly state: 'CANCELLED' }> => {
-  const databasePath = authorityDatabasePath(request.runId, request.runDirectory);
-  const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
-  const settlementStore: CancellationSettlementPersistence = persistence;
-  const result =
-    request.attemptKind === 'builder'
-      ? await settlementStore.settleUnknownBuilderCancellation(request)
-      : await settlementStore.settleUnknownRepairCancellation(request);
-  if (result.status !== 'settled') {
-    throw new Error(
-      result.status === 'version-conflict'
-        ? `Cancellation settlement revision conflict: ${request.attemptId}/${result.actualRevision}`
-        : `Cancellation settlement requires UNKNOWN attempt: ${request.attemptId}/${result.state}`
-    );
+  const persistence = await operationalAuthority(request.runId, request.runDirectory);
+  try {
+    const settlementStore: CancellationSettlementPersistence = persistence;
+    const result =
+      request.attemptKind === 'builder'
+        ? await settlementStore.settleUnknownBuilderCancellation(request)
+        : await settlementStore.settleUnknownRepairCancellation(request);
+    if (result.status !== 'settled') {
+      throw new Error(
+        result.status === 'version-conflict'
+          ? `Cancellation settlement revision conflict: ${request.attemptId}/${result.actualRevision}`
+          : `Cancellation settlement requires UNKNOWN attempt: ${request.attemptId}/${result.state}`
+      );
+    }
+    return { attemptId: result.attemptId, state: 'CANCELLED' };
+  } finally {
+    await persistence.close();
   }
-  return { attemptId: result.attemptId, state: 'CANCELLED' };
 };
 
 const settleIntegrationCancellation = async (request: {
@@ -361,11 +365,14 @@ const settleIntegrationCancellation = async (request: {
   readonly outputAttemptId: string;
   readonly detail: string;
 }): Promise<{ readonly taskId: string; readonly state: 'SETTLED' }> => {
-  const databasePath = authorityDatabasePath(request.runId, request.runDirectory);
-  const persistence = new DrizzleSqliteOrchestrationPersistence(databasePath);
-  const settlementStore: IntegrationMutationClaimPersistence = persistence;
-  await settlementStore.settleIntegrationCancellation(request);
-  return { taskId: request.taskId, state: 'SETTLED' };
+  const persistence = await operationalAuthority(request.runId, request.runDirectory);
+  try {
+    const settlementStore: IntegrationMutationClaimPersistence = persistence;
+    await settlementStore.settleIntegrationCancellation(request);
+    return { taskId: request.taskId, state: 'SETTLED' };
+  } finally {
+    await persistence.close();
+  }
 };
 
 const planStores = async (request: {
@@ -456,23 +463,22 @@ const runRepositoryPlan = async (request: {
   readonly reviewModel: string;
 }): Promise<unknown> => {
   const { policy } = resolveReviewPolicy(request.reviewProvider, request.reviewModel);
-  const configuredAuthorityDatabasePath = process.env.FORGE_WORKER_DATABASE_PATH;
+  const authorityConfiguration = resolveAuthorityConfiguration(process.env);
   const workerRepositoryPath = process.env.FORGE_WORKER_REPOSITORY_PATH;
   if (
-    configuredAuthorityDatabasePath === undefined ||
     workerRepositoryPath === undefined ||
-    configuredAuthorityDatabasePath.trim().length === 0 ||
     workerRepositoryPath.trim().length === 0 ||
-    !isAbsolute(configuredAuthorityDatabasePath) ||
     !isAbsolute(workerRepositoryPath)
   ) {
-    throw new Error(
-      'Temporal launch requires nonempty absolute FORGE_WORKER_DATABASE_PATH and FORGE_WORKER_REPOSITORY_PATH'
-    );
+    throw new Error('Temporal launch requires nonempty absolute FORGE_WORKER_REPOSITORY_PATH');
   }
   if (workerRepositoryPath !== resolve(request.repositoryPath)) {
     throw new Error('Temporal worker repository scope does not match the requested repository');
   }
+  // Fail before binding or provisioning a checkout if the selected deployment cannot open
+  // its existing authority schema with the restricted runtime credential.
+  const preflight = await openAuthorityPersistence(authorityConfiguration);
+  await preflight.close();
   const [stores, registry] = await Promise.all([
     planStores(request),
     loadSharedResourceRegistry(request.sharedResourcesPath)
@@ -507,9 +513,7 @@ const runRepositoryPlan = async (request: {
     bindings: new LocalRuntimeBindingPolicy({ workspaceRoot: runDirectory }),
     runtime: {
       startOrResumeRun: async (runtimeRequest) => {
-        const persistence = new DrizzleSqliteOrchestrationPersistence(
-          configuredAuthorityDatabasePath
-        );
+        const persistence = await openAuthorityPersistence(authorityConfiguration);
         const launcher = new TemporalRunLauncher({
           persistence,
           workflow: {
@@ -527,7 +531,7 @@ const runRepositoryPlan = async (request: {
         try {
           return await launcher.startOrResumeRun(runtimeRequest);
         } finally {
-          persistence.close();
+          await persistence.close();
         }
       }
     }

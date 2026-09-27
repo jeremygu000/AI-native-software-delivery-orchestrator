@@ -2881,3 +2881,36 @@ M4.1D 尚未开始。
 FROZEN**。M4.1 整体仍为**进行中**：M4.1D 尚未开始，生产 CLI 与 worker 均继续使用
 SQLite，PostgreSQL 生产路由尚未启用。未来的 TLS 与连接安全选项应通过明确的强类型
 adapter 配置表达，而不是通过可能绕过登录闸门的 URL 查询参数表达。
+
+## M4.1D：生产 backend 选择与独立进程路由
+
+M4.1D 让已经复审过的 PostgreSQL durable adapter 可由生产 CLI 和 Temporal worker 显式
+选择。统一持久化工厂解析 backend 配置，打开原有 SQLite authority 或预先迁移完成的
+PostgreSQL adapter，并校验不包含凭据的部署身份。旧部署和按 run 存储的运维命令仍默认
+SQLite；PostgreSQL 则必须由两个独立进程同时显式提供 runtime 连接、schema、角色与
+匹配的 `FORGE_AUTHORITY_ID`。backend 或 scope 配置不一致时直接拒绝。PostgreSQL 启动
+仍执行 M4.1C 的 schema、角色和权限闸门；迁移由 schema owner 单独完成，CLI／worker
+启动不会建表。
+
+CLI 的启动、status read model、cancel 和取消结算现在使用同一个选定 backend；在绑定
+计划或创建 checkout 之前预检 PostgreSQL。worker 将所选存储注入可复用 composition，
+后者不再从进程环境或默认路径推断数据库。CLI 仅作为 Temporal client 启动工作流，
+worker 保持独立进程。编译产物验收用真实已迁移的 PostgreSQL 14 数据库、独立 CLI／
+worker、本地 Temporal 服务完成一次 run；另一数据库连接核对持久化证据和 status。
+另一个 PostgreSQL run 在启动 CLI 退出后被取消，status 及独立连接可见
+`CANCEL_REQUESTED`，worker 随后完成为 `CANCELLED`；错误 backend／schema 身份被拒绝。
+显式 SQLite 编译产物验收和工厂级默认兼容
+行为也保留。部署变量、身份约定和迁移先决条件详见
+`docs/m4-postgres-durable-authority-parity.zh.md`。
+
+M4.1D 目前是**已实现／待独立复审**，M4.1 整体仍为**进行中**；M3 和 M4.1A–C 维持
+冻结。本阶段不包含跨 run repository fencing、多 run 并发或 API/UI；TLS 连接配置
+需要另行设计强类型 adapter 策略。
+
+本次实现的验证结果：工厂／CLI／composition 定向测试 50 项通过；编译产物 Temporal
+worker 阶段的 composition 15 项、进程验收 5 项、smoke 配置 3 项均通过。Lint、typecheck
+和 build 通过。非 worker 测试阶段有 668 项通过，但未改动的 Restate 容器测试因环境找不到
+可用容器运行时而失败，因此全套测试未完成。`pnpm check` 仍在三个原有、未改动文件的格式
+问题处停止：`libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`、
+`libs/domain/src/lib/task-repair-attempt.ts`、
+`libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`。

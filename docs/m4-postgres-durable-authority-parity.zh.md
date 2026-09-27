@@ -220,3 +220,45 @@ SQLite，M4.1D 生产路由尚未开始。
 **PASS / CLOSED / FROZEN**。M4.1 整体仍为**进行中**：M4.1D 尚未开始，生产 CLI 和
 worker 继续使用 SQLite，PostgreSQL 生产路由尚未启用。未来如需 TLS 或连接安全配置，
 应使用明确的强类型 adapter 配置，不应放宽 runtime 登录闸门以允许 URL 查询参数。
+
+## M4.1D：生产 authority 显式路由（待独立复审）
+
+CLI 与独立启动的 Temporal worker 现在通过 `libs/persistence` 中相同的
+`resolveAuthorityConfiguration`／`openAuthorityPersistence` 边界选择持久化存储。
+`FORGE_AUTHORITY_BACKEND=sqlite` 使用绝对路径 `FORGE_WORKER_DATABASE_PATH`；未设置 backend
+时，现有 SQLite 部署及按 run 存储的运维命令仍保持 SQLite 兼容行为。仅设置 PostgreSQL
+参数却未显式选择 `FORGE_AUTHORITY_BACKEND=postgres` 会被拒绝，不会默默回退 SQLite。
+选择 PostgreSQL 时，两个进程均需提供 `FORGE_POSTGRES_CONNECTION_STRING`、
+`FORGE_POSTGRES_SCHEMA`、`FORGE_POSTGRES_ROLE` 和 `FORGE_AUTHORITY_ID`；不得同时提供
+SQLite 数据库路径。`FORGE_AUTHORITY_ID` 是 `authorityConfigurationFingerprint` 对 backend、
+数据库主机／端口／名称、schema、角色计算的 `sha256:` 指纹，不包含凭据。两个进程必须使用
+相同指纹；修改数据库、schema、角色或 backend 却未更新指纹会在工作开始前失败。这防止意外
+配置错位，不能抵御有意伪造一致配置的行为。
+
+迁移仍由独立的 owner 显式执行：进程启动之前使用 `migratePostgresAuthoritySchema` 安装
+版本化 schema。工厂仅通过 `PostgresOrchestrationPersistence.connect` 打开 PostgreSQL；
+缺失迁移、错误角色、多余权限或异常结构均直接拒绝，不在启动时建表。`forge run` 在绑定计划
+或创建 checkout 之前预检连接。启动、`forge status`、`forge cancel`、UNKNOWN attempt
+取消结算及 integration 取消结算均使用所配置的 authority；worker 将同一 backend 的
+存储注入 provider-neutral composition。CLI 不创建 worker，Temporal 工作流只传紧凑 run ID。
+
+编译产物进程验收启动本地 Temporal 服务、由 owner 迁移且 runtime 角色受限的真实
+PostgreSQL 14 fixture、独立 CLI 与独立 worker。第三个数据库连接验证持久化完成及唯一
+初始 run-started 事件。CLI status 读取该 PostgreSQL run；终态 cancel 拒绝取消已完成
+run。另一个独立启动的 PostgreSQL run 在 CLI 启动进程退出后由 CLI 发起取消：status 与
+独立连接可见 `CANCEL_REQUESTED`，另一 worker 随后将其完成为 `CANCELLED`。错误 schema
+的 CLI 和错误 backend 的 worker 均被部署身份闸门拒绝。
+原有编译产物 SQLite 进程测试现在也以相同身份机制显式选用 SQLite；未指定 backend
+的 SQLite 兼容行为由工厂测试保留。
+
+M4.1D 当前为**已实现／待独立复审**，尚未关闭；M4.1A–C 和 M3 的语义保持冻结。
+本阶段不增加跨 run repository fencing 或多 run 并发控制；未来 TLS 与连接安全配置
+应使用明确的强类型 adapter 配置，不能通过绕过登录闸门的 URL 查询参数实现。
+
+验证结果：工厂／CLI／composition 定向测试 50 项通过；编译产物 Temporal worker 阶段的
+composition 15 项、进程验收 5 项、smoke 配置 3 项均通过。Lint、typecheck、build 通过。
+非 worker 全套阶段有 668 项通过，但未改动的 Restate 容器测试无法找到可用的容器运行时，
+因此未能完成整套测试。仓库级 `pnpm check` 在三个未改动文件的格式检查处停止：
+`libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`、
+`libs/domain/src/lib/task-repair-attempt.ts`、
+`libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`。

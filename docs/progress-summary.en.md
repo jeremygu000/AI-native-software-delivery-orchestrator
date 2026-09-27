@@ -3278,3 +3278,40 @@ Independent review of the authenticated-runtime-credential correction found no P
 and neither the CLI nor the worker has been routed to PostgreSQL. Both production processes
 continue to use SQLite. Future TLS and connection-security options must be modeled as explicit
 typed adapter configuration rather than URL query parameters that bypass the login gate.
+
+## M4.1D — production backend selection and independent process routing
+
+M4.1D makes the previously reviewed PostgreSQL durable adapter selectable by the production CLI
+and Temporal worker. One persistence factory parses the backend configuration, opens either the
+existing SQLite authority or the pre-migrated PostgreSQL adapter, and verifies a credential-free
+deployment identity. SQLite remains the default for older deployments and per-run operational
+commands. PostgreSQL must be explicitly selected with its runtime connection, schema, role, and
+matching `FORGE_AUTHORITY_ID` in both independently started processes. Inconsistent backend or
+scope settings fail closed. PostgreSQL startup continues to use the M4.1C schema/role/permission
+gate; migration is still performed separately by the schema owner, never by a CLI or worker.
+
+The CLI now uses the same backend for launch, status read model, cancel, and cancellation
+settlement; it preflights PostgreSQL before binding or checkout provisioning. The worker injects
+the selected store into the reusable composition, which no longer chooses a database from process
+environment variables or a default path. The launch remains client-only and Temporal remains the
+independent worker boundary. A compiled-process acceptance test completes a run through an
+owner-migrated PostgreSQL 14 database, separate CLI and worker, and a local Temporal server. It
+checks PostgreSQL status and durable evidence from another connection, then separately cancels
+another PostgreSQL run after the launching CLI exits and observes `CANCEL_REQUESTED` and
+worker-finalized `CANCELLED`. It rejects wrong backend or schema identities. SQLite
+compiled-process completion and factory-level default compatibility
+remain covered. See `docs/m4-postgres-durable-authority-parity.en.md` for the exact deployment
+variables, identity contract, and migration prerequisites.
+
+M4.1D is **IMPLEMENTED / AWAITING INDEPENDENT REVIEW**, so M4.1 overall is still **OPEN**.
+M3 and M4.1A–C remain frozen. Repository fencing, multi-run concurrency, and API/UI work remain
+outside this stage; TLS configuration requires a separately typed adapter policy.
+
+Verification for this implementation: 50 focused factory/CLI/composition tests passed; the
+compiled Temporal-worker phase passed 15 composition tests, 5 process-acceptance tests, and 3
+smoke-configuration tests. Lint, typecheck, and build passed. The non-worker test phase passed
+668 tests, but the full suite could not complete because the unchanged Restate container test
+could not find a container runtime. `pnpm check` stops at pre-existing formatting issues in
+`libs/agent-runtime/src/lib/pi-agent-runner.spec.ts`,
+`libs/domain/src/lib/task-repair-attempt.ts`, and
+`libs/orchestration-runtime/src/lib/repair-execution-coordinator.spec.ts`.

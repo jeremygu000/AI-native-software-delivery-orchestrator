@@ -4,6 +4,15 @@ export {
   PersistenceReplayError
 } from './lib/drizzle-sqlite-orchestration-persistence.js';
 export {
+  authorityConfigurationFingerprint,
+  authorityConfigurationIdentity,
+  openAuthorityPersistence,
+  resolveAuthorityConfiguration,
+  type AuthorityBackend,
+  type AuthorityConfiguration,
+  type AuthorityPersistence
+} from './lib/authority-persistence-factory.js';
+export {
   JsonFilePlanApprovalStore,
   JsonFilePlanArtifactStore,
   PlanArtifactStoreError,

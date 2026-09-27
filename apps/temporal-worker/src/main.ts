@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path';
+import { resolveAuthorityConfiguration } from '@ai-native-software-delivery-orchestrator/persistence';
 
 import {
   resolveTemporalConfig,
@@ -10,17 +11,13 @@ import { resolveWorkerReviewDeploymentConfig } from './review-deployment-config.
 
 async function main(): Promise<void> {
   if (
-    process.env.FORGE_WORKER_DATABASE_PATH === undefined ||
     process.env.FORGE_WORKER_REPOSITORY_PATH === undefined ||
-    process.env.FORGE_WORKER_DATABASE_PATH.trim().length === 0 ||
     process.env.FORGE_WORKER_REPOSITORY_PATH.trim().length === 0 ||
-    !isAbsolute(process.env.FORGE_WORKER_DATABASE_PATH) ||
     !isAbsolute(process.env.FORGE_WORKER_REPOSITORY_PATH)
   ) {
-    throw new Error(
-      'Worker requires nonempty absolute FORGE_WORKER_DATABASE_PATH and FORGE_WORKER_REPOSITORY_PATH'
-    );
+    throw new Error('Worker requires nonempty absolute FORGE_WORKER_REPOSITORY_PATH');
   }
+  const authority = resolveAuthorityConfiguration(process.env);
   const config = resolveTemporalConfig({
     serverUrl: process.env.TEMPORAL_SERVER_URL ?? 'http://localhost:7233',
     namespace: process.env.TEMPORAL_NAMESPACE ?? 'default',
@@ -29,7 +26,7 @@ async function main(): Promise<void> {
 
   const review = resolveWorkerReviewDeploymentConfig();
   const composition = await createForgeWorkerComposition({
-    databasePath: process.env.FORGE_WORKER_DATABASE_PATH,
+    authority,
     repositoryPath: process.env.FORGE_WORKER_REPOSITORY_PATH,
     codeReviewPolicy: review.policy,
     reviewModel: review.model

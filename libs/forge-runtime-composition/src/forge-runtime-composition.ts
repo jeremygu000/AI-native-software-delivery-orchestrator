@@ -27,7 +27,6 @@ import type {
   TaskVerificationEvidence,
   WorkspaceManager
 } from '@ai-native-software-delivery-orchestrator/domain';
-import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
 import { analyzeRepository } from '@ai-native-software-delivery-orchestrator/repository-analysis';
 import {
   codeReviewPolicyFingerprint,
@@ -204,7 +203,6 @@ export interface ActivityExecutionContext {
 
 export interface ForgeRuntimeCompositionOptions {
   readonly getActivityExecutionContext?: () => ActivityExecutionContext | undefined;
-  readonly databasePath?: string;
   readonly repositoryPath?: string;
 }
 
@@ -227,14 +225,10 @@ export async function createForgeRuntimeComposition(
         return analyzeRepository(options.repositoryPath);
       })()
     : { graph: overrides.repositoryGraph });
-  const persistence =
-    overrides.persistence ??
-    (() => {
-      if (options.databasePath === undefined) {
-        throw new Error('Forge runtime composition requires an explicit database path');
-      }
-      return new DrizzleSqliteOrchestrationPersistence(options.databasePath);
-    })();
+  const persistence = overrides.persistence;
+  if (persistence === undefined) {
+    throw new Error('Forge runtime composition requires explicit authority persistence');
+  }
   const writeGuards = new Map<string, InMemoryWriteGuard>();
   const writeGuardHydrations = new Map<string, Promise<InMemoryWriteGuard>>();
   const writeGuardForRunSync = (runId: string): InMemoryWriteGuard => {
@@ -1094,7 +1088,7 @@ export async function createForgeRuntimeComposition(
   return {
     forgeActivities,
     async close() {
-      void persistence.close?.();
+      await persistence.close?.();
     }
   };
 }

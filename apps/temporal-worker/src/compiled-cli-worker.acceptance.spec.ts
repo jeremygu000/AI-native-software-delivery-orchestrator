@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,9 +9,14 @@ import { fileURLToPath } from 'node:url';
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import type { PredictedTaskImpact } from '@ai-native-software-delivery-orchestrator/domain';
 import {
+  authorityConfigurationFingerprint,
   DrizzleSqliteOrchestrationPersistence,
   JsonFilePlanArtifactStore
 } from '@ai-native-software-delivery-orchestrator/persistence';
+import {
+  migratePostgresAuthoritySchema,
+  PostgresOrchestrationPersistence
+} from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 import {
   createPlanArtifact,
   type PreparedOrchestrationPlan
@@ -76,6 +82,21 @@ interface AcceptanceFixture {
 
 const sleep = (milliseconds: number): Promise<void> =>
   new Promise((complete) => setTimeout(complete, milliseconds));
+
+const freePort = async (): Promise<number> =>
+  new Promise((complete, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (address === null || typeof address === 'string') {
+        server.close();
+        reject(new Error('No PostgreSQL fixture port'));
+        return;
+      }
+      server.close(() => complete(address.port));
+    });
+  });
 
 const waitFor = async (predicate: () => Promise<boolean>, description: string): Promise<void> => {
   for (let attempts = 0; attempts < 300; attempts++) {
@@ -364,6 +385,166 @@ beforeAll(() => {
 }, 210_000);
 
 describe('compiled CLI and Temporal worker process boundary', () => {
+  it('completes through independent compiled processes and pre-migrated PostgreSQL authority', async () => {
+    const environment = await TestWorkflowEnvironment.createLocal();
+    const fixture = await createFixture(environment, 'postgres');
+    const data = join(fixture.root, 'postgres-data');
+    const port = await freePort();
+    const role = `forge_m41d_runtime_${process.pid}`;
+    const owner = `forge_m41d_owner_${process.pid}`;
+    const schema = 'forge_m41d';
+    const adminUrl = `postgresql://127.0.0.1:${port}/postgres`;
+    const ownerUrl = `postgresql://${owner}@127.0.0.1:${port}/postgres`;
+    const runtimeUrl = `postgresql://${role}@127.0.0.1:${port}/postgres`;
+    let databaseStarted = false;
+    let workerProcess: CapturedProcess | undefined;
+    let cancellationFixture: AcceptanceFixture | undefined;
+    let cancellationWorker: CapturedProcess | undefined;
+    try {
+      execFileSync('initdb', ['-D', data, '-A', 'trust', '--no-instructions'], { stdio: 'pipe' });
+      execFileSync(
+        'pg_ctl',
+        [
+          '-D',
+          data,
+          '-l',
+          join(fixture.root, 'postgres.log'),
+          '-o',
+          `-h 127.0.0.1 -p ${port}`,
+          '-w',
+          'start'
+        ],
+        { stdio: 'pipe' }
+      );
+      databaseStarted = true;
+      const psql = (statement: string) =>
+        execFileSync('psql', [adminUrl, '-v', 'ON_ERROR_STOP=1', '-c', statement], {
+          stdio: 'pipe'
+        });
+      psql(`create role "${owner}" login`);
+      psql(`create role "${role}" login`);
+      psql('revoke create, temporary on database postgres from public');
+      psql('revoke create on schema public from public');
+      psql(`grant create on database postgres to "${owner}"`);
+      await migratePostgresAuthoritySchema(
+        { connectionString: ownerUrl, schema, role: owner },
+        role
+      );
+      const configuration = {
+        backend: 'postgres' as const,
+        connectionString: runtimeUrl,
+        schema,
+        role
+      };
+      const env = {
+        ...fixture.env,
+        FORGE_AUTHORITY_BACKEND: 'postgres',
+        FORGE_POSTGRES_CONNECTION_STRING: runtimeUrl,
+        FORGE_POSTGRES_SCHEMA: schema,
+        FORGE_POSTGRES_ROLE: role,
+        FORGE_AUTHORITY_ID: authorityConfigurationFingerprint(configuration),
+        FORGE_WORKER_DATABASE_PATH: undefined
+      };
+      const routed = { ...fixture, env };
+      workerProcess = worker(routed);
+      await approveAndRun(routed);
+      await waitFor(
+        async () => (await status(routed)).state === 'COMPLETED',
+        'PostgreSQL durable completion'
+      );
+      const persistence = await PostgresOrchestrationPersistence.connect(configuration);
+      try {
+        const recovered = await persistence.recoverRun(routed.runId);
+        expect(recovered?.run.state).toBe('COMPLETED');
+        expect(recovered?.attempts).toHaveLength(1);
+        expect(recovered?.events.filter(({ event }) => event.type === 'run-started')).toHaveLength(
+          1
+        );
+      } finally {
+        await persistence.close();
+      }
+      const terminalCancel = capture(
+        process.execPath,
+        [cliPath, 'cancel', '--run-id', routed.runId, '--run-directory', routed.runDirectory],
+        env
+      );
+      expect((await terminalCancel.exited).code).toBe(1);
+      expect(terminalCancel.output()).toContain('Cannot cancel run');
+      expect(terminalCancel.output()).toContain('COMPLETED');
+      const next = await createFixture(environment, 'postgres-cancellation');
+      cancellationFixture = next;
+      const routedCancellation = {
+        ...next,
+        env: {
+          ...env,
+          FORGE_WORKER_REPOSITORY_PATH: next.repository,
+          TEMPORAL_TASK_QUEUE: next.queue
+        }
+      };
+      await approveAndRun(routedCancellation);
+      await invokeCli(routedCancellation, [
+        'cancel',
+        '--run-id',
+        next.runId,
+        '--run-directory',
+        next.runDirectory
+      ]);
+      expect((await status(routedCancellation)).state).toBe('CANCEL_REQUESTED');
+      const cancellationAuthority = await PostgresOrchestrationPersistence.connect(configuration);
+      try {
+        expect((await cancellationAuthority.recoverRun(next.runId))?.run.state).toBe(
+          'CANCEL_REQUESTED'
+        );
+      } finally {
+        await cancellationAuthority.close();
+      }
+      cancellationWorker = worker(routedCancellation);
+      await waitFor(
+        async () => (await status(routedCancellation)).state === 'CANCELLED',
+        'PostgreSQL durable cancellation'
+      );
+      const mismatchedSchema = { ...routed, env: { ...env, FORGE_POSTGRES_SCHEMA: 'wrong' } };
+      const mismatch = capture(
+        process.execPath,
+        [cliPath, 'status', '--run-id', routed.runId, '--run-directory', routed.runDirectory],
+        mismatchedSchema.env
+      );
+      const exited = await mismatch.exited;
+      expect(exited.code).toBe(1);
+      expect(mismatch.output()).toContain('FORGE_AUTHORITY_ID does not match');
+      const sqliteMismatch = {
+        ...routed,
+        env: {
+          ...env,
+          FORGE_AUTHORITY_BACKEND: 'sqlite',
+          FORGE_WORKER_DATABASE_PATH: routed.databasePath,
+          FORGE_POSTGRES_CONNECTION_STRING: undefined,
+          FORGE_POSTGRES_SCHEMA: undefined,
+          FORGE_POSTGRES_ROLE: undefined
+        }
+      };
+      const wrongBackend = capture(process.execPath, [workerPath], sqliteMismatch.env);
+      const stopped = await wrongBackend.exited;
+      expect(stopped.code).toBe(1);
+      expect(wrongBackend.output()).toContain('FORGE_AUTHORITY_ID does not match');
+    } finally {
+      if (cancellationWorker !== undefined) {
+        await stop(cancellationWorker);
+      }
+      if (workerProcess !== undefined) {
+        await stop(workerProcess);
+      }
+      if (databaseStarted) {
+        execFileSync('pg_ctl', ['-D', data, '-m', 'immediate', '-w', 'stop'], { stdio: 'pipe' });
+      }
+      await environment.teardown();
+      await rm(fixture.root, { recursive: true, force: true });
+      if (cancellationFixture !== undefined) {
+        await rm(cancellationFixture.root, { recursive: true, force: true });
+      }
+    }
+  }, 120_000);
+
   it('rejects a relative authority database before connecting the worker', async () => {
     const invalidWorker = capture(globalThis.process.execPath, [workerPath], {
       ...globalThis.process.env,
@@ -382,12 +563,19 @@ describe('compiled CLI and Temporal worker process boundary', () => {
     ]);
 
     expect(exited.code).toBe(1);
-    expect(invalidWorker.output()).toContain('Worker requires nonempty absolute');
+    expect(invalidWorker.output()).toContain(
+      'SQLite authority requires an absolute FORGE_WORKER_DATABASE_PATH'
+    );
   });
 
   it('completes one run through independent compiled CLI and worker processes', async () => {
     const environment = await TestWorkflowEnvironment.createLocal();
     const fixture = await createFixture(environment, 'normal');
+    fixture.env.FORGE_AUTHORITY_BACKEND = 'sqlite';
+    fixture.env.FORGE_AUTHORITY_ID = authorityConfigurationFingerprint({
+      backend: 'sqlite',
+      databasePath: fixture.databasePath
+    });
     const process = worker(fixture);
     try {
       await approveAndRun(fixture);
