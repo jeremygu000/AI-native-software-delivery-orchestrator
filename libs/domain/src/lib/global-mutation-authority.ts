@@ -53,6 +53,15 @@ export interface FencedMutationPermit {
   readonly id: string;
 }
 
+/** Durable unresolved permit evidence, recoverable after its worker disappears. */
+export interface PersistedFencedMutationPermit extends FencedMutationPermit {
+  readonly scopeId: string;
+  readonly claimId: string;
+  readonly owner: GlobalMutationOwner;
+  readonly token: number;
+  readonly resource: WritableResource;
+}
+
 export class GlobalMutationInFlightError extends Error {
   constructor() {
     super('Mutation authority has an in-flight controlled callback');
@@ -116,6 +125,16 @@ export interface GlobalMutationAuthority {
   /** Check deployment readiness, then serialize scope claims before the run row. */
   claimGlobalMutation(claim: GlobalMutationClaim): Promise<GlobalMutationClaimResult>;
   recoverRepositoryMutationAuthority(scopeId: string): Promise<readonly GlobalMutationLease[]>;
+  /**
+   * Recover every unresolved durable permit in stable order, including permits
+   * from lost processes. An independent connection must see the exact permit
+   * ID and its scope/claim/owner/token/resource, with an optional claim filter.
+   * Recovery is evidence only and does not release or settle a permit.
+   */
+  recoverFencedMutationPermits(
+    scopeId: string,
+    claimId?: string
+  ): Promise<readonly PersistedFencedMutationPermit[]>;
   assertCurrentMutationToken(request: CurrentMutationTokenRequest): Promise<void>;
   /**
    * Atomically validate current scope/claim/owner/token/resource authority and
@@ -131,8 +150,9 @@ export interface GlobalMutationAuthority {
   endFencedMutation(permit: FencedMutationPermit): Promise<void>;
   /**
    * Privileged recovery after the callback owner is proven unable to write.
-   * Atomically retire the orphaned permit, retain the claim as HELD_UNCERTAIN,
-   * and record the independent quiescence evidence; this is not a handoff.
+   * Accept an exact permit recovered on another connection. Atomically retire
+   * it, retain the claim as HELD_UNCERTAIN, and record independent quiescence
+   * evidence; this is not a handoff. The permit remains recoverable on failure.
    */
   settleOrphanedFencedMutation(
     permit: FencedMutationPermit,

@@ -3371,3 +3371,18 @@ blocking until settlement. A shared backend-neutral test factory specifies both 
 callback versus handoff, plus uncertain-owner reclamation. These are contract corrections and
 future adapter acceptance tests, **not** evidence that either durable adapter already satisfies
 them. M4.2 implementation remains open and requires independent review of this correction.
+
+Independent review of `6c002e7b976c885a85797dd5e058132f3c7a6e79` accepted the lock
+hierarchy and normal callback handoff semantics but found two remaining P1 acceptance gaps. The
+shared factory now defines both serialization orders for legacy admission versus deployment-wide
+cutover. Its fixtures must use real old writer-creating entry points and observable gate waits:
+an unknown-alias writer admitted first must appear in the whole-store inventory, while a barrier
+that wins first must reject later builder, repair, integration, and dynamic lease admission without
+changing durable writer evidence. An unclassified historical run under unregistered alias B must
+keep scope S, registered under alias A, from activating. The provider-neutral API also now exposes
+unresolved durable permits with their exact identity, scope, claim, owner, token, and resource.
+The shared factory specifies independent-connection recovery after owner connection loss, refusal
+to release or reclaim while the orphan remains, evidence-backed orphan settlement that leaves the
+claim HELD_UNCERTAIN, and only then reclamation and a higher-token replacement. These are still
+unwired acceptance definitions: SQLite and PostgreSQL have not executed them, and M4.2 remains
+OPEN pending independent contract review and both adapter implementations.

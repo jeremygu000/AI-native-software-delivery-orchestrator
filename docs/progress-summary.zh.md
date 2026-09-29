@@ -2963,3 +2963,16 @@ scope 先于 run 的锁序。仍有 permit 未结束时，释放与不确定 own
 无关的测试工厂定义了 callback 与交接的两种先后顺序，以及不确定 owner 的回收场景。
 这些是契约修正和未来 adapter 的验收测试，**并不证明两种持久化 adapter 已通过**。
 M4.2 实现仍未关闭，本轮修正还需独立复审。
+
+对 `6c002e7b976c885a85797dd5e058132f3c7a6e79` 的独立复审认可锁层级和正常
+callback 交接语义，但指出两个仍缺失的 P1 验收契约。共享测试工厂现定义旧 admission
+与覆盖部署的 cutover 两种先后顺序。fixture 必须调用真实旧 writer 创建入口，并证明
+事务确实在 gate 上等待：使用未注册别名 B 的 writer 若先获准，必须出现在全 store
+盘点中；屏障若先获准，后来的 builder、repair、integration 和 dynamic lease admission
+都必须被拒绝，且持久化 writer 证据不变。别名 A 已注册到 scope S 时，别名 B 下尚未
+分类的历史 run 仍必须阻止 S 激活。provider-neutral API 现在也可以恢复未结束的
+durable permit，包括准确的 ID、scope、claim、owner、token 与 resource。共享测试工厂
+定义了 owner 连接丢失后由独立连接恢复 permit、孤儿 permit 存在时拒绝释放及回收、
+凭停止证据结算后仍保持 `HELD_UNCERTAIN`，最后才允许回收并给新 owner 分配更高 token。
+这些仍是**尚未接入后端的验收定义**：SQLite 和 PostgreSQL 都未运行这些场景；M4.2
+继续为 OPEN，等待本轮契约独立复审及两种 adapter 实现。
