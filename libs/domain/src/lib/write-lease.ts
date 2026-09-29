@@ -20,6 +20,7 @@ export type RepositoryWritableResource =
 
 export type WritableResource =
   | RepositoryWritableResource
+  | { readonly type: 'repository' }
   | {
       readonly type: 'shared-resource';
       readonly resourceId: string;
@@ -36,6 +37,7 @@ export interface TaskLeasePlan {
 const nonEmptyStringSchema = z.string().trim().min(1);
 
 export const writableResourceSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('repository') }),
   z.object({ type: z.literal('project'), projectId: nonEmptyStringSchema }),
   z.object({
     type: z.literal('file'),
@@ -53,6 +55,7 @@ export const writableResourceSchema = z.discriminatedUnion('type', [
 ]);
 
 const resourceTypeRanks = {
+  repository: -1,
   project: 0,
   file: 1,
   symbol: 2,
@@ -61,6 +64,8 @@ const resourceTypeRanks = {
 
 export const writableResourceIdentity = (resource: WritableResource): string => {
   switch (resource.type) {
+    case 'repository':
+      return '';
     case 'project':
       return resource.projectId;
     case 'file':
@@ -166,6 +171,9 @@ export const areWritableResourcesConflicting = (
   a: WritableResource,
   b: WritableResource
 ): boolean => {
+  if (a.type === 'repository' || b.type === 'repository') {
+    return true;
+  }
   if (a.type === 'shared-resource' || b.type === 'shared-resource') {
     return (
       a.type === 'shared-resource' && b.type === 'shared-resource' && a.resourceId === b.resourceId
@@ -196,6 +204,12 @@ export const isWritableResourceCoveredBy = (
   covering: WritableResource,
   requested: WritableResource
 ): boolean => {
+  if (covering.type === 'repository') {
+    return true;
+  }
+  if (requested.type === 'repository') {
+    return false;
+  }
   if (covering.type === 'shared-resource' || requested.type === 'shared-resource') {
     return (
       covering.type === 'shared-resource' &&

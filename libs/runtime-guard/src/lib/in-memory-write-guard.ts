@@ -32,6 +32,9 @@ const cloneLease = (lease: WriteLease): WriteLease => ({
 });
 
 const resourcesEqual = (a: WritableResource, b: WritableResource): boolean => {
+  if (a.type === 'repository') {
+    return b.type === 'repository';
+  }
   if (a.type === 'project') {
     return b.type === 'project' && b.projectId === a.projectId;
   }
@@ -61,6 +64,8 @@ const requireNonEmpty = (value: string, name: string): void => {
 
 const assertResource = (resource: WritableResource): void => {
   switch (resource.type) {
+    case 'repository':
+      return;
     case 'project':
       requireNonEmpty(resource.projectId, 'projectId');
       return;

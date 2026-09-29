@@ -186,7 +186,9 @@ class AbortFailingPiGateway implements PiSessionGateway {
     this.#controller = controller;
   }
 
-  async start(options: Parameters<PiSessionGateway['start']>[0]): Promise<{ readonly sessionId: string }> {
+  async start(
+    options: Parameters<PiSessionGateway['start']>[0]
+  ): Promise<{ readonly sessionId: string }> {
     await options.onStarted('pi-session-1');
     this.#controller.abort();
     throw new Error('Pi abort failed.');
@@ -1322,7 +1324,10 @@ describe('PiAgentRunner', () => {
     });
 
     await expect(
-      runner.run({ ...request(workspacePath, async () => {}), cancellationSignal: controller.signal })
+      runner.run({
+        ...request(workspacePath, async () => {}),
+        cancellationSignal: controller.signal
+      })
     ).rejects.toThrow('Pi abort failed.');
   });
 

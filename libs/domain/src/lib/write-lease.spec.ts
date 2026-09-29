@@ -27,6 +27,8 @@ const symbol = (
 
 describe('areWritableResourcesConflicting', () => {
   it.each([
+    [{ type: 'repository' } as const, { type: 'shared-resource', resourceId: 'lockfile' } as const],
+    [{ type: 'repository' } as const, file('catalog', 'product.ts')],
     [project('catalog'), file('catalog', 'product.ts')],
     [project('catalog'), symbol('catalog', 'product.ts', 'ProductService.search')],
     [file('catalog', 'product.ts'), symbol('catalog', 'product.ts', 'ProductService.search')],
@@ -79,6 +81,14 @@ describe('isWritableResourceCoveredBy', () => {
     expect(isWritableResourceCoveredBy(parentSymbol, childSymbol)).toBe(true);
     expect(isWritableResourceCoveredBy(childSymbol, parentSymbol)).toBe(false);
     expect(isWritableResourceCoveredBy(fileResource, projectResource)).toBe(false);
+    expect(isWritableResourceCoveredBy({ type: 'repository' }, fileResource)).toBe(true);
+    expect(
+      isWritableResourceCoveredBy(
+        { type: 'repository' },
+        { type: 'shared-resource', resourceId: 'lockfile' }
+      )
+    ).toBe(true);
+    expect(isWritableResourceCoveredBy(fileResource, { type: 'repository' })).toBe(false);
   });
 });
 

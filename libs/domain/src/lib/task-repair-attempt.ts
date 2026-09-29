@@ -96,7 +96,9 @@ export const taskRepairAttemptSchema = z
       }
     }
     if (
-      (attempt.state === 'FAILED' || attempt.state === 'CANCELLED' || attempt.state === 'UNKNOWN') &&
+      (attempt.state === 'FAILED' ||
+        attempt.state === 'CANCELLED' ||
+        attempt.state === 'UNKNOWN') &&
       attempt.failure === undefined
     ) {
       context.addIssue({

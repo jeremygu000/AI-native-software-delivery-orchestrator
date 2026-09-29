@@ -9,6 +9,7 @@ export * from './lib/task-repair-attempt.js';
 export * from './lib/task-repair-work-item.js';
 export * from './lib/task-verification-evidence.js';
 export * from './lib/write-lease.js';
+export * from './lib/global-mutation-authority.js';
 export * from './lib/workspace.js';
 export * from './lib/agent-execution.js';
 export * from './lib/command-policy.js';

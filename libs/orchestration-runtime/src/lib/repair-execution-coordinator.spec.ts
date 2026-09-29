@@ -452,9 +452,17 @@ describe('RepairExecutionCoordinator', () => {
           return { status: 'cancelled', detail: 'Cancellation confirmed by agent.' };
         }
       },
-      reconciler: { reconcile: async () => { throw new Error('not reached'); } },
+      reconciler: {
+        reconcile: async () => {
+          throw new Error('not reached');
+        }
+      },
       verifier: { verify: async () => ({ status: 'passed' }) },
-      snapshots: { capture: async () => { throw new Error('not reached'); } },
+      snapshots: {
+        capture: async () => {
+          throw new Error('not reached');
+        }
+      },
       subjects: { createSubject: () => subject },
       reviews: setupResult.reviews,
       verificationEvidence: setupResult.verificationEvidence,
@@ -462,7 +470,9 @@ describe('RepairExecutionCoordinator', () => {
       persistence: setupResult.persistence,
       feedback: setupResult.feedbackPort,
       createEvidenceId: () => 'unused',
-      createVerificationEvidence: () => { throw new Error('not reached'); }
+      createVerificationEvidence: () => {
+        throw new Error('not reached');
+      }
     });
     await expect(
       coordinator.execute({

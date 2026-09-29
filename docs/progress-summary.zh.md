@@ -2926,3 +2926,29 @@ Temporal polling 之前退出。M4.1D 仍为**已实现／待独立复审**，M4
 **M4.1D 和 M4.1 现均为 PASS / CLOSED / FROZEN**。M3 与 M4.1A–C 继续冻结，
 M4.2、M4.3 尚未开始。未设置 backend 的历史
 SQLite 兼容路径仍然可用，而两种显式 backend 均要求匹配的 `FORGE_AUTHORITY_ID`。
+
+## M4.2 设计获批与实现起点
+
+M4.2 要解决的问题与 M4.1 不同：使用同一个 authority store 的两个 run，不能同时取得
+修改同一 repository 内冲突资源的权限。已复审的设计把经过批准的 repository 身份显式映射到
+不透明的 authority scope。一个持久化 claim 原子取得多个资源时，所有资源共用一个递增
+token。同一 scope 内的 repository 级权限与所有写入资源冲突；实际写入授权则有方向性：
+范围较广的 lease 可以覆盖范围较窄的写入，反过来不行。受控写入 callback 必须校验当前
+持久化权限，并持有执行中的 permit，避免释放或交接越过尚在执行的 callback。
+
+针对远端精确 SHA `84adcedb06b4295a88f562b83b8a52a573cfa271` 的最终独立复审未发现
+剩余的 P0 或 P1 设计阻塞。关键规则是覆盖整个部署的旧 writer 切换屏障：所有 scope 的旧
+writer admission 必须先关闭，然后才能盘点和激活。盘点包括 repository ID 尚未注册或
+未知的历史 run 与未解决 owner。如果无法确认某个未解决 owner 所属的 scope，则所有
+scope 都不能激活，直到明确分类或独立证明它已停止。已知 scope 但资源不明时，以
+repository 级不确定权限阻塞该 scope。这样就不会因某个别名的局部清单为空，漏掉使用另一
+别名的旧 writer。
+
+**M4.2 DESIGN 为 PASS / APPROVED FOR IMPLEMENTATION。** 这只批准实现依据，不代表
+M4.2 的实现已经验收。provider-neutral 类型与 repository 资源语义已有初稿；domain 类型
+检查和定向资源测试通过。剩余工作包括完整的 provider-neutral contract、SQLite 和
+PostgreSQL 两种持久化实现、全 store 切换证据、真实受控写入拒绝、PostgreSQL 有控制的
+重叠事务竞态，以及第三连接对持久化状态的核验。切换竞态还需分别证明两种先后顺序：
+旧 admission 先取得序列化点时必须纳入盘点；屏障先取得序列化点时必须拒绝后来的旧
+admission。M3 与 M4.1 保持 PASS / CLOSED / FROZEN；M4.3 尚未开始。详细实现契约见
+`docs/m4-cross-run-fencing-proposal.en.md`。

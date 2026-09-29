@@ -8,11 +8,13 @@ import type {
 const compareIds = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 const resourceId = (resource: WritableResource): string =>
-  resource.type === 'shared-resource'
-    ? resource.resourceId
-    : resource.type === 'project'
-      ? resource.projectId
-      : resource.fileId;
+  resource.type === 'repository'
+    ? 'repository'
+    : resource.type === 'shared-resource'
+      ? resource.resourceId
+      : resource.type === 'project'
+        ? resource.projectId
+        : resource.fileId;
 
 /**
  * Turns observed write-scope expansion into deterministic hard conflicts against

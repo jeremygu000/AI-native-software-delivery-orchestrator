@@ -3328,3 +3328,33 @@ Independent review of the explicit SQLite identity fix found no P0 or P1 issues.
 **M4.1D and M4.1 are PASS / CLOSED / FROZEN.** M3 and M4.1A–C remain frozen; M4.2 and M4.3
 have not begun. The backend-unset SQLite compatibility behavior remains intact, and both
 explicit backend selections now require a matching `FORGE_AUTHORITY_ID`.
+
+## M4.2 design approval and implementation starting point
+
+M4.2 addresses a different problem from M4.1: two runs using the same authority store must not
+both gain permission to change conflicting parts of one repository. The reviewed design assigns
+each approved repository identity to an explicit, opaque authority scope. A scope-wide durable
+claim carries one increasing token across all resources acquired atomically by that claim.
+Repository authority conflicts with every mutation resource in its scope, while write permission
+is directional: a broad lease can cover a narrower write, but a narrow lease cannot authorize a
+broader one. A controlled mutation callback must validate current durable authority and hold an
+in-flight permit so release or handoff cannot race through the callback.
+
+The final independent review of remote SHA `84adcedb06b4295a88f562b83b8a52a573cfa271`
+found no remaining P0 or P1 design blocker. Its decisive rule is a deployment-wide legacy
+cutover: old writer admission closes across every scope before inventory and activation. The
+inventory includes historical runs and unresolved owners even when their repository ID is
+unregistered or unknown. An owner whose scope cannot be established blocks activation of every
+scope until it is classified or independently proven quiescent. A known scope with an unknown
+resource is represented as repository-wide uncertain authority. This prevents an empty inventory
+for one alias from concealing a writer using another alias.
+
+**M4.2 DESIGN is PASS / APPROVED FOR IMPLEMENTATION.** This is approval of the contract, not
+implementation acceptance. Initial provider-neutral types and repository resource semantics have
+been drafted; domain typechecking and the focused resource tests pass. M4.2 still requires a
+complete provider-neutral contract, SQLite and PostgreSQL implementations, store-wide cutover
+evidence, real controlled-write rejection, PostgreSQL controlled-overlap races, and durable-state
+verification from a third connection. In particular, test both cutover race orders: an old
+admission that wins first must be inventoried; a barrier that wins first must reject a later old
+admission. M3 and M4.1 remain PASS / CLOSED / FROZEN; M4.3 has not started. The detailed
+implementation contract is `docs/m4-cross-run-fencing-proposal.en.md`.

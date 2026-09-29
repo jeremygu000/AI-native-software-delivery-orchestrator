@@ -31,6 +31,7 @@ export type ForgeBlockingReference =
   | { readonly type: 'runtime-conflict'; readonly conflictId: string };
 
 export type ForgeLeaseResource =
+  | { readonly type: 'repository' }
   | { readonly type: 'project'; readonly projectId: string }
   | { readonly type: 'file'; readonly projectId: string; readonly fileId: string }
   | {
