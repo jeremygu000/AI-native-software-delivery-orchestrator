@@ -70,8 +70,18 @@ const legacyRowSchema = z.object({
 });
 type ClaimRow = z.infer<typeof claimRowSchema>;
 type AuthorizedAttempt =
-  | { kind: 'builder'; attempt: z.infer<typeof agentExecutionAttemptSchema>; previousJson: string }
-  | { kind: 'repair'; attempt: z.infer<typeof taskRepairAttemptSchema>; previousJson: string };
+  | {
+      kind: 'builder';
+      attempt: z.infer<typeof agentExecutionAttemptSchema>;
+      previousJson: string;
+      approvedResources: readonly WritableResource[];
+    }
+  | {
+      kind: 'repair';
+      attempt: z.infer<typeof taskRepairAttemptSchema>;
+      previousJson: string;
+      approvedResources: readonly WritableResource[];
+    };
 
 const nonempty = (value: string, name: string): string => {
   if (value.trim().length === 0) {
@@ -573,29 +583,35 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
         throw new Error('Attempt lifecycle does not authorize global mutation admission');
       }
     };
+    const binding = this.#one(
+      'SELECT binding_json FROM task_execution_bindings WHERE run_id=? AND task_id=?',
+      z.object({ binding_json: z.string() }),
+      owner.runId,
+      owner.taskId
+    );
+    if (binding === undefined) {
+      throw new Error('Mutation attempt has no approved task execution binding');
+    }
+    const approvedBinding = parsed(binding.binding_json, persistedTaskExecutionBindingSchema);
+    if (approvedBinding.runId !== owner.runId || approvedBinding.taskId !== owner.taskId) {
+      throw new Error('Mutation attempt does not match its approved task binding');
+    }
     if (builder !== undefined) {
       const attempt = parsedAttempt(builder.attempt_json, agentExecutionAttemptSchema);
       valid(attempt);
-      const binding = this.#one(
-        'SELECT binding_json FROM task_execution_bindings WHERE run_id=? AND task_id=?',
-        z.object({ binding_json: z.string() }),
-        owner.runId,
-        owner.taskId
-      );
-      if (binding === undefined) {
-        throw new Error('Builder attempt has no approved task execution binding');
-      }
-      const approved = parsed(binding.binding_json, persistedTaskExecutionBindingSchema);
       if (
-        approved.runId !== owner.runId ||
-        approved.taskId !== owner.taskId ||
-        approved.agentId !== owner.agentId ||
-        approved.workspace.id !== attempt.workspaceId ||
-        taskLeasePlanFingerprint(approved.leasePlan) !== attempt.leasePlanFingerprint
+        approvedBinding.agentId !== owner.agentId ||
+        approvedBinding.workspace.id !== attempt.workspaceId ||
+        taskLeasePlanFingerprint(approvedBinding.leasePlan) !== attempt.leasePlanFingerprint
       ) {
         throw new Error('Builder attempt does not match its approved task binding');
       }
-      return { kind: 'builder', attempt, previousJson: builder.attempt_json };
+      return {
+        kind: 'builder',
+        attempt,
+        previousJson: builder.attempt_json,
+        approvedResources: approvedBinding.leasePlan.predictedResources
+      };
     }
     if (repair === undefined) {
       throw new Error('Missing persisted repair attempt');
@@ -618,11 +634,31 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
       approved.repairAttemptId !== owner.attemptId ||
       approved.workspaceId !== attempt.workspaceId ||
       approved.parentReviewIteration !== attempt.parentReviewIteration ||
-      approved.builderAttemptId !== attempt.parentReviewSubject.builderAttemptId
+      approved.builderAttemptId !== attempt.parentReviewSubject.builderAttemptId ||
+      approved.leasePlanFingerprint !== taskLeasePlanFingerprint(approvedBinding.leasePlan)
     ) {
       throw new Error('Repair attempt does not match its admitted work item');
     }
-    return { kind: 'repair', attempt, previousJson: repair.attempt_json };
+    return {
+      kind: 'repair',
+      attempt,
+      previousJson: repair.attempt_json,
+      approvedResources: approvedBinding.leasePlan.predictedResources
+    };
+  }
+
+  #assertResourcesAuthorized(
+    approvedResources: readonly WritableResource[],
+    requestedResources: readonly WritableResource[]
+  ): void {
+    if (
+      requestedResources.some(
+        (requested) =>
+          !approvedResources.some((approved) => isWritableResourceCoveredBy(approved, requested))
+      )
+    ) {
+      throw new Error('Global claim resource exceeds the approved lease plan');
+    }
   }
 
   #startAttempt(admitted: AuthorizedAttempt): void {
@@ -693,7 +729,8 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
         claim.claimId
       );
       if (old !== undefined) {
-        this.#authorizedAttempt(claim.owner, run.tasks_json, true);
+        const admitted = this.#authorizedAttempt(claim.owner, run.tasks_json, true);
+        this.#assertResourcesAuthorized(admitted.approvedResources, resources);
         const previous = this.#leases(claim.scopeId, claim.claimId);
         if (
           old.state !== 'ACTIVE' ||
@@ -708,6 +745,7 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
         return { status: 'granted', token: old.token, leases: previous };
       }
       const admitted = this.#authorizedAttempt(claim.owner, run.tasks_json, false);
+      this.#assertResourcesAuthorized(admitted.approvedResources, resources);
       const blockers = this.#leases(claim.scopeId).filter(
         (lease) =>
           lease.state !== 'RELEASED' &&

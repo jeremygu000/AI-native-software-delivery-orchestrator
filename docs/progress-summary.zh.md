@@ -3015,3 +3015,15 @@ work item。只有 `PREPARING` attempt 可以获得新 claim；冲突检查通�
 仍为 `STARTING` 或 `RUNNING`。定向 SQLite 测试覆盖上述修正，包括原未知别名下的新
 run，以及 builder 和 repair admission。修正仍待独立复审；受控 cutover 竞态、
 PostgreSQL adapter 和真实生产写入边界继续未完成。
+
+针对 `53855c7e9a1d037ac919607fb116b011190517e9` 的独立复审确认了别名分类与
+attempt 身份修复，但发现合法 attempt 仍可申请超出已批准 lease plan 的文件，甚至申请
+repository 级 authority。现在 SQLite 的 claim 准入会读取持久化 task execution binding
+里的 lease plan，并按有方向的覆盖关系检查每项申请资源是否落在已批准资源内。repair
+还须先证明其已准入 work item 的 lease-plan fingerprint 与该 binding 一致，才能使用
+binding 的资源计划。因此获准写 file-A 的 attempt 不能申请 file-B 或更宽的 repository
+lease。定向 builder 和 repair 回归检查这两类拒绝、没有 claim 或 lease、没有消耗 token、
+attempt 保持 `PREPARING`，以及随后批准资源可以获得 claim。超出原计划的动态扩展仍需
+单独的持久化授权证据、新 claim 和新 token；本次增量尚未实现这条路径。SQLite 资源授权
+修复仍待独立复审。SQLite 受控 cutover 竞态、PostgreSQL M4.2 adapter 与生产受控写入
+边界仍未获证明；M4.2 继续为 OPEN。

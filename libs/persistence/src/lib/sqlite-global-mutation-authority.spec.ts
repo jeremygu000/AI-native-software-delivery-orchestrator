@@ -202,6 +202,37 @@ describe('SQLite global attempt admission', () => {
           'unbound-agent-claim'
         )
       ).rejects.toThrow('approved task binding');
+      const tokenBeforeInvalidResource = sqlite
+        .prepare('SELECT next_token FROM forge_global_control WHERE id=1')
+        .get();
+      for (const [claimId, requested] of [
+        ['wrong-file-claim', { type: 'file' as const, projectId: 'project-A', fileId: 'file-B' }],
+        ['overbroad-claim', { type: 'repository' as const }]
+      ] as const) {
+        await expect(
+          fixture.peer.claimGlobalMutation({ ...claim, claimId, resources: [requested] })
+        ).rejects.toThrow('exceeds the approved lease plan');
+        expect(
+          sqlite
+            .prepare('SELECT count(*) AS count FROM forge_global_claims WHERE claim_id=?')
+            .get(claimId)
+        ).toEqual({ count: 0 });
+        expect(
+          sqlite
+            .prepare('SELECT count(*) AS count FROM forge_global_leases WHERE claim_id=?')
+            .get(claimId)
+        ).toEqual({ count: 0 });
+      }
+      expect(
+        sqlite.prepare('SELECT next_token FROM forge_global_control WHERE id=1').get()
+      ).toEqual(tokenBeforeInvalidResource);
+      expect(
+        sqlite
+          .prepare(
+            'SELECT attempt_json FROM agent_execution_attempts WHERE run_id=? AND attempt_id=?'
+          )
+          .get('run-A', 'attempt-B')
+      ).toEqual({ attempt_json: expect.stringContaining('"state":"PREPARING"') });
       expect(
         (await fixture.peer.recoverRepositoryMutationAuthority(fixture.scopeId)).map(
           (lease) => lease.claimId
@@ -304,7 +335,53 @@ describe('SQLite global attempt admission', () => {
           owner: { ...claim.owner, agentId: 'forged-agent' }
         })
       ).rejects.toThrow('does not match');
-      expect(await fixture.peer.claimGlobalMutation(claim)).toMatchObject({ status: 'granted' });
+      const tokenBeforeInvalidResource = sqlite
+        .prepare('SELECT next_token FROM forge_global_control WHERE id=1')
+        .get();
+      for (const [claimId, requested] of [
+        ['repair-wrong-file', { type: 'file' as const, projectId: 'project-A', fileId: 'file-B' }],
+        ['repair-overbroad', { type: 'repository' as const }]
+      ] as const) {
+        await expect(
+          fixture.peer.claimGlobalMutation({ ...claim, claimId, resources: [requested] })
+        ).rejects.toThrow('exceeds the approved lease plan');
+        expect(
+          sqlite
+            .prepare('SELECT count(*) AS count FROM forge_global_claims WHERE claim_id=?')
+            .get(claimId)
+        ).toEqual({ count: 0 });
+        expect(
+          sqlite
+            .prepare('SELECT count(*) AS count FROM forge_global_leases WHERE claim_id=?')
+            .get(claimId)
+        ).toEqual({ count: 0 });
+      }
+      expect(
+        sqlite.prepare('SELECT next_token FROM forge_global_control WHERE id=1').get()
+      ).toEqual(tokenBeforeInvalidResource);
+      expect(
+        sqlite
+          .prepare('SELECT attempt_json FROM task_repair_attempts WHERE run_id=? AND attempt_id=?')
+          .get('run-A', 'repair-A')
+      ).toEqual({ attempt_json: expect.stringContaining('"state":"PREPARING"') });
+      const original = (await fixture.peer.recoverRepositoryMutationAuthority(fixture.scopeId))[0];
+      if (original === undefined) {
+        throw new Error('Missing original claim');
+      }
+      await fixture.authority.releaseGlobalMutation({
+        scopeId: fixture.scopeId,
+        claimId: fixture.originalClaim.claimId,
+        owner: fixture.originalClaim.owner,
+        token: fixture.originalGrant.token,
+        expectedVersion: original.version,
+        stopEvidence: 'Builder A has stopped.'
+      });
+      expect(
+        await fixture.peer.claimGlobalMutation({
+          ...claim,
+          resources: [{ type: 'file', projectId: 'project-A', fileId: 'file-A' }]
+        })
+      ).toMatchObject({ status: 'granted' });
       expect(
         sqlite
           .prepare('SELECT attempt_json FROM task_repair_attempts WHERE run_id=? AND attempt_id=?')

@@ -3431,3 +3431,17 @@ the attempt unchanged, while an exact retry requires the original attempt to rem
 or `RUNNING`. Focused SQLite tests cover both corrections, including a new run under the formerly
 unknown alias and builder and repair admission. These corrections still need independent review;
 the controlled cutover race, PostgreSQL adapter, and production mutation boundary remain open.
+
+Independent review of `53855c7e9a1d037ac919607fb116b011190517e9` accepted the alias
+classification and attempt-identity fixes, but found that a valid attempt could request a file
+outside its approved lease plan or even repository-wide authority. SQLite claim admission now
+reads the durable task execution binding's lease plan and requires every requested resource to
+fall within an approved resource using directional coverage. Repair admission additionally ties
+its admitted work item's lease-plan fingerprint to that binding before using its resource plan.
+This prevents a file-approved attempt from claiming another file or a broader repository lease.
+Focused builder and repair regressions check both rejections, no claim or lease, no token
+allocation, and the unchanged `PREPARING` attempt, followed by an approved-resource grant.
+Dynamic expansion outside the approved plan still requires separate durable authorization
+evidence and a new claim and token; this increment does not implement that path. The SQLite
+resource correction awaits independent review. Controlled SQLite cutover races, the PostgreSQL
+M4.2 adapter, and the production controlled-write boundary remain unproven; M4.2 remains OPEN.
