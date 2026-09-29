@@ -37,7 +37,7 @@ describe('FencedMutationPort', () => {
   });
 
   it('holds the exact permit until the callback settles', async () => {
-    const permit = { id: 'permit-1' };
+    const permit = { id: 'permit-1', completionSecret: 'completion-secret-1' };
     const calls: string[] = [];
     const authority = {
       beginFencedMutation: vi.fn(async () => {

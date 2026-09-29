@@ -3386,3 +3386,16 @@ to release or reclaim while the orphan remains, evidence-backed orphan settlemen
 claim HELD_UNCERTAIN, and only then reclamation and a higher-token replacement. These are still
 unwired acceptance definitions: SQLite and PostgreSQL have not executed them, and M4.2 remains
 OPEN pending independent contract review and both adapter implementations.
+
+Review of `311abdd51a6ae6a817c87845541ef1d1febfe4fc` found three more P1 gaps in the
+provider-neutral contract. The live callback permit now carries a single-use completion secret
+that recovery never returns; recovered permit evidence cannot serve as ordinary callback
+completion authority. The shared suite asks a peer to attempt a forged completion while the
+callback is active and requires the old claim to remain blocking. The state transitions are also
+separated: ordinary release closes only `ACTIVE` authority; `HELD_UNCERTAIN` can be closed only by
+evidence-backed reclaim after all permits end or receive privileged settlement. The orphan
+scenario now checks that settlement requires `HELD_UNCERTAIN` first and that ordinary release
+cannot bypass reclaim afterward. Finally, the legacy-admission-first cutover scenario now covers
+builder, repair, integration, and dynamic leases, checking each exact writer kind in the
+whole-store unknown-alias inventory. These are still unexecuted shared adapter contracts; they
+do not close M4.2 or demonstrate durable SQLite/PostgreSQL fencing.

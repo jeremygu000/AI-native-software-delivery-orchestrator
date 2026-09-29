@@ -142,6 +142,29 @@ export const globalMutationPermitContract = (
         );
         await entered.promise;
 
+        const recovered = await fixture.peer.recoverFencedMutationPermits(
+          fixture.scopeId,
+          fixture.originalClaim.claimId
+        );
+        expect(recovered).toHaveLength(1);
+        expect(recovered[0]).not.toHaveProperty('completionSecret');
+        const visible = recovered[0];
+        if (visible === undefined) {
+          throw new Error('In-flight permit was not recoverable');
+        }
+        await expect(
+          fixture.peer.endFencedMutation({
+            id: visible.id,
+            completionSecret: 'forged-recovery-only-completion-secret'
+          })
+        ).rejects.toThrow();
+        expect(
+          await fixture.peer.recoverFencedMutationPermits(
+            fixture.scopeId,
+            fixture.originalClaim.claimId
+          )
+        ).toHaveLength(1);
+
         await expect(
           fixture.peer.releaseGlobalMutation(await releaseRequest(fixture))
         ).rejects.toBeInstanceOf(GlobalMutationInFlightError);
@@ -257,6 +280,7 @@ export const globalMutationPermitContract = (
           fixture.originalClaim.claimId
         );
         expect(recovered).toHaveLength(1);
+        expect(recovered[0]).not.toHaveProperty('completionSecret');
         expect(recovered[0]).toMatchObject({
           id: permit.id,
           scopeId: fixture.scopeId,
@@ -272,6 +296,13 @@ export const globalMutationPermitContract = (
         await expect(
           fixture.peer.releaseGlobalMutation(await releaseRequest(fixture))
         ).rejects.toBeInstanceOf(GlobalMutationInFlightError);
+        await expect(
+          fixture.peer.settleOrphanedFencedMutation(
+            orphan,
+            'The owner process exited and its controlled mutation cannot resume.'
+          )
+        ).rejects.toThrow();
+        expect(await fixture.peer.recoverFencedMutationPermits(fixture.scopeId)).toHaveLength(1);
         await fixture.peer.markMutationUncertain({
           scopeId: fixture.scopeId,
           claimId: fixture.originalClaim.claimId,
@@ -306,6 +337,14 @@ export const globalMutationPermitContract = (
           status: 'blocked'
         });
 
+        await expect(
+          fixture.peer.releaseGlobalMutation(await releaseRequest(fixture))
+        ).rejects.toThrow();
+        expect(await currentLease(fixture)).toMatchObject({ state: 'HELD_UNCERTAIN' });
+        expect(await fixture.peer.claimGlobalMutation(fixture.replacementClaim)).toMatchObject({
+          status: 'blocked'
+        });
+
         await reclaim();
         const replacement = assertGranted(
           await fixture.peer.claimGlobalMutation(fixture.replacementClaim)
@@ -323,40 +362,43 @@ export const globalMutationCutoverContract = (
   createFixture: () => Promise<GlobalMutationCutoverFixture>
 ): void => {
   describe(`${name} deployment-wide legacy cutover`, () => {
-    it('inventories an unknown-alias writer whose legacy admission wins the gate first', async () => {
-      const fixture = await createFixture();
-      let held: HeldGateOperation<{ readonly ownerKey: string }> | undefined;
-      let cutover: Promise<void> | undefined;
-      try {
-        expect(fixture.registeredRepositoryId).not.toBe(fixture.unregisteredRepositoryId);
-        held = await fixture.holdLegacyAdmissionAtGate('builder');
-        cutover = fixture.peer.beginLegacyCutover();
-        await fixture.assertWaitingOnGate('cutover');
-        held.release();
-        const admitted = await held.finished;
-        await cutover;
+    for (const kind of ['builder', 'repair', 'integration', 'dynamic-lease'] as const) {
+      it(`inventories unknown-alias ${kind} when legacy admission wins the gate first`, async () => {
+        const fixture = await createFixture();
+        let held: HeldGateOperation<{ readonly ownerKey: string }> | undefined;
+        let cutover: Promise<void> | undefined;
+        try {
+          expect(fixture.registeredRepositoryId).not.toBe(fixture.unregisteredRepositoryId);
+          held = await fixture.holdLegacyAdmissionAtGate(kind);
+          cutover = fixture.peer.beginLegacyCutover();
+          await fixture.assertWaitingOnGate('cutover');
+          held.release();
+          const admitted = await held.finished;
+          await cutover;
 
-        const owners = await fixture.peer.recoverLegacyOwners();
-        expect(owners).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              key: admitted.ownerKey,
-              repositoryId: fixture.unregisteredRepositoryId,
-              runId: fixture.historicalRunId
-            })
-          ])
-        );
-        await expect(
-          fixture.peer.completeLegacyCutover('All old worker processes are stopped.')
-        ).rejects.toThrow();
-        await expect(fixture.peer.activateScope(fixture.scopeId)).rejects.toThrow();
-      } finally {
-        held?.release();
-        await held?.finished.catch(() => undefined);
-        await cutover?.catch(() => undefined);
-        await fixture.close();
-      }
-    });
+          const owners = await fixture.peer.recoverLegacyOwners();
+          expect(owners).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                key: admitted.ownerKey,
+                kind: kind === 'dynamic-lease' ? 'lease' : kind,
+                repositoryId: fixture.unregisteredRepositoryId,
+                runId: fixture.historicalRunId
+              })
+            ])
+          );
+          await expect(
+            fixture.peer.completeLegacyCutover('All old worker processes are stopped.')
+          ).rejects.toThrow();
+          await expect(fixture.peer.activateScope(fixture.scopeId)).rejects.toThrow();
+        } finally {
+          held?.release();
+          await held?.finished.catch(() => undefined);
+          await cutover?.catch(() => undefined);
+          await fixture.close();
+        }
+      });
+    }
 
     for (const kind of ['builder', 'repair', 'integration', 'dynamic-lease'] as const) {
       it(`rejects ${kind} admission with no evidence when cutover wins the gate first`, async () => {

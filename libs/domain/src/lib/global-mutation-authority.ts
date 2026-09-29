@@ -48,13 +48,16 @@ export interface LegacyMutationOwner {
   readonly resource?: WritableResource;
 }
 
-/** An opaque, store-unique slot for one controlled callback. */
-export interface FencedMutationPermit {
+/** Live completion capability returned only to the controlled callback owner. */
+export interface FencedMutationExecutionPermit {
   readonly id: string;
+  /** Unpredictable, single-use secret; recovery must never disclose it. */
+  readonly completionSecret: string;
 }
 
-/** Durable unresolved permit evidence, recoverable after its worker disappears. */
-export interface PersistedFencedMutationPermit extends FencedMutationPermit {
+/** Durable evidence for operator recovery, not a normal completion capability. */
+export interface PersistedFencedMutationPermit {
+  readonly id: string;
   readonly scopeId: string;
   readonly claimId: string;
   readonly owner: GlobalMutationOwner;
@@ -129,7 +132,8 @@ export interface GlobalMutationAuthority {
    * Recover every unresolved durable permit in stable order, including permits
    * from lost processes. An independent connection must see the exact permit
    * ID and its scope/claim/owner/token/resource, with an optional claim filter.
-   * Recovery is evidence only and does not release or settle a permit.
+   * The completion secret is never persisted in recoverable form or returned by
+   * this API. Recovery is evidence only and cannot normally complete a callback.
    */
   recoverFencedMutationPermits(
     scopeId: string,
@@ -139,29 +143,35 @@ export interface GlobalMutationAuthority {
   /**
    * Atomically validate current scope/claim/owner/token/resource authority and
    * durably register a unique in-flight permit before the callback begins.
-   * A process loss leaves the unresolved permit blocking release and handoff
-   * until independent quiescence settlement; elapsed time is insufficient.
+   * Return a store-unique ID and an unpredictable single-use completion secret.
+   * Persist only a verifier for that secret, never the secret itself. A process
+   * loss leaves the unresolved permit blocking release and handoff until
+   * independent quiescence settlement; elapsed time is insufficient.
    */
-  beginFencedMutation(request: CurrentMutationTokenRequest): Promise<FencedMutationPermit>;
+  beginFencedMutation(request: CurrentMutationTokenRequest): Promise<FencedMutationExecutionPermit>;
   /**
-   * Remove only this exact permit after its callback has settled. Do not
-   * reject its removal merely because the claim became HELD_UNCERTAIN.
+   * Verify the live completion secret and remove only this exact permit after
+   * its callback has settled. A recovered ID or forged secret cannot complete
+   * it. Do not reject valid completion merely because the claim became
+   * HELD_UNCERTAIN.
    */
-  endFencedMutation(permit: FencedMutationPermit): Promise<void>;
+  endFencedMutation(permit: FencedMutationExecutionPermit): Promise<void>;
   /**
    * Privileged recovery after the callback owner is proven unable to write.
-   * Accept an exact permit recovered on another connection. Atomically retire
-   * it, retain the claim as HELD_UNCERTAIN, and record independent quiescence
-   * evidence; this is not a handoff. The permit remains recoverable on failure.
+   * Require an exact recovered permit whose claim is already HELD_UNCERTAIN;
+   * reject settlement while ACTIVE. Atomically retire the permit and record
+   * independent quiescence evidence; this is not a handoff. The permit remains
+   * recoverable on failure.
    */
   settleOrphanedFencedMutation(
-    permit: FencedMutationPermit,
+    permit: PersistedFencedMutationPermit,
     verifiedQuiescenceEvidence: string
   ): Promise<void>;
   /**
-   * Reject with GlobalMutationInFlightError while any permit for this claim is
-   * unresolved, without changing durable lease evidence. Ownership cannot
-   * close or transfer until every callback ends.
+   * Only ACTIVE -> RELEASED. Reject HELD_UNCERTAIN even after all permits are
+   * settled; it requires reclaimUncertainMutation instead. Reject with
+   * GlobalMutationInFlightError while any permit for this ACTIVE claim remains
+   * unresolved, without changing durable lease evidence.
    */
   releaseGlobalMutation(request: {
     readonly scopeId: string;
@@ -180,9 +190,9 @@ export interface GlobalMutationAuthority {
     readonly evidence: string;
   }): Promise<void>;
   /**
-   * Close HELD_UNCERTAIN authority only with verified quiescence evidence and
-   * no unresolved permit. Otherwise reject with GlobalMutationInFlightError;
-   * leave durable evidence unchanged and keep the old owner blocking.
+   * Only HELD_UNCERTAIN -> RELEASED, with verified quiescence evidence and no
+   * unresolved permit. Reject ACTIVE claims. If a permit remains, reject with
+   * GlobalMutationInFlightError; leave evidence unchanged and keep blocking.
    */
   reclaimUncertainMutation(request: {
     readonly scopeId: string;

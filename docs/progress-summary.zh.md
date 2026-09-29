@@ -2976,3 +2976,15 @@ durable permit，包括准确的 ID、scope、claim、owner、token 与 resource
 凭停止证据结算后仍保持 `HELD_UNCERTAIN`，最后才允许回收并给新 owner 分配更高 token。
 这些仍是**尚未接入后端的验收定义**：SQLite 和 PostgreSQL 都未运行这些场景；M4.2
 继续为 OPEN，等待本轮契约独立复审及两种 adapter 实现。
+
+对 `311abdd51a6ae6a817c87845541ef1d1febfe4fc` 的复审又指出三个
+provider-neutral 契约 P1。现在正常 callback permit 带有一次性的完成密钥，恢复 API
+绝不返回该密钥；恢复到的 permit 证据不能充当普通 callback 完成权限。共享测试要求在
+callback 仍执行时由 peer 尝试伪造完成，并证明旧 claim 继续阻塞。状态转换也已分开：
+普通 release 只能关闭 `ACTIVE`；`HELD_UNCERTAIN` 必须在所有 permit 正常结束或经
+特权结算后，凭停止证据通过 reclaim 关闭。孤儿场景现验证 settlement 前必须先标记
+`HELD_UNCERTAIN`，并验证 settlement 后普通 release 不能绕过 reclaim。最后，旧
+admission 先赢的 cutover 场景现覆盖 builder、repair、integration、dynamic lease
+四类入口，逐一核对未知别名的全 store 清单中对应的 writer 类型。这些仍是尚未执行的
+共享 adapter 契约，不能据此关闭 M4.2，也不能宣称 SQLite／PostgreSQL durable fencing
+已获证明。
