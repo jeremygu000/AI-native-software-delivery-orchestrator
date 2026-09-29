@@ -1,13 +1,21 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
+import { Worker } from 'node:worker_threads';
 
 import Database from 'better-sqlite3';
+import { build } from 'esbuild';
 import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import { DrizzleSqliteOrchestrationPersistence } from './drizzle-sqlite-orchestration-persistence.js';
-import { globalMutationPermitContract } from './global-mutation-authority.contract.test.js';
+import {
+  globalMutationCutoverContract,
+  globalMutationPermitContract,
+  type GlobalMutationCutoverFixture,
+  type HeldGateOperation,
+  type LegacyAdmissionKind
+} from './global-mutation-authority.contract.test.js';
 import { SqliteGlobalMutationAuthority } from './sqlite-global-mutation-authority.js';
 
 const task = (id: string) => ({
@@ -148,6 +156,196 @@ const createPermitFixture = async () => {
 };
 
 globalMutationPermitContract('SQLite', createPermitFixture);
+
+const workerDirectory = mkdtempSync(resolvePath('libs/persistence/node_modules/.cutover-race-'));
+const workerBundle = join(workerDirectory, 'worker.mjs');
+let bundleReady: Promise<void> | undefined;
+const prepareWorkerBundle = (): Promise<void> => {
+  bundleReady ??= build({
+    entryPoints: ['libs/persistence/test/sqlite-cutover-race-worker.ts'],
+    outfile: workerBundle,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node24',
+    conditions: ['@ai-native-software-delivery-orchestrator/source'],
+    external: ['better-sqlite3', 'drizzle-orm', 'zod']
+  }).then(() => undefined);
+  return bundleReady;
+};
+afterAll(() => rmSync(workerDirectory, { recursive: true, force: true }));
+
+type RaceMessage = {
+  readonly type: 'ready' | 'gate-attempt' | 'gate-held' | 'done' | 'error';
+  readonly ownerKey?: string;
+  readonly message?: string;
+};
+type RaceCommand = { readonly kind: LegacyAdmissionKind | 'cutover'; readonly hold: boolean };
+
+const startRaceWorker = async (filename: string) => {
+  await prepareWorkerBundle();
+  const gate = new SharedArrayBuffer(4);
+  const worker = new Worker(workerBundle, { workerData: { filename, gate } });
+  const queued = new Map<RaceMessage['type'], RaceMessage[]>();
+  const waiting = new Map<RaceMessage['type'], ((message: RaceMessage) => void)[]>();
+  worker.on('message', (message: RaceMessage) => {
+    const deliver = waiting.get(message.type)?.shift();
+    if (deliver !== undefined) {
+      deliver(message);
+    } else {
+      const messages = queued.get(message.type) ?? [];
+      messages.push(message);
+      queued.set(message.type, messages);
+    }
+  });
+  const next = async (type: RaceMessage['type']): Promise<RaceMessage> => {
+    const message = queued.get(type)?.shift();
+    return (
+      message ??
+      new Promise<RaceMessage>((deliver) => {
+        const resolvers = waiting.get(type) ?? [];
+        resolvers.push(deliver);
+        waiting.set(type, resolvers);
+      })
+    );
+  };
+  await next('ready');
+  let settled = false;
+  return {
+    next,
+    get settled() {
+      return settled;
+    },
+    run: (command: RaceCommand): Promise<string | undefined> => {
+      settled = false;
+      worker.postMessage(command, []);
+      return Promise.race([next('done'), next('error')]).then((message) => {
+        settled = true;
+        if (message.type === 'error') {
+          throw new Error(message.message);
+        }
+        return message.ownerKey;
+      });
+    },
+    release: () => {
+      Atomics.store(new Int32Array(gate), 0, 1);
+      Atomics.notify(new Int32Array(gate), 0);
+    },
+    close: async () => {
+      await worker.terminate();
+    }
+  };
+};
+
+type RaceWorker = Awaited<ReturnType<typeof startRaceWorker>>;
+const holdGate = async <T>(
+  worker: RaceWorker,
+  command: RaceCommand,
+  result: (key: string | undefined) => T
+): Promise<HeldGateOperation<T>> => {
+  const finished = worker.run(command).then(result);
+  await Promise.race([
+    worker.next('gate-held'),
+    finished.then(() => {
+      throw new Error('Gate operation finished before it was held');
+    })
+  ]);
+  return { finished, release: worker.release };
+};
+
+const createCutoverFixture = async (): Promise<GlobalMutationCutoverFixture> => {
+  const directory = mkdtempSync(join(tmpdir(), 'forge-global-cutover-race-'));
+  const filename = join(directory, 'authority.sqlite');
+  const legacyStore = new DrizzleSqliteOrchestrationPersistence(filename);
+  const authority = new SqliteGlobalMutationAuthority(filename);
+  const peer = new SqliteGlobalMutationAuthority(filename);
+  const scopeId = await authority.registerScope('registered-A');
+  const sqlite = new Database(filename);
+  sqlite
+    .prepare(`INSERT INTO orchestration_runs
+    (id,repository_id,state,created_at,tasks_json,hard_conflicts_json,risk_conflicts_json,schedule_options_json)
+    VALUES (?,?,?,?,?,?,?,?)`)
+    .run(
+      'historical-B',
+      'unregistered-B',
+      'ACTIVE',
+      '2026-09-29',
+      JSON.stringify([task('task-A')]),
+      '[]',
+      '[]',
+      '{}'
+    );
+  const admissionWorker = await startRaceWorker(filename);
+  const cutoverWorker = await startRaceWorker(filename);
+  const cutoverPeer = new Proxy(peer, {
+    get(target, property) {
+      if (property === 'beginLegacyCutover') {
+        return async () => {
+          await cutoverWorker.run({ kind: 'cutover', hold: false });
+        };
+      }
+      const value: unknown = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    }
+  });
+  return {
+    authority,
+    peer: cutoverPeer,
+    scopeId,
+    registeredRepositoryId: 'registered-A',
+    unregisteredRepositoryId: 'unregistered-B',
+    historicalRunId: 'historical-B',
+    holdLegacyAdmissionAtGate: async (kind) =>
+      holdGate(admissionWorker, { kind, hold: true }, (ownerKey) => {
+        if (ownerKey === undefined) {
+          throw new Error('Missing admitted owner key');
+        }
+        return { ownerKey };
+      }),
+    holdCutoverAtGate: () =>
+      holdGate(cutoverWorker, { kind: 'cutover', hold: true }, () => undefined),
+    admitLegacyWriter: async (kind) => {
+      await admissionWorker.run({ kind, hold: false });
+    },
+    assertWaitingOnGate: async (operation) => {
+      const waitingWorker = operation === 'cutover' ? cutoverWorker : admissionWorker;
+      await waitingWorker.next('gate-attempt');
+      await new Promise((done) => setTimeout(done, 50));
+      expect(waitingWorker.settled).toBe(false);
+    },
+    readLegacyWriterEvidence: async () => ({
+      attempts: [
+        ...sqlite
+          .prepare('SELECT attempt_json FROM agent_execution_attempts ORDER BY run_id,attempt_id')
+          .all(),
+        ...sqlite
+          .prepare('SELECT attempt_json FROM task_repair_attempts ORDER BY run_id,attempt_id')
+          .all()
+      ].map((row) => JSON.stringify(row)),
+      leases: sqlite
+        .prepare('SELECT lease_json FROM write_leases ORDER BY run_id,lease_id')
+        .all()
+        .map((row) => JSON.stringify(row)),
+      integrationClaims: sqlite
+        .prepare('SELECT * FROM task_integration_claims ORDER BY run_id,task_id')
+        .all()
+        .map((row) => JSON.stringify(row))
+    }),
+    close: async () => {
+      admissionWorker.release();
+      cutoverWorker.release();
+      await admissionWorker.close();
+      await cutoverWorker.close();
+      sqlite.close();
+      peer.close();
+      authority.close();
+      legacyStore.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  };
+};
+
+globalMutationCutoverContract('SQLite', createCutoverFixture);
 
 describe('SQLite durable permit evidence', () => {
   it('persists a verifier without the live completion secret', async () => {

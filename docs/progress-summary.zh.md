@@ -3027,3 +3027,13 @@ attempt 保持 `PREPARING`，以及随后批准资源可以获得 claim。超出
 单独的持久化授权证据、新 claim 和新 token；本次增量尚未实现这条路径。SQLite 资源授权
 修复仍待独立复审。SQLite 受控 cutover 竞态、PostgreSQL M4.2 adapter 与生产受控写入
 边界仍未获证明；M4.2 继续为 OPEN。
+
+对 `a925255e7e32685adb78c2ad0ad2eee944f60b0c` 的独立复审已接受 SQLite 资源授权
+修复。SQLite 现在接入共享的旧 writer 切换竞态契约，通过独立 worker 连接运行 builder、
+repair、integration 和 dynamic lease 四类 writer 创建入口的两个序列化顺序。旧 admission
+先取得 SQLite 写入闸门时，真实事务会在提交前暂停；cutover 等待，随后必须把未注册历史
+别名下的该 writer 准确纳入全 store 清单。cutover 先赢时，随后到达的四类 writer 均须等待
+并被拒绝，不能留下 attempt、lease 或 integration claim 持久化证据。两个顺序中，尚未
+解决的历史 run 都会阻止部署进入 ready 状态和 scope activation。这构成受控的 SQLite
+验收证据，仍待独立复审；PostgreSQL adapter、生产受控写入边界和 M4.2 其余工作继续为
+OPEN。

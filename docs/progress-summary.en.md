@@ -3445,3 +3445,14 @@ Dynamic expansion outside the approved plan still requires separate durable auth
 evidence and a new claim and token; this increment does not implement that path. The SQLite
 resource correction awaits independent review. Controlled SQLite cutover races, the PostgreSQL
 M4.2 adapter, and the production controlled-write boundary remain unproven; M4.2 remains OPEN.
+
+Independent review of `a925255e7e32685adb78c2ad0ad2eee944f60b0c` accepted the SQLite
+resource-authorization correction. The shared legacy cutover race contract is now connected to
+SQLite through independent worker connections. It runs all four writer-creating paths—builder,
+repair, integration, and dynamic lease—in both serialization orders. When old admission acquires
+the SQLite write gate first, the worker pauses its real transaction before commit; cutover waits,
+then inventories that exact writer under the unregistered historical alias. When cutover wins,
+each later writer waits and is rejected without durable attempt, lease, or integration-claim
+evidence. In both orders the unresolved historical run prevents deployment readiness and scope
+activation. This is controlled SQLite acceptance evidence, subject to independent review; the
+PostgreSQL adapter, production controlled-write boundary, and remaining M4.2 work are still open.
