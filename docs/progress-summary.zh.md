@@ -2952,3 +2952,14 @@ PostgreSQL 两种持久化实现、全 store 切换证据、真实受控写入�
 旧 admission 先取得序列化点时必须纳入盘点；屏障先取得序列化点时必须拒绝后来的旧
 admission。M3 与 M4.1 保持 PASS / CLOSED / FROZEN；M4.3 尚未开始。详细实现契约见
 `docs/m4-cross-run-fencing-proposal.en.md`。
+
+对实现起点 SHA `3b095cfb9db0e5933adf860e68e36b808f799cab` 的独立复审指出两个
+P1 契约缺口。初稿把所有转换都描述为 repository scope 锁保护，但所属 scope 未知的旧
+writer 无法依此序列化；初稿还提供执行中 callback permit，却没有要求释放和交接等待
+permit 结束。现已在契约中区分覆盖部署的 cutover、旧 admission、分类与 readiness 闸门，
+以及 repository scope 内的 claim、permit 和交接序列化；涉及 run 资格的操作继续保持
+scope 先于 run 的锁序。仍有 permit 未结束时，释放与不确定 owner 的回收必须拒绝；进程
+丢失后的恢复需要独立验证的停止证据，在结算前继续阻塞其他 owner。共享、与 backend
+无关的测试工厂定义了 callback 与交接的两种先后顺序，以及不确定 owner 的回收场景。
+这些是契约修正和未来 adapter 的验收测试，**并不证明两种持久化 adapter 已通过**。
+M4.2 实现仍未关闭，本轮修正还需独立复审。

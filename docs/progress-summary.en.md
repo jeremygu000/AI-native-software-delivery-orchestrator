@@ -3358,3 +3358,16 @@ verification from a third connection. In particular, test both cutover race orde
 admission that wins first must be inventoried; a barrier that wins first must reject a later old
 admission. M3 and M4.1 remain PASS / CLOSED / FROZEN; M4.3 has not started. The detailed
 implementation contract is `docs/m4-cross-run-fencing-proposal.en.md`.
+
+Independent review of implementation-start SHA `3b095cfb9db0e5933adf860e68e36b808f799cab`
+found two P1 contract gaps. The draft had described every transition as repository-scope locked,
+which cannot serialize an unresolved writer whose scope is unknown. It also provided an in-flight
+callback permit without requiring release or handoff to wait for that permit. The contract now
+separates the deployment-wide cutover/admission/classification/readiness gate from repository-scope
+claim/permit/handoff serialization, and preserves scope-before-run order for eligibility changes.
+Release and uncertain-owner reclamation must reject while an exact permit remains unresolved;
+process-loss recovery requires independently verified quiescence evidence and keeps the claim
+blocking until settlement. A shared backend-neutral test factory specifies both winner orders for
+callback versus handoff, plus uncertain-owner reclamation. These are contract corrections and
+future adapter acceptance tests, **not** evidence that either durable adapter already satisfies
+them. M4.2 implementation remains open and requires independent review of this correction.

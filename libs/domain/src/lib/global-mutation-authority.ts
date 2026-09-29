@@ -48,9 +48,16 @@ export interface LegacyMutationOwner {
   readonly resource?: WritableResource;
 }
 
-/** A unique slot coordinates a controlled callback with release and handoff. */
+/** An opaque, store-unique slot for one controlled callback. */
 export interface FencedMutationPermit {
   readonly id: string;
+}
+
+export class GlobalMutationInFlightError extends Error {
+  constructor() {
+    super('Mutation authority has an in-flight controlled callback');
+    this.name = 'GlobalMutationInFlightError';
+  }
 }
 
 export interface CurrentMutationTokenRequest {
@@ -61,26 +68,81 @@ export interface CurrentMutationTokenRequest {
   readonly resource: WritableResource;
 }
 
-/** The provider persists every transition atomically under a repository-scope lock. */
+/**
+ * The deployment-wide gate serializes legacy writer admission, cutover,
+ * classification of owners with unknown scopes, and activation readiness.
+ * Repository-scope serialization protects claims, permits, release, and
+ * handoff. Every transition either commits all durable evidence or none of
+ * it. Operations touching both acquire the deployment gate before the
+ * scope; operations touching run eligibility acquire the scope before the run.
+ * A repository-scope lock alone cannot protect an owner with unknown scope.
+ */
 export interface GlobalMutationAuthority {
-  /** Only privileged setup may allocate a scope or attach an approved alias. */
+  /** Privileged identity registration is serialized by the deployment gate. */
   registerScope(repositoryId: string): Promise<string>;
   registerAlias(scopeId: string, repositoryId: string): Promise<void>;
+  /** Bind the approved immutable run identity under gate, then scope/run lock order. */
   bindRun(runId: string, repositoryId: string): Promise<void>;
+  /**
+   * Atomically close every legacy writer-creating admission path under the
+   * deployment-wide gate. An admission serialized first joins the inventory;
+   * an admission serialized after the barrier is rejected. This includes
+   * builder, repair, integration, dynamic lease acquisition, and every other
+   * legacy writer-creating path, across all scopes and runs.
+   */
   beginLegacyCutover(): Promise<void>;
-  /** Inventory spans the entire store, including unknown and unregistered aliases. */
+  /**
+   * Read a consistent store-wide inventory after admission closes, including
+   * unknown and unregistered aliases; never filter by repository scope.
+   */
   recoverLegacyOwners(): Promise<readonly LegacyMutationOwner[]>;
-  /** Settlement requires independently verified quiescence, recorded durably. */
+  /** Classify unknown-scope owners under the deployment gate. Settlement requires proven quiescence. */
   settleLegacyOwner(key: string, quiescenceEvidence: string): Promise<void>;
-  /** Import an unresolved owner as blocking authority, conservatively if details are unknown. */
+  /**
+   * Classify under the deployment gate, then import under the scope lock.
+   * An unknown resource in a known scope MUST become repository-wide
+   * HELD_UNCERTAIN authority. An unknown scope cannot be guessed or omitted.
+   */
   importLegacyOwner(key: string, scopeId: string, resource?: WritableResource): Promise<void>;
+  /**
+   * Privileged deployment-wide checked transition to GLOBAL_READY. It must
+   * verify complete classification of every historical unresolved owner and
+   * durable closure of old admission, including all live old workers. An
+   * unknown-scope unresolved owner blocks readiness for every scope.
+   */
+  completeLegacyCutover(verifiedOldWriterShutdownEvidence: string): Promise<void>;
+  /** Require GLOBAL_READY under the deployment gate before the scope transition. */
   activateScope(scopeId: string): Promise<void>;
+  /** Check deployment readiness, then serialize scope claims before the run row. */
   claimGlobalMutation(claim: GlobalMutationClaim): Promise<GlobalMutationClaimResult>;
   recoverRepositoryMutationAuthority(scopeId: string): Promise<readonly GlobalMutationLease[]>;
   assertCurrentMutationToken(request: CurrentMutationTokenRequest): Promise<void>;
-  /** Acquire an in-flight mutation slot atomically with checking current authority. */
+  /**
+   * Atomically validate current scope/claim/owner/token/resource authority and
+   * durably register a unique in-flight permit before the callback begins.
+   * A process loss leaves the unresolved permit blocking release and handoff
+   * until independent quiescence settlement; elapsed time is insufficient.
+   */
   beginFencedMutation(request: CurrentMutationTokenRequest): Promise<FencedMutationPermit>;
+  /**
+   * Remove only this exact permit after its callback has settled. Do not
+   * reject its removal merely because the claim became HELD_UNCERTAIN.
+   */
   endFencedMutation(permit: FencedMutationPermit): Promise<void>;
+  /**
+   * Privileged recovery after the callback owner is proven unable to write.
+   * Atomically retire the orphaned permit, retain the claim as HELD_UNCERTAIN,
+   * and record the independent quiescence evidence; this is not a handoff.
+   */
+  settleOrphanedFencedMutation(
+    permit: FencedMutationPermit,
+    verifiedQuiescenceEvidence: string
+  ): Promise<void>;
+  /**
+   * Reject with GlobalMutationInFlightError while any permit for this claim is
+   * unresolved, without changing durable lease evidence. Ownership cannot
+   * close or transfer until every callback ends.
+   */
   releaseGlobalMutation(request: {
     readonly scopeId: string;
     readonly claimId: string;
@@ -89,12 +151,26 @@ export interface GlobalMutationAuthority {
     readonly expectedVersion: number;
     readonly stopEvidence: string;
   }): Promise<void>;
+  /** Retain every unresolved permit and keep the claim blocking replacement owners. */
   markMutationUncertain(request: {
     readonly scopeId: string;
     readonly claimId: string;
     readonly owner: GlobalMutationOwner;
     readonly token: number;
     readonly evidence: string;
+  }): Promise<void>;
+  /**
+   * Close HELD_UNCERTAIN authority only with verified quiescence evidence and
+   * no unresolved permit. Otherwise reject with GlobalMutationInFlightError;
+   * leave durable evidence unchanged and keep the old owner blocking.
+   */
+  reclaimUncertainMutation(request: {
+    readonly scopeId: string;
+    readonly claimId: string;
+    readonly owner: GlobalMutationOwner;
+    readonly token: number;
+    readonly expectedVersion: number;
+    readonly verifiedQuiescenceEvidence: string;
   }): Promise<void>;
 }
 
