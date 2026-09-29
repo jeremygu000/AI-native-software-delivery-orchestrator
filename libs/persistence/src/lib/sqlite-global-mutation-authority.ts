@@ -3,10 +3,16 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import {
+  agentExecutionAttemptSchema,
   areWritableResourcesConflicting,
   canonicalTaskLeaseResources,
   GlobalMutationInFlightError,
   isWritableResourceCoveredBy,
+  persistedTaskExecutionBindingSchema,
+  taskContractSchema,
+  taskLeasePlanFingerprint,
+  taskRepairAttemptSchema,
+  taskRepairWorkItemSchema,
   writableResourceIdentity,
   writableResourceSchema,
   type CurrentMutationTokenRequest,
@@ -63,6 +69,9 @@ const legacyRowSchema = z.object({
   disposition: z.string().nullable()
 });
 type ClaimRow = z.infer<typeof claimRowSchema>;
+type AuthorizedAttempt =
+  | { kind: 'builder'; attempt: z.infer<typeof agentExecutionAttemptSchema>; previousJson: string }
+  | { kind: 'repair'; attempt: z.infer<typeof taskRepairAttemptSchema>; previousJson: string };
 
 const nonempty = (value: string, name: string): string => {
   if (value.trim().length === 0) {
@@ -71,6 +80,14 @@ const nonempty = (value: string, name: string): string => {
   return value;
 };
 const parsed = <T>(json: string, schema: z.ZodType<T>): T => schema.parse(JSON.parse(json));
+const parsedAttempt = <T>(json: string, schema: z.ZodType<T>): T =>
+  schema.parse(
+    JSON.parse(json, (key: string, value: unknown): unknown =>
+      (key === 'startedAt' || key === 'completedAt') && typeof value === 'string'
+        ? new Date(value)
+        : value
+    )
+  );
 const resource = (json: string): WritableResource => writableResourceSchema.parse(JSON.parse(json));
 const resourceKey = (value: WritableResource): string =>
   `${value.type}\u0000${writableResourceIdentity(value)}`;
@@ -392,6 +409,14 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
         throw new Error('Legacy owner is not unresolved');
       }
       const owner = parsed(row.owner_json, legacyOwnerSchema);
+      const historicalRun = this.#one(
+        'SELECT repository_id FROM orchestration_runs WHERE id=?',
+        z.object({ repository_id: z.string() }),
+        owner.runId
+      );
+      if (historicalRun?.repository_id !== owner.repositoryId) {
+        throw new Error('Historical owner repository identity no longer matches its run');
+      }
       const known = this.#one(
         'SELECT scope_id FROM forge_global_aliases WHERE repository_id=?',
         scopeRow,
@@ -399,6 +424,27 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
       );
       if (known !== undefined && known.scope_id !== scopeId) {
         throw new Error('Legacy alias scope conflict');
+      }
+      if (known === undefined) {
+        this.#db
+          .prepare('INSERT INTO forge_global_aliases (repository_id,scope_id) VALUES (?,?)')
+          .run(owner.repositoryId, scopeId);
+      }
+      const binding = this.#one(
+        'SELECT repository_id,scope_id FROM forge_global_run_bindings WHERE run_id=?',
+        z.object({ repository_id: z.string(), scope_id: z.string() }),
+        owner.runId
+      );
+      if (
+        binding !== undefined &&
+        (binding.repository_id !== owner.repositoryId || binding.scope_id !== scopeId)
+      ) {
+        throw new Error('Historical run scope binding conflict');
+      }
+      if (binding === undefined) {
+        this.#db
+          .prepare('INSERT INTO forge_global_run_bindings VALUES (?,?,?)')
+          .run(owner.runId, owner.repositoryId, scopeId);
       }
       const leaseResource =
         owner.resource === undefined
@@ -477,6 +523,142 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
     });
   }
 
+  #authorizedAttempt(
+    owner: GlobalMutationOwner,
+    tasksJson: string,
+    retry: boolean
+  ): AuthorizedAttempt {
+    const tasks = parsed(tasksJson, z.array(taskContractSchema));
+    if (!tasks.some((task) => task.id === owner.taskId)) {
+      throw new Error('Global mutation owner task is not in the approved run');
+    }
+    const rowSchema = z.object({ attempt_json: z.string() });
+    const builder = this.#one(
+      'SELECT attempt_json FROM agent_execution_attempts WHERE run_id=? AND attempt_id=?',
+      rowSchema,
+      owner.runId,
+      owner.attemptId
+    );
+    const repair = this.#one(
+      'SELECT attempt_json FROM task_repair_attempts WHERE run_id=? AND attempt_id=?',
+      rowSchema,
+      owner.runId,
+      owner.attemptId
+    );
+    if ((builder === undefined) === (repair === undefined)) {
+      throw new Error('Global mutation owner needs one unambiguous persisted attempt');
+    }
+    const valid = (attempt: {
+      runId: string;
+      taskId: string;
+      id: string;
+      agentId: string;
+      workspaceId: string;
+      state: string;
+    }): void => {
+      if (
+        attempt.runId !== owner.runId ||
+        attempt.taskId !== owner.taskId ||
+        attempt.id !== owner.attemptId ||
+        attempt.agentId !== owner.agentId ||
+        (owner.workspaceId !== undefined && attempt.workspaceId !== owner.workspaceId)
+      ) {
+        throw new Error('Global mutation owner does not match the persisted attempt');
+      }
+      if (
+        retry
+          ? attempt.state !== 'STARTING' && attempt.state !== 'RUNNING'
+          : attempt.state !== 'PREPARING'
+      ) {
+        throw new Error('Attempt lifecycle does not authorize global mutation admission');
+      }
+    };
+    if (builder !== undefined) {
+      const attempt = parsedAttempt(builder.attempt_json, agentExecutionAttemptSchema);
+      valid(attempt);
+      const binding = this.#one(
+        'SELECT binding_json FROM task_execution_bindings WHERE run_id=? AND task_id=?',
+        z.object({ binding_json: z.string() }),
+        owner.runId,
+        owner.taskId
+      );
+      if (binding === undefined) {
+        throw new Error('Builder attempt has no approved task execution binding');
+      }
+      const approved = parsed(binding.binding_json, persistedTaskExecutionBindingSchema);
+      if (
+        approved.runId !== owner.runId ||
+        approved.taskId !== owner.taskId ||
+        approved.agentId !== owner.agentId ||
+        approved.workspace.id !== attempt.workspaceId ||
+        taskLeasePlanFingerprint(approved.leasePlan) !== attempt.leasePlanFingerprint
+      ) {
+        throw new Error('Builder attempt does not match its approved task binding');
+      }
+      return { kind: 'builder', attempt, previousJson: builder.attempt_json };
+    }
+    if (repair === undefined) {
+      throw new Error('Missing persisted repair attempt');
+    }
+    const attempt = parsedAttempt(repair.attempt_json, taskRepairAttemptSchema);
+    valid(attempt);
+    const workItem = this.#one(
+      'SELECT item_json FROM task_repair_work_items WHERE run_id=? AND repair_attempt_id=?',
+      z.object({ item_json: z.string() }),
+      owner.runId,
+      owner.attemptId
+    );
+    if (workItem === undefined) {
+      throw new Error('Repair attempt has no admitted work item');
+    }
+    const approved = parsed(workItem.item_json, taskRepairWorkItemSchema);
+    if (
+      approved.runId !== owner.runId ||
+      approved.taskId !== owner.taskId ||
+      approved.repairAttemptId !== owner.attemptId ||
+      approved.workspaceId !== attempt.workspaceId ||
+      approved.parentReviewIteration !== attempt.parentReviewIteration ||
+      approved.builderAttemptId !== attempt.parentReviewSubject.builderAttemptId
+    ) {
+      throw new Error('Repair attempt does not match its admitted work item');
+    }
+    return { kind: 'repair', attempt, previousJson: repair.attempt_json };
+  }
+
+  #startAttempt(admitted: AuthorizedAttempt): void {
+    const started = {
+      ...admitted.attempt,
+      state: 'STARTING' as const,
+      revision: admitted.attempt.revision + 1,
+      startedAt: new Date()
+    };
+    if (admitted.kind === 'builder') {
+      agentExecutionAttemptSchema.parse(started);
+      this.#db
+        .prepare(
+          'UPDATE agent_execution_attempts SET attempt_json=? WHERE run_id=? AND attempt_id=?'
+        )
+        .run(JSON.stringify(started), started.runId, started.id);
+      return;
+    }
+    taskRepairAttemptSchema.parse(started);
+    this.#db
+      .prepare(
+        `INSERT INTO task_repair_attempt_history
+         (run_id,attempt_id,revision,attempt_json,recorded_at) VALUES (?,?,?,?,?)`
+      )
+      .run(
+        admitted.attempt.runId,
+        admitted.attempt.id,
+        admitted.attempt.revision,
+        admitted.previousJson,
+        new Date().toISOString()
+      );
+    this.#db
+      .prepare('UPDATE task_repair_attempts SET attempt_json=? WHERE run_id=? AND attempt_id=?')
+      .run(JSON.stringify(started), started.runId, started.id);
+  }
+
   async claimGlobalMutation(claim: GlobalMutationClaim): Promise<GlobalMutationClaimResult> {
     return this.#transaction(() => {
       if (
@@ -486,9 +668,9 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
         throw new Error('Global mutation claims are not active');
       }
       const run = this.#one(
-        `SELECT b.scope_id,r.state FROM forge_global_run_bindings b
+        `SELECT b.scope_id,r.state,r.tasks_json FROM forge_global_run_bindings b
          JOIN orchestration_runs r ON r.id=b.run_id WHERE b.run_id=?`,
-        z.object({ scope_id: z.string(), state: z.string() }),
+        z.object({ scope_id: z.string(), state: z.string(), tasks_json: z.string() }),
         claim.owner.runId
       );
       if (run?.scope_id !== claim.scopeId || run.state !== 'ACTIVE') {
@@ -511,6 +693,7 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
         claim.claimId
       );
       if (old !== undefined) {
+        this.#authorizedAttempt(claim.owner, run.tasks_json, true);
         const previous = this.#leases(claim.scopeId, claim.claimId);
         if (
           old.state !== 'ACTIVE' ||
@@ -524,6 +707,7 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
         }
         return { status: 'granted', token: old.token, leases: previous };
       }
+      const admitted = this.#authorizedAttempt(claim.owner, run.tasks_json, false);
       const blockers = this.#leases(claim.scopeId).filter(
         (lease) =>
           lease.state !== 'RELEASED' &&
@@ -541,6 +725,7 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
           .prepare('INSERT INTO forge_global_leases VALUES (?,?,?,?)')
           .run(claim.scopeId, claim.claimId, randomUUID(), JSON.stringify(value));
       }
+      this.#startAttempt(admitted);
       return { status: 'granted', token, leases: this.#leases(claim.scopeId, claim.claimId) };
     });
   }

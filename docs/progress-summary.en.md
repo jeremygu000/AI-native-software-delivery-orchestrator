@@ -3417,3 +3417,17 @@ later integration claim, and repository-wide uncertain import for an unknown res
 SQLite persistence regressions still pass. The controlled legacy-admission race factory is not
 yet wired to SQLite, PostgreSQL has no M4.2 adapter, and the real production mutation boundary
 and third-connection PostgreSQL evidence remain outstanding. **M4.2 implementation remains OPEN.**
+
+Independent review of the first SQLite increment at
+`0d17eefb1f8a7f92336e0994b3fcf615960a9b40` found two P1 identity gaps. Importing an
+unregistered historical repository ID now atomically records its alias-to-scope mapping and
+immutable historical run binding with the imported blocking claim, so a later `registerScope`
+cannot split the same identity into a second scope. A new global claim now requires a real
+persisted builder or repair attempt for a task in the bound run, with matching run, task, agent,
+and optional workspace identity. A builder must match its approved task execution binding;
+a repair must have a matching admitted work item. Only a `PREPARING` attempt can receive a new claim; the same
+SQLite transaction advances it to `STARTING` after conflict checks pass. A blocked claim leaves
+the attempt unchanged, while an exact retry requires the original attempt to remain `STARTING`
+or `RUNNING`. Focused SQLite tests cover both corrections, including a new run under the formerly
+unknown alias and builder and repair admission. These corrections still need independent review;
+the controlled cutover race, PostgreSQL adapter, and production mutation boundary remain open.

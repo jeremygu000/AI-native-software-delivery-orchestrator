@@ -3003,3 +3003,15 @@ SQLite 持久化实现已经开始。新的 adapter 在现有 SQLite authority �
 级 `HELD_UNCERTAIN`。现有 SQLite 持久化回归仍通过。旧 admission 竞态共享工厂尚未
 接入 SQLite；PostgreSQL 尚无 M4.2 adapter；真实生产写入边界与 PostgreSQL 第三连接
 证据也仍未完成。**M4.2 实现继续为 OPEN。**
+
+对首个 SQLite 增量 SHA `0d17eefb1f8a7f92336e0994b3fcf615960a9b40` 的独立复审
+指出两个身份边界 P1。导入未注册的历史 repository ID 时，现在会与阻塞性 claim 在同一个
+事务中写入该 ID 到 scope 的别名映射和历史 run 的不可变绑定；以后调用 `registerScope`
+不会把同一身份分裂到第二个 scope。新的 global claim 现在必须对应 bound run 中真实存在的
+builder 或 repair attempt，该 task 属于 run，run、task、agent 与可选 workspace 身份
+均须匹配。builder 还须匹配已批准的 task execution binding，repair 须有对应的已准入
+work item。只有 `PREPARING` attempt 可以获得新 claim；冲突检查通过后，同一个 SQLite
+事务才将其推进到 `STARTING`。被阻塞的 claim 不推进 attempt；精确重试要求原 attempt
+仍为 `STARTING` 或 `RUNNING`。定向 SQLite 测试覆盖上述修正，包括原未知别名下的新
+run，以及 builder 和 repair admission。修正仍待独立复审；受控 cutover 竞态、
+PostgreSQL adapter 和真实生产写入边界继续未完成。
