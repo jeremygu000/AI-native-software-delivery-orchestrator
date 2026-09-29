@@ -275,6 +275,42 @@ const createCutoverFixture = async (): Promise<GlobalMutationCutoverFixture> => 
       '[]',
       '{}'
     );
+  await legacyStore.persistAttempt({
+    runId: 'historical-B',
+    attempt: {
+      id: 'builder-attempt',
+      runId: 'historical-B',
+      taskId: 'task-A',
+      agentId: 'builder-agent',
+      workspaceId: 'builder-workspace',
+      leasePlanFingerprint: 'approved-plan',
+      state: 'PREPARING',
+      revision: 1
+    }
+  });
+  await legacyStore.persistRepairAttempt({
+    runId: 'historical-B',
+    attempt: {
+      id: 'repair-attempt',
+      runId: 'historical-B',
+      taskId: 'task-A',
+      agentId: 'repair-agent',
+      workspaceId: 'repair-workspace',
+      parentReviewIteration: 1,
+      parentReviewSubject: {
+        builderAttemptId: 'builder-parent',
+        outputAttemptId: 'builder-parent',
+        workspaceId: 'builder-workspace',
+        workspaceRevision: 1,
+        workspaceChangeFingerprint: `sha256:${'a'.repeat(64)}`,
+        impactFingerprint: `sha256:${'b'.repeat(64)}`,
+        verificationFingerprint: `sha256:${'c'.repeat(64)}`
+      },
+      repairIteration: 1,
+      state: 'PREPARING',
+      revision: 1
+    }
+  });
   const admissionWorker = await startRaceWorker(filename);
   const cutoverWorker = await startRaceWorker(filename);
   const cutoverPeer = new Proxy(peer, {
@@ -331,6 +367,38 @@ const createCutoverFixture = async (): Promise<GlobalMutationCutoverFixture> => 
         .all()
         .map((row) => JSON.stringify(row))
     }),
+    assertRejectedAdmissionHasNoStartResidue: async (kind) => {
+      if (kind === 'builder') {
+        expect(
+          sqlite
+            .prepare(
+              'SELECT attempt_json FROM agent_execution_attempts WHERE run_id=? AND attempt_id=?'
+            )
+            .get('historical-B', 'builder-attempt')
+        ).toEqual({ attempt_json: expect.stringContaining('"state":"PREPARING"') });
+        expect(
+          sqlite
+            .prepare('SELECT count(*) AS count FROM write_leases WHERE run_id=? AND lease_id=?')
+            .get('historical-B', 'builder-lease')
+        ).toEqual({ count: 0 });
+      }
+      if (kind === 'repair') {
+        expect(
+          sqlite
+            .prepare(
+              'SELECT attempt_json FROM task_repair_attempts WHERE run_id=? AND attempt_id=?'
+            )
+            .get('historical-B', 'repair-attempt')
+        ).toEqual({ attempt_json: expect.stringContaining('"state":"PREPARING"') });
+        expect(
+          sqlite
+            .prepare(
+              'SELECT count(*) AS count FROM task_repair_attempt_history WHERE run_id=? AND attempt_id=?'
+            )
+            .get('historical-B', 'repair-attempt')
+        ).toEqual({ count: 0 });
+      }
+    },
     close: async () => {
       admissionWorker.release();
       cutoverWorker.release();

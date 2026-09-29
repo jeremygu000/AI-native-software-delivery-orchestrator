@@ -33,7 +33,7 @@ const admit = async (kind: Kind): Promise<string> => {
   const runId = 'historical-B';
   switch (kind) {
     case 'builder':
-      await store.persistAttempt({
+      await store.claimBuilderStart({
         runId,
         attempt: {
           id: 'builder-attempt',
@@ -44,12 +44,26 @@ const admit = async (kind: Kind): Promise<string> => {
           leasePlanFingerprint: 'approved-plan',
           state: 'STARTING',
           startedAt: new Date('2026-09-29T00:00:00.000Z'),
-          revision: 1
-        }
+          revision: 2
+        },
+        leases: [
+          {
+            id: 'builder-lease',
+            runId,
+            agentId: 'builder-agent',
+            taskId: 'task-A',
+            resource: { type: 'file', projectId: 'project-A', fileId: 'file-A' },
+            mode: 'exclusive',
+            version: 1,
+            state: 'ACTIVE',
+            acquiredAt: new Date('2026-09-29T00:00:00.000Z'),
+            lastHeartbeatAt: new Date('2026-09-29T00:00:00.000Z')
+          }
+        ]
       });
       return `builder:${runId}:builder-attempt`;
     case 'repair':
-      await store.persistRepairAttempt({
+      await store.claimRepairStart({
         runId,
         attempt: {
           id: 'repair-attempt',
@@ -70,7 +84,7 @@ const admit = async (kind: Kind): Promise<string> => {
           repairIteration: 1,
           state: 'STARTING',
           startedAt: new Date('2026-09-29T00:00:00.000Z'),
-          revision: 1
+          revision: 2
         }
       });
       return `repair:${runId}:repair-attempt`;

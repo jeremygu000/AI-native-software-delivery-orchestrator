@@ -3448,11 +3448,22 @@ M4.2 adapter, and the production controlled-write boundary remain unproven; M4.2
 
 Independent review of `a925255e7e32685adb78c2ad0ad2eee944f60b0c` accepted the SQLite
 resource-authorization correction. The shared legacy cutover race contract is now connected to
-SQLite through independent worker connections. It runs all four writer-creating paths—builder,
-repair, integration, and dynamic lease—in both serialization orders. When old admission acquires
+SQLite through independent worker connections. It exercises builder start, repair start,
+integration start, and dynamic lease creation in both serialization orders. When old admission acquires
 the SQLite write gate first, the worker pauses its real transaction before commit; cutover waits,
 then inventories that exact writer under the unregistered historical alias. When cutover wins,
 each later writer waits and is rejected without durable attempt, lease, or integration-claim
 evidence. In both orders the unresolved historical run prevents deployment readiness and scope
 activation. This is controlled SQLite acceptance evidence, subject to independent review; the
 PostgreSQL adapter, production controlled-write boundary, and remaining M4.2 work are still open.
+
+Review of `6608fcebf8dd9046f05ac531ebd7a9b018299fd5` found that the builder and repair
+race cases had used generic `persistAttempt(STARTING)` and `persistRepairAttempt(STARTING)` rather
+than the production `claimBuilderStart` and `claimRepairStart` transactions. The SQLite fixture
+now seeds real `PREPARING` attempts, then races those two production admission methods against
+cutover. Builder start atomically persists its `STARTING` attempt and an ACTIVE local lease;
+the admission-first case requires both owner kinds in the store-wide inventory. When cutover
+wins, explicit checks require the builder and repair attempts to remain `PREPARING`, no builder
+lease, and no repair start/history record. The generic STARTING persistence entry points remain
+guarded by the same durable gate but are not the primary admission cases in this controlled race.
+This correction awaits independent review; M4.2 remains OPEN.

@@ -59,6 +59,8 @@ export interface GlobalMutationCutoverFixture {
     readonly leases: readonly string[];
     readonly integrationClaims: readonly string[];
   }>;
+  /** Check entry-specific start evidence after a losing legacy admission. */
+  assertRejectedAdmissionHasNoStartResidue(kind: LegacyAdmissionKind): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -387,6 +389,17 @@ export const globalMutationCutoverContract = (
               })
             ])
           );
+          if (kind === 'builder') {
+            expect(owners).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'lease',
+                  repositoryId: fixture.unregisteredRepositoryId,
+                  runId: fixture.historicalRunId
+                })
+              ])
+            );
+          }
           await expect(
             fixture.peer.completeLegacyCutover('All old worker processes are stopped.')
           ).rejects.toThrow();
@@ -417,6 +430,7 @@ export const globalMutationCutoverContract = (
           await held.finished;
           expect(await admission).toBe('rejected');
           expect(await fixture.readLegacyWriterEvidence()).toEqual(before);
+          await fixture.assertRejectedAdmissionHasNoStartResidue(kind);
 
           const owners = await fixture.peer.recoverLegacyOwners();
           expect(owners).toEqual(
