@@ -19,7 +19,8 @@
     "@ai-native-software-delivery-orchestrator/planning": "workspace:*",
     "@ai-native-software-delivery-orchestrator/postgres-persistence": "workspace:*",
     "better-sqlite3": "^13.0.3",
-    "drizzle-orm": "0.45.2"
+    "drizzle-orm": "0.45.2",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*",

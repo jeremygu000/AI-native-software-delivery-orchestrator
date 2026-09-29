@@ -3,6 +3,7 @@ export {
   PersistenceInputError,
   PersistenceReplayError
 } from './lib/drizzle-sqlite-orchestration-persistence.js';
+export { SqliteGlobalMutationAuthority } from './lib/sqlite-global-mutation-authority.js';
 export {
   authorityConfigurationFingerprint,
   authorityConfigurationIdentity,

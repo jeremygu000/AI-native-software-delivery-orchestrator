@@ -2988,3 +2988,18 @@ admission 先赢的 cutover 场景现覆盖 builder、repair、integration、dyn
 四类入口，逐一核对未知别名的全 store 清单中对应的 writer 类型。这些仍是尚未执行的
 共享 adapter 契约，不能据此关闭 M4.2，也不能宣称 SQLite／PostgreSQL durable fencing
 已获证明。
+
+针对远端 SHA `f179d0f480e768bbe67ad3e2ba1f0e281c8f7a4f` 的独立复审已接受
+M4.2 的 provider-neutral 契约和共享验收基线。正常 callback 的完成能力与可恢复 permit
+证据已经分离；不确定 claim 不能经普通 release 关闭；旧 admission 先赢和 cutover 先赢的
+场景均覆盖 builder、repair、integration 和 dynamic lease。此次通过使契约可以作为后端
+实现依据，尚不代表 M4.2 关闭。
+
+SQLite 持久化实现已经开始。新的 adapter 在现有 SQLite authority 数据库中保存 scope 与
+别名绑定、部署级切换状态、全 store 历史 owner 清单、claim、lease、permit 与审计证据。
+写入转换使用 immediate transaction，旧 writer 创建入口在同一个持久化切换闸门下检查。
+四个共享受控 permit 场景现在通过两个独立 SQLite 连接执行；另一个定向 SQLite 场景
+验证了未注册历史别名、切换后 integration claim 被拒，以及资源未知时导入 repository
+级 `HELD_UNCERTAIN`。现有 SQLite 持久化回归仍通过。旧 admission 竞态共享工厂尚未
+接入 SQLite；PostgreSQL 尚无 M4.2 adapter；真实生产写入边界与 PostgreSQL 第三连接
+证据也仍未完成。**M4.2 实现继续为 OPEN。**

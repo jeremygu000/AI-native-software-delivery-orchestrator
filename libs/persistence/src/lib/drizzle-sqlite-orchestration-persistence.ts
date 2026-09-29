@@ -425,8 +425,17 @@ export class DrizzleSqliteOrchestrationPersistence
 
   constructor(filename = ':memory:') {
     this.#sqlite = new Database(filename);
+    this.#sqlite.pragma('journal_mode = WAL');
+    this.#sqlite.pragma('busy_timeout = 5000');
     this.#db = drizzle(this.#sqlite);
     this.#sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS forge_global_control (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        state TEXT NOT NULL,
+        next_token INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO forge_global_control (id, state, next_token)
+        VALUES (1, 'LEGACY_ALLOWED', 0);
       CREATE TABLE IF NOT EXISTS orchestration_runs (
         id TEXT PRIMARY KEY NOT NULL,
         repository_id TEXT NOT NULL,
@@ -1048,10 +1057,15 @@ export class DrizzleSqliteOrchestrationPersistence
       throw new PersistenceInputError('Write lease run ID must match payload run ID');
     }
     writeLeaseSchema.parse(record.lease);
-    this.#sqlite.transaction(() => {
-      this.#assertRunExists(record.runId);
-      this.#persistLeaseInTransaction(record);
-    })();
+    this.#sqlite
+      .transaction(() => {
+        if (record.lease.state === 'ACTIVE') {
+          this.#assertLegacyWriterAdmissionOpen();
+        }
+        this.#assertRunExists(record.runId);
+        this.#persistLeaseInTransaction(record);
+      })
+      .immediate();
   }
 
   async persistWorkspace(record: PersistedTaskWorkspace): Promise<void> {
@@ -1108,9 +1122,14 @@ export class DrizzleSqliteOrchestrationPersistence
 
   async persistAttempt(record: PersistedAgentExecutionAttempt): Promise<void> {
     this.#assertAttempt(record);
-    this.#sqlite.transaction(() => {
-      this.#persistAttemptInTransaction(record);
-    })();
+    this.#sqlite
+      .transaction(() => {
+        if (record.attempt.state === 'STARTING' || record.attempt.state === 'RUNNING') {
+          this.#assertLegacyWriterAdmissionOpen();
+        }
+        this.#persistAttemptInTransaction(record);
+      })
+      .immediate();
   }
 
   async claimBuilderStart(request: {
@@ -1123,19 +1142,22 @@ export class DrizzleSqliteOrchestrationPersistence
     if (request.attempt.state !== 'STARTING') {
       throw new PersistenceInputError('Builder mutation claim requires a STARTING attempt');
     }
-    return this.#sqlite.transaction(() => {
-      this.#assertRunIsActive(request.runId);
-      this.#assertPrecedingBuilderAttempt(record);
-      for (const lease of request.leases) {
-        writeLeaseSchema.parse(lease);
-        if (lease.runId !== request.runId) {
-          throw new PersistenceInputError('Write lease run ID must match persistence run ID');
+    return this.#sqlite
+      .transaction(() => {
+        this.#assertLegacyWriterAdmissionOpen();
+        this.#assertRunIsActive(request.runId);
+        this.#assertPrecedingBuilderAttempt(record);
+        for (const lease of request.leases) {
+          writeLeaseSchema.parse(lease);
+          if (lease.runId !== request.runId) {
+            throw new PersistenceInputError('Write lease run ID must match persistence run ID');
+          }
+          this.#persistLeaseInTransaction({ runId: request.runId, lease });
         }
-        this.#persistLeaseInTransaction({ runId: request.runId, lease });
-      }
-      this.#persistAttemptInTransaction(record);
-      return request.attempt;
-    })();
+        this.#persistAttemptInTransaction(record);
+        return request.attempt;
+      })
+      .immediate();
   }
 
   async claimIntegrationStart(request: {
@@ -1145,31 +1167,34 @@ export class DrizzleSqliteOrchestrationPersistence
     readonly outputAttemptId: string;
   }): Promise<void> {
     this.#assertIntegrationClaim(request);
-    this.#sqlite.transaction(() => {
-      this.#assertRunIsActive(request.runId);
-      const existing = this.#db
-        .select()
-        .from(integrationClaims)
-        .where(
-          and(
-            eq(integrationClaims.runId, request.runId),
-            eq(integrationClaims.taskId, request.taskId)
+    this.#sqlite
+      .transaction(() => {
+        this.#assertLegacyWriterAdmissionOpen();
+        this.#assertRunIsActive(request.runId);
+        const existing = this.#db
+          .select()
+          .from(integrationClaims)
+          .where(
+            and(
+              eq(integrationClaims.runId, request.runId),
+              eq(integrationClaims.taskId, request.taskId)
+            )
           )
-        )
-        .get();
-      if (existing === undefined) {
-        this.#db.insert(integrationClaims).values(request).run();
-        return;
-      }
-      if (
-        existing.workspaceId !== request.workspaceId ||
-        existing.outputAttemptId !== request.outputAttemptId
-      ) {
-        throw new PersistenceInputError(
-          `Integration mutation claim authority mismatch: ${request.runId}/${request.taskId}`
-        );
-      }
-    })();
+          .get();
+        if (existing === undefined) {
+          this.#db.insert(integrationClaims).values(request).run();
+          return;
+        }
+        if (
+          existing.workspaceId !== request.workspaceId ||
+          existing.outputAttemptId !== request.outputAttemptId
+        ) {
+          throw new PersistenceInputError(
+            `Integration mutation claim authority mismatch: ${request.runId}/${request.taskId}`
+          );
+        }
+      })
+      .immediate();
   }
 
   async releaseIntegrationClaim(request: {
@@ -1755,10 +1780,15 @@ export class DrizzleSqliteOrchestrationPersistence
       throw new PersistenceInputError('Repair attempt run ID must match persistence run ID');
     }
     taskRepairAttemptSchema.parse(record.attempt);
-    this.#sqlite.transaction(() => {
-      this.#assertRunExists(record.runId);
-      this.#persistRepairAttemptInTransaction(record);
-    })();
+    this.#sqlite
+      .transaction(() => {
+        if (record.attempt.state === 'STARTING' || record.attempt.state === 'RUNNING') {
+          this.#assertLegacyWriterAdmissionOpen();
+        }
+        this.#assertRunExists(record.runId);
+        this.#persistRepairAttemptInTransaction(record);
+      })
+      .immediate();
   }
 
   async claimRepairStart(record: PersistedTaskRepairAttempt): Promise<TaskRepairAttempt> {
@@ -1767,12 +1797,15 @@ export class DrizzleSqliteOrchestrationPersistence
     if (record.attempt.state !== 'STARTING') {
       throw new PersistenceInputError('Repair mutation claim requires a STARTING attempt');
     }
-    return this.#sqlite.transaction(() => {
-      this.#assertRunIsActive(record.runId);
-      this.#assertPrecedingRepairAttempt(record);
-      this.#persistRepairAttemptInTransaction(record);
-      return record.attempt;
-    })();
+    return this.#sqlite
+      .transaction(() => {
+        this.#assertLegacyWriterAdmissionOpen();
+        this.#assertRunIsActive(record.runId);
+        this.#assertPrecedingRepairAttempt(record);
+        this.#persistRepairAttemptInTransaction(record);
+        return record.attempt;
+      })
+      .immediate();
   }
 
   async settleUnknownRepairCancellation(request: {
@@ -2301,6 +2334,20 @@ export class DrizzleSqliteOrchestrationPersistence
     }
     if (run.state !== 'ACTIVE') {
       throw new PersistenceInputError(`Mutation claim requires ACTIVE run: ${runId}/${run.state}`);
+    }
+  }
+
+  #assertLegacyWriterAdmissionOpen(): void {
+    const row: unknown = this.#sqlite
+      .prepare('SELECT state FROM forge_global_control WHERE id = 1')
+      .get();
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      !('state' in row) ||
+      row.state !== 'LEGACY_ALLOWED'
+    ) {
+      throw new PersistenceInputError('Legacy mutation admission is closed by global cutover');
     }
   }
 

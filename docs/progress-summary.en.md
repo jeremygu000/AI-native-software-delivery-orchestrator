@@ -3399,3 +3399,21 @@ cannot bypass reclaim afterward. Finally, the legacy-admission-first cutover sce
 builder, repair, integration, and dynamic leases, checking each exact writer kind in the
 whole-store unknown-alias inventory. These are still unexecuted shared adapter contracts; they
 do not close M4.2 or demonstrate durable SQLite/PostgreSQL fencing.
+
+Independent review of remote SHA `f179d0f480e768bbe67ad3e2ba1f0e281c8f7a4f` accepted
+the provider-neutral M4.2 contract and shared acceptance baseline. The live completion
+capability is separate from recoverable permit evidence, uncertain claims cannot use ordinary
+release, and both legacy-admission-first and cutover-first scenarios cover builder, repair,
+integration, and dynamic leases. This acceptance freezes the contract as an implementation
+baseline; it does not close M4.2.
+
+SQLite durable implementation has begun. A new adapter stores scope and alias bindings, the
+deployment cutover state, whole-store historical owner inventory, claims, leases, permits, and
+audit evidence in the existing SQLite authority database. Its write transitions use immediate
+transactions, and legacy writer-creating entry points check the same durable cutover gate.
+Four shared controlled-permit scenarios now run against two independent SQLite connections;
+a focused SQLite scenario also checks an unregistered historical alias, cutover rejection of a
+later integration claim, and repository-wide uncertain import for an unknown resource. Existing
+SQLite persistence regressions still pass. The controlled legacy-admission race factory is not
+yet wired to SQLite, PostgreSQL has no M4.2 adapter, and the real production mutation boundary
+and third-connection PostgreSQL evidence remain outstanding. **M4.2 implementation remains OPEN.**
