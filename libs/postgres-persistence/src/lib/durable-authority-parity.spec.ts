@@ -266,6 +266,167 @@ it('installs M4.2 global authority tables through migration owner and gates runt
   }
 });
 
+it.each([
+  { table: 'forge_global_aliases', privilege: 'UPDATE(scope_id)', capability: 'UPDATE' },
+  { table: 'forge_global_run_bindings', privilege: 'UPDATE(scope_id)', capability: 'UPDATE' },
+  { table: 'forge_global_claims', privilege: 'UPDATE(owner_json)', capability: 'UPDATE' },
+  { table: 'forge_global_leases', privilege: 'REFERENCES(lease_id)', capability: 'REFERENCES' },
+  { table: 'forge_global_permits', privilege: 'UPDATE(token)', capability: 'UPDATE' },
+  { table: 'forge_global_audit', privilege: 'UPDATE(evidence)', capability: 'UPDATE' }
+])(
+  'rejects column-level $privilege on $table and repairs it on v3 migration rerun',
+  async ({ table, privilege, capability }) => {
+    const schema = `forge_global_column_${++fixtureOrdinal}`;
+    const migration = { connectionString: ownerConnectionString, schema, role };
+    const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+    const owner = postgres(ownerConnectionString);
+    const runtimeSql = postgres(runtimeConnectionString);
+    try {
+      await migratePostgresAuthoritySchema(
+        migration,
+        runtimeRole,
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+      );
+      await owner.unsafe(`grant ${privilege} on "${schema}".${table} to "${runtimeRole}"`);
+      const before = await runtimeSql.unsafe(
+        `select has_table_privilege(current_user, $1, $2) as table_allowed,
+          has_any_column_privilege(current_user, $1, $2) as column_allowed`,
+        [`${schema}.${table}`, capability]
+      );
+      expect(before[0]).toMatchObject({
+        table_allowed: table === 'forge_global_claims',
+        column_allowed: true
+      });
+      await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+        `global authority runtime privileges are incompatible: ${table}`
+      );
+      await migratePostgresAuthoritySchema(
+        migration,
+        runtimeRole,
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+      );
+      const after = await runtimeSql.unsafe(
+        `select has_any_column_privilege(current_user, $1, $2) as column_allowed,
+          exists (select 1 from pg_attribute a
+            cross join lateral aclexplode(a.attacl) grant_entry
+            where a.attrelid=$1::regclass and a.attnum > 0
+              and grant_entry.grantee=current_user::regrole::oid) as column_grant`,
+        [`${schema}.${table}`, capability]
+      );
+      expect(after[0]).toMatchObject({
+        column_allowed: table === 'forge_global_claims',
+        column_grant: false
+      });
+      await assertPostgresGlobalAuthoritySchema(runtimeSql, runtime);
+    } finally {
+      await runtimeSql.end();
+      await owner.unsafe(`drop schema if exists "${schema}" cascade`);
+      await owner.end();
+    }
+  }
+);
+
+it.each([
+  { table: 'forge_global_control', privilege: 'UPDATE', capability: 'UPDATE' },
+  { table: 'forge_global_scopes', privilege: 'INSERT(id)', capability: 'INSERT' },
+  { table: 'forge_global_aliases', privilege: 'SELECT(scope_id)', capability: 'SELECT' },
+  { table: 'forge_global_run_bindings', privilege: 'INSERT', capability: 'INSERT' },
+  { table: 'forge_global_claims', privilege: 'UPDATE(owner_json)', capability: 'UPDATE' },
+  { table: 'forge_global_leases', privilege: 'SELECT', capability: 'SELECT' },
+  { table: 'forge_global_permits', privilege: 'DELETE', capability: 'DELETE' },
+  { table: 'forge_global_legacy_owners', privilege: 'UPDATE', capability: 'UPDATE' },
+  { table: 'forge_global_audit', privilege: 'SELECT', capability: 'SELECT' }
+])(
+  'rejects $privilege grant option on $table and repairs it on v3 migration rerun',
+  async ({ table, privilege, capability }) => {
+    const schema = `forge_global_grant_${++fixtureOrdinal}`;
+    const migration = { connectionString: ownerConnectionString, schema, role };
+    const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+    const owner = postgres(ownerConnectionString);
+    const runtimeSql = postgres(runtimeConnectionString);
+    try {
+      await migratePostgresAuthoritySchema(
+        migration,
+        runtimeRole,
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+      );
+      await owner.unsafe(
+        `grant ${privilege} on "${schema}".${table} to "${runtimeRole}" with grant option`
+      );
+      const check = capability === 'DELETE' ? 'has_table_privilege' : 'has_any_column_privilege';
+      const before = await runtimeSql.unsafe(`select ${check}(current_user, $1, $2) as granted`, [
+        `${schema}.${table}`,
+        `${capability} WITH GRANT OPTION`
+      ]);
+      expect(before[0]?.granted).toBe(true);
+      await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+        `global authority runtime privileges are incompatible: ${table}`
+      );
+      await migratePostgresAuthoritySchema(
+        migration,
+        runtimeRole,
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+      );
+      const after = await runtimeSql.unsafe(`select ${check}(current_user, $1, $2) as granted`, [
+        `${schema}.${table}`,
+        `${capability} WITH GRANT OPTION`
+      ]);
+      expect(after[0]?.granted).toBe(false);
+      await assertPostgresGlobalAuthoritySchema(runtimeSql, runtime);
+    } finally {
+      await runtimeSql.end();
+      await owner.unsafe(`drop schema if exists "${schema}" cascade`);
+      await owner.end();
+    }
+  }
+);
+
+it('rejects PUBLIC column ACL drift even when table privileges already cover it', async () => {
+  const schema = `forge_global_public_${++fixtureOrdinal}`;
+  const migration = { connectionString: ownerConnectionString, schema, role };
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const owner = postgres(ownerConnectionString);
+  const runtimeSql = postgres(runtimeConnectionString);
+  try {
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    await owner.unsafe(`grant update(owner_json) on "${schema}".forge_global_claims to public`);
+    const before = await runtimeSql.unsafe(
+      `select has_table_privilege(current_user, $1, 'UPDATE') as table_allowed,
+        exists (select 1 from pg_attribute a
+          cross join lateral aclexplode(a.attacl) grant_entry
+          where a.attrelid=$1::regclass and a.attname='owner_json'
+            and grant_entry.grantee=0) as public_column_grant`,
+      [`${schema}.forge_global_claims`]
+    );
+    expect(before[0]).toMatchObject({ table_allowed: true, public_column_grant: true });
+    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+      'global authority runtime privileges are incompatible: forge_global_claims'
+    );
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    const after = await runtimeSql.unsafe(
+      `select exists (select 1 from pg_attribute a
+        cross join lateral aclexplode(a.attacl) grant_entry
+        where a.attrelid=$1::regclass and a.attname='owner_json'
+          and grant_entry.grantee=0) as public_column_grant`,
+      [`${schema}.forge_global_claims`]
+    );
+    expect(after[0]?.public_column_grant).toBe(false);
+    await assertPostgresGlobalAuthoritySchema(runtimeSql, runtime);
+  } finally {
+    await runtimeSql.end();
+    await owner.unsafe(`drop schema if exists "${schema}" cascade`);
+    await owner.end();
+  }
+});
+
 it('closes PostgreSQL legacy writer creation after the deployment cutover barrier', async () => {
   const schema = `forge_global_gate_${++fixtureOrdinal}`;
   const migration = { connectionString: ownerConnectionString, schema, role };

@@ -3483,3 +3483,21 @@ The PostgreSQL parity suite passes 55 tests on a real isolated server. This incr
 schema and old-writer admission groundwork, **not** a PostgreSQL `GlobalMutationAuthority`
 adapter, controlled PG overlap proof, third-connection verification, or production fenced-write
 boundary. M4.2 remains OPEN and this increment awaits independent review.
+
+Independent review of PostgreSQL groundwork SHA `a3d80a05eac936374827a0f8f9a17a6f5f1eee7b`
+found a P1 startup-permission gap. PostgreSQL can grant a runtime role permission to change just
+one column even when the table-level UPDATE check says no. That could let a worker rewrite a
+repository's immutable scope binding or move a run to another scope without the startup gate
+noticing. The version 3 gate now checks both table and column capabilities on all nine global
+authority tables, rejects any grant option, and rejects unexpected column ACL entries even when
+an existing table-level grant would hide a redundant column grant. Real-server regressions cover
+alias and run-binding rebinding, additional column grants, and grant options; they also verify
+that rerunning the owner migration removes the drift and restores startup. A separate case
+verifies that a column grant to every database user is detected and removed as well. The focused
+PostgreSQL suite passes all 71 tests; formatting, type checking, and linting pass. The full
+`pnpm check` run has 735 passing tests and one skipped test, but it cannot complete successfully
+here because the unrelated Restate integration test needs a container runtime that is unavailable
+in this environment. This correction addresses the reviewed privilege hole; it still awaits
+independent acceptance. The global
+PostgreSQL adapter, controlled overlap and third-connection proof, and production fenced-write
+boundary remain unimplemented, so M4.2 is OPEN.

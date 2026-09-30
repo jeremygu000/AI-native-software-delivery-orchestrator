@@ -3061,3 +3061,16 @@ integration start、ACTIVE lease 持久化，以及通用 STARTING／RUNNING att
 suite 有 55 项通过。本增量只建立 schema 与旧 writer 准入闸门，**尚未实现** PostgreSQL
 `GlobalMutationAuthority` adapter、受控 PG overlap、第三连接持久状态验证或生产 fenced
 write 边界。M4.2 继续为 OPEN，本增量仍待独立复审。
+
+针对 PostgreSQL 基础增量 SHA `a3d80a05eac936374827a0f8f9a17a6f5f1eee7b` 的独立
+复审发现一个 P1 启动权限缺口。PostgreSQL 可以只授权修改某一列，即使表级 UPDATE 检查
+显示没有权限；旧闸门因此可能允许运行角色偷偷改写 repository 到 scope 的不可变绑定，或把
+run 重新绑定到另一 scope。现在版本 3 启动闸门会对全部九张全局 authority 表同时核验表级
+与列级权限，拒绝转授权限，并检查列 ACL 中的额外授权；即使已有表级授权掩盖了冗余的列级
+授权，也会拒绝。真实 PostgreSQL server 上的回归覆盖 alias／run binding 改绑、其他列级
+授权及转授权限，并验证 owner 重跑迁移能清除漂移，使启动恢复通过。另有案例验证对所有数据库
+用户授予的列权限也能被发现和清除。PostgreSQL 定向测试 71 项全部通过，格式、类型与静态检查
+通过。完整 `pnpm check` 中有 735 项测试通过、1 项跳过；但本机缺少容器运行环境，导致无关的
+Restate 集成测试无法启动，因此整条命令未能通过。这项修正针对复审指出的权限漏洞，仍待独立
+复审验收。PostgreSQL global adapter、受控重叠事务与第三连接证明、生产
+fenced-write 边界仍未实现，因此 M4.2 继续为 OPEN。

@@ -758,7 +758,18 @@ export const assertPostgresAuthoritySchema = async (
         has_table_privilege(current_user, ${relation}, 'DELETE') as delete,
         has_table_privilege(current_user, ${relation}, 'TRUNCATE') as truncate,
         has_table_privilege(current_user, ${relation}, 'TRIGGER') as trigger,
-        has_table_privilege(current_user, ${relation}, 'REFERENCES') as references`;
+        has_table_privilege(current_user, ${relation}, 'REFERENCES') as references,
+        has_any_column_privilege(current_user, ${relation}, 'SELECT') as column_read,
+        has_any_column_privilege(current_user, ${relation}, 'INSERT') as column_insert,
+        has_any_column_privilege(current_user, ${relation}, 'UPDATE') as column_update,
+        has_any_column_privilege(current_user, ${relation}, 'REFERENCES') as column_references,
+        has_any_column_privilege(current_user, ${relation}, 'SELECT WITH GRANT OPTION') as grant_read,
+        has_any_column_privilege(current_user, ${relation}, 'INSERT WITH GRANT OPTION') as grant_insert,
+        has_any_column_privilege(current_user, ${relation}, 'UPDATE WITH GRANT OPTION') as grant_update,
+        has_table_privilege(current_user, ${relation}, 'DELETE WITH GRANT OPTION') as grant_delete,
+        has_table_privilege(current_user, ${relation}, 'TRUNCATE WITH GRANT OPTION') as grant_truncate,
+        has_table_privilege(current_user, ${relation}, 'TRIGGER WITH GRANT OPTION') as grant_trigger,
+        has_any_column_privilege(current_user, ${relation}, 'REFERENCES WITH GRANT OPTION') as grant_references`;
       const globalPrivilege = globalPrivileges[0];
       const allowed: readonly string[] = globalRuntimePrivileges[table];
       if (
@@ -768,8 +779,33 @@ export const assertPostgresAuthoritySchema = async (
         globalPrivilege.delete !== allowed.includes('DELETE') ||
         globalPrivilege.truncate !== false ||
         globalPrivilege.trigger !== false ||
-        globalPrivilege.references !== false
+        globalPrivilege.references !== false ||
+        globalPrivilege.column_read !== allowed.includes('SELECT') ||
+        globalPrivilege.column_insert !== allowed.includes('INSERT') ||
+        globalPrivilege.column_update !== allowed.includes('UPDATE') ||
+        globalPrivilege.column_references !== false ||
+        globalPrivilege.grant_read !== false ||
+        globalPrivilege.grant_insert !== false ||
+        globalPrivilege.grant_update !== false ||
+        globalPrivilege.grant_delete !== false ||
+        globalPrivilege.grant_truncate !== false ||
+        globalPrivilege.grant_trigger !== false ||
+        globalPrivilege.grant_references !== false
       ) {
+        throw new Error(
+          `PostgreSQL global authority runtime privileges are incompatible: ${table}`
+        );
+      }
+      // A table grant masks redundant column grants in has_any_column_privilege.
+      // Installation never grants column privileges, so reject even redundant ACL drift.
+      const columnGrants = await sql`select exists (
+         select 1 from pg_attribute attribute
+         cross join lateral aclexplode(attribute.attacl) grant_entry
+         where attribute.attrelid = ${relation}::regclass
+           and attribute.attnum > 0 and not attribute.attisdropped
+           and grant_entry.grantee in (0, current_user::regrole::oid)
+       ) as present`;
+      if (columnGrants[0]?.present !== false) {
         throw new Error(
           `PostgreSQL global authority runtime privileges are incompatible: ${table}`
         );
