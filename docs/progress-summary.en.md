@@ -3786,3 +3786,33 @@ project-reference validation, linting, and all 778 tests across 72 suites. It
 still exits unsuccessfully at the repository's 90% aggregate coverage gate:
 statements 87.98%, branches 82.71%, and lines 87.90%. The three directly
 relevant agent-tool, Pi-runner, and SQLite boundary suites pass all 40 tests.
+
+An independent review of exact remote SHA `c43b487` found one blocking
+handoff race in that workspace boundary. On Git or workspace-record failure,
+the first implementation ended the durable permit before marking the claim
+HELD_UNCERTAIN. A separate recovery connection could release the still-ACTIVE
+claim in that gap, allowing a replacement owner even though the Git result was
+unknown. This follow-up moves uncertainty recording _inside_ the repository
+permit callback, before that callback settles and its permit can be removed.
+The outer failure handler still retains ownership if Git and its record succeed
+but completing the permit fails. No previously accepted provider or migration
+contracts change.
+
+The SQLite regression now observes the transition through a second connection:
+while uncertainty is being recorded, the exact permit still exists and an
+independent release is rejected as an in-flight mutation; once the permit has
+ended, the claim is already HELD_UNCERTAIN. It checks both a failed durable
+workspace record and a Git result with a branch different from the approved
+binding; the wrong branch is never saved as a workspace record. This fixes the
+continuous handoff barrier identified in review. The production GLOBAL_READY
+worker still refuses to start, so production builder/repair consumption,
+integration fencing, dynamic resource expansion, and safe release remain to be
+built. M4.2 remains OPEN and M4.3 has not started. The number-token/BIGINT and
+diagnostic resource-ID questions remain P2, as does avoiding an unnecessary
+uncertain hold for a pre-write edit validation failure.
+
+For this targeted remediation, the SQLite admission suite passes all 5 cases,
+including both workspace failure-ordering paths. `pnpm check` passes formatting,
+TypeScript project references, linting, and all 779 tests across 72 suites; it
+still exits unsuccessfully on the pre-existing 90% aggregate coverage gate:
+statements 87.97%, branches 82.68%, and lines 87.89%.

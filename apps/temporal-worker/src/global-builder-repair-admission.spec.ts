@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  GlobalMutationInFlightError,
   taskLeasePlanFingerprint,
   type AgentExecutionAttempt,
-  type CreatePersistedRunRequest
+  type CreatePersistedRunRequest,
+  type GlobalMutationAuthority
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
   DrizzleSqliteOrchestrationPersistence,
@@ -83,7 +85,7 @@ const request: CreatePersistedRunRequest = {
 };
 
 describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
-  it.each(['persisted', 'persist-failed', 'impact-failed'] as const)(
+  it.each(['persisted', 'persist-failed', 'identity-failed', 'impact-failed'] as const)(
     'holds a repository permit through Git workspace creation and its %s record',
     async (outcome) => {
       const directory = mkdtempSync(join(tmpdir(), 'forge-global-workspace-'));
@@ -137,8 +139,41 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
           revision: 1
         };
         let gitCalls = 0;
+        let checkedFailureTransition = false;
+        const observedAuthority = new Proxy(peer, {
+          get(target, property, receiver) {
+            if (property === 'markMutationUncertain') {
+              return async (
+                uncertainRequest: Parameters<GlobalMutationAuthority['markMutationUncertain']>[0]
+              ) => {
+                const permit = await authority.recoverFencedMutationPermits(scopeId);
+                expect(permit).toHaveLength(1);
+                expect(permit[0]?.claimId).toBe(result.admission.mutation.claim.claimId);
+                const lease = result.admission.leases[0];
+                if (lease === undefined) {
+                  throw new Error('Missing admitted claim lease');
+                }
+                await expect(
+                  authority.releaseGlobalMutation({
+                    ...result.admission.mutation.claim,
+                    expectedVersion: lease.version,
+                    stopEvidence: 'Competing release before uncertainty is persisted'
+                  })
+                ).rejects.toBeInstanceOf(GlobalMutationInFlightError);
+                await target.markMutationUncertain(uncertainRequest);
+                expect(
+                  (await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state
+                ).toBe('HELD_UNCERTAIN');
+                expect(await authority.recoverFencedMutationPermits(scopeId)).toHaveLength(1);
+                checkedFailureTransition = true;
+              };
+            }
+            const value: unknown = Reflect.get(target, property, receiver);
+            return typeof value === 'function' ? value.bind(target) : value;
+          }
+        });
         const boundary = new GlobalBuilderRepairExecutionBoundary({
-          authority: peer,
+          authority: observedAuthority,
           admission: result.admission,
           binding,
           persistence: {
@@ -154,12 +189,20 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
             async create() {
               gitCalls++;
               expect(await authority.recoverFencedMutationPermits(scopeId)).toHaveLength(1);
-              return workspace;
+              return outcome === 'identity-failed'
+                ? { ...workspace, branchName: 'wrong-branch' }
+                : workspace;
             }
           }
         });
-        if (outcome === 'persist-failed') {
-          await expect(boundary.createWorkspace()).rejects.toThrow('Simulated persistence failure');
+        if (outcome === 'persist-failed' || outcome === 'identity-failed') {
+          await expect(boundary.createWorkspace()).rejects.toThrow(
+            outcome === 'persist-failed'
+              ? 'Simulated persistence failure'
+              : 'Git workspace differs from approved binding'
+          );
+          expect(checkedFailureTransition).toBe(true);
+          expect((await store.recoverRun(runId))?.workspaces).toEqual([]);
           expect((await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state).toBe(
             'HELD_UNCERTAIN'
           );
@@ -231,6 +274,7 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
           expect((await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state).toBe(
             'HELD_UNCERTAIN'
           );
+          expect(checkedFailureTransition).toBe(true);
           expect(await authority.recoverFencedMutationPermits(scopeId)).toEqual([]);
           await expect(tools.write('file.ts', 'stale')).rejects.toThrow();
           expect(readFileSync(join(workspacePath, 'file.ts'), 'utf8')).toBe('written');
