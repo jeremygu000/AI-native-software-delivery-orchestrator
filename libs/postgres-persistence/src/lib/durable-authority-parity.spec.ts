@@ -1282,6 +1282,58 @@ it('fails closed before allocating an unsafe BIGINT token', async () => {
   }
 });
 
+it('atomically creates a v4 run with its pre-registered scope and rejects missing aliases or cutover', async () => {
+  const schema = `forge_launch_binding_${++fixtureOrdinal}`;
+  const migration = { connectionString: ownerConnectionString, schema, role };
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  let store: PostgresOrchestrationPersistence | undefined;
+  let authority: PostgresGlobalMutationAuthority | undefined;
+  try {
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    store = await PostgresOrchestrationPersistence.connect(runtime);
+    authority = await PostgresGlobalMutationAuthority.connect(runtime);
+    expect(store.requiresGlobalRunBinding()).toBe(true);
+    const missing = durableAuthorityRunRequest('missing-alias');
+    await expect(store.createBoundRun(missing)).rejects.toThrow('Unregistered repository alias');
+    expect(await store.recoverRun(missing.run.id)).toBeUndefined();
+    const scopeId = await authority.registerScope(missing.run.repositoryId);
+    const unbound = durableAuthorityRunRequest('unbound-legacy-run');
+    await store.createRun(unbound);
+    await expect(
+      store.assertGlobalRunBinding(unbound.run.id, unbound.run.repositoryId)
+    ).rejects.toThrow('matching immutable repository scope binding');
+    await store.createBoundRun(missing);
+    await store.assertGlobalRunBinding(missing.run.id, missing.run.repositoryId);
+    const bindings = await admin.unsafe(
+      `select run_id,repository_id,scope_id from "${schema}".forge_global_run_bindings where run_id=$1`,
+      [missing.run.id]
+    );
+    expect(bindings).toMatchObject([
+      { run_id: missing.run.id, repository_id: missing.run.repositoryId, scope_id: scopeId }
+    ]);
+    await expect(
+      store.assertGlobalRunBinding(missing.run.id, 'different-repository')
+    ).rejects.toThrow('matching immutable repository scope binding');
+    await authority.beginLegacyCutover();
+    await expect(store.createBoundRun(durableAuthorityRunRequest('after-barrier'))).rejects.toThrow(
+      'Legacy run launch is closed'
+    );
+    expect(await store.recoverRun('after-barrier')).toBeUndefined();
+    await expect(
+      store.assertGlobalRunBinding(missing.run.id, missing.run.repositoryId)
+    ).rejects.toThrow('Legacy run launch is closed');
+  } finally {
+    await Promise.all([store?.close(), authority?.close()]);
+    await admin.unsafe(`drop schema if exists "${schema}" cascade`);
+    await admin.end();
+  }
+});
+
 it('installs, upgrades, and safely reruns migrations without losing persisted authority', async () => {
   const schema = `forge_upgrade_${++fixtureOrdinal}`;
   const migration = { connectionString: ownerConnectionString, schema, role };

@@ -178,6 +178,7 @@ export class PostgresOrchestrationPersistence
   readonly #sql: Sql;
   readonly #schema: string;
   #globalGateInstalled = false;
+  #globalBindingInstalled = false;
 
   private constructor(configuration: PostgresEvidenceStoreConfiguration) {
     this.#schema = `"${configuration.schema}"`;
@@ -198,6 +199,10 @@ export class PostgresOrchestrationPersistence
         `select 1 from ${store.#schema}.forge_schema_migrations where version=3`
       );
       store.#globalGateInstalled = globalVersion.length === 1;
+      const bindingVersion = await store.#sql.unsafe(
+        `select 1 from ${store.#schema}.forge_schema_migrations where version=4`
+      );
+      store.#globalBindingInstalled = bindingVersion.length === 1;
       return store;
     } catch (error) {
       await store.close();
@@ -207,6 +212,10 @@ export class PostgresOrchestrationPersistence
 
   async close(): Promise<void> {
     await this.#sql.end({ timeout: 5 });
+  }
+
+  requiresGlobalRunBinding(): boolean {
+    return this.#globalBindingInstalled;
   }
 
   /** Legacy production composition cannot fall back to local leases after global cutover. */
@@ -319,6 +328,59 @@ export class PostgresOrchestrationPersistence
   }
 
   async createRun(request: CreatePersistedRunRequest): Promise<void> {
+    await this.#createRun(request, false);
+  }
+
+  /** Production v4 launch: approved run and immutable scope binding commit together. */
+  async createBoundRun(request: CreatePersistedRunRequest): Promise<void> {
+    if (!this.#globalBindingInstalled) {
+      throw new Error('Global run binding requires PostgreSQL v4 authority');
+    }
+    await this.#createRun(request, true);
+  }
+
+  async assertGlobalRunBinding(runId: string, repositoryId: string): Promise<void> {
+    if (!this.#globalBindingInstalled) {
+      throw new Error('Global run binding requires PostgreSQL v4 authority');
+    }
+    await this.#locked(runId, async (tx) => {
+      const control = await tx.unsafe(
+        `select state from ${this.#schema}.forge_global_control where id=1`
+      );
+      if (control.length !== 1 || control[0]?.state !== 'LEGACY_ALLOWED') {
+        throw new Error('Legacy run launch is closed by global cutover');
+      }
+      const rows = await tx.unsafe(
+        `select b.repository_id,b.scope_id,a.scope_id as alias_scope_id,r.payload
+         from ${this.#schema}.forge_runs r
+         left join ${this.#schema}.forge_global_run_bindings b on b.run_id=r.id
+         left join ${this.#schema}.forge_global_aliases a on a.repository_id=$2
+         where r.id=$1`,
+        [runId, repositoryId]
+      );
+      const row = rows[0];
+      const payload: unknown = JSON.parse(String(row?.payload));
+      if (
+        !row ||
+        row.repository_id !== repositoryId ||
+        row.scope_id === null ||
+        row.scope_id !== row.alias_scope_id ||
+        typeof payload !== 'object' ||
+        payload === null ||
+        !('run' in payload) ||
+        typeof payload.run !== 'object' ||
+        payload.run === null ||
+        !('id' in payload.run) ||
+        payload.run.id !== runId ||
+        !('repositoryId' in payload.run) ||
+        payload.run.repositoryId !== repositoryId
+      ) {
+        throw new Error('Global run has no matching immutable repository scope binding');
+      }
+    });
+  }
+
+  async #createRun(request: CreatePersistedRunRequest, bound: boolean): Promise<void> {
     taskSpecificationSchema.parse({ tasks: request.tasks });
     scheduleOptionsSchema.parse(request.scheduleOptions);
     runAuthorityEvidenceSchema.parse(request.run.authority);
@@ -339,12 +401,45 @@ export class PostgresOrchestrationPersistence
       }
     }
     await this.#sql.begin(async (tx) => {
+      let scopeId: string | undefined;
+      if (bound) {
+        const control = await tx.unsafe(
+          `select state from ${this.#schema}.forge_global_control where id=1 for update`
+        );
+        if (control.length !== 1) {
+          throw new Error('PostgreSQL global authority deployment gate is missing');
+        }
+        if (control[0]?.state !== 'LEGACY_ALLOWED') {
+          throw new Error('Legacy run launch is closed by global cutover');
+        }
+        const aliases = await tx.unsafe(
+          `select scope_id from ${this.#schema}.forge_global_aliases where repository_id=$1`,
+          [request.run.repositoryId]
+        );
+        if (aliases.length !== 1 || typeof aliases[0]?.scope_id !== 'string') {
+          throw new Error('Unregistered repository alias for global run');
+        }
+        scopeId = aliases[0].scope_id;
+        const scopes = await tx.unsafe(
+          `select id from ${this.#schema}.forge_global_scopes where id=$1 for update`,
+          [scopeId]
+        );
+        if (scopes.length !== 1) {
+          throw new Error('Registered repository scope is missing');
+        }
+      }
       await tx.unsafe(
         `insert into ${this.#schema}.forge_runs (id,state,payload) values ($1,$2,$3)`,
         [request.run.id, request.run.state, encode(request)]
       );
       for (const binding of request.taskBindings) {
         await this.#insert(tx, request.run.id, 'binding', binding.taskId, binding);
+      }
+      if (scopeId !== undefined) {
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_global_run_bindings (run_id,repository_id,scope_id) values ($1,$2,$3)`,
+          [request.run.id, request.run.repositoryId, scopeId]
+        );
       }
     });
   }

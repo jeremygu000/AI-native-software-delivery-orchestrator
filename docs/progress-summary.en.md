@@ -3643,3 +3643,38 @@ an initial separate run hit that limit in a different case. Both affected cases 
 when isolated, and a further complete rerun of the compiled CLI/worker acceptance suite
 passed all five cases. The original `pnpm check` result is still a failure because the
 Restate container runtime was unavailable; its first process-boundary run was not green.
+
+Independent review accepted the legacy-worker cutover guard and workspace-owner check at
+`ae5cf89`. This next production increment gives a new PostgreSQL version 4 run an immutable
+global scope binding **when it is created**, rather than trying to infer its scope when a worker
+later starts writing. An authorized operator must first register the repository alias with the
+global authority; the CLI does not create aliases or guess whether two repository names identify
+the same underlying checkout. For a version 4 launch, the run launcher asks the persistence
+provider to create the approved run, task bindings, and global run/scope binding in one database
+transaction. That transaction checks that old writer admission is still open, resolves the
+registered alias, and locks the deployment gate and scope before inserting the new run. A missing
+alias or closed admission leaves no half-created run. Earlier SQLite and PostgreSQL version 2/3 launch paths
+retain their existing behavior. The lower-level unbound `createRun` API remains available for
+historical fixtures and migrations; the production launcher selects the bound API for version 4.
+
+On retries and recovery, the launcher checks both the approved-plan fingerprint and the
+persisted run/repository/scope identity before dispatch or starting a Temporal workflow. A
+missing or mismatched binding fails closed; a cutover that has closed legacy admission also stops
+the launch. The CLI checks the existing legacy-worker deployment state before provisioning a
+checkout, with the transactional launch checks providing the final defense against races.
+Real PostgreSQL tests show that an unregistered alias creates no run, a registered alias creates
+the run and binding atomically and is visible from a separate connection, a wrong repository is
+rejected, and cutover prevents subsequent launch. Launcher tests cover rejection before workflow
+start and rejection on recovery. The two focused suites pass 102 tests.
+
+This increment prepares run identity for future global claims; it does **not** enable the
+`GLOBAL_READY` worker. Builder and repair still need atomic global admission and mandatory
+mutation context, dynamic resource expansion and integration/Git writes still need fenced
+permits, and an already-running legacy worker still requires controlled shutdown at cutover.
+M4.2 remains **OPEN** and M4.3 has not started. The public number-token/BIGINT range and
+diagnostic resource-ID ambiguity remain P2 follow-ups.
+
+Formatting, TypeScript project-reference checking, linting, and the 102 focused launcher and
+PostgreSQL tests pass. The full `pnpm check` reports 771 passing tests and one skipped test,
+but exits unsuccessfully because the unrelated Restate integration suite cannot find a
+working container runtime (its teardown also encounters the missing environment).

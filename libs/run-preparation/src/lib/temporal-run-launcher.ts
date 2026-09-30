@@ -22,6 +22,9 @@ export interface TemporalRunLaunchResult {
 type TemporalLaunchPersistence = OrchestrationPersistence &
   TaskCodeReviewStore & {
     ensureInitialDispatch: NonNullable<OrchestrationPersistence['ensureInitialDispatch']>;
+    requiresGlobalRunBinding?(): boolean;
+    createBoundRun?(request: Parameters<OrchestrationPersistence['createRun']>[0]): Promise<void>;
+    assertGlobalRunBinding?(runId: string, repositoryId: string): Promise<void>;
   };
 
 const bindings = (request: StartRuntimeRunRequest): readonly PersistedTaskExecutionBinding[] =>
@@ -50,7 +53,7 @@ const initialAttemptId = (runId: string, ordinal: number): string => `launch:${r
 
 /**
  * Initializes Forge authority before asking Temporal to coordinate a run. The
- * workflow receives only the durable run ID; SQLite remains the authority.
+ * workflow receives only the durable run ID; the configured persistence remains the authority.
  */
 export class TemporalRunLauncher {
   readonly #persistence: TemporalLaunchPersistence;
@@ -65,10 +68,24 @@ export class TemporalRunLauncher {
   }
 
   async startOrResumeRun(request: StartRuntimeRunRequest): Promise<TemporalRunLaunchResult> {
+    const requiresBinding = this.#persistence.requiresGlobalRunBinding?.() === true;
+    if (
+      requiresBinding &&
+      (this.#persistence.createBoundRun === undefined ||
+        this.#persistence.assertGlobalRunBinding === undefined)
+    ) {
+      throw new Error('Global run launch requires atomic run/scope binding');
+    }
     let existing = await this.#persistence.recoverRun(request.run.id);
     if (existing === undefined) {
       try {
-        await this.#persistence.createRun({
+        const create = requiresBinding
+          ? this.#persistence.createBoundRun?.bind(this.#persistence)
+          : this.#persistence.createRun.bind(this.#persistence);
+        if (create === undefined) {
+          throw new Error('Global run launch requires atomic run/scope binding');
+        }
+        await create({
           run: request.run,
           tasks: request.tasks,
           taskBindings: bindings(request),
@@ -100,6 +117,12 @@ export class TemporalRunLauncher {
       if (persistedFingerprint !== requestFingerprint(request)) {
         throw new Error(`Temporal launch authority mismatch: ${request.run.id}`);
       }
+    }
+    if (requiresBinding) {
+      if (this.#persistence.assertGlobalRunBinding === undefined) {
+        throw new Error('Global run launch requires atomic run/scope binding');
+      }
+      await this.#persistence.assertGlobalRunBinding(request.run.id, request.run.repositoryId);
     }
     // This fresh authority check also rejects malformed initial evidence.
     await new ForgeRunProgressionService({

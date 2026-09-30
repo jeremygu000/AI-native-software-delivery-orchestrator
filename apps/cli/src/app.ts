@@ -478,7 +478,13 @@ const runRepositoryPlan = async (request: {
   // Fail before binding or provisioning a checkout if the selected deployment cannot open
   // its existing authority schema with the restricted runtime credential.
   const preflight = await openAuthorityPersistence(authorityConfiguration);
-  await preflight.close();
+  try {
+    // The production worker cannot service a legacy launch once cutover closes
+    // its writer admission. Refuse before provisioning a checkout or creating a run.
+    await preflight.assertLegacyWorkerCompositionAllowed();
+  } finally {
+    await preflight.close();
+  }
   const [stores, registry] = await Promise.all([
     planStores(request),
     loadSharedResourceRegistry(request.sharedResourcesPath)

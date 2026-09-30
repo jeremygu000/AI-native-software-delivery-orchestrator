@@ -72,6 +72,67 @@ const request = (runId = 'run-1'): StartRuntimeRunRequest => ({
 });
 
 describe('TemporalRunLauncher', () => {
+  it('requires atomic scope binding before initial dispatch and workflow launch, including recovery', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'forge-global-launcher-'));
+    const store = new DrizzleSqliteOrchestrationPersistence(join(directory, 'run.sqlite'));
+    const initial = request('bound-run');
+    let registered = false;
+    let bound = false;
+    let workflowCalls = 0;
+    const persistence = new Proxy(store, {
+      get(target, property) {
+        if (property === 'requiresGlobalRunBinding') {
+          return () => true;
+        }
+        if (property === 'createBoundRun') {
+          return async (value: Parameters<typeof store.createRun>[0]) => {
+            if (!registered) {
+              throw new Error('Unregistered repository alias');
+            }
+            await target.createRun(value);
+            bound = true;
+          };
+        }
+        if (property === 'assertGlobalRunBinding') {
+          return async () => {
+            if (!bound) {
+              throw new Error('Global run has no matching immutable repository scope binding');
+            }
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    });
+    const launcher = new TemporalRunLauncher({
+      persistence,
+      workflow: {
+        async start() {
+          workflowCalls += 1;
+          return { workflowId: 'workflow', workflowRunId: 'execution' };
+        }
+      }
+    });
+    try {
+      await expect(launcher.startOrResumeRun(initial)).rejects.toThrow(
+        'Unregistered repository alias'
+      );
+      expect(await store.recoverRun(initial.run.id)).toBeUndefined();
+      expect(workflowCalls).toBe(0);
+      registered = true;
+      await launcher.startOrResumeRun(initial);
+      expect(workflowCalls).toBe(1);
+      bound = false;
+      await expect(launcher.startOrResumeRun(initial)).rejects.toThrow(
+        'immutable repository scope binding'
+      );
+      expect(workflowCalls).toBe(1);
+    } finally {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('initializes durable authority exactly once across recovery and concurrent connections', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'forge-temporal-launcher-'));
     const databasePath = join(directory, 'run.sqlite');

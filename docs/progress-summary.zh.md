@@ -3190,3 +3190,31 @@ worker，以及连接建立之后才发生切换的情况。四组定向测试�
 测试时，另一用例触发同一时限。两个受影响用例分别单独运行均通过，此后再完整重跑
 编译版 CLI／worker 验收套件，5 项全部通过。原始 `pnpm check` 仍是失败结果，因为
 Restate 缺少容器运行环境；原始运行中的跨进程套件也并未通过。
+
+独立复审已接受提交 `ae5cf89` 中对旧 worker 的切换保护和 workspace owner 校验。
+本轮生产接线让新的 PostgreSQL 版本 4 run 在**创建时**就取得不可变的全局 scope 绑定，
+而不是等 worker 将来写入时再猜测它属于哪个 scope。授权操作人员必须预先通过全局权限
+提供者注册 repository alias；CLI 不会自动建别名，也不会猜测不同仓库名称是否指向同一个
+实际检出目录。对于版本 4，run launcher 要求持久化提供者在同一数据库事务中写入已批准的
+run、任务绑定及全局 run／scope 绑定。事务检查旧 writer 准入是否仍开放，查询已注册的
+alias，先锁部署闸门和 scope，再插入新 run。别名不存在或准入已经关闭时，不会留下创建了一半
+的 run。SQLite 和 PostgreSQL 版本 2／3 的旧启动路径保持原行为。底层不带绑定的
+`createRun` 仍可供历史测试和迁移使用；生产 launcher 在版本 4 选择带绑定的接口。
+
+启动重试或恢复时，launcher 在初始调度及 Temporal workflow 启动前，同时核对已批准
+计划的指纹和持久化的 run／repository／scope 身份。绑定缺失或不一致会直接拒绝；若切换
+已经关闭旧路径准入，也会拒绝启动。CLI 在创建检出目录前先检查旧 worker 的部署状态；
+事务中的最终检查还能阻止检查之后才发生切换的竞态。真实 PostgreSQL 测试证明：
+未注册 alias 不会创建 run；注册之后，run 与绑定原子写入，另一个连接也能看到；
+repository 不匹配会被拒绝；切换之后无法继续启动。launcher 测试覆盖启动 workflow 前
+的拒绝及恢复时的拒绝。两组定向测试共 102 项通过。
+
+本轮只为今后的全局 claim 准备 run 身份，**尚未**启用 `GLOBAL_READY` worker。
+builder、repair 仍需要原子的全局准入和强制 mutation context；动态资源扩展及
+integration／Git 写入仍缺少受控 permit；切换时已经运行的旧 worker 仍须受控停机。
+M4.2 继续 **OPEN**，M4.3 尚未启动。对外 number token 与 BIGINT 范围的差异、
+诊断资源 ID 的歧义仍是 P2 后续事项。
+
+格式检查、TypeScript 项目引用类型检查、静态检查以及 102 项 launcher 和 PostgreSQL
+定向测试均通过。完整 `pnpm check` 报告 771 项通过、1 项跳过，但因无关的 Restate
+集成测试在本机找不到可用容器运行环境而以失败退出；其清理阶段也因环境未成功建立而报错。
