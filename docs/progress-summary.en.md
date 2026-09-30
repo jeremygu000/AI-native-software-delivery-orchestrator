@@ -3926,3 +3926,39 @@ M4.3 has not started. No runtime code, schema or tests changed in this
 revision; the last full check had format/type/lint and 782 tests pass but
 `pnpm check` fail the existing 90% aggregate coverage threshold (87.98%
 statements, 82.71% branches, 87.90% lines).
+
+Independent review accepted `f48f25c` as the **frozen workspace-continuation
+design**, not as a working recovery system. The next small implementation
+increment adds durable storage for a workspace-setup parent's phase. SQLite
+creates a `forge_global_workspace_phases` table; PostgreSQL installs the same
+table in a separate **version 5 migration**, leaving the accepted v1–v4
+migration checksums unchanged. Each phase row is tied to exactly one existing
+global claim. The least-privileged PostgreSQL runtime can read phase rows but
+cannot insert or change them; startup audits both the table shape and grants.
+Reapplying the migration keeps existing claim tokens and the per-scope counter.
+
+Both authority providers now read that durable row when a caller tries an
+ordinary mutation against the marked parent. In INITIAL_ADMITTED,
+WORKSPACE_ARMED or WORKSPACE_UNCERTAIN, they reject ordinary token validation,
+permit creation, exact claim replay, ACTIVE release and uncertain reclaim.
+This remains true if the parent has a repository-wide lease: that broad Git
+permission cannot silently become a file-write permission. Separate SQLite
+connections and a real isolated PostgreSQL server verify the rejection and
+continued blocking, while existing ordinary claims remain compatible. A
+version-4 database is deliberately refused by the updated global adapter;
+the migration owner must install version 5 first.
+
+This increment is **only a fail-closed phase-storage and read-gate
+foundation**. There is no approved workspace-setup plan or execution
+generation persisted yet, no privileged transition that creates a phase row,
+and no dedicated one-shot Git permit, recovery attestation, abandonment or
+parent-to-child handoff. Tests install phase rows using a migration-owner
+connection solely to exercise the provider gate. The production GLOBAL_READY
+worker remains disabled; M4.2 is OPEN and M4.3 has not started. Public
+number-token/BIGINT and diagnostic resource-ID questions remain P2.
+
+Verification for this increment: the focused real PostgreSQL suite passes all
+100 cases, and `pnpm check` passes formatting, TypeScript project references,
+linting, and all 784 tests across 72 suites. The overall command still exits
+unsuccessfully on the existing 90% aggregate coverage threshold: statements
+88.06%, branches 82.74%, and lines 87.97%. No coverage threshold was changed.

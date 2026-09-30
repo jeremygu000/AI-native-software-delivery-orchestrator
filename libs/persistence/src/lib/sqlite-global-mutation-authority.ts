@@ -150,6 +150,13 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
         id TEXT PRIMARY KEY, action TEXT NOT NULL, subject TEXT NOT NULL,
         evidence TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS forge_global_workspace_phases (
+        scope_id TEXT NOT NULL, parent_claim_id TEXT NOT NULL,
+        phase TEXT NOT NULL CHECK (phase IN ('INITIAL_ADMITTED','WORKSPACE_ARMED','WORKSPACE_UNCERTAIN','HANDOFF_COMMITTED','ABANDONED')),
+        PRIMARY KEY (scope_id,parent_claim_id),
+        FOREIGN KEY (scope_id,parent_claim_id)
+          REFERENCES forge_global_claims(scope_id,claim_id)
+      );
     `);
   }
 
@@ -193,6 +200,18 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
       throw new Error(`Unknown global mutation claim: ${scopeId}/${claimId}`);
     }
     return row;
+  }
+  #assertOrdinaryClaim(scopeId: string, claimId: string): void {
+    if (
+      this.#one(
+        'SELECT phase AS state FROM forge_global_workspace_phases WHERE scope_id=? AND parent_claim_id=?',
+        stringRow,
+        scopeId,
+        claimId
+      ) !== undefined
+    ) {
+      throw new Error('Workspace setup parent forbids ordinary mutation authority');
+    }
   }
   #leases(scopeId: string, claimId?: string): GlobalMutationLease[] {
     const rows = this.#all(
@@ -744,6 +763,7 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
         claim.claimId
       );
       if (old !== undefined) {
+        this.#assertOrdinaryClaim(claim.scopeId, claim.claimId);
         const admitted = this.#authorizedAttempt(claim.owner, run.tasks_json, true);
         this.#assertResourcesAuthorized(admitted.approvedResources, resources);
         const previous = this.#leases(claim.scopeId, claim.claimId);
@@ -807,6 +827,7 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
     }));
   }
   #assertCurrent(request: CurrentMutationTokenRequest): void {
+    this.#assertOrdinaryClaim(request.scopeId, request.claimId);
     const claim = this.#claim(request.scopeId, request.claimId);
     if (
       claim.state !== 'ACTIVE' ||
@@ -910,6 +931,7 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
   }): Promise<void> {
     nonempty(request.stopEvidence, 'Stop evidence');
     this.#transaction(() => {
+      this.#assertOrdinaryClaim(request.scopeId, request.claimId);
       const row = this.#claim(request.scopeId, request.claimId);
       this.#assertClaimOwner(row, request.owner, request.token);
       if (row.state !== 'ACTIVE' || row.version !== request.expectedVersion) {
@@ -954,6 +976,7 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
   }): Promise<void> {
     nonempty(request.verifiedQuiescenceEvidence, 'Quiescence evidence');
     this.#transaction(() => {
+      this.#assertOrdinaryClaim(request.scopeId, request.claimId);
       const row = this.#claim(request.scopeId, request.claimId);
       this.#assertClaimOwner(row, request.owner, request.token);
       if (row.state !== 'HELD_UNCERTAIN' || row.version !== request.expectedVersion) {

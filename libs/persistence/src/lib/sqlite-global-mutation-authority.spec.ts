@@ -159,6 +159,60 @@ const createPermitFixture = async () => {
 
 globalMutationPermitContract('SQLite', createPermitFixture);
 
+it('denies ordinary permit, exact replay and release for every durably marked workspace parent phase', async () => {
+  const fixture = await createPermitFixture();
+  const db = new Database(fixture.filename);
+  try {
+    const request = {
+      scopeId: fixture.scopeId,
+      claimId: fixture.originalClaim.claimId,
+      owner: fixture.originalClaim.owner,
+      token: fixture.originalGrant.token,
+      resource: fixture.originalClaim.resources[0]
+    };
+    for (const phase of ['INITIAL_ADMITTED', 'WORKSPACE_ARMED', 'WORKSPACE_UNCERTAIN']) {
+      db.prepare(
+        `INSERT INTO forge_global_workspace_phases (scope_id,parent_claim_id,phase)
+         VALUES (?,?,?) ON CONFLICT (scope_id,parent_claim_id) DO UPDATE SET phase=excluded.phase`
+      ).run(fixture.scopeId, fixture.originalClaim.claimId, phase);
+      await expect(fixture.peer.assertCurrentMutationToken(request)).rejects.toThrow(
+        'Workspace setup parent forbids ordinary mutation authority'
+      );
+      await expect(fixture.peer.beginFencedMutation(request)).rejects.toThrow(
+        'Workspace setup parent forbids ordinary mutation authority'
+      );
+      await expect(fixture.peer.claimGlobalMutation(fixture.originalClaim)).rejects.toThrow(
+        'Workspace setup parent forbids ordinary mutation authority'
+      );
+      await expect(
+        fixture.peer.releaseGlobalMutation({
+          ...request,
+          expectedVersion: 1,
+          stopEvidence: 'No writes remain'
+        })
+      ).rejects.toThrow('Workspace setup parent forbids ordinary mutation authority');
+    }
+    await fixture.authority.markMutationUncertain({
+      ...request,
+      evidence: 'Workspace result is uncertain'
+    });
+    await expect(
+      fixture.peer.reclaimUncertainMutation({
+        ...request,
+        expectedVersion: 2,
+        verifiedQuiescenceEvidence: 'Stopped externally'
+      })
+    ).rejects.toThrow('Workspace setup parent forbids ordinary mutation authority');
+    expect(await fixture.peer.recoverFencedMutationPermits(fixture.scopeId)).toEqual([]);
+    expect((await fixture.peer.recoverRepositoryMutationAuthority(fixture.scopeId))[0]?.state).toBe(
+      'HELD_UNCERTAIN'
+    );
+  } finally {
+    db.close();
+    await fixture.close();
+  }
+});
+
 const workerDirectory = mkdtempSync(resolvePath('libs/persistence/node_modules/.cutover-race-'));
 const workerBundle = join(workerDirectory, 'worker.mjs');
 let bundleReady: Promise<void> | undefined;

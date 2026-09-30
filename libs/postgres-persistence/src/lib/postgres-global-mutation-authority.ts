@@ -257,6 +257,17 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     return row;
   }
 
+  async #assertOrdinaryClaim(tx: Query, scopeId: string, claimId: string): Promise<void> {
+    const phase = await this.#one(
+      tx,
+      `select phase from ${this.#schema}.forge_global_workspace_phases where scope_id=$1 and parent_claim_id=$2`,
+      [scopeId, claimId]
+    );
+    if (phase !== undefined) {
+      throw new Error('Workspace setup parent forbids ordinary mutation authority');
+    }
+  }
+
   async #leases(tx: Query, scopeId: string, claimId?: string): Promise<GlobalMutationLease[]> {
     const rows = await tx.unsafe(
       `select c.*,l.lease_id,l.resource_json from ${this.#schema}.forge_global_claims c
@@ -829,6 +840,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
           [claim.scopeId, claim.claimId]
         );
         if (old !== undefined) {
+          await this.#assertOrdinaryClaim(tx, claim.scopeId, claim.claimId);
           await this.#authorizedAttempt(tx, request, true);
           const existing = await this.#leases(tx, claim.scopeId, claim.claimId);
           if (
@@ -929,6 +941,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
   }
 
   async #assertCurrent(tx: Query, request: CurrentMutationTokenRequest): Promise<void> {
+    await this.#assertOrdinaryClaim(tx, request.scopeId, request.claimId);
     const claim = await this.#claim(tx, request.scopeId, request.claimId);
     if (
       claim.state !== 'ACTIVE' ||
@@ -1066,6 +1079,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
   }): Promise<void> {
     required(request.stopEvidence, 'Stop evidence');
     await this.#scopedLocked(request.scopeId, async (tx) => {
+      await this.#assertOrdinaryClaim(tx, request.scopeId, request.claimId);
       const row = await this.#claim(tx, request.scopeId, request.claimId);
       this.#assertOwner(row, request.owner, request.token);
       if (row.state !== 'ACTIVE' || safeInteger(row.version) !== request.expectedVersion) {
@@ -1110,6 +1124,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
   }): Promise<void> {
     required(request.verifiedQuiescenceEvidence, 'Quiescence evidence');
     await this.#scopedLocked(request.scopeId, async (tx) => {
+      await this.#assertOrdinaryClaim(tx, request.scopeId, request.claimId);
       const row = await this.#claim(tx, request.scopeId, request.claimId);
       this.#assertOwner(row, request.owner, request.token);
       if (row.state !== 'HELD_UNCERTAIN' || safeInteger(row.version) !== request.expectedVersion) {

@@ -268,6 +268,60 @@ const createGlobalPermitFixture = async (): Promise<
 
 globalMutationPermitContract('PostgreSQL isolated server', createGlobalPermitFixture);
 
+it('gates ordinary PostgreSQL mutation, replay, release and reclaim for a marked setup parent', async () => {
+  const fixture = await createGlobalPermitFixture();
+  try {
+    const request = {
+      scopeId: fixture.scopeId,
+      claimId: fixture.originalClaim.claimId,
+      owner: fixture.originalClaim.owner,
+      token: fixture.originalGrant.token,
+      resource: fixture.originalClaim.resources[0]
+    };
+    for (const phase of ['INITIAL_ADMITTED', 'WORKSPACE_ARMED', 'WORKSPACE_UNCERTAIN']) {
+      await fixture.admin.unsafe(
+        `insert into "${fixture.schema}".forge_global_workspace_phases
+         (scope_id,parent_claim_id,phase) values ($1,$2,$3)
+         on conflict (scope_id,parent_claim_id) do update set phase=excluded.phase`,
+        [fixture.scopeId, fixture.originalClaim.claimId, phase]
+      );
+      await expect(fixture.peer.assertCurrentMutationToken(request)).rejects.toThrow(
+        'Workspace setup parent forbids ordinary mutation authority'
+      );
+      await expect(fixture.peer.beginFencedMutation(request)).rejects.toThrow(
+        'Workspace setup parent forbids ordinary mutation authority'
+      );
+      await expect(fixture.peer.claimGlobalMutation(fixture.originalClaim)).rejects.toThrow(
+        'Workspace setup parent forbids ordinary mutation authority'
+      );
+      await expect(
+        fixture.peer.releaseGlobalMutation({
+          ...request,
+          expectedVersion: 1,
+          stopEvidence: 'No writes remain'
+        })
+      ).rejects.toThrow('Workspace setup parent forbids ordinary mutation authority');
+    }
+    await fixture.authority.markMutationUncertain({
+      ...request,
+      evidence: 'Workspace result is uncertain'
+    });
+    await expect(
+      fixture.peer.reclaimUncertainMutation({
+        ...request,
+        expectedVersion: 2,
+        verifiedQuiescenceEvidence: 'Stopped externally'
+      })
+    ).rejects.toThrow('Workspace setup parent forbids ordinary mutation authority');
+    expect(await fixture.peer.recoverFencedMutationPermits(fixture.scopeId)).toEqual([]);
+    expect((await fixture.peer.recoverRepositoryMutationAuthority(fixture.scopeId))[0]?.state).toBe(
+      'HELD_UNCERTAIN'
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 it('refuses a legacy PostgreSQL worker at GLOBAL_READY even on an already connected store', async () => {
   const fixture = await createGlobalPermitFixture();
   try {
@@ -1419,6 +1473,7 @@ it('installs M4.2 global authority tables through migration owner and gates runt
       'forge_global_permits',
       'forge_global_run_bindings',
       'forge_global_scopes',
+      'forge_global_workspace_phases',
       'forge_records',
       'forge_runs',
       'forge_schema_migrations'
@@ -1427,10 +1482,28 @@ it('installs M4.2 global authority tables through migration owner and gates runt
       `select state from "${schema}".forge_global_control where id=1`
     );
     expect(control).toMatchObject([{ state: 'LEGACY_ALLOWED' }]);
+    await expect(
+      runtimeSql.unsafe(
+        `insert into "${schema}".forge_global_workspace_phases (scope_id,parent_claim_id,phase)
+         values ('forged','claim','WORKSPACE_ARMED')`
+      )
+    ).rejects.toThrow();
+    await admin.unsafe(
+      `grant insert on "${schema}".forge_global_workspace_phases to "${runtimeRole}"`
+    );
+    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+      'global authority runtime privileges are incompatible: forge_global_workspace_phases'
+    );
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    await assertPostgresGlobalAuthoritySchema(runtimeSql, runtime);
     const versions = await admin.unsafe(
       `select version from "${schema}".forge_schema_migrations order by version`
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5]);
     await expect(
       runtimeSql.unsafe(`create table "${schema}".unauthorized (id text)`)
     ).rejects.toThrow();
@@ -1469,7 +1542,20 @@ it('upgrades v3 counters per scope without resetting existing claim tokens or ch
     await owner.unsafe(`update "${schema}".forge_global_control set next_token=200 where id=1`);
     await migratePostgresAuthoritySchema(migration, runtimeRole, 4);
     await migratePostgresAuthoritySchema(migration, runtimeRole, 4);
-    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).resolves.toBeUndefined();
+    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+      'schema version is incompatible'
+    );
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    await assertPostgresGlobalAuthoritySchema(runtimeSql, runtime);
     expect(
       await admin.unsafe(`select id,next_token from "${schema}".forge_global_scopes order by id`)
     ).toMatchObject([
@@ -1766,7 +1852,7 @@ it('closes PostgreSQL legacy writer creation after the deployment cutover barrie
   }
 });
 
-it.each([0, 5, Number.NaN])(
+it.each([0, 6, Number.NaN])(
   'rejects unsupported runtime migration target %s before creating schema objects',
   async (target) => {
     const schema = `forge_bad_target_${++fixtureOrdinal}`;
