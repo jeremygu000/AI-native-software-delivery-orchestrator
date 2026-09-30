@@ -3853,3 +3853,35 @@ tests pass all 10 focused cases. `pnpm check` passes formatting, TypeScript
 project references, linting, and all 782 tests across 72 suites; the overall
 command still fails the existing 90% aggregate coverage gate (statements
 87.98%, branches 82.71%, lines 87.90%). No coverage threshold was changed.
+
+Independent review accepted `d4ae9b8`'s continuous permit-to-uncertainty
+barrier and froze that workspace mutation boundary. The next question is what
+happens **after** Git creates a worktree: even success deliberately leaves the
+first global claim HELD_UNCERTAIN, so an agent cannot start writing with it.
+The new design draft at `docs/m4-workspace-continuation-design.en.md` explains
+this state and proposes a separate, privileged continuation. An independent
+recovery actor must prove that the original Git operation and any writer using
+its authority cannot start again, resolve any unfinished permit, and verify
+the approved Git worktree and durable workspace record. A new provider
+operation would then, within **one repository-scope transaction**, close the
+old claim and create one new execution-phase claim with a higher token. Closing
+the old claim in one transaction and claiming again in another would expose a
+handoff gap to a competing run and is expressly forbidden. The builder/repair
+attempt remains STARTING; a stable parent-to-child phase record would let a
+worker recover the exact new claim after a lost response without recreating
+the worktree. Failed proofs, conflicts, cancellation, and crashes retain a
+durable blocker rather than granting accidental authority. A marker recorded
+before Git starts would prevent ordinary release or reclamation of this
+special parent from bypassing the atomic handoff.
+
+This is a **proposal awaiting independent review**, not a new production
+capability. It requires a trusted, independently verified quiescence process,
+real Git identity checks, a new provider-neutral handoff contract, versioned
+PostgreSQL persistence, and shared SQLite/PostgreSQL overlap regressions.
+Legacy builder/repair services and their attempt updates are not safe to
+reuse after global cutover. The production worker still rejects GLOBAL_READY;
+agent continuation, integration Git, dynamic resource expansion, external
+writer shutdown, and final release are unimplemented. M4.2 remains OPEN and
+M4.3 has not started. The public number-token/BIGINT and diagnostic resource-ID
+questions remain P2. This document-only increment has no new runtime tests;
+it changes no previously accepted contract, provider, or migration.

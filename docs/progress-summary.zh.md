@@ -3345,3 +3345,25 @@ GLOBAL_READY worker 依旧未启用，builder／repair 消费、integration 围�
 `pnpm check` 的格式、TypeScript 项目引用、静态检查及 72 组共 782 项测试均通过；
 整体命令仍因原有的 90% 总体覆盖率门槛失败（语句 87.98%、分支 82.71%、代码行
 87.90%），未调整覆盖率标准。
+
+独立复审接受并冻结了 `d4ae9b8` 的 permit 到不确定占用的连续屏障。下一步问题是
+Git 创建 worktree **之后**如何继续：即使 Git 成功，初始全局 claim 也被刻意保留为
+HELD_UNCERTAIN，agent 不能持有它继续写入。新设计草案
+`docs/m4-workspace-continuation-design.en.md` 解释这一状态，提出一项独立且有权限的
+继续执行流程。独立恢复者必须证明原 Git 操作以及持有原权限的任何写入者都无法再次
+启动，处理尚未结束的 permit，并核对实际 Git worktree 与已保存、已批准的工作区记录。
+之后，新的持久化操作将在**同一仓库 scope 事务**内关闭旧 claim，并授予一笔 token
+更高的执行阶段新 claim。先单独释放旧 claim、再另起事务申请新 claim 会给竞争中的
+run 留出接管空隙，因此明确禁止。builder／repair attempt 保持 STARTING；稳定的
+父子阶段记录可让 worker 在响应丢失后找回准确的新 claim，而不会再次创建 worktree。
+静止性证明不充分、资源冲突、取消或崩溃时，都要保留持久化阻挡，不能意外授予权限。
+Git 开始之前保存的阶段标记还应禁止对这一特殊父 claim 执行普通释放或回收，以免绕过
+原子交接。
+
+这份文档**仅是等待独立复审的设计提案**，并非新的生产功能。它尚需受信任且独立的
+静止性确认、真实 Git 身份核对、新的提供者中立交接契约、版本化 PostgreSQL 持久化
+及 SQLite／PostgreSQL 的共享交错回归。旧 builder／repair 服务及其 attempt 更新在
+全局切换后不能直接复用。生产 worker 仍拒绝 GLOBAL_READY；agent 继续执行、Git
+integration、动态资源扩展、外部写入者停止证明和最终释放尚未实现。M4.2 继续 OPEN，
+M4.3 尚未开始。公开 number token／BIGINT 与诊断资源 ID 问题仍属 P2。本次只增加
+设计文档，没有新的运行时测试，也没有修改已接受的契约、提供者或迁移。
