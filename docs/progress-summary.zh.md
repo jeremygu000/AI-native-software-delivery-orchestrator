@@ -3047,3 +3047,17 @@ OPEN。
 `PREPARING`、没有 builder lease，也没有 repair start/history 记录。通用 STARTING
 持久化入口仍受同一持久化闸门约束，但不再充当本次受控竞态中的主准入路径。这项修正仍待
 独立复审；M4.2 继续为 OPEN。
+
+对 `5cd194213cfd4a9ae0431410ee7ab11a207cf11a` 的独立复审已接受 SQLite 的受控
+cutover。PostgreSQL M4.2 现在有显式 migration-owner 安装的版本 3 schema，用于保存部署
+控制状态、scope／alias／run 绑定、历史 owner 清单、claim、lease、permit 与审计记录。运行时
+启动会核对迁移账本、表与约束的准确形态，以及各表所需的最小权限；现有 M4.1 adapter
+仍可在版本 2 启动，而新的 global authority gate 必须要求版本 3。版本 3 的 PostgreSQL
+orchestration 连接会先取得部署闸门，再锁定已绑定 scope 和 run。生产 builder、repair、
+integration start、ACTIVE lease 持久化，以及通用 STARTING／RUNNING attempt 持久化，
+都在同一事务中于 `LEGACY_ALLOWED` 关闭后拒绝。
+在版本 3 迁移前已打开的连接不会取得这个新闸门；部署 activation 仍须证明这些旧 worker
+已停止或替换。真实隔离 PostgreSQL server 上的 parity
+suite 有 55 项通过。本增量只建立 schema 与旧 writer 准入闸门，**尚未实现** PostgreSQL
+`GlobalMutationAuthority` adapter、受控 PG overlap、第三连接持久状态验证或生产 fenced
+write 边界。M4.2 继续为 OPEN，本增量仍待独立复审。

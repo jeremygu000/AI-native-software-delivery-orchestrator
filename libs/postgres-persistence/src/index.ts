@@ -7,5 +7,6 @@ export {
 export { PostgresOrchestrationPersistence } from './lib/postgres-orchestration-persistence.js';
 export {
   migratePostgresAuthoritySchema,
-  POSTGRES_AUTHORITY_SCHEMA_VERSION
+  POSTGRES_AUTHORITY_SCHEMA_VERSION,
+  POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
 } from './lib/postgres-authority-schema.js';

@@ -177,6 +177,7 @@ export class PostgresOrchestrationPersistence
 {
   readonly #sql: Sql;
   readonly #schema: string;
+  #globalGateInstalled = false;
 
   private constructor(configuration: PostgresEvidenceStoreConfiguration) {
     this.#schema = `"${configuration.schema}"`;
@@ -193,6 +194,10 @@ export class PostgresOrchestrationPersistence
     const store = new PostgresOrchestrationPersistence(configuration);
     try {
       await assertPostgresAuthoritySchema(store.#sql, configuration);
+      const globalVersion = await store.#sql.unsafe(
+        `select 1 from ${store.#schema}.forge_schema_migrations where version=3`
+      );
+      store.#globalGateInstalled = globalVersion.length === 1;
       return store;
     } catch (error) {
       await store.close();
@@ -255,9 +260,31 @@ export class PostgresOrchestrationPersistence
   }
   async #locked<T>(
     runId: string,
-    work: (tx: TransactionSql, state: OrchestrationRunState) => Promise<T>
+    work: (tx: TransactionSql, state: OrchestrationRunState) => Promise<T>,
+    createsLegacyWriter = false
   ): Promise<T> {
     const result = await this.#sql.begin(async (tx) => {
+      if (this.#globalGateInstalled) {
+        const control = await tx.unsafe(
+          `select state from ${this.#schema}.forge_global_control where id=1 for update`
+        );
+        if (control.length !== 1) {
+          throw new Error('PostgreSQL global authority deployment gate is missing');
+        }
+        if (createsLegacyWriter && control[0]?.state !== 'LEGACY_ALLOWED') {
+          throw new Error('Legacy mutation admission is closed');
+        }
+        const binding = await tx.unsafe(
+          `select scope_id from ${this.#schema}.forge_global_run_bindings where run_id=$1`,
+          [runId]
+        );
+        if (binding.length === 1) {
+          await tx.unsafe(
+            `select id from ${this.#schema}.forge_global_scopes where id=$1 for update`,
+            [binding[0]?.scope_id]
+          );
+        }
+      }
       const rows = await tx.unsafe(
         `select state from ${this.#schema}.forge_runs where id=$1 for update`,
         [runId]
@@ -562,10 +589,18 @@ export class PostgresOrchestrationPersistence
     await this.#revision(tx, record.runId, 'builder', record.attempt.id, record.attempt);
   }
   async persistAttempt(record: PersistedAgentExecutionAttempt): Promise<void> {
-    await this.#locked(record.runId, async (tx) => this.#builder(tx, record));
+    await this.#locked(
+      record.runId,
+      async (tx) => this.#builder(tx, record),
+      record.attempt.state === 'STARTING' || record.attempt.state === 'RUNNING'
+    );
   }
   async persistRepairAttempt(record: PersistedTaskRepairAttempt): Promise<void> {
-    await this.#locked(record.runId, async (tx) => this.#repair(tx, record));
+    await this.#locked(
+      record.runId,
+      async (tx) => this.#repair(tx, record),
+      record.attempt.state === 'STARTING' || record.attempt.state === 'RUNNING'
+    );
   }
   async #repair(tx: Query, record: PersistedTaskRepairAttempt): Promise<void> {
     taskRepairAttemptSchema.parse(record.attempt);
@@ -589,41 +624,50 @@ export class PostgresOrchestrationPersistence
     readonly attempt: AgentExecutionAttempt;
     readonly leases: readonly WriteLease[];
   }): Promise<AgentExecutionAttempt> {
-    return this.#locked(request.runId, async (tx, state) => {
-      this.#active(request.runId, state);
-      const before = await this.#row(tx, request.runId, 'builder', request.attempt.id);
-      if (
-        request.attempt.state !== 'STARTING' ||
-        before === undefined ||
-        parsed(before, (value) => agentExecutionAttemptSchema.parse(value)).state !== 'PREPARING' ||
-        parsed(before, (value) => agentExecutionAttemptSchema.parse(value)).revision + 1 !==
-          request.attempt.revision
-      ) {
-        throw new Error('Builder mutation claim is stale');
-      }
-      for (const lease of request.leases) {
-        await this.#lease(tx, { runId: request.runId, lease });
-      }
-      await this.#builder(tx, { runId: request.runId, attempt: request.attempt });
-      return request.attempt;
-    });
+    return this.#locked(
+      request.runId,
+      async (tx, state) => {
+        this.#active(request.runId, state);
+        const before = await this.#row(tx, request.runId, 'builder', request.attempt.id);
+        if (
+          request.attempt.state !== 'STARTING' ||
+          before === undefined ||
+          parsed(before, (value) => agentExecutionAttemptSchema.parse(value)).state !==
+            'PREPARING' ||
+          parsed(before, (value) => agentExecutionAttemptSchema.parse(value)).revision + 1 !==
+            request.attempt.revision
+        ) {
+          throw new Error('Builder mutation claim is stale');
+        }
+        for (const lease of request.leases) {
+          await this.#lease(tx, { runId: request.runId, lease });
+        }
+        await this.#builder(tx, { runId: request.runId, attempt: request.attempt });
+        return request.attempt;
+      },
+      true
+    );
   }
   async claimRepairStart(record: PersistedTaskRepairAttempt): Promise<TaskRepairAttempt> {
-    return this.#locked(record.runId, async (tx, state) => {
-      this.#active(record.runId, state);
-      const before = await this.#row(tx, record.runId, 'repair', record.attempt.id);
-      if (
-        record.attempt.state !== 'STARTING' ||
-        before === undefined ||
-        parsed(before, (value) => taskRepairAttemptSchema.parse(value)).state !== 'PREPARING' ||
-        parsed(before, (value) => taskRepairAttemptSchema.parse(value)).revision + 1 !==
-          record.attempt.revision
-      ) {
-        throw new Error('Repair mutation claim is stale');
-      }
-      await this.#repair(tx, record);
-      return record.attempt;
-    });
+    return this.#locked(
+      record.runId,
+      async (tx, state) => {
+        this.#active(record.runId, state);
+        const before = await this.#row(tx, record.runId, 'repair', record.attempt.id);
+        if (
+          record.attempt.state !== 'STARTING' ||
+          before === undefined ||
+          parsed(before, (value) => taskRepairAttemptSchema.parse(value)).state !== 'PREPARING' ||
+          parsed(before, (value) => taskRepairAttemptSchema.parse(value)).revision + 1 !==
+            record.attempt.revision
+        ) {
+          throw new Error('Repair mutation claim is stale');
+        }
+        await this.#repair(tx, record);
+        return record.attempt;
+      },
+      true
+    );
   }
   async #lease(tx: Query, record: PersistedWriteLease): Promise<void> {
     writeLeaseSchema.parse(record.lease);
@@ -633,7 +677,11 @@ export class PostgresOrchestrationPersistence
     await this.#revision(tx, record.runId, 'lease', record.lease.id, record.lease);
   }
   async persistLease(record: PersistedWriteLease): Promise<void> {
-    await this.#locked(record.runId, async (tx) => this.#lease(tx, record));
+    await this.#locked(
+      record.runId,
+      async (tx) => this.#lease(tx, record),
+      record.lease.state === 'ACTIVE'
+    );
   }
   async recoverLeases(runId: string): Promise<readonly PersistedWriteLease[]> {
     return (await this.#rows(this.#sql, runId, 'lease')).map(({ payload }) => ({
@@ -676,17 +724,21 @@ export class PostgresOrchestrationPersistence
     readonly workspaceId: string;
     readonly outputAttemptId: string;
   }): Promise<void> {
-    await this.#locked(request.runId, async (tx, state) => {
-      this.#active(request.runId, state);
-      const key = request.taskId;
-      const old = await this.#row(tx, request.runId, 'integration-claim', key);
-      if (old !== undefined && canonical(decode(old)) !== canonical(request)) {
-        throw new Error('Integration mutation claim authority mismatch');
-      }
-      if (old === undefined) {
-        await this.#insert(tx, request.runId, 'integration-claim', key, request);
-      }
-    });
+    await this.#locked(
+      request.runId,
+      async (tx, state) => {
+        this.#active(request.runId, state);
+        const key = request.taskId;
+        const old = await this.#row(tx, request.runId, 'integration-claim', key);
+        if (old !== undefined && canonical(decode(old)) !== canonical(request)) {
+          throw new Error('Integration mutation claim authority mismatch');
+        }
+        if (old === undefined) {
+          await this.#insert(tx, request.runId, 'integration-claim', key, request);
+        }
+      },
+      true
+    );
   }
   async releaseIntegrationClaim(request: {
     readonly runId: string;

@@ -21,8 +21,10 @@ import {
 import { PostgresOrchestrationPersistence } from './postgres-orchestration-persistence.js';
 import {
   assertPostgresAuthoritySchema,
+  assertPostgresGlobalAuthoritySchema,
   migratePostgresAuthoritySchema,
-  POSTGRES_AUTHORITY_SCHEMA_VERSION
+  POSTGRES_AUTHORITY_SCHEMA_VERSION,
+  POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
 } from './postgres-authority-schema.js';
 
 let directory: string;
@@ -200,7 +202,173 @@ it('installs, upgrades, and safely reruns migrations without losing persisted au
   }
 });
 
-it.each([0, 3, Number.NaN])(
+it('installs M4.2 global authority tables through migration owner and gates runtime startup', async () => {
+  const schema = `forge_global_${++fixtureOrdinal}`;
+  const migration = { connectionString: ownerConnectionString, schema, role };
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  const runtimeSql = postgres(runtimeConnectionString, { onnotice: () => undefined });
+  try {
+    await migratePostgresAuthoritySchema(migration, runtimeRole);
+    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+      'schema version is incompatible'
+    );
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    await assertPostgresGlobalAuthoritySchema(runtimeSql, runtime);
+    const existingM41 = await PostgresOrchestrationPersistence.connect(runtime);
+    await existingM41.close();
+    const tables = await admin`select relname from pg_class
+      where relnamespace=${schema}::regnamespace and relkind='r' order by relname`;
+    expect(tables.map((row) => row.relname)).toEqual([
+      'forge_global_aliases',
+      'forge_global_audit',
+      'forge_global_claims',
+      'forge_global_control',
+      'forge_global_leases',
+      'forge_global_legacy_owners',
+      'forge_global_permits',
+      'forge_global_run_bindings',
+      'forge_global_scopes',
+      'forge_records',
+      'forge_runs',
+      'forge_schema_migrations'
+    ]);
+    const control = await runtimeSql.unsafe(
+      `select state,next_token from "${schema}".forge_global_control where id=1`
+    );
+    expect(control).toMatchObject([{ state: 'LEGACY_ALLOWED', next_token: '0' }]);
+    const versions = await admin.unsafe(
+      `select version from "${schema}".forge_schema_migrations order by version`
+    );
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
+    await expect(
+      runtimeSql.unsafe(`create table "${schema}".unauthorized (id text)`)
+    ).rejects.toThrow();
+    await admin.unsafe(
+      `alter table "${schema}".forge_global_control drop constraint forge_global_control_id_check`
+    );
+    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+      'global authority constraints are incompatible'
+    );
+  } finally {
+    await runtimeSql.end();
+    await admin.unsafe(`drop schema if exists "${schema}" cascade`);
+    await admin.end();
+  }
+});
+
+it('closes PostgreSQL legacy writer creation after the deployment cutover barrier', async () => {
+  const schema = `forge_global_gate_${++fixtureOrdinal}`;
+  const migration = { connectionString: ownerConnectionString, schema, role };
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const sql = postgres(runtimeConnectionString, { onnotice: () => undefined });
+  const owner = postgres(ownerConnectionString, { onnotice: () => undefined });
+  let store: PostgresOrchestrationPersistence | undefined;
+  try {
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    store = await PostgresOrchestrationPersistence.connect(runtime);
+    const runId = 'legacy-run';
+    await store.createRun(durableAuthorityRunRequest(runId));
+    const builder = durableAuthorityInitialDispatch(runId).attempts[0];
+    if (builder === undefined) {
+      throw new Error('Missing builder fixture');
+    }
+    await store.persistAttempt(builder);
+    const repair = { ...durableAuthorityRepairAttempt('legacy-repair'), runId };
+    await store.persistRepairAttempt({ runId, attempt: repair });
+    await sql.unsafe(
+      `update "${schema}".forge_global_control set state='LEGACY_CUTOVER' where id=1`
+    );
+    const startedAt = new Date('2026-09-29T00:00:00.000Z');
+    const lease = {
+      id: 'legacy-builder-lease',
+      runId,
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      resource: { type: 'project' as const, projectId: 'project-1' },
+      mode: 'exclusive' as const,
+      version: 1,
+      state: 'ACTIVE' as const,
+      acquiredAt: startedAt,
+      lastHeartbeatAt: startedAt
+    };
+    await expect(
+      store.claimBuilderStart({
+        runId,
+        attempt: { ...builder.attempt, state: 'STARTING', revision: 2, startedAt },
+        leases: [lease]
+      })
+    ).rejects.toThrow('Legacy mutation admission is closed');
+    await expect(
+      store.claimRepairStart({
+        runId,
+        attempt: { ...repair, state: 'STARTING', revision: 2, startedAt }
+      })
+    ).rejects.toThrow('Legacy mutation admission is closed');
+    await expect(
+      store.claimIntegrationStart({
+        runId,
+        taskId: 'task-1',
+        workspaceId: 'workspace-1',
+        outputAttemptId: 'contract-builder'
+      })
+    ).rejects.toThrow('Legacy mutation admission is closed');
+    await expect(store.persistLease({ runId, lease })).rejects.toThrow(
+      'Legacy mutation admission is closed'
+    );
+    await expect(
+      store.persistAttempt({
+        runId,
+        attempt: { ...builder.attempt, state: 'STARTING', revision: 2, startedAt }
+      })
+    ).rejects.toThrow('Legacy mutation admission is closed');
+    await expect(
+      store.persistRepairAttempt({
+        runId,
+        attempt: { ...repair, state: 'STARTING', revision: 2, startedAt }
+      })
+    ).rejects.toThrow('Legacy mutation admission is closed');
+    const evidence = await sql.unsafe(
+      `select kind,key,payload from "${schema}".forge_records where run_id=$1 order by kind,key`,
+      [runId]
+    );
+    expect(
+      evidence.filter((row) =>
+        ['lease', 'integration-claim', 'repair-history'].includes(String(row.kind))
+      )
+    ).toEqual([]);
+    expect(
+      evidence
+        .filter((row) => row.kind === 'builder' || row.kind === 'repair')
+        .map((row) => JSON.parse(String(row.payload)))
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ state: 'PREPARING' }),
+        expect.objectContaining({ state: 'PREPARING' })
+      ])
+    );
+  } finally {
+    await store?.close();
+    await sql.end();
+    await owner.unsafe(`drop schema if exists "${schema}" cascade`);
+    await owner.end();
+  }
+});
+
+it.each([0, 4, Number.NaN])(
   'rejects unsupported runtime migration target %s before creating schema objects',
   async (target) => {
     const schema = `forge_bad_target_${++fixtureOrdinal}`;
@@ -593,12 +761,12 @@ it('refuses missing, future, and altered migration metadata without repairing th
   };
   try {
     await admin.unsafe(
-      `insert into "${fixture.schema}".forge_schema_migrations (version, checksum) values (3,'future')`
+      `insert into "${fixture.schema}".forge_schema_migrations (version, checksum) values (4,'future')`
     );
     await expect(PostgresOrchestrationPersistence.connect(runtime)).rejects.toThrow(
       'schema version is incompatible'
     );
-    await admin.unsafe(`delete from "${fixture.schema}".forge_schema_migrations where version=3`);
+    await admin.unsafe(`delete from "${fixture.schema}".forge_schema_migrations where version=4`);
     await admin.unsafe(
       `update "${fixture.schema}".forge_schema_migrations set checksum='tampered' where version=1`
     );

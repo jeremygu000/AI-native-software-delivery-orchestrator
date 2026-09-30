@@ -3467,3 +3467,19 @@ wins, explicit checks require the builder and repair attempts to remain `PREPARI
 lease, and no repair start/history record. The generic STARTING persistence entry points remain
 guarded by the same durable gate but are not the primary admission cases in this controlled race.
 This correction awaits independent review; M4.2 remains OPEN.
+
+Independent review of `5cd194213cfd4a9ae0431410ee7ab11a207cf11a` accepted the SQLite
+controlled cutover. PostgreSQL M4.2 groundwork now has an explicit migration-owner version 3
+schema. It installs deployment control, scope/alias/run bindings, historical-owner inventory,
+claims, leases, permits, and audit tables. Runtime startup checks the migration ledger, exact
+table and constraint shape, and per-table privileges; the existing M4.1 adapter can still start
+on version 2, while the new global-authority gate requires version 3. A version 3 PostgreSQL
+orchestration connection now takes the deployment gate before any bound scope and run row. Its
+production builder, repair, and integration starts, ACTIVE lease persistence, and generic
+STARTING/RUNNING attempt persistence reject after `LEGACY_ALLOWED` closes in that same transaction.
+Connections opened before the version 3 migration do not acquire this new gate; deployment
+activation must still prove those older workers have stopped or been replaced.
+The PostgreSQL parity suite passes 55 tests on a real isolated server. This increment provides
+schema and old-writer admission groundwork, **not** a PostgreSQL `GlobalMutationAuthority`
+adapter, controlled PG overlap proof, third-connection verification, or production fenced-write
+boundary. M4.2 remains OPEN and this increment awaits independent review.

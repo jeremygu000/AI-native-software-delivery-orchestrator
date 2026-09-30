@@ -27,15 +27,88 @@ const migrations = [
   {
     version: 2,
     statements: ['create index forge_records_kind_run_idx on {schema}.forge_records (kind, run_id)']
+  },
+  {
+    version: 3,
+    statements: [
+      `create table {schema}.forge_global_control (
+        id integer primary key check (id = 1), state text not null, next_token bigint not null
+      )`,
+      `insert into {schema}.forge_global_control (id,state,next_token)
+        values (1,'LEGACY_ALLOWED',0)`,
+      `create table {schema}.forge_global_scopes (
+        id text primary key, state text not null
+      )`,
+      `create table {schema}.forge_global_aliases (
+        repository_id text primary key, scope_id text not null
+          references {schema}.forge_global_scopes(id)
+      )`,
+      `create table {schema}.forge_global_run_bindings (
+        run_id text primary key references {schema}.forge_runs(id),
+        repository_id text not null, scope_id text not null
+          references {schema}.forge_global_scopes(id)
+      )`,
+      `create table {schema}.forge_global_claims (
+        scope_id text not null references {schema}.forge_global_scopes(id),
+        claim_id text not null, owner_json text not null, token bigint not null,
+        state text not null, version bigint not null, evidence text,
+        primary key (scope_id,claim_id)
+      )`,
+      `create table {schema}.forge_global_leases (
+        scope_id text not null, claim_id text not null, lease_id text not null,
+        resource_json text not null, primary key (scope_id,claim_id,lease_id),
+        foreign key (scope_id,claim_id)
+          references {schema}.forge_global_claims(scope_id,claim_id)
+      )`,
+      `create table {schema}.forge_global_permits (
+        id text primary key, scope_id text not null, claim_id text not null,
+        owner_json text not null, token bigint not null, resource_json text not null,
+        verifier text not null,
+        foreign key (scope_id,claim_id)
+          references {schema}.forge_global_claims(scope_id,claim_id)
+      )`,
+      `create table {schema}.forge_global_legacy_owners (
+        key text primary key, owner_json text not null, disposition text, evidence text
+      )`,
+      `create table {schema}.forge_global_audit (
+        id text primary key, action text not null, subject text not null, evidence text not null
+      )`
+    ]
   }
 ] as const;
 
 export const POSTGRES_AUTHORITY_SCHEMA_VERSION = 2;
-export type PostgresAuthoritySchemaVersion = 1 | typeof POSTGRES_AUTHORITY_SCHEMA_VERSION;
+export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 3;
+export type PostgresAuthoritySchemaVersion =
+  | 1
+  | typeof POSTGRES_AUTHORITY_SCHEMA_VERSION
+  | typeof POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION;
 
 const checksum = (statements: readonly string[]): string =>
   createHash('sha256').update(statements.join('\n')).digest('hex');
 const quote = (identifier: string): string => `"${identifier}"`;
+const globalTables = [
+  'forge_global_control',
+  'forge_global_scopes',
+  'forge_global_aliases',
+  'forge_global_run_bindings',
+  'forge_global_claims',
+  'forge_global_leases',
+  'forge_global_permits',
+  'forge_global_legacy_owners',
+  'forge_global_audit'
+] as const;
+const globalRuntimePrivileges = {
+  forge_global_control: ['SELECT', 'UPDATE'],
+  forge_global_scopes: ['SELECT', 'INSERT', 'UPDATE'],
+  forge_global_aliases: ['SELECT', 'INSERT'],
+  forge_global_run_bindings: ['SELECT', 'INSERT'],
+  forge_global_claims: ['SELECT', 'INSERT', 'UPDATE'],
+  forge_global_leases: ['SELECT', 'INSERT'],
+  forge_global_permits: ['SELECT', 'INSERT', 'DELETE'],
+  forge_global_legacy_owners: ['SELECT', 'INSERT', 'UPDATE'],
+  forge_global_audit: ['SELECT', 'INSERT']
+} as const satisfies Record<(typeof globalTables)[number], readonly string[]>;
 
 /** The runtime adapter accepts only an explicit login, never role-assumption startup options. */
 export const assertPostgresAuthorityLogin = (
@@ -77,6 +150,179 @@ const expectedColumns = {
     ['payload', 'text', true]
   ]
 } as const;
+
+const globalColumns = {
+  forge_global_control: [
+    ['id', 'integer', true],
+    ['state', 'text', true],
+    ['next_token', 'bigint', true]
+  ],
+  forge_global_scopes: [
+    ['id', 'text', true],
+    ['state', 'text', true]
+  ],
+  forge_global_aliases: [
+    ['repository_id', 'text', true],
+    ['scope_id', 'text', true]
+  ],
+  forge_global_run_bindings: [
+    ['run_id', 'text', true],
+    ['repository_id', 'text', true],
+    ['scope_id', 'text', true]
+  ],
+  forge_global_claims: [
+    ['scope_id', 'text', true],
+    ['claim_id', 'text', true],
+    ['owner_json', 'text', true],
+    ['token', 'bigint', true],
+    ['state', 'text', true],
+    ['version', 'bigint', true],
+    ['evidence', 'text', false]
+  ],
+  forge_global_leases: [
+    ['scope_id', 'text', true],
+    ['claim_id', 'text', true],
+    ['lease_id', 'text', true],
+    ['resource_json', 'text', true]
+  ],
+  forge_global_permits: [
+    ['id', 'text', true],
+    ['scope_id', 'text', true],
+    ['claim_id', 'text', true],
+    ['owner_json', 'text', true],
+    ['token', 'bigint', true],
+    ['resource_json', 'text', true],
+    ['verifier', 'text', true]
+  ],
+  forge_global_legacy_owners: [
+    ['key', 'text', true],
+    ['owner_json', 'text', true],
+    ['disposition', 'text', false],
+    ['evidence', 'text', false]
+  ],
+  forge_global_audit: [
+    ['id', 'text', true],
+    ['action', 'text', true],
+    ['subject', 'text', true],
+    ['evidence', 'text', true]
+  ]
+} as const;
+
+const assertGlobalAuthorityShape = async (
+  sql: TransactionSql | Sql,
+  schema: string
+): Promise<void> => {
+  const relations = await sql`select c.relname as name, c.relkind as kind,
+    c.relpersistence as persistence, c.relrowsecurity as row_security,
+    c.relforcerowsecurity as force_row_security
+    from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname=${schema} and c.relname like 'forge_global_%' and c.relkind in ('r','p')
+    order by c.relname`;
+  if (
+    JSON.stringify(
+      relations.map((row) => [
+        row.name,
+        row.kind,
+        row.persistence,
+        row.row_security,
+        row.force_row_security
+      ])
+    ) !== JSON.stringify(globalTables.toSorted().map((name) => [name, 'r', 'p', false, false]))
+  ) {
+    throw new Error('PostgreSQL global authority relation semantics are incompatible');
+  }
+  const columns = await sql`select c.relname as table_name, a.attname as column_name,
+    format_type(a.atttypid,a.atttypmod) as data_type, a.attnotnull as not_null
+    from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    join pg_attribute a on a.attrelid=c.oid
+    where n.nspname=${schema} and c.relname like 'forge_global_%'
+      and c.relkind='r' and a.attnum>0 and not a.attisdropped
+    order by c.relname,a.attnum`;
+  const expected = globalTables
+    .toSorted()
+    .flatMap((table) =>
+      globalColumns[table].map(([name, type, notNull]) => [table, name, type, notNull])
+    );
+  if (
+    JSON.stringify(
+      columns.map((row) => [row.table_name, row.column_name, row.data_type, row.not_null])
+    ) !== JSON.stringify(expected)
+  ) {
+    throw new Error('PostgreSQL global authority columns are incompatible');
+  }
+  const constraints = await sql`select c.relname as table_name, con.contype as kind,
+    pg_get_constraintdef(con.oid) as definition
+    from pg_constraint con join pg_class c on c.oid=con.conrelid
+    join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname=${schema} and c.relname like 'forge_global_%'
+    order by c.relname, con.contype, pg_get_constraintdef(con.oid)`;
+  const expectedConstraints = [
+    [
+      'forge_global_aliases',
+      'f',
+      `FOREIGN KEY (scope_id) REFERENCES ${schema}.forge_global_scopes(id)`
+    ],
+    ['forge_global_aliases', 'p', 'PRIMARY KEY (repository_id)'],
+    ['forge_global_audit', 'p', 'PRIMARY KEY (id)'],
+    [
+      'forge_global_claims',
+      'f',
+      `FOREIGN KEY (scope_id) REFERENCES ${schema}.forge_global_scopes(id)`
+    ],
+    ['forge_global_claims', 'p', 'PRIMARY KEY (scope_id, claim_id)'],
+    ['forge_global_control', 'c', 'CHECK ((id = 1))'],
+    ['forge_global_control', 'p', 'PRIMARY KEY (id)'],
+    [
+      'forge_global_leases',
+      'f',
+      `FOREIGN KEY (scope_id, claim_id) REFERENCES ${schema}.forge_global_claims(scope_id, claim_id)`
+    ],
+    ['forge_global_leases', 'p', 'PRIMARY KEY (scope_id, claim_id, lease_id)'],
+    ['forge_global_legacy_owners', 'p', 'PRIMARY KEY (key)'],
+    [
+      'forge_global_permits',
+      'f',
+      `FOREIGN KEY (scope_id, claim_id) REFERENCES ${schema}.forge_global_claims(scope_id, claim_id)`
+    ],
+    ['forge_global_permits', 'p', 'PRIMARY KEY (id)'],
+    ['forge_global_run_bindings', 'f', `FOREIGN KEY (run_id) REFERENCES ${schema}.forge_runs(id)`],
+    [
+      'forge_global_run_bindings',
+      'f',
+      `FOREIGN KEY (scope_id) REFERENCES ${schema}.forge_global_scopes(id)`
+    ],
+    ['forge_global_run_bindings', 'p', 'PRIMARY KEY (run_id)'],
+    ['forge_global_scopes', 'p', 'PRIMARY KEY (id)']
+  ].toSorted(
+    ([tableA, kindA, defA], [tableB, kindB, defB]) =>
+      tableA.localeCompare(tableB) || kindA.localeCompare(kindB) || defA.localeCompare(defB)
+  );
+  if (
+    JSON.stringify(constraints.map((row) => [row.table_name, row.kind, row.definition])) !==
+    JSON.stringify(expectedConstraints)
+  ) {
+    throw new Error('PostgreSQL global authority constraints are incompatible');
+  }
+  const triggers = await sql`select 1 from pg_trigger t join pg_class c on c.oid=t.tgrelid
+    join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname=${schema} and c.relname like 'forge_global_%'
+      and not t.tgisinternal limit 1`;
+  const defaults = await sql`select 1 from pg_attrdef d join pg_class c on c.oid=d.adrelid
+    join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname=${schema} and c.relname like 'forge_global_%' limit 1`;
+  const rules = await sql`select 1 from pg_rewrite r join pg_class c on c.oid=r.ev_class
+    join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname=${schema} and c.relname like 'forge_global_%' limit 1`;
+  const extraIndexes = await sql`select 1 from pg_index x join pg_class c on c.oid=x.indrelid
+    join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname=${schema} and c.relname like 'forge_global_%'
+      and not x.indisprimary limit 1`;
+  if (triggers.length > 0 || defaults.length > 0 || rules.length > 0 || extraIndexes.length > 0) {
+    throw new Error(
+      'PostgreSQL global authority triggers, rules, defaults, or indexes are incompatible'
+    );
+  }
+};
 
 const assertAuthorityShape = async (
   sql: TransactionSql | Sql,
@@ -247,7 +493,12 @@ export const migratePostgresAuthoritySchema = async (
       const expectedTables =
         applied.length === 0
           ? ['forge_schema_migrations']
-          : ['forge_schema_migrations', 'forge_runs', 'forge_records'];
+          : [
+              'forge_schema_migrations',
+              'forge_runs',
+              'forge_records',
+              ...(applied.length >= POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION ? globalTables : [])
+            ];
       if (
         installedObjects.length !== expectedTables.length ||
         expectedTables.some((name) => !installedObjects.some((row) => row.relname === name))
@@ -279,7 +530,10 @@ export const migratePostgresAuthoritySchema = async (
         );
       }
       await assertAuthorityShape(tx, configuration.schema, targetVersion);
-      await grantRuntimePrivileges(tx, schema, runtimeRole);
+      if (targetVersion >= POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION) {
+        await assertGlobalAuthorityShape(tx, configuration.schema);
+      }
+      await grantRuntimePrivileges(tx, schema, runtimeRole, targetVersion);
     });
   } finally {
     await sql.end({ timeout: 5 });
@@ -289,7 +543,8 @@ export const migratePostgresAuthoritySchema = async (
 const grantRuntimePrivileges = async (
   tx: TransactionSql,
   schema: string,
-  runtimeRole: string
+  runtimeRole: string,
+  version: PostgresAuthoritySchemaVersion
 ): Promise<void> => {
   const role = quote(runtimeRole);
   await tx.unsafe(`revoke all on schema ${schema} from public`);
@@ -304,12 +559,22 @@ const grantRuntimePrivileges = async (
   }
   await tx.unsafe(`grant select, insert, update on ${schema}.forge_runs to ${role}`);
   await tx.unsafe(`grant select, insert, update, delete on ${schema}.forge_records to ${role}`);
+  if (version >= POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION) {
+    for (const table of globalTables) {
+      await tx.unsafe(`revoke all on ${schema}.${table} from public`);
+      await tx.unsafe(`revoke all on ${schema}.${table} from ${role}`);
+      await tx.unsafe(
+        `grant ${globalRuntimePrivileges[table].join(', ')} on ${schema}.${table} to ${role}`
+      );
+    }
+  }
 };
 
 /** Read-only startup gate: schema installation is exclusively a migration-owner operation. */
 export const assertPostgresAuthoritySchema = async (
   sql: Sql,
-  configuration: PostgresEvidenceStoreConfiguration
+  configuration: PostgresEvidenceStoreConfiguration,
+  requiredVersion: 2 | 3 = POSTGRES_AUTHORITY_SCHEMA_VERSION
 ): Promise<void> => {
   assertPostgresAuthorityLogin(configuration);
   if (sql.options.user !== configuration.role) {
@@ -363,13 +628,14 @@ export const assertPostgresAuthoritySchema = async (
       throw new Error(`PostgreSQL authority object is missing or runtime-owned: ${name}`);
     }
   }
-  if (objects.length !== 3 || objects.some((object) => object.owner !== metadata[0]?.owner)) {
-    throw new Error('PostgreSQL authority object ownership or table set is incompatible');
-  }
   const applied = await sql.unsafe(
     `select version, checksum from ${schema}.forge_schema_migrations order by version`
   );
-  if (applied.length !== POSTGRES_AUTHORITY_SCHEMA_VERSION) {
+  if (
+    applied.length < requiredVersion ||
+    applied.length > POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION ||
+    applied.some((row, index) => row.version !== index + 1)
+  ) {
     throw new Error('PostgreSQL authority schema version is incompatible');
   }
   for (let index = 0; index < applied.length; index++) {
@@ -381,6 +647,24 @@ export const assertPostgresAuthoritySchema = async (
     ) {
       throw new Error('PostgreSQL authority migration ledger is incompatible');
     }
+  }
+  const tables = [
+    'forge_schema_migrations',
+    'forge_runs',
+    'forge_records',
+    ...(applied.length >= POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION ? globalTables : [])
+  ];
+  for (const name of tables) {
+    const object = objects.find((row) => row.relname === name);
+    if (object === undefined || object.owner === configuration.role) {
+      throw new Error(`PostgreSQL authority object is missing or runtime-owned: ${name}`);
+    }
+  }
+  if (
+    objects.length !== tables.length ||
+    objects.some((object) => object.owner !== metadata[0]?.owner)
+  ) {
+    throw new Error('PostgreSQL authority object ownership or table set is incompatible');
   }
   const privileges = await sql`select
     has_schema_privilege(current_user, ${configuration.schema}, 'USAGE') as usage,
@@ -462,5 +746,41 @@ export const assertPostgresAuthoritySchema = async (
   ) {
     throw new Error('PostgreSQL authority runtime privileges are incompatible');
   }
-  await assertAuthorityShape(sql, configuration.schema, POSTGRES_AUTHORITY_SCHEMA_VERSION);
+  await assertAuthorityShape(sql, configuration.schema, applied.length);
+  if (applied.length >= POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION) {
+    await assertGlobalAuthorityShape(sql, configuration.schema);
+    for (const table of globalTables) {
+      const relation = `${configuration.schema}.${table}`;
+      const globalPrivileges = await sql`select
+        has_table_privilege(current_user, ${relation}, 'SELECT') as read,
+        has_table_privilege(current_user, ${relation}, 'INSERT') as insert,
+        has_table_privilege(current_user, ${relation}, 'UPDATE') as update,
+        has_table_privilege(current_user, ${relation}, 'DELETE') as delete,
+        has_table_privilege(current_user, ${relation}, 'TRUNCATE') as truncate,
+        has_table_privilege(current_user, ${relation}, 'TRIGGER') as trigger,
+        has_table_privilege(current_user, ${relation}, 'REFERENCES') as references`;
+      const globalPrivilege = globalPrivileges[0];
+      const allowed: readonly string[] = globalRuntimePrivileges[table];
+      if (
+        globalPrivilege?.read !== true ||
+        globalPrivilege.insert !== allowed.includes('INSERT') ||
+        globalPrivilege.update !== allowed.includes('UPDATE') ||
+        globalPrivilege.delete !== allowed.includes('DELETE') ||
+        globalPrivilege.truncate !== false ||
+        globalPrivilege.trigger !== false ||
+        globalPrivilege.references !== false
+      ) {
+        throw new Error(
+          `PostgreSQL global authority runtime privileges are incompatible: ${table}`
+        );
+      }
+    }
+  }
 };
+
+/** M4.2 runtime gate: the migration owner must install version 3 before connecting. */
+export const assertPostgresGlobalAuthoritySchema = async (
+  sql: Sql,
+  configuration: PostgresEvidenceStoreConfiguration
+): Promise<void> =>
+  assertPostgresAuthoritySchema(sql, configuration, POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION);
