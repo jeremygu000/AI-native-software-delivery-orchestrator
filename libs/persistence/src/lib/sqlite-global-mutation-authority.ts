@@ -153,11 +153,26 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
       CREATE TABLE IF NOT EXISTS forge_global_workspace_phases (
         scope_id TEXT NOT NULL, parent_claim_id TEXT NOT NULL,
         phase TEXT NOT NULL CHECK (phase IN ('INITIAL_ADMITTED','WORKSPACE_ARMED','WORKSPACE_UNCERTAIN','HANDOFF_COMMITTED','ABANDONED')),
+        setup_plan_digest TEXT, execution_plan_digest TEXT,
+        execution_generation TEXT, workspace_id TEXT,
         PRIMARY KEY (scope_id,parent_claim_id),
         FOREIGN KEY (scope_id,parent_claim_id)
           REFERENCES forge_global_claims(scope_id,claim_id)
       );
     `);
+    const phaseColumns = z
+      .array(z.object({ name: z.string() }))
+      .parse(this.#db.prepare('PRAGMA table_info(forge_global_workspace_phases)').all());
+    for (const name of [
+      'setup_plan_digest',
+      'execution_plan_digest',
+      'execution_generation',
+      'workspace_id'
+    ]) {
+      if (!phaseColumns.some((column) => column.name === name)) {
+        this.#db.exec(`ALTER TABLE forge_global_workspace_phases ADD COLUMN ${name} TEXT`);
+      }
+    }
   }
 
   close(): void {

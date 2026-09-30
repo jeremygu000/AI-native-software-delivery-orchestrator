@@ -3962,3 +3962,48 @@ Verification for this increment: the focused real PostgreSQL suite passes all
 linting, and all 784 tests across 72 suites. The overall command still exits
 unsuccessfully on the existing 90% aggregate coverage threshold: statements
 88.06%, branches 82.74%, and lines 87.97%. No coverage threshold was changed.
+
+An independent review accepted the earlier version-5 phase gate at `6bc3b98`
+as a deliberately narrow foundation. The frozen continuation design next
+requires a separate approval for Git setup, a durable execution generation,
+and an **atomic** setup-parent grant and INITIAL_ADMITTED marker. Investigation
+of the real approval chain showed why merely adding a `workspaceSetupApproval`
+field to a task binding is insufficient: the approved version-1 plan artifact
+does not authorize a separate repository-wide Git setup resource. Copying its
+ordinary approval ID into such a field would let an execution binding
+self-authorize Git. Similarly, granting the PostgreSQL runtime direct INSERT
+on the version-5 phase table would invalidate the accepted SELECT-only
+least-privilege boundary. An experimental admission implementation was removed
+before delivery; there is no callable setup grant, arm operation, or Git
+permit in this increment.
+
+The safe prerequisite delivered here is a separate **PostgreSQL version-6
+migration** adding nullable setup-plan digest, execution-plan digest,
+execution-generation, and workspace-ID slots to the phase row. The migration
+keeps versions 1–5 and their checksums untouched and retains SELECT-only
+runtime access; neither runtime workers nor an unverified task binding can
+populate these fields. The SQLite provider adds the same inert slots on new
+databases and upgrades existing phase tables in place. Nullable slots preserve
+older phase rows without inventing an approval or a generation. Runtime shape
+checks require version 6 for the global PostgreSQL adapter, and rerunning the
+migration preserves existing scope tokens and parent states. Real SQLite and
+PostgreSQL upgrade tests inspect legacy rows and demonstrate that marked
+parents still reject ordinary mutation permits; PostgreSQL tests also reject
+runtime writes to the phase table. The real two-backend focused suites pass
+119 tests.
+
+For this increment, `pnpm check` passes formatting, TypeScript references,
+linting and all 786 tests across 72 suites; the command still exits at the
+unchanged 90% aggregate coverage threshold (statements 88.07%, branches
+82.75%, lines 87.97%).
+
+For a future usable setup path, the approved artifact/approval pipeline must
+first independently authorize the repository-level Git setup plan and bind
+its digest to the approved execution plan and workspace. A trusted generation
+issuer and revocation protocol must persist the execution generation. The
+provider then needs one atomic claim-plus-marker operation that checks both
+approvals; PostgreSQL must achieve this without opening general phase INSERT
+to the runtime role. Only after that can arming and the single-lineage
+dedicated Git permit be implemented. The production GLOBAL_READY worker stays
+disabled; M4.2 remains OPEN and M4.3 has not started. The public number-token
+versus BIGINT and diagnostic resource-ID questions remain P2.

@@ -213,6 +213,61 @@ it('denies ordinary permit, exact replay and release for every durably marked wo
   }
 });
 
+it('upgrades existing SQLite workspace phases with inert handoff metadata without permitting setup writes', async () => {
+  const fixture = await createPermitFixture();
+  const db = new Database(fixture.filename);
+  try {
+    db.prepare(
+      `INSERT INTO forge_global_workspace_phases (scope_id,parent_claim_id,phase)
+       VALUES (?,?,'INITIAL_ADMITTED')`
+    ).run(fixture.scopeId, fixture.originalClaim.claimId);
+    db.exec('ALTER TABLE forge_global_workspace_phases DROP COLUMN setup_plan_digest');
+    db.exec('ALTER TABLE forge_global_workspace_phases DROP COLUMN execution_plan_digest');
+    db.exec('ALTER TABLE forge_global_workspace_phases DROP COLUMN execution_generation');
+    db.exec('ALTER TABLE forge_global_workspace_phases DROP COLUMN workspace_id');
+    const upgraded = new SqliteGlobalMutationAuthority(fixture.filename);
+    try {
+      const columns = db.prepare('PRAGMA table_info(forge_global_workspace_phases)').all();
+      expect(columns).toMatchObject([
+        { name: 'scope_id' },
+        { name: 'parent_claim_id' },
+        { name: 'phase' },
+        { name: 'setup_plan_digest' },
+        { name: 'execution_plan_digest' },
+        { name: 'execution_generation' },
+        { name: 'workspace_id' }
+      ]);
+      expect(
+        db
+          .prepare(
+            'SELECT * FROM forge_global_workspace_phases WHERE scope_id=? AND parent_claim_id=?'
+          )
+          .get(fixture.scopeId, fixture.originalClaim.claimId)
+      ).toMatchObject({
+        phase: 'INITIAL_ADMITTED',
+        setup_plan_digest: null,
+        execution_plan_digest: null,
+        execution_generation: null,
+        workspace_id: null
+      });
+      await expect(
+        upgraded.beginFencedMutation({
+          scopeId: fixture.scopeId,
+          claimId: fixture.originalClaim.claimId,
+          owner: fixture.originalClaim.owner,
+          token: fixture.originalGrant.token,
+          resource: fixture.originalClaim.resources[0]
+        })
+      ).rejects.toThrow('Workspace setup parent forbids ordinary mutation authority');
+    } finally {
+      upgraded.close();
+    }
+  } finally {
+    db.close();
+    await fixture.close();
+  }
+});
+
 const workerDirectory = mkdtempSync(resolvePath('libs/persistence/node_modules/.cutover-race-'));
 const workerBundle = join(workerDirectory, 'worker.mjs');
 let bundleReady: Promise<void> | undefined;

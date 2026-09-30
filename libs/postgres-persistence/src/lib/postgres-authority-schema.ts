@@ -97,16 +97,26 @@ const migrations = [
           references {schema}.forge_global_claims(scope_id,claim_id)
       )`
     ]
+  },
+  {
+    version: 6,
+    statements: [
+      `alter table {schema}.forge_global_workspace_phases add column setup_plan_digest text`,
+      `alter table {schema}.forge_global_workspace_phases add column execution_plan_digest text`,
+      `alter table {schema}.forge_global_workspace_phases add column execution_generation text`,
+      `alter table {schema}.forge_global_workspace_phases add column workspace_id text`
+    ]
   }
 ] as const;
 
 export const POSTGRES_AUTHORITY_SCHEMA_VERSION = 2;
-export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 5;
+export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 6;
 export type PostgresAuthoritySchemaVersion =
   | 1
   | typeof POSTGRES_AUTHORITY_SCHEMA_VERSION
   | 3
   | 4
+  | 5
   | typeof POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION;
 
 const checksum = (statements: readonly string[]): string =>
@@ -236,7 +246,11 @@ const globalColumns = {
   forge_global_workspace_phases: [
     ['scope_id', 'text', true],
     ['parent_claim_id', 'text', true],
-    ['phase', 'text', true]
+    ['phase', 'text', true],
+    ['setup_plan_digest', 'text', false],
+    ['execution_plan_digest', 'text', false],
+    ['execution_generation', 'text', false],
+    ['workspace_id', 'text', false]
   ]
 } as const;
 
@@ -283,7 +297,18 @@ const assertGlobalAuthorityShape = async (
     .flatMap((table) => {
       const original = globalColumns[table]
         .filter(
-          ([name]) => version < 4 || !(table === 'forge_global_control' && name === 'next_token')
+          ([name]) =>
+            (version < 4 || !(table === 'forge_global_control' && name === 'next_token')) &&
+            (version >= 6 ||
+              !(
+                table === 'forge_global_workspace_phases' &&
+                [
+                  'setup_plan_digest',
+                  'execution_plan_digest',
+                  'execution_generation',
+                  'workspace_id'
+                ].includes(name)
+              ))
         )
         .map(([name, type, notNull]) => [table, name, type, notNull]);
       return version >= 4 && table === 'forge_global_scopes'
@@ -645,7 +670,7 @@ const grantRuntimePrivileges = async (
 export const assertPostgresAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration,
-  requiredVersion: 2 | 3 | 4 | 5 = POSTGRES_AUTHORITY_SCHEMA_VERSION
+  requiredVersion: 2 | 3 | 4 | 5 | 6 = POSTGRES_AUTHORITY_SCHEMA_VERSION
 ): Promise<void> => {
   assertPostgresAuthorityLogin(configuration);
   if (sql.options.user !== configuration.role) {
@@ -891,7 +916,7 @@ export const assertPostgresAuthoritySchema = async (
   }
 };
 
-/** M4.2 runtime gate: the migration owner must install version 5 before connecting. */
+/** M4.2 runtime gate: the migration owner must install version 6 before connecting. */
 export const assertPostgresGlobalAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration

@@ -1503,7 +1503,27 @@ it('installs M4.2 global authority tables through migration owner and gates runt
     const versions = await admin.unsafe(
       `select version from "${schema}".forge_schema_migrations order by version`
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    const phaseColumns = await admin.unsafe(
+      `select column_name from information_schema.columns
+        where table_schema=$1 and table_name='forge_global_workspace_phases'
+        order by ordinal_position`,
+      [schema]
+    );
+    expect(phaseColumns.map((row) => row.column_name)).toEqual([
+      'scope_id',
+      'parent_claim_id',
+      'phase',
+      'setup_plan_digest',
+      'execution_plan_digest',
+      'execution_generation',
+      'workspace_id'
+    ]);
+    await expect(
+      runtimeSql.unsafe(
+        `update "${schema}".forge_global_workspace_phases set execution_generation='forged'`
+      )
+    ).rejects.toThrow();
     await expect(
       runtimeSql.unsafe(`create table "${schema}".unauthorized (id text)`)
     ).rejects.toThrow();
@@ -1517,6 +1537,63 @@ it('installs M4.2 global authority tables through migration owner and gates runt
     await runtimeSql.end();
     await admin.unsafe(`drop schema if exists "${schema}" cascade`);
     await admin.end();
+  }
+});
+
+it('upgrades existing v5 workspace phases without changing their authority or migration checksum', async () => {
+  const schema = `forge_phase_upgrade_${++fixtureOrdinal}`;
+  const migration = { connectionString: ownerConnectionString, schema, role };
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const owner = postgres(ownerConnectionString, { onnotice: () => undefined });
+  const runtimeSql = postgres(runtimeConnectionString, { onnotice: () => undefined });
+  try {
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 5);
+    await owner.unsafe(`insert into "${schema}".forge_global_scopes (id,state,next_token)
+      values ('scope-old','ACTIVE',7)`);
+    await owner.unsafe(`insert into "${schema}".forge_global_claims
+      (scope_id,claim_id,owner_json,token,state,version)
+      values ('scope-old','parent-old','{}',7,'HELD_UNCERTAIN',1)`);
+    await owner.unsafe(`insert into "${schema}".forge_global_workspace_phases
+      (scope_id,parent_claim_id,phase)
+      values ('scope-old','parent-old','WORKSPACE_UNCERTAIN')`);
+    const checksum = await owner.unsafe(
+      `select checksum from "${schema}".forge_schema_migrations where version=5`
+    );
+    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+      'schema version is incompatible'
+    );
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 6);
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 6);
+    await assertPostgresGlobalAuthoritySchema(runtimeSql, runtime);
+    expect(
+      await owner.unsafe(`select checksum from "${schema}".forge_schema_migrations where version=5`)
+    ).toEqual(checksum);
+    expect(
+      await runtimeSql.unsafe(`select phase,setup_plan_digest,execution_plan_digest,
+        execution_generation,workspace_id from "${schema}".forge_global_workspace_phases
+        where scope_id='scope-old' and parent_claim_id='parent-old'`)
+    ).toMatchObject([
+      {
+        phase: 'WORKSPACE_UNCERTAIN',
+        setup_plan_digest: null,
+        execution_plan_digest: null,
+        execution_generation: null,
+        workspace_id: null
+      }
+    ]);
+    expect(
+      await owner.unsafe(
+        `select next_token from "${schema}".forge_global_scopes where id='scope-old'`
+      )
+    ).toMatchObject([{ next_token: '7' }]);
+    await expect(
+      runtimeSql.unsafe(`update "${schema}".forge_global_workspace_phases
+        set execution_generation='forged' where parent_claim_id='parent-old'`)
+    ).rejects.toThrow();
+  } finally {
+    await runtimeSql.end();
+    await owner.unsafe(`drop schema if exists "${schema}" cascade`);
+    await owner.end();
   }
 });
 
@@ -1852,7 +1929,7 @@ it('closes PostgreSQL legacy writer creation after the deployment cutover barrie
   }
 });
 
-it.each([0, 6, Number.NaN])(
+it.each([0, 7, Number.NaN])(
   'rejects unsupported runtime migration target %s before creating schema objects',
   async (target) => {
     const schema = `forge_bad_target_${++fixtureOrdinal}`;
