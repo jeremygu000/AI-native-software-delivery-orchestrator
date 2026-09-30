@@ -223,4 +223,29 @@ export class FencedMutationPort {
       await this.authority.endFencedMutation(permit);
     }
   }
+
+  /**
+   * For an externally ambiguous effect, persist an uncertain claim before
+   * removing its permit. This includes successful callbacks: completion may
+   * commit even if its response is lost. If uncertainty cannot be persisted,
+   * leave the exact permit unresolved for independent quiescence recovery.
+   */
+  async executeWithDurableUncertainty<T>(
+    request: CurrentMutationTokenRequest,
+    sideEffect: () => Promise<T>,
+    persistUncertainty: (error?: unknown) => Promise<void>
+  ): Promise<T> {
+    const permit = await this.authority.beginFencedMutation(request);
+    let result: T;
+    try {
+      result = await sideEffect();
+    } catch (error) {
+      await persistUncertainty(error);
+      await this.authority.endFencedMutation(permit);
+      throw error;
+    }
+    await persistUncertainty();
+    await this.authority.endFencedMutation(permit);
+    return result;
+  }
 }

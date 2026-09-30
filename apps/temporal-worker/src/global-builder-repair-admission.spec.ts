@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  FencedMutationPort,
   GlobalMutationInFlightError,
   taskLeasePlanFingerprint,
   type AgentExecutionAttempt,
@@ -85,7 +86,13 @@ const request: CreatePersistedRunRequest = {
 };
 
 describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
-  it.each(['persisted', 'persist-failed', 'identity-failed', 'impact-failed'] as const)(
+  it.each([
+    'persisted',
+    'persist-failed',
+    'identity-failed',
+    'mark-failed',
+    'end-lost-response'
+  ] as const)(
     'holds a repository permit through Git workspace creation and its %s record',
     async (outcome) => {
       const directory = mkdtempSync(join(tmpdir(), 'forge-global-workspace-'));
@@ -160,6 +167,9 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
                     stopEvidence: 'Competing release before uncertainty is persisted'
                   })
                 ).rejects.toBeInstanceOf(GlobalMutationInFlightError);
+                if (outcome === 'mark-failed') {
+                  throw new Error('Simulated uncertainty persistence failure before commit');
+                }
                 await target.markMutationUncertain(uncertainRequest);
                 expect(
                   (await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state
@@ -168,18 +178,50 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
                 checkedFailureTransition = true;
               };
             }
+            if (property === 'endFencedMutation' && outcome === 'end-lost-response') {
+              return async (
+                permit: Parameters<GlobalMutationAuthority['endFencedMutation']>[0]
+              ) => {
+                await target.endFencedMutation(permit);
+                expect(await authority.recoverFencedMutationPermits(scopeId)).toEqual([]);
+                expect(
+                  (await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state
+                ).toBe('HELD_UNCERTAIN');
+                const lease = result.admission.leases[0];
+                if (lease === undefined) {
+                  throw new Error('Missing admitted claim lease');
+                }
+                await expect(
+                  authority.releaseGlobalMutation({
+                    ...result.admission.mutation.claim,
+                    expectedVersion: lease.version,
+                    stopEvidence: 'Competing release after committed permit completion'
+                  })
+                ).rejects.toThrow('Invalid active claim release');
+                throw new Error('Simulated lost permit completion response after commit');
+              };
+            }
             const value: unknown = Reflect.get(target, property, receiver);
             return typeof value === 'function' ? value.bind(target) : value;
           }
         });
         const boundary = new GlobalBuilderRepairExecutionBoundary({
           authority: observedAuthority,
-          admission: result.admission,
+          admission:
+            outcome === 'end-lost-response'
+              ? {
+                  ...result.admission,
+                  mutation: {
+                    ...result.admission.mutation,
+                    port: new FencedMutationPort(observedAuthority)
+                  }
+                }
+              : result.admission,
           binding,
           persistence: {
             async persistWorkspace(record) {
               expect(await authority.recoverFencedMutationPermits(scopeId)).toHaveLength(1);
-              if (outcome === 'persist-failed') {
+              if (outcome === 'persist-failed' || outcome === 'mark-failed') {
                 throw new Error('Simulated persistence failure after Git');
               }
               await store.persistWorkspace(record);
@@ -195,89 +237,79 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
             }
           }
         });
-        if (outcome === 'persist-failed' || outcome === 'identity-failed') {
+        if (
+          outcome === 'persist-failed' ||
+          outcome === 'identity-failed' ||
+          outcome === 'mark-failed'
+        ) {
           await expect(boundary.createWorkspace()).rejects.toThrow(
-            outcome === 'persist-failed'
-              ? 'Simulated persistence failure'
-              : 'Git workspace differs from approved binding'
+            outcome === 'mark-failed'
+              ? 'Simulated uncertainty persistence failure before commit'
+              : outcome === 'persist-failed'
+                ? 'Simulated persistence failure'
+                : 'Git workspace differs from approved binding'
           );
-          expect(checkedFailureTransition).toBe(true);
+          expect(checkedFailureTransition).toBe(outcome !== 'mark-failed');
           expect((await store.recoverRun(runId))?.workspaces).toEqual([]);
           expect((await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state).toBe(
-            'HELD_UNCERTAIN'
+            outcome === 'mark-failed' ? 'ACTIVE' : 'HELD_UNCERTAIN'
           );
-          await expect(
-            result.admission.execute({ type: 'repository' }, async () => gitCalls++)
-          ).rejects.toThrow();
-        } else {
-          await expect(boundary.createWorkspace()).resolves.toEqual(workspace);
-          expect((await store.recoverRun(runId))?.workspaces[0]?.workspace).toEqual(workspace);
-          expect((await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state).toBe(
-            'ACTIVE'
+          expect(await peer.recoverFencedMutationPermits(scopeId)).toHaveLength(
+            outcome === 'mark-failed' ? 1 : 0
           );
-        }
-        expect(gitCalls).toBe(1);
-        expect(await peer.recoverFencedMutationPermits(scopeId)).toEqual([]);
-        if (outcome === 'impact-failed') {
-          const workspacePath = join(directory, 'workspace');
-          mkdirSync(workspacePath);
-          writeFileSync(join(workspacePath, 'file.ts'), 'before');
-          const task = runRequest.tasks[0];
-          const startingAttempt = (await store.recoverAttempts(runId))[0]?.attempt;
-          if (task === undefined || startingAttempt === undefined) {
-            throw new Error('Missing approved agent request');
-          }
-          const tools = boundary.createAgentTools(
-            {
-              attempt: startingAttempt,
-              runId,
-              taskId: task.id,
-              task,
-              workspace,
-              instructions: task.goal,
-              onStarted: async () => undefined
-            },
-            {
-              persistence: new Proxy(store, {
-                get(target, property, receiver) {
-                  if (property === 'persistImpact') {
-                    return async () => {
-                      throw new Error('Simulated impact persistence failure');
-                    };
-                  }
-                  const value: unknown = Reflect.get(target, property, receiver);
-                  return typeof value === 'function' ? value.bind(target) : value;
-                }
-              }),
-              writeGuard: {
-                acquire: async () => {
-                  throw new Error('Local lease fallback');
-                },
-                release: async () => {
-                  throw new Error('Local lease fallback');
-                },
-                heartbeat: async () => {
-                  throw new Error('Local lease fallback');
-                },
-                markStale: async () => {
-                  throw new Error('Local lease fallback');
-                }
-              },
-              resolveResource: () => ({ type: 'file', projectId: 'project-1', fileId: 'file-1' }),
-              resolveFileId: () => 'file-1'
+          if (outcome === 'mark-failed') {
+            const lease = result.admission.leases[0];
+            if (lease === undefined) {
+              throw new Error('Missing admitted claim lease');
             }
-          );
-          await expect(tools.write('file.ts', 'written')).rejects.toThrow(
-            'Simulated impact persistence failure'
-          );
-          expect(readFileSync(join(workspacePath, 'file.ts'), 'utf8')).toBe('written');
+            await expect(
+              authority.releaseGlobalMutation({
+                ...result.admission.mutation.claim,
+                expectedVersion: lease.version,
+                stopEvidence:
+                  'Another owner wants to take over after failed uncertainty persistence'
+              })
+            ).rejects.toBeInstanceOf(GlobalMutationInFlightError);
+            const unresolved = await authority.recoverFencedMutationPermits(scopeId);
+            expect(unresolved).toHaveLength(1);
+            const orphan = unresolved[0];
+            if (orphan === undefined) {
+              throw new Error('Missing recoverable permit');
+            }
+            await authority.markMutationUncertain({
+              ...result.admission.mutation.claim,
+              evidence: 'Recovered after failed uncertainty persistence'
+            });
+            await authority.settleOrphanedFencedMutation(
+              orphan,
+              'Independently verified that the failed Git callback can no longer write'
+            );
+            expect(await peer.recoverFencedMutationPermits(scopeId)).toEqual([]);
+            expect((await peer.recoverRepositoryMutationAuthority(scopeId))[0]?.state).toBe(
+              'HELD_UNCERTAIN'
+            );
+          } else {
+            await expect(
+              result.admission.execute({ type: 'repository' }, async () => gitCalls++)
+            ).rejects.toThrow();
+          }
+        } else {
+          if (outcome === 'end-lost-response') {
+            await expect(boundary.createWorkspace()).rejects.toThrow(
+              'Simulated lost permit completion response after commit'
+            );
+          } else {
+            await expect(boundary.createWorkspace()).resolves.toEqual(workspace);
+          }
+          expect((await store.recoverRun(runId))?.workspaces[0]?.workspace).toEqual(workspace);
           expect((await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state).toBe(
             'HELD_UNCERTAIN'
           );
           expect(checkedFailureTransition).toBe(true);
-          expect(await authority.recoverFencedMutationPermits(scopeId)).toEqual([]);
-          await expect(tools.write('file.ts', 'stale')).rejects.toThrow();
-          expect(readFileSync(join(workspacePath, 'file.ts'), 'utf8')).toBe('written');
+        }
+        expect(gitCalls).toBe(1);
+        if (outcome !== 'mark-failed') {
+          expect(await peer.recoverFencedMutationPermits(scopeId)).toEqual([]);
         }
       } finally {
         peer.close();

@@ -39,55 +39,39 @@ export class GlobalBuilderRepairExecutionBoundary {
 
   /** Git worktree/branch mutation and its durable record share one repository permit. */
   async createWorkspace(): Promise<TaskWorkspace> {
-    let callbackStarted = false;
-    try {
-      return await this.options.admission.execute({ type: 'repository' }, async () => {
-        callbackStarted = true;
-        try {
-          const workspace = await this.options.workspaceManager.create(
-            this.options.binding.workspace
-          );
-          if (
-            workspace.id !== this.options.binding.workspace.id ||
-            workspace.runId !== this.options.binding.runId ||
-            workspace.taskId !== this.options.binding.taskId ||
-            workspace.workspacePath !== this.options.binding.workspace.workspacePath ||
-            workspace.integrationRepositoryPath !==
-              this.options.binding.workspace.integrationRepositoryPath ||
-            workspace.branchName !== this.options.binding.workspace.branchName ||
-            workspace.baseRef !== this.options.binding.workspace.baseRef ||
-            workspace.integrationRef !== this.options.binding.workspace.integrationRef
-          ) {
-            throw new Error('Git workspace differs from approved binding');
-          }
-          await this.options.persistence.persistWorkspace({
-            runId: this.options.binding.runId,
-            workspace
-          });
-          return workspace;
-        } catch (error) {
-          // Persist uncertainty while this permit is still durable, so an
-          // independent release cannot race the handoff barrier.
-          await this.options.authority.markMutationUncertain({
-            ...this.options.admission.mutation.claim,
-            evidence: `Global workspace creation outcome unknown: ${error instanceof Error ? error.message : 'non-error rejection'}`
-          });
-          callbackStarted = false;
-          throw error;
+    const { claim, port } = this.options.admission.mutation;
+    return port.executeWithDurableUncertainty(
+      { ...claim, resource: { type: 'repository' } },
+      async () => {
+        const workspace = await this.options.workspaceManager.create(
+          this.options.binding.workspace
+        );
+        if (
+          workspace.id !== this.options.binding.workspace.id ||
+          workspace.runId !== this.options.binding.runId ||
+          workspace.taskId !== this.options.binding.taskId ||
+          workspace.workspacePath !== this.options.binding.workspace.workspacePath ||
+          workspace.integrationRepositoryPath !==
+            this.options.binding.workspace.integrationRepositoryPath ||
+          workspace.branchName !== this.options.binding.workspace.branchName ||
+          workspace.baseRef !== this.options.binding.workspace.baseRef ||
+          workspace.integrationRef !== this.options.binding.workspace.integrationRef
+        ) {
+          throw new Error('Git workspace differs from approved binding');
         }
-      });
-    } catch (error) {
-      // Even a failed Git or persistence callback may have written externally.
-      // A lost permit completion after a successful callback is also ambiguous.
-      if (callbackStarted) {
-        const { claim } = this.options.admission.mutation;
+        await this.options.persistence.persistWorkspace({
+          runId: this.options.binding.runId,
+          workspace
+        });
+        return workspace;
+      },
+      async (error) => {
         await this.options.authority.markMutationUncertain({
           ...claim,
-          evidence: `Global workspace creation outcome unknown: ${error instanceof Error ? error.message : 'non-error rejection'}`
+          evidence: `Global workspace creation outcome ${error === undefined ? 'requires confirmed quiescence' : `unknown: ${error instanceof Error ? error.message : 'non-error rejection'}`}`
         });
       }
-      throw error;
-    }
+    );
   }
 
   /** No optional mutation context or fallback to a process-local lease is exposed. */

@@ -3319,3 +3319,29 @@ integration 围栏、动态资源扩展与安全释放仍待实现。M4.2 继续
 `pnpm check` 的格式、TypeScript 项目引用、静态检查以及 72 组共 779 项测试均通过，
 但整体命令仍因原有的 90% 总体覆盖率门槛而失败：语句 87.97%、分支 82.68%、
 代码行 87.89%。
+
+对远端 SHA `7731480` 的独立复审发现这一交接屏障还有第二种失败方式：若在
+HELD_UNCERTAIN 真正落库前写入失败，原有受控回调仍会在 `finally` 中删除 permit。
+另一连接便可能释放 ACTIVE claim，尽管 Git 结果尚不确定。另外，permit 完成已经
+提交、但响应丢失时，原外层异常处理也只能在 permit 消失后才标记不确定占用。本轮
+为外部副作用增加明确的失败保守型 `FencedMutationPort` 操作：先登记 permit，再
+执行回调；无论 Git 回调成功还是失败，都先持久化 HELD_UNCERTAIN，再完成 permit。
+若不确定状态无法落库，精确的 permit 会保持未完成，必须由独立恢复流程证明外部
+写入者已停止，方可清理孤儿 permit；若完成 permit 的提交响应丢失，占用此前已经
+进入 HELD_UNCERTAIN。普通回调操作以及先前验收的 SQLite／PostgreSQL 提供者和
+数据库迁移都未改动。
+
+Git 工作区边界现在使用这一操作保护 worktree 创建、批准身份检查及工作区记录保存。
+即使 Git 创建成功，claim 也会保持 HELD_UNCERTAIN：这是刻意的失效关闭策略，
+必须由独立流程确认外部写入者静止并回收占用，**不能**把它当作 builder 已能自动
+继续执行。真实 SQLite 测试使用另一连接，在写入不确定状态期间尝试释放，模拟
+不确定状态写入失败，并模拟 permit 完成已提交但响应丢失，证明不确定占用或仍可
+恢复的 permit 始终阻止交接；domain 测试验证回调与 permit 的先后顺序。生产
+GLOBAL_READY worker 依旧未启用，builder／repair 消费、integration 围栏、动态
+资源与安全继续执行的完整生命周期仍未实现。M4.2 继续 OPEN，M4.3 尚未开始；
+公开 number token／BIGINT、诊断资源 ID 及写入前 edit 校验问题继续列为 P2。
+
+本次第二轮定向修复的 domain 与真实 SQLite 准入测试共 10 项全部通过。
+`pnpm check` 的格式、TypeScript 项目引用、静态检查及 72 组共 782 项测试均通过；
+整体命令仍因原有的 90% 总体覆盖率门槛失败（语句 87.98%、分支 82.71%、代码行
+87.90%），未调整覆盖率标准。

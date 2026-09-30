@@ -3816,3 +3816,40 @@ including both workspace failure-ordering paths. `pnpm check` passes formatting,
 TypeScript project references, linting, and all 779 tests across 72 suites; it
 still exits unsuccessfully on the pre-existing 90% aggregate coverage gate:
 statements 87.97%, branches 82.68%, and lines 87.89%.
+
+An independent review of remote SHA `7731480` found a second failure in this
+handoff barrier. If recording HELD_UNCERTAIN failed before it was durable, the
+ordinary fenced callback would still remove its permit in `finally`. A separate
+connection could then release an ACTIVE claim despite an ambiguous Git result.
+There was also a gap when permit completion committed but its response was lost:
+the outer error handler would only mark uncertainty after the permit was gone.
+This follow-up adds an explicit failure-aware `FencedMutationPort` operation for
+external effects. It starts the permit, performs the callback, and records
+HELD_UNCERTAIN **before** completing that permit, whether the Git callback
+succeeded or failed. If recording uncertainty fails, it deliberately leaves the
+exact permit unresolved, so independent recovery must establish quiescence
+before settling the orphan. If permit completion succeeds but its response is
+lost, the claim was already HELD_UNCERTAIN. The ordinary callback operation and
+the accepted SQLite/PostgreSQL providers and database migrations are unchanged.
+
+The Git workspace boundary uses this operation for worktree creation, approved
+identity checks, and saving its workspace record. A successful Git creation now
+also leaves its claim HELD_UNCERTAIN: this is intentionally fail-closed until an
+independent process proves the external writer has stopped and reclaims the
+claim. It is **not** a completed production builder lifecycle or a way to
+resume the agent automatically. The real SQLite tests use another connection
+to attempt release while uncertainty is recorded, simulate failure to record
+it, and simulate permit completion that commits before its response disappears.
+They verify that either the uncertain claim or an unresolved recoverable permit
+always blocks handoff. Domain tests check the callback/permit ordering. The
+production GLOBAL_READY worker remains disabled; builder/repair consumption,
+integration fencing, dynamic resources, and safe lifecycle continuation remain
+unimplemented. M4.2 remains OPEN and M4.3 has not started. The public
+number-token/BIGINT, diagnostic resource-ID, and pre-write edit-validation
+follow-ups remain P2.
+
+For this second targeted remediation, the domain and real SQLite admission
+tests pass all 10 focused cases. `pnpm check` passes formatting, TypeScript
+project references, linting, and all 782 tests across 72 suites; the overall
+command still fails the existing 90% aggregate coverage gate (statements
+87.98%, branches 82.71%, lines 87.90%). No coverage threshold was changed.

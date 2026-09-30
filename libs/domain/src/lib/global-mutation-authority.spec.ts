@@ -58,4 +58,55 @@ describe('FencedMutationPort', () => {
     ).resolves.toBe('written');
     expect(calls).toEqual(['begin', 'callback', 'end']);
   });
+
+  it('leaves the permit unresolved if a failed callback cannot persist uncertainty', async () => {
+    const calls: string[] = [];
+    const endFencedMutation = vi.fn(async () => {
+      calls.push('end');
+    });
+    const port = new FencedMutationPort({
+      beginFencedMutation: async () => ({ id: 'permit-1', completionSecret: 'secret' }),
+      endFencedMutation
+    });
+    await expect(
+      port.executeWithDurableUncertainty(
+        request,
+        async () => {
+          calls.push('callback');
+          throw new Error('Git wrote but recording failed');
+        },
+        async () => {
+          calls.push('uncertainty-failed');
+          throw new Error('uncertainty persistence failed');
+        }
+      )
+    ).rejects.toThrow('uncertainty persistence failed');
+    expect(calls).toEqual(['callback', 'uncertainty-failed']);
+    expect(endFencedMutation).not.toHaveBeenCalled();
+  });
+
+  it('marks even a successful callback uncertain before ambiguous permit completion', async () => {
+    const calls: string[] = [];
+    const port = new FencedMutationPort({
+      beginFencedMutation: async () => ({ id: 'permit-1', completionSecret: 'secret' }),
+      endFencedMutation: async () => {
+        calls.push('end-lost-response');
+        throw new Error('permit completion response lost');
+      }
+    });
+    await expect(
+      port.executeWithDurableUncertainty(
+        request,
+        async () => {
+          calls.push('callback');
+          return 'written';
+        },
+        async (error) => {
+          expect(error).toBeUndefined();
+          calls.push('uncertain');
+        }
+      )
+    ).rejects.toThrow('permit completion response lost');
+    expect(calls).toEqual(['callback', 'uncertain', 'end-lost-response']);
+  });
 });
