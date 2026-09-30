@@ -3128,3 +3128,31 @@ PostgreSQL 定向测试 96 项全部通过。这次增量补足了复审指出�
 格式检查、TypeScript 项目引用类型检查与静态检查均通过。完整 `pnpm check` 报告
 760 项通过、1 项跳过，但由于本机缺少可用容器运行环境，无关的 Restate 集成测试无法启动，
 因此整条命令仍以失败退出。
+
+独立复审已接受提交 `15cde7f` 的 PostgreSQL 版本 4 迁移、按 scope 独立的计数器、全局
+authority adapter，以及 96 项真实数据库受控重叠测试。这项认可针对持久化权限提供者，
+并不等于生产写入准入已经完成：CLI 创建 run 时尚未将它绑定到已注册的全局 scope，worker
+仍使用旧的 builder、repair、integration 和动态 lease 准入。在 `GLOBAL_READY` 状态下，
+旧 writer 闸门会拒绝这些准入。当前全局 claim 契约仅授权 PREPARING 的 builder 和 repair
+attempt，尚无独立的 integration 准入。因此，只给 worker 传入 authority 并不能让生产
+写入既安全又可用。
+
+下一个小步在 agent 工具运行时建立受控写入接缝。传入准确的 claim 与
+`FencedMutationPort` 时，运行时先检查 claim 的 owner 是否与 run、task、attempt 和 agent
+一致。文件写入或编辑会针对解析后的文件资源申请 permit；permit 覆盖编辑前的读取、
+实际文件写入及影响记录，直到回调结束后才完成。Pi 命令可能改动工作区里的任意文件，
+所以命令执行需要整个 repository 的权限。旧 token 或不足以覆盖资源的权限不会启动
+写入回调。未传入全局 claim 时，仍按原有本地 lease 流程运行。定向测试在真实临时文件上
+验证过期 edit/write 无法改动内容、影响记录仍处于 permit 保护下，以及 repository
+permit 被拒时 Pi 命令执行器根本不会启动。
+
+这是可供后续接线复用的底层边界，**还不是**生产启用：CLI 和 worker 尚未传入全局
+claim／port，builder、repair 仍获取旧 lease，Git 工作区创建、集成与继续集成也尚未
+受到保护。完成 M4.2 还需要持久化 run 绑定、worker 中原子的全局准入、所有文件系统／
+命令／Git 副作用入口的 permit 覆盖，以及对这些生产路径的独立验收。M4.2 继续
+**OPEN**，M4.3 的多 run 部署工作尚未开始。对外 token 的 BIGINT 范围和诊断用途资源
+标识歧义仍是 P2 后续事项；版本 3 有活跃 writer 时升级到版本 4，还可能需要先静默
+writer 或针对 PostgreSQL 死锁 `40P01` 重试。
+agent 工具和 Pi runner 的定向测试 33 项全部通过。格式、TypeScript 项目引用类型检查与
+静态检查均通过。完整 `pnpm check` 报告 764 项通过、1 项跳过，但仍以失败退出：本机
+缺少可用容器运行环境，导致无关的 Restate 集成测试无法启动。

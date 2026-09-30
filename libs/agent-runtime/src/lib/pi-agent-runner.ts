@@ -144,7 +144,7 @@ export class PiAgentRunner implements AgentRunner {
           return { content: `Wrote ${result.path}` };
         }
         case 'forge_command': {
-          const result = await commands.run(call.commandId);
+          const result = await tools.executeRepositoryMutation(() => commands.run(call.commandId));
           const content = [result.stdout, result.stderr]
             .filter((value) => value.length > 0)
             .join('\n');

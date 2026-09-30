@@ -1,4 +1,5 @@
 import type { AgentRunRequest } from '@ai-native-software-delivery-orchestrator/domain';
+import { FencedMutationPort as MutationPort } from '@ai-native-software-delivery-orchestrator/domain';
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -930,6 +931,97 @@ describe('PiAgentRunner', () => {
       { content: 'checked' },
       { content: 'Agent command is not allowed: shell', isError: true }
     ]);
+  });
+
+  it('rejects Pi commands before executor invocation when the repository-wide permit is denied', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'pi-runner-'));
+    directories.push(workspacePath);
+    const gateway = new CommandPiGateway();
+    const execute = vi.fn(async () => ({
+      status: 'completed' as const,
+      exitCode: 0,
+      stdout: 'executed',
+      stderr: ''
+    }));
+    const begin = vi.fn(async () => {
+      throw new Error('repository lease required');
+    });
+    const runner = new PiAgentRunner({
+      gateway,
+      createTools: (agentRequest) =>
+        new AgentToolRuntime({
+          runId: agentRequest.runId,
+          taskId: agentRequest.taskId,
+          attemptId: agentRequest.attempt.id,
+          agentId: agentRequest.attempt.agentId,
+          workspacePath: agentRequest.workspace.workspacePath,
+          resolveResource: (path) => ({ type: 'file', projectId: 'core', fileId: `core:${path}` }),
+          resolveFileId: (path) => `core:${path}`,
+          writeGuard: new InMemoryWriteGuard(),
+          mutation: {
+            port: new MutationPort({
+              beginFencedMutation: begin,
+              endFencedMutation: async () => {}
+            }),
+            claim: {
+              scopeId: 'scope-1',
+              claimId: 'claim-1',
+              token: 1,
+              owner: {
+                runId: agentRequest.runId,
+                taskId: agentRequest.taskId,
+                attemptId: agentRequest.attempt.id,
+                agentId: agentRequest.attempt.agentId
+              }
+            }
+          },
+          persistence: {
+            createRun: async () => {},
+            persistReevaluation: async () => {},
+            persistDispatch: async () => {},
+            persistImpact: async () => {},
+            persistConflict: async () => {},
+            persistLease: async () => {},
+            persistWorkspace: async () => {},
+            persistAttempt: async () => {},
+            updateRunState: async () => {},
+            recoverRun: async () => undefined,
+            recoverTaskBindings: async () => [],
+            recoverTaskBinding: async () => undefined,
+            replayRun: async () => [],
+            recoverDispatches: async () => [],
+            recoverAttempts: async () => [],
+            recoverLeases: async () => [],
+            persistIntegration: async () => {},
+            recoverIntegration: async () => undefined,
+            persistRepairResumeDispatch: async () => {},
+            recoverRepairResumeDispatches: async () => []
+          }
+        }),
+      createCommands: () => new AgentCommandRuntime({ execute })
+    });
+
+    await expect(
+      runner.run({
+        ...request(workspacePath, async () => {}),
+        commandPolicy: {
+          commands: [
+            {
+              id: 'check-types',
+              executable: 'pnpm',
+              args: ['typecheck'],
+              timeoutMs: 30_000,
+              maxOutputBytes: 10_000
+            }
+          ],
+          environment: {}
+        }
+      })
+    ).rejects.toThrow('repository lease required');
+    expect(begin).toHaveBeenCalledWith(
+      expect.objectContaining({ resource: { type: 'repository' } })
+    );
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('does not enable commands without policy and maps command failures to tool errors', async () => {

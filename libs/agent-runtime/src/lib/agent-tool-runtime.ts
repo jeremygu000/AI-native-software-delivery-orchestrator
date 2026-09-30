@@ -1,6 +1,8 @@
 import { readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
 import type {
+  CurrentMutationTokenRequest,
+  FencedMutationPort,
   OrchestrationPersistence,
   TaskImpact,
   WriteGuard,
@@ -30,6 +32,11 @@ export interface AgentToolRuntimeContext {
   readonly resolveFileId: (workspaceRelativePath: string) => string;
   readonly persistence: OrchestrationPersistence;
   readonly writeGuard: WriteGuard;
+  /** An exact durable claim, never inferred from a local lease or workspace path. */
+  readonly mutation?: {
+    readonly port: FencedMutationPort;
+    readonly claim: Omit<CurrentMutationTokenRequest, 'resource'>;
+  };
 }
 
 export type AgentToolWriteResult =
@@ -45,6 +52,16 @@ export class AgentToolRuntime {
   #initialLeases: readonly WriteLease[] | undefined;
 
   constructor(context: AgentToolRuntimeContext) {
+    const owner = context.mutation?.claim.owner;
+    if (
+      owner !== undefined &&
+      (owner.runId !== context.runId ||
+        owner.taskId !== context.taskId ||
+        owner.attemptId !== context.attemptId ||
+        owner.agentId !== context.agentId)
+    ) {
+      throw new AgentToolDeniedError('Durable mutation owner does not match the agent attempt');
+    }
     this.#context = context;
     this.#impact = context.impact;
     this.#initialLeases = context.initialLeases;
@@ -88,7 +105,7 @@ export class AgentToolRuntime {
     if (target.status === 'blocked') {
       return target;
     }
-    return this.#writePrepared(target, content);
+    return this.#controlledWrite(target, () => this.#writePrepared(target, content));
   }
 
   async edit(path: string, expected: string, replacement: string): Promise<AgentToolWriteResult> {
@@ -99,18 +116,28 @@ export class AgentToolRuntime {
     if (target.status === 'blocked') {
       return target;
     }
-    const content = await readFile(target.absolutePath, 'utf8');
-    const index = content.indexOf(expected);
-    if (index === -1) {
-      throw new AgentToolDeniedError(`Expected edit text was not found: ${path}`);
-    }
-    if (content.indexOf(expected, index + expected.length) !== -1) {
-      throw new AgentToolDeniedError(`Expected edit text is ambiguous: ${path}`);
-    }
-    return this.#writePrepared(
-      target,
-      `${content.slice(0, index)}${replacement}${content.slice(index + expected.length)}`
-    );
+    return this.#controlledWrite(target, async () => {
+      const content = await readFile(target.absolutePath, 'utf8');
+      const index = content.indexOf(expected);
+      if (index === -1) {
+        throw new AgentToolDeniedError(`Expected edit text was not found: ${path}`);
+      }
+      if (content.indexOf(expected, index + expected.length) !== -1) {
+        throw new AgentToolDeniedError(`Expected edit text is ambiguous: ${path}`);
+      }
+      return this.#writePrepared(
+        target,
+        `${content.slice(0, index)}${replacement}${content.slice(index + expected.length)}`
+      );
+    });
+  }
+
+  /** Commands may mutate arbitrary workspace files, so require repository-wide authority. */
+  async executeRepositoryMutation<T>(sideEffect: () => Promise<T>): Promise<T> {
+    const mutation = this.#context.mutation;
+    return mutation === undefined
+      ? sideEffect()
+      : mutation.port.execute({ ...mutation.claim, resource: { type: 'repository' } }, sideEffect);
   }
 
   observedImpact(): TaskImpact['observed'] {
@@ -144,12 +171,18 @@ export class AgentToolRuntime {
         readonly status: 'ready';
         readonly absolutePath: string;
         readonly workspaceRelativePath: string;
+        readonly resource: WritableResource;
       }
     | Extract<AgentToolWriteResult, { readonly status: 'blocked' }>
   > {
     const absolutePath = await this.#resolve(path);
     const workspaceRelativePath = this.#relative(absolutePath);
     const resource = this.#context.resolveResource(workspaceRelativePath);
+    if (this.#context.mutation !== undefined) {
+      // A local guard cannot authorize expansion of a durable global claim. The port
+      // checks directional coverage at the real write boundary instead.
+      return { status: 'ready', absolutePath, workspaceRelativePath, resource };
+    }
     const resourceKey = JSON.stringify(resource);
     if (!this.#isAuthorized(resource)) {
       const acquired = await this.#context.writeGuard.acquire({
@@ -172,7 +205,17 @@ export class AgentToolRuntime {
         lease: acquired.lease
       });
     }
-    return { status: 'ready', absolutePath, workspaceRelativePath };
+    return { status: 'ready', absolutePath, workspaceRelativePath, resource };
+  }
+
+  async #controlledWrite<T>(
+    target: { readonly resource: WritableResource },
+    sideEffect: () => Promise<T>
+  ): Promise<T> {
+    const mutation = this.#context.mutation;
+    return mutation === undefined
+      ? sideEffect()
+      : mutation.port.execute({ ...mutation.claim, resource: target.resource }, sideEffect);
   }
 
   async #writePrepared(

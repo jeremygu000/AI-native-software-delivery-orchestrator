@@ -3567,3 +3567,36 @@ BIGINT range and diagnostic resource-identifier ambiguity still need separate re
 Formatting, TypeScript project-reference checking, and linting pass. The full `pnpm check`
 reports 760 passing tests and one skipped test, but exits unsuccessfully because the unrelated
 Restate integration suite cannot find a working container runtime in this environment.
+
+Independent review accepted the version 4 PostgreSQL migration, scope-local counters, global
+authority adapter, and its 96 real-database controlled-overlap tests at commit `15cde7f`. That
+acceptance applies to the durable authority provider, not to production write admission: CLI run
+creation does not yet bind a run to a registered global scope, and the worker still uses legacy
+builder, repair, integration, and dynamic lease admission. In `GLOBAL_READY`, the legacy writer
+gate rejects those admissions. The global claim contract currently authorizes PREPARING builder
+and repair attempts; it has no separate admission for integration. Therefore merely supplying an
+authority to the worker would not make production mutations safe or functional.
+
+The next incremental seam is in the agent tool runtime. When an exact claim and a
+`FencedMutationPort` are supplied, the runtime checks that the claim owner matches the run, task,
+attempt, and agent. A file write or edit requests a permit for its resolved file resource; the
+permit encloses the edit read, filesystem write, and recorded impact, and is completed only after
+the callback settles. A Pi command can change arbitrary workspace files, so it requests
+repository-wide authority around command execution. A stale or insufficient token prevents the
+callback from starting. The existing local lease path remains the behavior when no global claim
+is supplied. Focused tests use a real temporary file to show a stale edit/write cannot alter it,
+show that impact persistence still holds the permit, and show that a denied repository permit
+prevents the Pi command executor from running.
+
+This is a reusable lower-level boundary, **not** production activation: the production CLI and
+worker do not yet supply the global claim/port, builder and repair still acquire legacy leases,
+and Git workspace creation, integration, and continuation have not been fenced. Completing M4.2
+requires durable run binding, atomic global admission through the worker, permit coverage at all
+filesystem/command/Git side-effect entry points, and independent acceptance of those paths.
+M4.2 remains **OPEN** and M4.3 multi-run deployment work has not started. The public token's
+BIGINT range and diagnostic resource identifier ambiguity remain P2 follow-ups; upgrading a live
+version 3 writer to version 4 may also require quiescence or retry on PostgreSQL deadlock `40P01`.
+The focused agent tool and Pi runner suites pass all 33 tests. Formatting, TypeScript
+project-reference checking, and linting pass. The full `pnpm check` reports 764 passing tests
+and one skipped test, but still exits unsuccessfully: the unrelated Restate integration suite
+cannot find a working container runtime in this environment.

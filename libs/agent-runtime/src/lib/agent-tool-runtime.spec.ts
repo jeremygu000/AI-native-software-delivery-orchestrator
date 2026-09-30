@@ -3,6 +3,7 @@ import type {
   WriteGuard,
   WriteLease
 } from '@ai-native-software-delivery-orchestrator/domain';
+import { FencedMutationPort as MutationPort } from '@ai-native-software-delivery-orchestrator/domain';
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,7 +34,8 @@ class LeasePersistence implements Pick<OrchestrationPersistence, 'persistImpact'
 const createTools = (
   workspacePath: string,
   writeGuard: WriteGuard,
-  persistence: LeasePersistence
+  persistence: LeasePersistence,
+  mutation?: ConstructorParameters<typeof AgentToolRuntime>[0]['mutation']
 ) =>
   new AgentToolRuntime({
     runId: 'run-1',
@@ -42,6 +44,7 @@ const createTools = (
     agentId: 'agent-1',
     workspacePath,
     writeGuard,
+    ...(mutation === undefined ? {} : { mutation }),
     persistence: {
       createRun: async () => {},
       persistReevaluation: async () => {},
@@ -75,6 +78,116 @@ afterEach(() => {
 });
 
 describe('AgentToolRuntime', () => {
+  it('rejects a durable claim for a different attempt before creating tools', () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
+    directories.push(workspacePath);
+    expect(() =>
+      createTools(workspacePath, new InMemoryWriteGuard(), new LeasePersistence(), {
+        port: new MutationPort({
+          beginFencedMutation: async () => ({ id: 'permit-1', completionSecret: 'secret' }),
+          endFencedMutation: async () => {}
+        }),
+        claim: {
+          scopeId: 'scope-1',
+          claimId: 'claim-1',
+          token: 1,
+          owner: { runId: 'run-1', taskId: 'task-1', attemptId: 'other', agentId: 'agent-1' }
+        }
+      })
+    ).toThrow('Durable mutation owner does not match the agent attempt');
+  });
+
+  it('fences a file edit inside a live permit and rejects stale writes before reading or changing content', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
+    directories.push(workspacePath);
+    writeFileSync(join(workspacePath, 'value.txt'), 'before\n');
+    const calls: string[] = [];
+    let current = true;
+    const port = new MutationPort({
+      beginFencedMutation: async (request) => {
+        calls.push(`begin:${request.resource.type}`);
+        if (!current) {
+          throw new Error('stale token');
+        }
+        return { id: 'permit-1', completionSecret: 'secret' };
+      },
+      endFencedMutation: async () => {
+        calls.push('end');
+      }
+    });
+    const tools = createTools(workspacePath, new InMemoryWriteGuard(), new LeasePersistence(), {
+      port,
+      claim: {
+        scopeId: 'scope-1',
+        claimId: 'claim-1',
+        token: 1,
+        owner: { runId: 'run-1', taskId: 'task-1', attemptId: 'attempt-1', agentId: 'agent-1' }
+      }
+    });
+
+    await tools.edit('value.txt', 'before', 'after');
+    expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('after\n');
+    expect(calls).toEqual(['begin:file', 'end']);
+    current = false;
+    await expect(tools.edit('value.txt', 'after', 'stale')).rejects.toThrow('stale token');
+    await expect(tools.write('value.txt', 'stale\n')).rejects.toThrow('stale token');
+    expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('after\n');
+    expect(calls).toEqual(['begin:file', 'end', 'begin:file', 'begin:file']);
+  });
+
+  it('holds the permit through persisted impact and refuses repository commands without repository-wide authority', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
+    directories.push(workspacePath);
+    writeFileSync(join(workspacePath, 'value.txt'), 'before\n');
+    let finishImpact: (() => void) | undefined;
+    const impactPending = new Promise<void>((resolve) => {
+      finishImpact = resolve;
+    });
+    let impactStarted: (() => void) | undefined;
+    const impactEntered = new Promise<void>((resolve) => {
+      impactStarted = resolve;
+    });
+    const persistence = new LeasePersistence();
+    persistence.persistImpact = async (record) => {
+      impactStarted?.();
+      await impactPending;
+      persistence.impacts.push(record);
+    };
+    const ended = vi.fn(async () => {});
+    const begin = vi.fn(async (request: Parameters<MutationPort['execute']>[0]) => {
+      if (request.resource.type === 'repository') {
+        throw new Error('repository lease required');
+      }
+      return { id: 'permit-1', completionSecret: 'secret' };
+    });
+    const tools = createTools(workspacePath, new InMemoryWriteGuard(), persistence, {
+      port: new MutationPort({ beginFencedMutation: begin, endFencedMutation: ended }),
+      claim: {
+        scopeId: 'scope-1',
+        claimId: 'claim-1',
+        token: 1,
+        owner: { runId: 'run-1', taskId: 'task-1', attemptId: 'attempt-1', agentId: 'agent-1' }
+      }
+    });
+
+    const writing = tools.write('value.txt', 'after\n');
+    await impactEntered;
+    expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('after\n');
+    expect(ended).not.toHaveBeenCalled();
+    const command = vi.fn(async () => 'executed');
+    await expect(tools.executeRepositoryMutation(command)).rejects.toThrow(
+      'repository lease required'
+    );
+    expect(command).not.toHaveBeenCalled();
+    finishImpact?.();
+    await expect(writing).resolves.toEqual({ status: 'written', path: 'value.txt' });
+    expect(ended).toHaveBeenCalledOnce();
+    expect(persistence.leases).toEqual([]);
+    expect(begin.mock.calls.map(([request]) => request.resource.type)).toEqual([
+      'file',
+      'repository'
+    ]);
+  });
   it('edits only through a persisted write lease and records observed impact', async () => {
     const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
     directories.push(workspacePath);
