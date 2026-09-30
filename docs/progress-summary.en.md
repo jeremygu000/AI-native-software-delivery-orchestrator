@@ -4047,3 +4047,38 @@ filesystem tests pass 22/22; `pnpm check` passes formatting, TypeScript
 references, type-aware linting and all 791 tests across 73 suites. The
 command still exits at the unchanged 90% aggregate coverage threshold:
 statements 88.17%, branches 82.85%, lines 88.08%.
+
+An independent review accepted `0907703` strictly as the data format and
+immutable storage prerequisite. A file that loads successfully is not a
+trusted approval: its SHA-256 fingerprint can be recomputed by anyone who
+can replace the file, and its `approvedBy` field is plain text. The next
+increment introduces a separate **verification boundary** in the planning
+library. Given the exact approved plan artifact, execution approval, Git
+setup decision, an Ed25519 signature, and public keys supplied by an
+independently trusted configuration, it verifies the decision against the
+artifact and execution approval and checks a domain-separated signature
+over the complete setup decision and signing key ID. A missing key, altered
+decision with a newly calculated fingerprint, different approval, swapped
+key identity, invalid signature or wrong key type fails closed. Tests use
+independently generated keys to exercise these cases; signing credentials
+are never read from the setup record or the JSON store.
+
+This verifier is a reusable boundary, not a deployed Git approval service.
+There is no configured trusted signer, authenticated approval workflow,
+signature publication or key rotation/revocation mechanism yet; workers
+and providers do not consume the verifier or the unsigned store record.
+Before any provider setup claim, a separately authenticated approval source
+must issue and retain the signed decision, deployment must supply only its
+trusted setup-signing public keys, and the consumer must recheck the exact
+run/workspace and approved artifact at admission. Trusted execution
+generation issuance and revocation, atomic setup claim plus phase marker,
+arming, the dedicated Git permit and parent-to-child handoff are still
+unimplemented. The production GLOBAL_READY worker remains disabled;
+M4.2 stays OPEN and M4.3 has not started. Public number tokens versus
+PostgreSQL BIGINT and diagnostic resource-ID ambiguity remain P2.
+
+Verification for this verifier-only increment: both focused planning suites
+pass 7/7 tests; `pnpm check` passes formatting, TypeScript project references,
+type-aware linting and all 795 tests across 74 suites. The command still exits
+at the existing 90% aggregate coverage threshold: statements 88.20%,
+branches 82.89%, lines 88.11%.

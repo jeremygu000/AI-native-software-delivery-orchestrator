@@ -58,6 +58,13 @@ export {
 } from './lib/workspace-setup-approval.js';
 export type { WorkspaceSetupApproval } from './lib/workspace-setup-approval.js';
 export {
+  verifyWorkspaceSetupAuthorization,
+  workspaceSetupAuthorizationMessage,
+  workspaceSetupAuthorizationSchema,
+  WorkspaceSetupAuthorizationError
+} from './lib/workspace-setup-authorization.js';
+export type { WorkspaceSetupAuthorization } from './lib/workspace-setup-authorization.js';
+export {
   parsePlanExecutionIntent,
   PlanExecutionBinder,
   PlanExecutionBindingError
