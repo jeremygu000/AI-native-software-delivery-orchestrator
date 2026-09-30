@@ -4082,3 +4082,43 @@ pass 7/7 tests; `pnpm check` passes formatting, TypeScript project references,
 type-aware linting and all 795 tests across 74 suites. The command still exits
 at the existing 90% aggregate coverage threshold: statements 88.20%,
 branches 82.89%, lines 88.11%.
+
+Independent review accepted `8931825` strictly as verification of a signed
+Git setup decision, not as a deployed signing service or provider capability.
+It also pointed out a useful future regression: after forging a record, an
+attacker can recalculate both its content fingerprint and the unsigned
+authorization envelope fingerprint, but still cannot reuse the original
+Ed25519 signature. The existing implementation has that signature barrier;
+the stronger test and unified external error reporting are P2 follow-ups;
+key lifecycle is a prerequisite for production admission. The actual verifier
+increment reached 88.20% statements, 82.89% branches and 88.11% lines, as
+recorded above.
+
+This **documentation-only design increment** describes the missing trust
+services before the frozen workspace-continuation design can be put into
+production. A separate authenticated setup approver authorizes the exact
+worktree operation; a signing service cross-checks the approved plan and
+publishes an immutable signed decision. Its key does not live in the record
+store or a worker. An independently administered key registry never reuses a
+key ID; new grants, arming and Git permits require a key that is **currently
+ACTIVE**, not merely one that was trusted when the decision was written.
+Retirement blocks new effects, revocation keeps existing setup parents
+blocking until independently verified recovery, and registry reads must
+serialize with changes so a cached old public-key list cannot authorize a
+new effect. `approvedBy` remains plain text until the signing service proves
+its link to an authenticated approver.
+
+A separate trusted generation issuer must bind one durable execution
+generation to the exact scope, run, task, attempt, workspace, setup parent and
+supervised worker. Revocation is irreversible and checked by both scheduler
+resume and provider permit entry; it does not by itself prove that a spawned
+process or Git command has stopped. Only independent supervisor containment
+and proof of quiescence may allow orphan settlement or the privileged parent
+to child handoff. The new design document gives failure and race outcomes for
+publication loss, key rotation/revocation, generation issuance/revocation,
+cancellation and an in-flight Git callback. It changes no schema, runtime
+contract, provider or worker. The approved continuation design is marked
+frozen but still incomplete in code; actual signer, key registry, generation
+issuer, atomic setup admission, dedicated Git permit and production worker
+remain unimplemented. M4.2 stays OPEN, M4.3 not started. Public number tokens
+versus BIGINT and diagnostic resource-ID ambiguity remain P2.
