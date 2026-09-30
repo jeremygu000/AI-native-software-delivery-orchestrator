@@ -131,7 +131,8 @@ const attemptJson = (value: unknown): unknown =>
   );
 const verifier = (secret: string): Buffer => createHash('sha256').update(secret).digest();
 
-/** Runtime-only v3 authority; all transitions use gate -> scope -> run lock order. */
+/** Runtime-only v4 authority; deployment transitions use gate -> scope -> run,
+ * while steady-state transitions read the one-way ready gate and lock scope -> run. */
 export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority {
   readonly #sql: Sql;
   readonly #schema: string;
@@ -170,7 +171,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     return (await tx.unsafe(statement, parameters))[0];
   }
 
-  async #locked<T>(
+  async #deploymentLocked<T>(
     work: (tx: Tx, state: string) => Promise<T>,
     scopeId?: string,
     runId?: string
@@ -197,6 +198,37 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         }
       }
       return { value: await work(tx, String(control.state)) };
+    });
+    return result.value;
+  }
+
+  // GLOBAL_READY is a one-way cutover state. Once observed, only the scope row
+  // (then the affected run row) serializes steady-state authority transitions.
+  async #scopedLocked<T>(
+    scopeId: string,
+    work: (tx: Tx) => Promise<T>,
+    runId?: string
+  ): Promise<T> {
+    const result = await this.#sql.begin(async (tx) => {
+      const control = await this.#one(
+        tx,
+        `select state from ${this.#schema}.forge_global_control where id=1`
+      );
+      if (control?.state !== 'GLOBAL_READY') {
+        throw new Error('Global mutation claims are not active');
+      }
+      await this.#scope(tx, scopeId, true);
+      if (runId !== undefined) {
+        const run = await this.#one(
+          tx,
+          `select id from ${this.#schema}.forge_runs where id=$1 for update`,
+          [runId]
+        );
+        if (run === undefined) {
+          throw new Error(`Unknown orchestration run: ${runId}`);
+        }
+      }
+      return { value: await work(tx) };
     });
     return result.value;
   }
@@ -253,16 +285,18 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     throw new Error('Invalid global mutation claim state');
   }
 
-  async #nextToken(tx: Tx): Promise<number> {
+  async #nextToken(tx: Tx, scopeId: string): Promise<number> {
     const row = await this.#one(
       tx,
-      `select next_token from ${this.#schema}.forge_global_control where id=1`
+      `select next_token from ${this.#schema}.forge_global_scopes where id=$1`,
+      [scopeId]
     );
     const next = BigInt(String(row?.next_token)) + 1n;
     if (next > BigInt(Number.MAX_SAFE_INTEGER) || next <= 0n) {
       throw new Error('Global mutation token exhausted');
     }
-    await tx.unsafe(`update ${this.#schema}.forge_global_control set next_token=$1 where id=1`, [
+    await tx.unsafe(`update ${this.#schema}.forge_global_scopes set next_token=$2 where id=$1`, [
+      scopeId,
       next.toString()
     ]);
     return Number(next);
@@ -270,7 +304,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   async registerScope(repositoryId: string): Promise<string> {
     required(repositoryId, 'Repository ID');
-    return this.#locked(async (tx) => {
+    return this.#deploymentLocked(async (tx) => {
       const existing = await this.#one(
         tx,
         `select scope_id from ${this.#schema}.forge_global_aliases where repository_id=$1`,
@@ -280,9 +314,10 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         return String(existing.scope_id);
       }
       const scopeId = randomUUID();
-      await tx.unsafe(`insert into ${this.#schema}.forge_global_scopes values ($1,'REGISTERING')`, [
-        scopeId
-      ]);
+      await tx.unsafe(
+        `insert into ${this.#schema}.forge_global_scopes values ($1,'REGISTERING',0)`,
+        [scopeId]
+      );
       await tx.unsafe(`insert into ${this.#schema}.forge_global_aliases values ($1,$2)`, [
         repositoryId,
         scopeId
@@ -293,7 +328,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   async registerAlias(scopeId: string, repositoryId: string): Promise<void> {
     required(repositoryId, 'Repository ID');
-    await this.#locked(async (tx) => {
+    await this.#deploymentLocked(async (tx) => {
       const existing = await this.#one(
         tx,
         `select scope_id from ${this.#schema}.forge_global_aliases where repository_id=$1`,
@@ -313,7 +348,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   async bindRun(runId: string, repositoryId: string): Promise<void> {
     const scopeId = await this.#boundScope(runId, repositoryId);
-    await this.#locked(
+    await this.#deploymentLocked(
       async (tx) => {
         const row = await this.#one(
           tx,
@@ -429,7 +464,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
   }
 
   async beginLegacyCutover(): Promise<void> {
-    await this.#locked(async (tx, state) => {
+    await this.#deploymentLocked(async (tx, state) => {
       if (state !== 'LEGACY_ALLOWED') {
         throw new Error('Legacy cutover already began');
       }
@@ -454,7 +489,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   async settleLegacyOwner(key: string, quiescenceEvidence: string): Promise<void> {
     required(quiescenceEvidence, 'Quiescence evidence');
-    await this.#locked(async (tx) => {
+    await this.#deploymentLocked(async (tx) => {
       const row = await this.#one(
         tx,
         `select disposition from ${this.#schema}.forge_global_legacy_owners where key=$1`,
@@ -476,7 +511,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     requested?: WritableResource
   ): Promise<void> {
     const runId = await this.#legacyRunId(key);
-    await this.#locked(
+    await this.#deploymentLocked(
       async (tx) => {
         const row = await this.#one(
           tx,
@@ -542,7 +577,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         ) {
           throw new Error('Imported authority cannot be narrower than historical evidence');
         }
-        const token = await this.#nextToken(tx);
+        const token = await this.#nextToken(tx, scopeId);
         const claimId = `legacy:${key}`;
         const importedOwner: GlobalMutationOwner = {
           runId: historical.runId,
@@ -590,7 +625,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   async completeLegacyCutover(verifiedOldWriterShutdownEvidence: string): Promise<void> {
     required(verifiedOldWriterShutdownEvidence, 'Old writer shutdown evidence');
-    await this.#locked(async (tx, state) => {
+    await this.#deploymentLocked(async (tx, state) => {
       if (state !== 'LEGACY_CUTOVER') {
         throw new Error('Legacy cutover not in progress');
       }
@@ -614,7 +649,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
   }
 
   async activateScope(scopeId: string): Promise<void> {
-    await this.#locked(async (tx, state) => {
+    await this.#deploymentLocked(async (tx, state) => {
       if (state !== 'GLOBAL_READY') {
         throw new Error('Deployment is not globally ready');
       }
@@ -746,12 +781,10 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
   }
 
   async claimGlobalMutation(claim: GlobalMutationClaim): Promise<GlobalMutationClaimResult> {
-    return this.#locked(
-      async (tx, state) => {
-        if (
-          state !== 'GLOBAL_READY' ||
-          (await this.#scope(tx, claim.scopeId)) !== 'ACTIVE_FOR_GLOBAL_CLAIMS'
-        ) {
+    return this.#scopedLocked(
+      claim.scopeId,
+      async (tx) => {
+        if ((await this.#scope(tx, claim.scopeId)) !== 'ACTIVE_FOR_GLOBAL_CLAIMS') {
           throw new Error('Global mutation claims are not active');
         }
         required(claim.claimId, 'Claim ID');
@@ -798,7 +831,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         if (blockers.length) {
           return { status: 'blocked', blockers };
         }
-        const token = await this.#nextToken(tx);
+        const token = await this.#nextToken(tx, claim.scopeId);
         await tx.unsafe(
           `insert into ${this.#schema}.forge_global_claims values ($1,$2,$3,$4,'ACTIVE',1,null)`,
           [claim.scopeId, claim.claimId, JSON.stringify(claim.owner), token]
@@ -840,7 +873,6 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
           leases: await this.#leases(tx, claim.scopeId, claim.claimId)
         };
       },
-      claim.scopeId,
       claim.owner.runId
     );
   }
@@ -886,13 +918,13 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
   }
 
   async assertCurrentMutationToken(request: CurrentMutationTokenRequest): Promise<void> {
-    await this.#locked(async (tx) => this.#assertCurrent(tx, request), request.scopeId);
+    await this.#scopedLocked(request.scopeId, async (tx) => this.#assertCurrent(tx, request));
   }
 
   async beginFencedMutation(
     request: CurrentMutationTokenRequest
   ): Promise<FencedMutationExecutionPermit> {
-    return this.#locked(async (tx) => {
+    return this.#scopedLocked(request.scopeId, async (tx) => {
       await this.#assertCurrent(tx, request);
       const permit = {
         id: randomUUID(),
@@ -911,7 +943,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         ]
       );
       return permit;
-    }, request.scopeId);
+    });
   }
 
   async #permitScope(id: string): Promise<string> {
@@ -928,7 +960,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   async endFencedMutation(permit: FencedMutationExecutionPermit): Promise<void> {
     const scopeId = await this.#permitScope(permit.id);
-    await this.#locked(async (tx) => {
+    await this.#scopedLocked(scopeId, async (tx) => {
       const row = await this.#one(
         tx,
         `select scope_id,verifier from ${this.#schema}.forge_global_permits where id=$1`,
@@ -943,7 +975,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         throw new Error('Invalid fenced mutation completion capability');
       }
       await tx.unsafe(`delete from ${this.#schema}.forge_global_permits where id=$1`, [permit.id]);
-    }, scopeId);
+    });
   }
 
   async #audit(tx: Tx, action: string, subject: string, evidence: string): Promise<void> {
@@ -960,7 +992,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     verifiedQuiescenceEvidence: string
   ): Promise<void> {
     required(verifiedQuiescenceEvidence, 'Quiescence evidence');
-    await this.#locked(async (tx) => {
+    await this.#scopedLocked(permit.scopeId, async (tx) => {
       const row = await this.#one(
         tx,
         `select * from ${this.#schema}.forge_global_permits where id=$1`,
@@ -979,7 +1011,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
       }
       await tx.unsafe(`delete from ${this.#schema}.forge_global_permits where id=$1`, [permit.id]);
       await this.#audit(tx, 'settle-orphaned-permit', permit.id, verifiedQuiescenceEvidence);
-    }, permit.scopeId);
+    });
   }
 
   #assertOwner(row: Row, claimOwner: GlobalMutationOwner, token: number): void {
@@ -1008,7 +1040,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     stopEvidence: string;
   }): Promise<void> {
     required(request.stopEvidence, 'Stop evidence');
-    await this.#locked(async (tx) => {
+    await this.#scopedLocked(request.scopeId, async (tx) => {
       const row = await this.#claim(tx, request.scopeId, request.claimId);
       this.#assertOwner(row, request.owner, request.token);
       if (row.state !== 'ACTIVE' || safeInteger(row.version) !== request.expectedVersion) {
@@ -1019,7 +1051,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         `update ${this.#schema}.forge_global_claims set state='RELEASED',version=version+1,evidence=$3 where scope_id=$1 and claim_id=$2`,
         [request.scopeId, request.claimId, request.stopEvidence]
       );
-    }, request.scopeId);
+    });
   }
 
   async markMutationUncertain(request: {
@@ -1030,7 +1062,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     evidence: string;
   }): Promise<void> {
     required(request.evidence, 'Uncertainty evidence');
-    await this.#locked(async (tx) => {
+    await this.#scopedLocked(request.scopeId, async (tx) => {
       const row = await this.#claim(tx, request.scopeId, request.claimId);
       this.#assertOwner(row, request.owner, request.token);
       if (row.state !== 'ACTIVE') {
@@ -1040,7 +1072,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         `update ${this.#schema}.forge_global_claims set state='HELD_UNCERTAIN',version=version+1,evidence=$3 where scope_id=$1 and claim_id=$2`,
         [request.scopeId, request.claimId, request.evidence]
       );
-    }, request.scopeId);
+    });
   }
 
   async reclaimUncertainMutation(request: {
@@ -1052,7 +1084,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     verifiedQuiescenceEvidence: string;
   }): Promise<void> {
     required(request.verifiedQuiescenceEvidence, 'Quiescence evidence');
-    await this.#locked(async (tx) => {
+    await this.#scopedLocked(request.scopeId, async (tx) => {
       const row = await this.#claim(tx, request.scopeId, request.claimId);
       this.#assertOwner(row, request.owner, request.token);
       if (row.state !== 'HELD_UNCERTAIN' || safeInteger(row.version) !== request.expectedVersion) {
@@ -1063,6 +1095,6 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         `update ${this.#schema}.forge_global_claims set state='RELEASED',version=version+1,evidence=$3 where scope_id=$1 and claim_id=$2`,
         [request.scopeId, request.claimId, request.verifiedQuiescenceEvidence]
       );
-    }, request.scopeId);
+    });
   }
 }

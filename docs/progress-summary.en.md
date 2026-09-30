@@ -3532,3 +3532,38 @@ implemented and reviewed; multi-run deployment acceptance belongs to M4.3.
 Formatting, TypeScript project-reference checking, and linting pass. The full `pnpm check`
 run reports 752 passing tests and one skipped test, but exits unsuccessfully because the
 unrelated Restate integration suite cannot find a working container runtime in this environment.
+
+Independent review of the committed PostgreSQL adapter `37a730a` found no new P1 issue but did
+not accept its M4.2 overlap evidence: its third-connection check was sequential, while the frozen
+acceptance requires simultaneous transactions and proof of who blocks whom at PostgreSQL's scope
+row. Version 4 is the next, separately checksummed owner-only migration; version 3's migration
+and checksum remain intact. It adds a non-null `next_token` counter to each scope, initializes it
+from that scope's highest persisted claim token (including released and uncertain claims), and
+removes the old deployment-wide counter. An owner rerun preserves the recorded counters. The
+runtime adapter now requires version 4. Its deployment and historical cutover transitions still
+lock the deployment control row, scope, then run; once the irreversible `GLOBAL_READY` state is
+read, ordinary claim, permit, release, and reclamation transactions lock only their scope and,
+where needed, their run. This lets independent scopes proceed separately while the shared scope
+serializes conflicting writers. Existing M4.1 run lifecycle transitions retain the deployment
+gate and then take the bound scope and run locks, so they synchronize with global claims.
+
+The isolated real-PostgreSQL acceptance fixture deliberately stalls the first operation _after_
+it has the scope lock. `pg_blocking_pids` proves that another run's conflicting claim, or a
+competing cancellation or terminal-state transition, waits on the first connection's scope row
+lock. After releasing the stall, an independent third connection reads the durable claim, run,
+attempt, and permit evidence: one conflicting claim wins with no losing claim or STARTING residue;
+in the opposite lifecycle order, the claim is rejected and no token or attempt is created.
+Cancellation is checked through both `CANCEL_REQUESTED` and `CANCELLED`, alongside FAILED and
+COMPLETED. Release and uncertain-claim reclamation similarly overlap a stale controlled write:
+the write waits behind the scope lock and its callback is never invoked once ownership ends.
+A separate controlled case shows another scope can grant a claim while the first scope's claim
+still holds its row lock, with independent counters. A migration regression starts on a populated
+version 3 schema and verifies that existing claim tokens, per-scope high-water marks, and the
+version 3 checksum survive the upgrade and rerun. The focused PostgreSQL suite passes 96 tests.
+This increment addresses the review's missing
+controlled-overlap evidence and awaits independent review; M4.2 remains **OPEN** until the
+production CLI/worker fenced-write boundary is connected and accepted. The public token type's
+BIGINT range and diagnostic resource-identifier ambiguity still need separate resolution.
+Formatting, TypeScript project-reference checking, and linting pass. The full `pnpm check`
+reports 760 passing tests and one skipped test, but exits unsuccessfully because the unrelated
+Restate integration suite cannot find a working container runtime in this environment.

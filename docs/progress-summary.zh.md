@@ -3100,3 +3100,31 @@ PostgreSQL 定向测试 88 项全部通过。本增量仍待独立复审；生�
 格式检查、TypeScript 项目引用类型检查与静态检查均通过。完整 `pnpm check`
 报告 752 项通过、1 项跳过，但由于本机缺少可用容器运行环境，无关的 Restate 集成测试
 无法启动，因此整条命令仍以失败退出。
+
+针对已提交的 PostgreSQL adapter `37a730a`，独立复审未发现新的 P1 问题，但尚未接受其
+M4.2 重叠事务证据：之前第三连接只做顺序检查，冻结的验收要求两个事务同时运行，并证明
+PostgreSQL scope 行锁的真实阻塞关系。版本 4 是单独记录校验值、仅由迁移账户安装的新迁移；
+版本 3 的迁移及其校验值保持不变。它为每个 scope 增加非空的 `next_token` 计数器，以该
+scope 已保存的最大 claim token 初始化（包括已释放和不确定状态），并移除原先整个部署
+共用的计数器。迁移账户重复运行时不会重置计数器。运行时 adapter 现在要求版本 4。
+部署切换和历史 owner 处理仍按部署闸门、scope、run 顺序取锁；读取不可逆的
+`GLOBAL_READY` 状态后，日常 claim、permit、释放和收回只锁定所属 scope，必要时再锁
+对应 run。不同 scope 可以独立推进，同一 scope 的冲突 writer 则被串行化。现有 M4.1
+run 生命周期仍先经过部署闸门，再锁已绑定 scope 和 run，因此与全局 claim 互斥。
+
+独立的真实 PostgreSQL fixture 会在第一个操作已经持有 scope 锁后故意暂停它。
+`pg_blocking_pids` 证明另一 run 的冲突 claim，或者竞争中的取消、终态更新，确实在
+等待第一个连接的 scope 行锁。解除暂停后，独立第三连接读取持久化的 claim、run、
+attempt 和 permit 证据：冲突 claim 只有一方获胜，失败方不留下 claim 或 STARTING
+残留；生命周期先完成时，随后到达的 claim 被拒绝，不消耗 token，也不启动 attempt。
+取消覆盖 `CANCEL_REQUESTED` 和 `CANCELLED`，终态还覆盖 FAILED、COMPLETED。
+释放以及不确定 claim 的收回也与旧的受控写入重叠：旧写入等待 scope 锁，所有权结束后
+其回调不会执行。另一项受控测试证明：第一个 scope 的 claim 仍持有行锁时，另一个 scope
+可以独立签发 claim，且各自使用独立计数器。升级回归从已有数据的版本 3 schema 出发，
+验证原有 claim token、各 scope 最大计数器以及版本 3 校验值在升级与重跑后不丢失。
+PostgreSQL 定向测试 96 项全部通过。这次增量补足了复审指出的受控重叠证据，尚待独立复审；生产 CLI／worker
+的 fenced-write 边界接入并验收之前，M4.2 仍为 **OPEN**。对外 token 类型的 BIGINT
+范围以及诊断用途资源标识的歧义仍需另外解决。
+格式检查、TypeScript 项目引用类型检查与静态检查均通过。完整 `pnpm check` 报告
+760 项通过、1 项跳过，但由于本机缺少可用容器运行环境，无关的 Restate 集成测试无法启动，
+因此整条命令仍以失败退出。

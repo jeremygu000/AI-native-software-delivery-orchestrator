@@ -10,9 +10,10 @@ import { ForgeReadModel } from '@ai-native-software-delivery-orchestrator/orches
 import {
   taskLeasePlanFingerprint,
   taskVerificationEvidenceFingerprint,
+  FencedMutationPort,
   type GlobalMutationClaim
 } from '@ai-native-software-delivery-orchestrator/domain';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 
 import {
   durableAuthorityContract,
@@ -181,7 +182,11 @@ const createGlobalPermitFixture = async (): Promise<
   let authority: PostgresGlobalMutationAuthority | undefined;
   let peer: PostgresGlobalMutationAuthority | undefined;
   try {
-    await migratePostgresAuthoritySchema(migration, runtimeRole, 3);
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
     store = await PostgresOrchestrationPersistence.connect(runtime);
     authority = await PostgresGlobalMutationAuthority.connect(runtime);
     peer = await PostgresGlobalMutationAuthority.connect(runtime);
@@ -273,7 +278,11 @@ const createGlobalCutoverFixture = async (): Promise<GlobalMutationCutoverFixtur
   let unblock: (() => void) | undefined;
   let blocking: Promise<void> | undefined;
   try {
-    await migratePostgresAuthoritySchema(migration, runtimeRole, 3);
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
     store = await PostgresOrchestrationPersistence.connect(runtime);
     authority = await PostgresGlobalMutationAuthority.connect(runtime);
     peer = await PostgresGlobalMutationAuthority.connect(runtime);
@@ -503,6 +512,418 @@ const createGlobalCutoverFixture = async (): Promise<GlobalMutationCutoverFixtur
 
 globalMutationCutoverContract('PostgreSQL isolated server', createGlobalCutoverFixture);
 
+const holdRow = async (schema: string, table: 'forge_runs' | 'forge_global_claims', id: string) => {
+  const sql = postgres(runtimeConnectionString, { onnotice: () => undefined });
+  let acquired: ((pid: number) => void) | undefined;
+  let unblock: (() => void) | undefined;
+  const ready = new Promise<number>((resolve) => {
+    acquired = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    unblock = resolve;
+  });
+  const finished = sql.begin(async (tx) => {
+    const rows = await tx.unsafe(
+      table === 'forge_runs'
+        ? `select pg_backend_pid() as pid from "${schema}".forge_runs where id=$1 for update`
+        : `select pg_backend_pid() as pid from "${schema}".forge_global_claims where claim_id=$1 for update`,
+      [id]
+    );
+    if (rows.length !== 1) {
+      throw new Error('Missing controlled overlap row');
+    }
+    acquired?.(Number(rows[0]?.pid));
+    await released;
+  });
+  try {
+    const pid = await ready;
+    return {
+      pid,
+      release: () => unblock?.(),
+      close: async () => {
+        unblock?.();
+        await finished;
+        await sql.end();
+      }
+    };
+  } catch (error) {
+    unblock?.();
+    await finished.catch(() => undefined);
+    await sql.end();
+    throw error;
+  }
+};
+
+const blockedBackend = async (
+  admin: ReturnType<typeof postgres>,
+  schema: string,
+  application: 'forge-authority' | 'forge-global-authority',
+  table: 'forge_runs' | 'forge_global_scopes' | 'forge_global_claims'
+): Promise<{ pid: number; blockers: number[] }> => {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const rows = await admin`select pid, pg_blocking_pids(pid) as blockers from pg_stat_activity
+      where datname=current_database() and application_name=${application}
+      and wait_event_type='Lock' and query like ${`%"${schema}".${table}%`}`;
+    const row = rows[0];
+    if (row !== undefined) {
+      const blockers: unknown = row.blockers;
+      if (!Array.isArray(blockers) || !blockers.every((pid) => typeof pid === 'number')) {
+        throw new Error('Unexpected PostgreSQL blocking PID evidence');
+      }
+      return { pid: Number(row.pid), blockers: blockers.map(Number) };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`${application} did not block on ${table}`);
+};
+
+const createScopeOverlapFixture = async () => {
+  const fixture = await createGlobalPermitFixture();
+  const { authority, peer, store, scopeId, originalClaim, originalGrant, schema } = fixture;
+  const third = await PostgresGlobalMutationAuthority.connect({
+    connectionString: runtimeConnectionString,
+    schema,
+    role: runtimeRole
+  });
+  try {
+    const lease = (await peer.recoverRepositoryMutationAuthority(scopeId))[0];
+    if (lease === undefined) {
+      throw new Error('Missing original claim');
+    }
+    await peer.releaseGlobalMutation({
+      scopeId,
+      claimId: originalClaim.claimId,
+      owner: originalClaim.owner,
+      token: originalGrant.token,
+      expectedVersion: lease.version,
+      stopEvidence: 'Original writer stopped before overlap.'
+    });
+    const otherRunId = `competing-${fixtureOrdinal}`;
+    await authority.registerAlias(scopeId, 'overlap-alias');
+    const request = durableAuthorityRunRequest(otherRunId);
+    await store.createRun({ ...request, run: { ...request.run, repositoryId: 'overlap-alias' } });
+    await third.bindRun(otherRunId, 'overlap-alias');
+    const binding = request.taskBindings[0];
+    if (binding === undefined) {
+      throw new Error('Missing competing binding');
+    }
+    await store.persistAttempt({
+      runId: otherRunId,
+      attempt: {
+        id: 'other-builder',
+        runId: otherRunId,
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        workspaceId: 'workspace-1',
+        leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
+        state: 'PREPARING',
+        revision: 1
+      }
+    });
+    const competing: GlobalMutationClaim = {
+      scopeId,
+      claimId: 'competing-claim',
+      owner: {
+        runId: otherRunId,
+        taskId: 'task-1',
+        attemptId: 'other-builder',
+        agentId: 'agent-1'
+      },
+      resources: [{ type: 'project', projectId: 'project-1' }]
+    };
+    return {
+      ...fixture,
+      third,
+      competing,
+      close: async () => {
+        await third.close();
+        await fixture.close();
+      }
+    };
+  } catch (error) {
+    await third.close();
+    await fixture.close();
+    throw error;
+  }
+};
+
+it('uses the actual scope row to serialize competing cross-run claims and persists only the winner', async () => {
+  const fixture = await createScopeOverlapFixture();
+  const { admin, schema, replacementClaim, competing, authority, peer, third } = fixture;
+  const blocker = await holdRow(schema, 'forge_runs', replacementClaim.owner.runId);
+  let first: Promise<Awaited<ReturnType<typeof authority.claimGlobalMutation>>> | undefined;
+  let second: Promise<Awaited<ReturnType<typeof authority.claimGlobalMutation>>> | undefined;
+  try {
+    first = authority.claimGlobalMutation(replacementClaim);
+    const a = await blockedBackend(admin, schema, 'forge-global-authority', 'forge_runs');
+    expect(a.blockers).toContain(blocker.pid);
+    second = peer.claimGlobalMutation(competing);
+    const b = await blockedBackend(admin, schema, 'forge-global-authority', 'forge_global_scopes');
+    expect(b.blockers).toContain(a.pid);
+    blocker.release();
+    expect(await first).toMatchObject({ status: 'granted' });
+    expect(await second).toMatchObject({ status: 'blocked' });
+    const rows = await admin.unsafe(
+      `select claim_id,state from "${schema}".forge_global_claims where claim_id in ($1,$2) order by claim_id`,
+      [replacementClaim.claimId, competing.claimId]
+    );
+    expect(rows).toMatchObject([{ claim_id: replacementClaim.claimId, state: 'ACTIVE' }]);
+    expect(await third.recoverRepositoryMutationAuthority(fixture.scopeId)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ claimId: replacementClaim.claimId })])
+    );
+    expect(
+      await admin.unsafe(
+        `select payload from "${schema}".forge_records where run_id=$1 and kind='builder' and key=$2`,
+        [competing.owner.runId, competing.owner.attemptId]
+      )
+    ).toEqual([
+      expect.objectContaining({ payload: expect.stringContaining('"state":"PREPARING"') })
+    ]);
+  } finally {
+    blocker.release();
+    await Promise.allSettled([first, second]);
+    await blocker.close();
+    await fixture.close();
+  }
+});
+
+it('grants another scope while a claim holds the first scope row', async () => {
+  const fixture = await createScopeOverlapFixture();
+  const { admin, schema, authority, peer, third, store, replacementClaim, scopeId } = fixture;
+  let blocker: Awaited<ReturnType<typeof holdRow>> | undefined;
+  let held: Promise<Awaited<ReturnType<typeof authority.claimGlobalMutation>>> | undefined;
+  try {
+    const otherScopeId = await authority.registerScope('independent-repository');
+    await authority.activateScope(otherScopeId);
+    const runId = `independent-${fixtureOrdinal}`;
+    const request = durableAuthorityRunRequest(runId);
+    await store.createRun({
+      ...request,
+      run: { ...request.run, repositoryId: 'independent-repository' }
+    });
+    await peer.bindRun(runId, 'independent-repository');
+    const binding = request.taskBindings[0];
+    if (binding === undefined) {
+      throw new Error('Missing independent scope binding');
+    }
+    await store.persistAttempt({
+      runId,
+      attempt: {
+        id: 'independent-builder',
+        runId,
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        workspaceId: 'workspace-1',
+        leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
+        state: 'PREPARING',
+        revision: 1
+      }
+    });
+    blocker = await holdRow(schema, 'forge_runs', replacementClaim.owner.runId);
+    held = authority.claimGlobalMutation(replacementClaim);
+    const a = await blockedBackend(admin, schema, 'forge-global-authority', 'forge_runs');
+    expect(a.blockers).toContain(blocker.pid);
+    const granted = await third.claimGlobalMutation({
+      scopeId: otherScopeId,
+      claimId: 'independent-claim',
+      owner: { runId, taskId: 'task-1', attemptId: 'independent-builder', agentId: 'agent-1' },
+      resources: [{ type: 'project', projectId: 'project-1' }]
+    });
+    expect(granted).toMatchObject({ status: 'granted', token: 1 });
+    expect(
+      await admin.unsafe(
+        `select id,next_token from "${schema}".forge_global_scopes
+      where id in ($1,$2) order by id`,
+        [scopeId, otherScopeId]
+      )
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: scopeId, next_token: '1' }),
+        expect.objectContaining({ id: otherScopeId, next_token: '1' })
+      ])
+    );
+    expect((await blockedBackend(admin, schema, 'forge-global-authority', 'forge_runs')).pid).toBe(
+      a.pid
+    );
+    blocker.release();
+    expect(await held).toMatchObject({ status: 'granted', token: 2 });
+  } finally {
+    blocker?.release();
+    await Promise.allSettled([held]);
+    await blocker?.close();
+    await fixture.close();
+  }
+});
+
+it.each([
+  ['request cancellation', 'CANCEL_REQUESTED'],
+  ['finish failed', 'FAILED'],
+  ['finish completed', 'COMPLETED']
+] as const)(
+  'serializes global claim and %s in both commit orders through the scope lock',
+  async (operation, finalState) => {
+    for (const claimFirst of [true, false]) {
+      const fixture = await createScopeOverlapFixture();
+      const { admin, schema, replacementClaim, authority, peer, third, store } = fixture;
+      const runId = replacementClaim.owner.runId;
+      const blocker = await holdRow(schema, 'forge_runs', runId);
+      const lifecycle = async () =>
+        operation === 'request cancellation'
+          ? store.requestCancellation(runId)
+          : store.updateRunState(runId, finalState);
+      let first: Promise<unknown> | undefined;
+      let second: Promise<unknown> | undefined;
+      try {
+        first = claimFirst ? authority.claimGlobalMutation(replacementClaim) : lifecycle();
+        const holder = await blockedBackend(
+          admin,
+          schema,
+          claimFirst ? 'forge-global-authority' : 'forge-authority',
+          'forge_runs'
+        );
+        expect(holder.blockers).toContain(blocker.pid);
+        second = claimFirst ? lifecycle() : peer.claimGlobalMutation(replacementClaim);
+        const waiter = await blockedBackend(
+          admin,
+          schema,
+          claimFirst ? 'forge-authority' : 'forge-global-authority',
+          'forge_global_scopes'
+        );
+        expect(waiter.blockers).toContain(holder.pid);
+        blocker.release();
+        if (claimFirst) {
+          expect(await first).toMatchObject({ status: 'granted' });
+          await second;
+        } else {
+          await first;
+          await expect(second).rejects.toThrow();
+        }
+        expect(
+          (await third.recoverRepositoryMutationAuthority(fixture.scopeId)).filter(
+            (lease) => lease.claimId === replacementClaim.claimId
+          )
+        ).toHaveLength(claimFirst ? 1 : 0);
+        expect(
+          await admin.unsafe(`select state from "${schema}".forge_runs where id=$1`, [runId])
+        ).toMatchObject([{ state: finalState }]);
+        const attempts = await admin.unsafe(
+          `select payload from "${schema}".forge_records where run_id=$1 and kind='builder' and key='replacement'`,
+          [runId]
+        );
+        expect(JSON.parse(String(attempts[0]?.payload))).toMatchObject({
+          state: claimFirst ? 'STARTING' : 'PREPARING'
+        });
+        if (finalState === 'CANCEL_REQUESTED') {
+          expect(await store.finalizeCancellation(runId)).toMatchObject({ state: 'CANCELLED' });
+          expect(
+            await admin.unsafe(`select state from "${schema}".forge_runs where id=$1`, [runId])
+          ).toMatchObject([{ state: 'CANCELLED' }]);
+        }
+      } finally {
+        blocker.release();
+        await Promise.allSettled([first, second]);
+        await blocker.close();
+        await fixture.close();
+      }
+    }
+  }
+);
+
+it.each(['release', 'reclaim'] as const)(
+  'serializes %s against a stale fenced write at the scope row before callback execution',
+  async (operation) => {
+    const fixture = await createGlobalPermitFixture();
+    const { admin, schema, authority, peer, originalClaim, originalGrant, scopeId } = fixture;
+    const third = await PostgresGlobalMutationAuthority.connect({
+      connectionString: runtimeConnectionString,
+      schema,
+      role: runtimeRole
+    });
+    let blocker: Awaited<ReturnType<typeof holdRow>> | undefined;
+    let transition: Promise<void> | undefined;
+    let attempted: Promise<unknown> | undefined;
+    try {
+      if (operation === 'reclaim') {
+        await authority.markMutationUncertain({
+          scopeId,
+          claimId: originalClaim.claimId,
+          owner: originalClaim.owner,
+          token: originalGrant.token,
+          evidence: 'The worker outcome is uncertain.'
+        });
+      }
+      const lease = (await third.recoverRepositoryMutationAuthority(scopeId))[0];
+      if (lease === undefined) {
+        throw new Error('Missing claim for transition overlap');
+      }
+      blocker = await holdRow(schema, 'forge_global_claims', originalClaim.claimId);
+      transition =
+        operation === 'release'
+          ? authority.releaseGlobalMutation({
+              scopeId,
+              claimId: originalClaim.claimId,
+              owner: originalClaim.owner,
+              token: originalGrant.token,
+              expectedVersion: lease.version,
+              stopEvidence: 'Original writer is stopped.'
+            })
+          : authority.reclaimUncertainMutation({
+              scopeId,
+              claimId: originalClaim.claimId,
+              owner: originalClaim.owner,
+              token: originalGrant.token,
+              expectedVersion: lease.version,
+              verifiedQuiescenceEvidence: 'The old worker is verified quiescent.'
+            });
+      const holder = await blockedBackend(
+        admin,
+        schema,
+        'forge-global-authority',
+        'forge_global_claims'
+      );
+      expect(holder.blockers).toContain(blocker.pid);
+      const callback = vi.fn(async () => 'unsafe stale write');
+      attempted = new FencedMutationPort(peer).execute(
+        {
+          scopeId,
+          claimId: originalClaim.claimId,
+          owner: originalClaim.owner,
+          token: originalGrant.token,
+          resource: { type: 'project', projectId: 'project-1' }
+        },
+        callback
+      );
+      const waiter = await blockedBackend(
+        admin,
+        schema,
+        'forge-global-authority',
+        'forge_global_scopes'
+      );
+      expect(waiter.blockers).toContain(holder.pid);
+      blocker.release();
+      await transition;
+      await expect(attempted).rejects.toThrow();
+      expect(callback).not.toHaveBeenCalled();
+      expect((await third.recoverRepositoryMutationAuthority(scopeId))[0]).toMatchObject({
+        state: 'RELEASED'
+      });
+      expect(await third.recoverFencedMutationPermits(scopeId)).toEqual([]);
+      expect(
+        await admin.unsafe(
+          `select state,version from "${schema}".forge_global_claims where claim_id=$1`,
+          [originalClaim.claimId]
+        )
+      ).toMatchObject([{ state: 'RELEASED', version: operation === 'release' ? '2' : '3' }]);
+    } finally {
+      blocker?.release();
+      await Promise.allSettled([transition, attempted]);
+      await blocker?.close();
+      await third.close();
+      await fixture.close();
+    }
+  }
+);
+
 it('fences competing runs in the same scope across a third PostgreSQL connection', async () => {
   const fixture = await createGlobalPermitFixture();
   const { authority, peer, store, originalClaim, originalGrant, scopeId, schema, admin } = fixture;
@@ -599,7 +1020,8 @@ it('rejects invented, mismatched, or overbroad global admissions without consumi
     const { peer, originalClaim, replacementClaim, schema, admin, scopeId, originalGrant } =
       fixture;
     const before = await admin.unsafe(
-      `select next_token from "${schema}".forge_global_control where id=1`
+      `select next_token from "${schema}".forge_global_scopes where id=$1`,
+      [scopeId]
     );
     for (const [claimId, owner] of [
       ['unknown-attempt', { ...replacementClaim.owner, attemptId: 'absent' }],
@@ -620,7 +1042,9 @@ it('rejects invented, mismatched, or overbroad global admissions without consumi
       );
     }
     expect(
-      await admin.unsafe(`select next_token from "${schema}".forge_global_control where id=1`)
+      await admin.unsafe(`select next_token from "${schema}".forge_global_scopes where id=$1`, [
+        scopeId
+      ])
     ).toEqual(before);
     expect(
       await admin.unsafe(`select claim_id from "${schema}".forge_global_claims`)
@@ -726,7 +1150,7 @@ it('keeps unknown-alias historical owners blocking every scope until classified 
     await migratePostgresAuthoritySchema(
       { connectionString: ownerConnectionString, schema, role },
       runtimeRole,
-      3
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
     );
     store = await PostgresOrchestrationPersistence.connect(runtime);
     authority = await PostgresGlobalMutationAuthority.connect(runtime);
@@ -801,7 +1225,8 @@ it('fails closed before allocating an unsafe BIGINT token', async () => {
       expectedVersion: lease.version,
       stopEvidence: 'Worker stopped.'
     });
-    await admin.unsafe(`update "${schema}".forge_global_control set next_token=$1 where id=1`, [
+    await admin.unsafe(`update "${schema}".forge_global_scopes set next_token=$2 where id=$1`, [
+      scopeId,
       String(Number.MAX_SAFE_INTEGER)
     ]);
     await expect(peer.claimGlobalMutation(replacementClaim)).rejects.toThrow('token exhausted');
@@ -908,13 +1333,13 @@ it('installs M4.2 global authority tables through migration owner and gates runt
       'forge_schema_migrations'
     ]);
     const control = await runtimeSql.unsafe(
-      `select state,next_token from "${schema}".forge_global_control where id=1`
+      `select state from "${schema}".forge_global_control where id=1`
     );
-    expect(control).toMatchObject([{ state: 'LEGACY_ALLOWED', next_token: '0' }]);
+    expect(control).toMatchObject([{ state: 'LEGACY_ALLOWED' }]);
     const versions = await admin.unsafe(
       `select version from "${schema}".forge_schema_migrations order by version`
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4]);
     await expect(
       runtimeSql.unsafe(`create table "${schema}".unauthorized (id text)`)
     ).rejects.toThrow();
@@ -931,6 +1356,62 @@ it('installs M4.2 global authority tables through migration owner and gates runt
   }
 });
 
+it('upgrades v3 counters per scope without resetting existing claim tokens or changing v3 checksum', async () => {
+  const schema = `forge_scope_upgrade_${++fixtureOrdinal}`;
+  const migration = { connectionString: ownerConnectionString, schema, role };
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const owner = postgres(ownerConnectionString, { onnotice: () => undefined });
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  const runtimeSql = postgres(runtimeConnectionString, { onnotice: () => undefined });
+  try {
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 3);
+    const before = await admin.unsafe(
+      `select checksum from "${schema}".forge_schema_migrations where version=3`
+    );
+    await owner.unsafe(
+      `insert into "${schema}".forge_global_scopes values ('scope-a','REGISTERING'),('scope-b','REGISTERING')`
+    );
+    await owner.unsafe(`insert into "${schema}".forge_global_claims values
+      ('scope-a','one','{}',5,'RELEASED',1,null),
+      ('scope-a','two','{}',9,'HELD_UNCERTAIN',1,null),
+      ('scope-b','three','{}',3,'RELEASED',1,null)`);
+    await owner.unsafe(`update "${schema}".forge_global_control set next_token=200 where id=1`);
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 4);
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 4);
+    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).resolves.toBeUndefined();
+    expect(
+      await admin.unsafe(`select id,next_token from "${schema}".forge_global_scopes order by id`)
+    ).toMatchObject([
+      { id: 'scope-a', next_token: '9' },
+      { id: 'scope-b', next_token: '3' }
+    ]);
+    expect(
+      await admin.unsafe(
+        `select claim_id,token,state from "${schema}".forge_global_claims order by claim_id`
+      )
+    ).toMatchObject([
+      { claim_id: 'one', token: '5', state: 'RELEASED' },
+      { claim_id: 'three', token: '3', state: 'RELEASED' },
+      { claim_id: 'two', token: '9', state: 'HELD_UNCERTAIN' }
+    ]);
+    expect(
+      await admin.unsafe(`select checksum from "${schema}".forge_schema_migrations where version=3`)
+    ).toEqual(before);
+    expect(
+      await admin.unsafe(
+        `select column_name from information_schema.columns
+      where table_schema=$1 and table_name='forge_global_control' and column_name='next_token'`,
+        [schema]
+      )
+    ).toEqual([]);
+  } finally {
+    await runtimeSql.end();
+    await owner.unsafe(`drop schema if exists "${schema}" cascade`);
+    await owner.end();
+    await admin.end();
+  }
+});
+
 it.each([
   { table: 'forge_global_aliases', privilege: 'UPDATE(scope_id)', capability: 'UPDATE' },
   { table: 'forge_global_run_bindings', privilege: 'UPDATE(scope_id)', capability: 'UPDATE' },
@@ -939,7 +1420,7 @@ it.each([
   { table: 'forge_global_permits', privilege: 'UPDATE(token)', capability: 'UPDATE' },
   { table: 'forge_global_audit', privilege: 'UPDATE(evidence)', capability: 'UPDATE' }
 ])(
-  'rejects column-level $privilege on $table and repairs it on v3 migration rerun',
+  'rejects column-level $privilege on $table and repairs it on v4 migration rerun',
   async ({ table, privilege, capability }) => {
     const schema = `forge_global_column_${++fixtureOrdinal}`;
     const migration = { connectionString: ownerConnectionString, schema, role };
@@ -1002,7 +1483,7 @@ it.each([
   { table: 'forge_global_legacy_owners', privilege: 'UPDATE', capability: 'UPDATE' },
   { table: 'forge_global_audit', privilege: 'SELECT', capability: 'SELECT' }
 ])(
-  'rejects $privilege grant option on $table and repairs it on v3 migration rerun',
+  'rejects $privilege grant option on $table and repairs it on v4 migration rerun',
   async ({ table, privilege, capability }) => {
     const schema = `forge_global_grant_${++fixtureOrdinal}`;
     const migration = { connectionString: ownerConnectionString, schema, role };
@@ -1194,7 +1675,7 @@ it('closes PostgreSQL legacy writer creation after the deployment cutover barrie
   }
 });
 
-it.each([0, 4, Number.NaN])(
+it.each([0, 5, Number.NaN])(
   'rejects unsupported runtime migration target %s before creating schema objects',
   async (target) => {
     const schema = `forge_bad_target_${++fixtureOrdinal}`;
