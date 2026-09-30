@@ -3218,3 +3218,32 @@ M4.2 继续 **OPEN**，M4.3 尚未启动。对外 number token 与 BIGINT 范围
 格式检查、TypeScript 项目引用类型检查、静态检查以及 102 项 launcher 和 PostgreSQL
 定向测试均通过。完整 `pnpm check` 报告 771 项通过、1 项跳过，但因无关的 Restate
 集成测试在本机找不到可用容器运行环境而以失败退出；其清理阶段也因环境未成功建立而报错。
+
+独立复审已接受提交 `dae9ffc` 中的 run／scope 绑定。本轮为 builder 和 repair 准入
+准备接缝，但尚未启用全局 worker。run 已经把获批准的 repository 身份不可变地绑定到
+不透明的全局 scope。现在 SQLite 与 PostgreSQL 的全局权限提供者都可以从数据库保存的
+run、alias 和 scope 记录读取该绑定；其中任何一处缺失或不一致，读取都会失败。worker
+绝不能从 workspace 目录反推 scope。新增的 `GlobalBuilderRepairAdmission` 使用这个
+读取结果，并接收批准的任务绑定和处于 PREPARING 状态的 builder 或 repair attempt。
+它将 run、task、attempt、agent、workspace 身份一起带入全局 claim；持久化提供者
+在把 attempt 原子推进 STARTING 的同一事务内，重新核对已批准的 run 与 task、资源
+计划、repair work item 和 attempt 状态。竞争者只会得到阻塞证据，不会推进自己的
+attempt。准入成功后返回 mutation context 与受控回调入口，逐次通过
+`FencedMutationPort` 判断资源权限。释放后的旧 token 不能发起新回调；project 的
+claim 也不能授权 repository 级回调。repair agent 可以不同于任务绑定里的 builder
+agent；持久化提供者核对的是获准的 repair work item 和 repair attempt。
+
+新增测试使用真实 SQLite 持久化和第二个连接，验证未绑定 run、未获准 work item 的
+repair 均被拒绝；合法 builder 与 repair 进入 STARTING；竞争 builder 保持
+PREPARING；释放 claim 后回调被拒绝。已有的 SQLite 和隔离 PostgreSQL 测试也核对
+确切的持久化 run／scope 读取。三组定向测试共 116 项通过。这仍只是**准入与 permit
+构件**，不是生产 worker 的全局模式开关：生产 worker 仍走旧准入，并在切换后拒绝
+启动。它尚未消费新增接缝，也未在 builder／repair 执行过程中强制传入返回的 mutation
+context；Git workspace 创建、动态资源扩展与 integration 写入仍无全局围栏。将来
+生产路径还必须在外部写入已成功、影响记录却未能保存时保留不确定的所有权，不能自动
+释放。M4.2 继续 **OPEN**，M4.3 尚未启动。对外 number token 与 PostgreSQL
+BIGINT 的范围差异、诊断资源 ID 的歧义继续作为 P2 后续事项。
+
+本轮 `pnpm check` 的格式、TypeScript 项目引用类型检查、静态检查及全部 773 项测试
+均通过，但命令仍以失败退出：整体覆盖率中语句为 87.73%、分支为 82.41%、代码行
+为 87.64%，这三项低于配置的 90% 门槛。三组定向测试 116 项全部通过。

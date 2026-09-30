@@ -95,6 +95,8 @@ export interface GlobalMutationAuthority {
   registerAlias(scopeId: string, repositoryId: string): Promise<void>;
   /** Bind the approved immutable run identity under gate, then scope/run lock order. */
   bindRun(runId: string, repositoryId: string): Promise<void>;
+  /** Resolve a pre-registered, immutable run binding from durable authority, never a workspace path. */
+  recoverGlobalRunScope(runId: string): Promise<string>;
   /**
    * Atomically close every legacy writer-creating admission path under the
    * deployment-wide gate. An admission serialized first joins the inventory;

@@ -197,6 +197,7 @@ const createGlobalPermitFixture = async (): Promise<
     const runId = `global-run-${fixtureOrdinal}`;
     const request = durableAuthorityRunRequest(runId);
     await store.createRun(request);
+    await expect(peer.recoverGlobalRunScope(runId)).rejects.toThrow('durable global scope binding');
     await authority.bindRun(runId, request.run.repositoryId);
     const binding = request.taskBindings[0];
     if (binding === undefined) {
@@ -223,6 +224,7 @@ const createGlobalPermitFixture = async (): Promise<
       owner: { runId, taskId: 'task-1', attemptId: 'original', agentId: 'agent-1' },
       resources: [{ type: 'project', projectId: 'project-1' }]
     };
+    expect(await peer.recoverGlobalRunScope(runId)).toBe(scopeId);
     const originalGrant = await authority.claimGlobalMutation(originalClaim);
     if (originalGrant.status !== 'granted') {
       throw new Error('Fixture claim was not granted');

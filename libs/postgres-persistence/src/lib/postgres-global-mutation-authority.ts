@@ -403,6 +403,31 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     return String(row.scope_id);
   }
 
+  async recoverGlobalRunScope(runId: string): Promise<string> {
+    const rows = await this.#sql.unsafe(
+      `select r.payload,b.repository_id,b.scope_id,a.scope_id as alias_scope_id
+       from ${this.#schema}.forge_runs r
+       left join ${this.#schema}.forge_global_run_bindings b on b.run_id=r.id
+       left join ${this.#schema}.forge_global_aliases a on a.repository_id=b.repository_id
+       where r.id=$1`,
+      [runId]
+    );
+    const row = rows[0];
+    if (
+      row === undefined ||
+      typeof row.repository_id !== 'string' ||
+      typeof row.scope_id !== 'string' ||
+      row.scope_id !== row.alias_scope_id
+    ) {
+      throw new Error(`Run has no matching durable global scope binding: ${runId}`);
+    }
+    const identity = runIdentity(row.payload);
+    if (identity.id !== runId || identity.repositoryId !== row.repository_id) {
+      throw new Error(`Run repository identity disagrees with its global scope binding: ${runId}`);
+    }
+    return row.scope_id;
+  }
+
   async #inventory(tx: Tx): Promise<LegacyMutationOwner[]> {
     const runs = await tx.unsafe(
       `select id,state,payload from ${this.#schema}.forge_runs order by id`

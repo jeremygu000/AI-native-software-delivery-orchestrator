@@ -114,7 +114,9 @@ const createPermitFixture = async () => {
   } finally {
     sqlite.close();
   }
+  await expect(peer.recoverGlobalRunScope('run-A')).rejects.toThrow('durable global scope binding');
   await authority.bindRun('run-A', repositoryId);
+  expect(await peer.recoverGlobalRunScope('run-A')).toBe(scopeId);
   await persistPreparingBuilder(legacyStore, 'run-A', 'attempt-A', 'agent-A');
   await persistPreparingBuilder(legacyStore, 'run-A', 'attempt-B', 'agent-A');
   const originalClaim = {

@@ -3678,3 +3678,43 @@ Formatting, TypeScript project-reference checking, linting, and the 102 focused 
 PostgreSQL tests pass. The full `pnpm check` reports 771 passing tests and one skipped test,
 but exits unsuccessfully because the unrelated Restate integration suite cannot find a
 working container runtime (its teardown also encounters the missing environment).
+
+Independent review accepted the run-to-scope binding increment at `dae9ffc`. The next
+increment prepares builder and repair admission without enabling a global worker. A run
+already has an immutable binding between its approved repository identity and an opaque
+global scope. Both SQLite and PostgreSQL global authority providers can now retrieve that
+binding from their persisted run, alias, and scope records. If any part is missing or
+disagrees, they reject the lookup; a worker must never derive scope identity from its
+workspace directory. This lookup supplies the input to a new
+`GlobalBuilderRepairAdmission` boundary. The boundary accepts the approved task binding
+and a PREPARING builder or repair attempt, carries the run, task, attempt, agent, and
+workspace IDs into a global claim, and asks the durable provider to check the approved
+run and task, resource plan, repair work item, and attempt state in the same transaction
+that advances the attempt to STARTING. A competing claim receives blockers without
+advancing its attempt. A successful admission returns a mandatory mutation context and
+a callback entry that uses `FencedMutationPort` for each covered resource. A stale token
+cannot execute a new callback; a project claim does not authorize a repository-wide
+callback. Unlike a builder, a repair may have a different agent from the approved task
+binding: the provider validates it against the admitted repair work item and persisted
+repair attempt instead.
+
+The new boundary is independently exercised with a real SQLite authority and a second
+connection: an unbound run and a repair without an admitted work item are rejected, a
+builder and an admitted repair become STARTING, a competing builder stays PREPARING,
+and a callback is denied after release. The existing SQLite and isolated PostgreSQL
+provider suites also verify recovery of the exact durable run scope. The three focused
+suites pass 116 tests. This is an admission-and-permit **building block**, not a
+production worker switch: the production worker still uses legacy admission and rejects
+startup after cutover. It does not yet consume this new boundary or require the returned
+mutation context in its builder/repair execution, and Git workspace creation, dynamic
+resource expansion, and integration writes are not globally fenced. A controlled
+production path must also retain uncertain ownership when an external write succeeds
+but its impact evidence fails to persist; automatic release would be unsafe. M4.2
+remains **OPEN** and M4.3 has not started. Public number tokens versus PostgreSQL BIGINT
+and ambiguous diagnostic resource IDs remain P2 follow-ups.
+
+For this increment, `pnpm check` passed formatting, TypeScript project-reference checks,
+linting, and all 773 tests, but the command still exited unsuccessfully: aggregate
+coverage was 87.73% of statements, 82.41% of branches, and 87.64% of lines, below
+the configured 90% threshold in those three categories. The focused three suites
+passed all 116 tests.

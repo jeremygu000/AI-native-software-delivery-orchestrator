@@ -305,6 +305,21 @@ export class SqliteGlobalMutationAuthority implements GlobalMutationAuthority {
     });
   }
 
+  async recoverGlobalRunScope(runId: string): Promise<string> {
+    const row = this.#one(
+      `SELECT b.scope_id FROM forge_global_run_bindings b
+       JOIN orchestration_runs r ON r.id=b.run_id AND r.repository_id=b.repository_id
+       JOIN forge_global_aliases a ON a.repository_id=b.repository_id AND a.scope_id=b.scope_id
+       JOIN forge_global_scopes s ON s.id=b.scope_id WHERE b.run_id=?`,
+      scopeRow,
+      runId
+    );
+    if (row === undefined) {
+      throw new Error(`Run has no matching durable global scope binding: ${runId}`);
+    }
+    return row.scope_id;
+  }
+
   #legacyInventory(): LegacyMutationOwner[] {
     const owners: LegacyMutationOwner[] = [];
     for (const run of this.#all(
