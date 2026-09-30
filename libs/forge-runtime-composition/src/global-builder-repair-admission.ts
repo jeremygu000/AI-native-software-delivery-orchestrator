@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 import {
   FencedMutationPort,
+  canonicalTaskLeaseResources,
   taskLeasePlanFingerprint,
   type AgentExecutionAttempt,
   type CurrentMutationTokenRequest,
@@ -40,7 +41,7 @@ export class GlobalBuilderRepairAdmission {
     attempt: AgentExecutionAttempt
   ): Promise<GlobalAdmissionResult> {
     if (
-      attempt.state !== 'PREPARING' ||
+      !['PREPARING', 'STARTING', 'RUNNING'].includes(attempt.state) ||
       binding.runId !== attempt.runId ||
       binding.taskId !== attempt.taskId ||
       binding.agentId !== attempt.agentId ||
@@ -49,7 +50,7 @@ export class GlobalBuilderRepairAdmission {
     ) {
       throw new Error('Builder global admission requires the exact approved attempt and workspace');
     }
-    return this.#admit(binding, {
+    return this.#admit('builder', binding, {
       runId: attempt.runId,
       taskId: attempt.taskId,
       attemptId: attempt.id,
@@ -63,14 +64,14 @@ export class GlobalBuilderRepairAdmission {
     attempt: TaskRepairAttempt
   ): Promise<GlobalAdmissionResult> {
     if (
-      attempt.state !== 'PREPARING' ||
+      !['PREPARING', 'STARTING', 'RUNNING'].includes(attempt.state) ||
       binding.runId !== attempt.runId ||
       binding.taskId !== attempt.taskId ||
       binding.workspace.id !== attempt.workspaceId
     ) {
       throw new Error('Repair global admission requires the exact approved attempt and workspace');
     }
-    return this.#admit(binding, {
+    return this.#admit('repair', binding, {
       runId: attempt.runId,
       taskId: attempt.taskId,
       attemptId: attempt.id,
@@ -80,11 +81,16 @@ export class GlobalBuilderRepairAdmission {
   }
 
   async #admit(
+    kind: 'builder' | 'repair',
     binding: PersistedTaskExecutionBinding,
     owner: CurrentMutationTokenRequest['owner']
   ): Promise<GlobalAdmissionResult> {
     const scopeId = await this.authority.recoverGlobalRunScope(owner.runId);
-    const claimId = randomUUID();
+    // The same persisted attempt must replay the same initial claim after a
+    // crash between provider commit and delivery of the admission context.
+    const claimId = `initial-${createHash('sha256')
+      .update(JSON.stringify(['forge-global-initial-claim-v1', kind, owner.runId, owner.attemptId]))
+      .digest('hex')}`;
     const result = await this.authority.claimGlobalMutation({
       scopeId,
       claimId,
@@ -95,10 +101,14 @@ export class GlobalBuilderRepairAdmission {
       return { status: 'blocked', blockers: result.blockers };
     }
     const lease = result.leases[0];
+    const requested = canonicalTaskLeaseResources(binding.leasePlan.predictedResources);
+    const returned = canonicalTaskLeaseResources(result.leases.map((item) => item.resource));
     if (
       lease === undefined ||
+      JSON.stringify(returned) !== JSON.stringify(requested) ||
       result.leases.some(
         (item) =>
+          item.state !== 'ACTIVE' ||
           item.claimId !== lease.claimId ||
           item.claimId !== claimId ||
           item.scopeId !== scopeId ||

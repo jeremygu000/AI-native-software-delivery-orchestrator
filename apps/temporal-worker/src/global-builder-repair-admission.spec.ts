@@ -88,9 +88,6 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
     const peer = new SqliteGlobalMutationAuthority(filename);
     try {
       const scopeId = await authority.registerScope(request.run.repositoryId);
-      await authority.beginLegacyCutover();
-      await authority.completeLegacyCutover('All previous workers stopped');
-      await authority.activateScope(scopeId);
       await store.createRun(request);
       const binding = request.taskBindings[0];
       if (binding === undefined) {
@@ -107,6 +104,19 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
         revision: 1
       };
       await store.persistAttempt({ runId, attempt });
+      const orphan = {
+        ...attempt,
+        id: 'builder-without-claim',
+        state: 'STARTING' as const,
+        startedAt: new Date()
+      };
+      await store.persistAttempt({ runId, attempt: orphan });
+      await authority.beginLegacyCutover();
+      for (const historical of await authority.recoverLegacyOwners()) {
+        await authority.settleLegacyOwner(historical.key, 'Legacy writer has stopped');
+      }
+      await authority.completeLegacyCutover('All previous workers stopped');
+      await authority.activateScope(scopeId);
       const admission = new GlobalBuilderRepairAdmission(peer);
       await expect(admission.admitBuilder(binding, attempt)).rejects.toThrow(
         'durable global scope'
@@ -137,6 +147,43 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
       });
       expect(leases).toHaveLength(1);
       expect((await store.recoverAttempts(runId))[0]?.attempt.state).toBe('STARTING');
+      const startingBuilder = (await store.recoverAttempts(runId))[0]?.attempt;
+      if (startingBuilder === undefined) {
+        throw new Error('Missing committed builder attempt');
+      }
+      // Discard the first response: a new seam instance must recover the same
+      // committed claim and token from the persisted STARTING attempt.
+      const builderReplay = await new GlobalBuilderRepairAdmission(authority).admitBuilder(
+        binding,
+        startingBuilder
+      );
+      expect(builderReplay.status).toBe('granted');
+      if (builderReplay.status !== 'granted') {
+        throw new Error('Missing replayed builder admission');
+      }
+      expect(builderReplay.admission.mutation.claim).toEqual(mutation.claim);
+      expect(builderReplay.admission.leases).toEqual(leases);
+      const staleBuilderReplay = await admission.admitBuilder(binding, attempt);
+      expect(staleBuilderReplay.status).toBe('granted');
+      if (staleBuilderReplay.status !== 'granted') {
+        throw new Error('Missing replay from a stale PREPARING builder object');
+      }
+      expect(staleBuilderReplay.admission.mutation.claim).toEqual(mutation.claim);
+      expect(staleBuilderReplay.admission.leases).toEqual(leases);
+      expect(
+        (await authority.recoverRepositoryMutationAuthority(scopeId)).filter(
+          (item) => item.state === 'ACTIVE'
+        )
+      ).toHaveLength(1);
+
+      await expect(admission.admitBuilder(binding, orphan)).rejects.toThrow(
+        'Attempt lifecycle does not authorize global mutation admission'
+      );
+      expect(
+        (await authority.recoverRepositoryMutationAuthority(scopeId)).filter(
+          (item) => item.state === 'ACTIVE'
+        )
+      ).toHaveLength(1);
       const rival = { ...attempt, id: 'builder-B' };
       await store.persistAttempt({ runId, attempt: rival });
       const blocked = await admission.admitBuilder(binding, rival);
@@ -218,12 +265,61 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
         workspaceId: 'workspace-1'
       });
       expect((await store.recoverRepairAttempts(runId))[0]?.attempt.state).toBe('STARTING');
+      const startingRepair = (await store.recoverRepairAttempts(runId))[0]?.attempt;
+      if (startingRepair === undefined) {
+        throw new Error('Missing committed repair attempt');
+      }
+      const repairReplay = await new GlobalBuilderRepairAdmission(authority).admitRepair(
+        binding,
+        startingRepair
+      );
+      expect(repairReplay.status).toBe('granted');
+      if (repairReplay.status !== 'granted') {
+        throw new Error('Missing replayed repair admission');
+      }
+      expect(repairReplay.admission.mutation.claim).toEqual(repairResult.admission.mutation.claim);
+      expect(repairReplay.admission.leases).toEqual(repairResult.admission.leases);
+      const staleRepairReplay = await admission.admitRepair(binding, repair);
+      expect(staleRepairReplay.status).toBe('granted');
+      if (staleRepairReplay.status !== 'granted') {
+        throw new Error('Missing replay from a stale PREPARING repair object');
+      }
+      expect(staleRepairReplay.admission.mutation.claim).toEqual(
+        repairResult.admission.mutation.claim
+      );
+      expect(staleRepairReplay.admission.leases).toEqual(repairResult.admission.leases);
+      expect(repairResult.admission.mutation.claim.token).toBe(mutation.claim.token + 1);
+      expect(
+        (await authority.recoverRepositoryMutationAuthority(scopeId)).filter(
+          (item) => item.state === 'ACTIVE'
+        )
+      ).toHaveLength(1);
       await expect(
         repairResult.admission.execute({ type: 'repository' }, async () => {
           called++;
         })
       ).rejects.toThrow();
       expect(called).toBe(1);
+      const repairLease = repairResult.admission.leases[0];
+      if (repairLease === undefined) {
+        throw new Error('Missing repair lease');
+      }
+      await authority.releaseGlobalMutation({
+        scopeId,
+        claimId: repairResult.admission.mutation.claim.claimId,
+        owner: repairResult.admission.mutation.claim.owner,
+        token: repairResult.admission.mutation.claim.token,
+        expectedVersion: repairLease.version,
+        stopEvidence: 'Repair stopped'
+      });
+      const afterReplay = await admission.admitBuilder(binding, rival);
+      expect(afterReplay.status).toBe('granted');
+      if (afterReplay.status !== 'granted') {
+        throw new Error('Missing next claim after exact retries');
+      }
+      expect(afterReplay.admission.mutation.claim.token).toBe(
+        repairResult.admission.mutation.claim.token + 1
+      );
     } finally {
       peer.close();
       authority.close();

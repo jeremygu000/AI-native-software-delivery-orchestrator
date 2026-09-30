@@ -3247,3 +3247,24 @@ BIGINT 的范围差异、诊断资源 ID 的歧义继续作为 P2 后续事项�
 本轮 `pnpm check` 的格式、TypeScript 项目引用类型检查、静态检查及全部 773 项测试
 均通过，但命令仍以失败退出：整体覆盖率中语句为 87.73%、分支为 82.41%、代码行
 为 87.64%，这三项低于配置的 90% 门槛。三组定向测试 116 项全部通过。
+
+独立复审发现 `6cd682c` 的准入构件存在一处阻断性的崩溃恢复缺口：此前每次 builder
+或 repair 准入都随机生成新的 claim ID，并且只允许 PREPARING attempt。如果数据库
+已经提交 claim 及 STARTING 状态，worker 却在收到响应前重启，它便无法取回 token：
+持久化的 STARTING attempt 被本地校验拒绝，而旧 PREPARING 对象会生成另一 claim ID。
+现在初始 claim ID 由操作类型、run ID 和 attempt ID 经 SHA-256 稳定生成。
+PREPARING、STARTING、RUNNING 可以进入持久化提供者，但只有 PREPARING 可以
+创建新 claim；STARTING／RUNNING 必须匹配已有的 ACTIVE claim、相同 owner 与资源。
+因此恢复不会凭空创造权限。准入结果还会检查所有 lease 处于 ACTIVE，且资源集合与
+请求的规范化资源集合完全一致。
+
+真实 SQLite 回归现在会丢弃首次准入响应，使用另一提供者连接读取已保存的 STARTING
+builder 与 repair，再验证恢复得到相同 claim ID、token 和 leases。测试也确认没有
+匹配 claim 的 STARTING attempt 会被拒绝，没有额外 ACTIVE claim，下一笔真正的
+新 claim 只取得下一个 token。生产 worker 仍拒绝 GLOBAL_READY，尚未消费该构件；
+Git、integration 与动态资源写入仍未形成生产围栏。M4.2 继续 OPEN，M4.3 尚未启动；
+对外 number token／BIGINT 范围差异和诊断资源 ID 歧义仍为 P2。本次修复等待独立复审。
+
+本次修复的 `pnpm check` 中，格式、TypeScript 项目引用类型检查、静态检查以及全部
+773 项测试通过，但整体命令仍因原有的 90% 覆盖率门槛而失败：语句 87.96%、分支
+82.73%、代码行 87.88%。该门槛失败与此次准入重放问题是两个独立事项。

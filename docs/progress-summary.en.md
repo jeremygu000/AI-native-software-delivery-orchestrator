@@ -3718,3 +3718,31 @@ linting, and all 773 tests, but the command still exited unsuccessfully: aggrega
 coverage was 87.73% of statements, 82.41% of branches, and 87.64% of lines, below
 the configured 90% threshold in those three categories. The focused three suites
 passed all 116 tests.
+
+Independent review of `6cd682c` identified one blocking crash-recovery gap in this
+admission building block. Previously, every builder or repair admission call made a
+new random claim ID and accepted only a PREPARING attempt. If the database committed
+the claim and STARTING transition but the worker lost the response, a restarted
+worker could not recover the token: the STARTING attempt failed the local check,
+and a stale PREPARING object created a different claim ID. The initial claim ID is
+now a stable SHA-256 identity derived from the operation kind, run ID, and attempt
+ID. PREPARING, STARTING, and RUNNING attempts may reach the provider, but the provider
+still allows a new claim only for PREPARING; STARTING/RUNNING require an exact,
+already-active claim with the same owner and resources. This distinction keeps
+recovery from creating new authority. Admission additionally verifies that returned
+leases are ACTIVE and contain exactly the requested canonical resources.
+
+A real SQLite test now discards the first admission response, recovers each
+persisted STARTING builder and repair from another provider connection, and verifies
+the same claim ID, token, and leases. It also checks that a STARTING attempt without
+a matching claim is rejected, that no extra ACTIVE claim appears, and that the
+next genuinely new claim receives only the next token. The production worker still
+rejects GLOBAL_READY and does not consume this building block; global Git,
+integration, and dynamic writes remain outside the production boundary. M4.2 stays
+OPEN, M4.3 has not started, and the public number-token/BIGINT and diagnostic
+resource-ID questions remain P2. This remediation awaits independent review.
+
+For this remediation, `pnpm check` passes formatting, TypeScript project-reference
+checks, linting, and all 773 tests. It still exits unsuccessfully on the unchanged
+90% aggregate coverage gate: statements 87.96%, branches 82.73%, and lines
+87.88%. This gate failure is separate from the admission replay finding.
