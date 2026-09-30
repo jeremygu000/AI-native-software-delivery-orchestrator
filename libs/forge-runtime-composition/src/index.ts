@@ -13,3 +13,4 @@ export type {
   AdmittedGlobalMutation,
   GlobalAdmissionResult
 } from './global-builder-repair-admission.js';
+export { GlobalBuilderRepairExecutionBoundary } from './global-builder-repair-execution-boundary.js';

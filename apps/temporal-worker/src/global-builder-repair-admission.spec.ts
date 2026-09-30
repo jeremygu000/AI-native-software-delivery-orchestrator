@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,7 +13,10 @@ import {
 } from '@ai-native-software-delivery-orchestrator/persistence';
 import { describe, expect, it } from 'vitest';
 
-import { GlobalBuilderRepairAdmission } from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
+import {
+  GlobalBuilderRepairAdmission,
+  GlobalBuilderRepairExecutionBoundary
+} from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
 
 const digest = (digit: string): string => `sha256:${digit.repeat(64)}`;
 const runId = 'global-admission-run';
@@ -80,6 +83,167 @@ const request: CreatePersistedRunRequest = {
 };
 
 describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
+  it.each(['persisted', 'persist-failed', 'impact-failed'] as const)(
+    'holds a repository permit through Git workspace creation and its %s record',
+    async (outcome) => {
+      const directory = mkdtempSync(join(tmpdir(), 'forge-global-workspace-'));
+      const filename = join(directory, 'authority.sqlite');
+      const store = new DrizzleSqliteOrchestrationPersistence(filename);
+      const authority = new SqliteGlobalMutationAuthority(filename);
+      const peer = new SqliteGlobalMutationAuthority(filename);
+      try {
+        const runRequest = {
+          ...request,
+          taskBindings: request.taskBindings.map((entry) => ({
+            ...entry,
+            leasePlan: {
+              ...entry.leasePlan,
+              predictedResources: [{ type: 'repository' as const }]
+            },
+            workspace: { ...entry.workspace, workspacePath: join(directory, 'workspace') }
+          }))
+        };
+        const binding = runRequest.taskBindings[0];
+        if (binding === undefined) {
+          throw new Error('Missing test binding');
+        }
+        const scopeId = await authority.registerScope(runRequest.run.repositoryId);
+        await store.createRun(runRequest);
+        await authority.bindRun(runId, runRequest.run.repositoryId);
+        const attempt: AgentExecutionAttempt = {
+          id: 'builder-repository',
+          runId,
+          taskId: binding.taskId,
+          agentId: binding.agentId,
+          workspaceId: binding.workspace.id,
+          leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
+          state: 'PREPARING',
+          revision: 1
+        };
+        await store.persistAttempt({ runId, attempt });
+        await authority.beginLegacyCutover();
+        for (const historical of await authority.recoverLegacyOwners()) {
+          await authority.settleLegacyOwner(historical.key, 'Legacy writer stopped');
+        }
+        await authority.completeLegacyCutover('All prior writers stopped');
+        await authority.activateScope(scopeId);
+        const result = await new GlobalBuilderRepairAdmission(peer).admitBuilder(binding, attempt);
+        if (result.status !== 'granted') {
+          throw new Error('Repository claim was not granted');
+        }
+        const workspace = {
+          ...binding.workspace,
+          phase: 'READY_TO_INTEGRATE' as const,
+          revision: 1
+        };
+        let gitCalls = 0;
+        const boundary = new GlobalBuilderRepairExecutionBoundary({
+          authority: peer,
+          admission: result.admission,
+          binding,
+          persistence: {
+            async persistWorkspace(record) {
+              expect(await authority.recoverFencedMutationPermits(scopeId)).toHaveLength(1);
+              if (outcome === 'persist-failed') {
+                throw new Error('Simulated persistence failure after Git');
+              }
+              await store.persistWorkspace(record);
+            }
+          },
+          workspaceManager: {
+            async create() {
+              gitCalls++;
+              expect(await authority.recoverFencedMutationPermits(scopeId)).toHaveLength(1);
+              return workspace;
+            }
+          }
+        });
+        if (outcome === 'persist-failed') {
+          await expect(boundary.createWorkspace()).rejects.toThrow('Simulated persistence failure');
+          expect((await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state).toBe(
+            'HELD_UNCERTAIN'
+          );
+          await expect(
+            result.admission.execute({ type: 'repository' }, async () => gitCalls++)
+          ).rejects.toThrow();
+        } else {
+          await expect(boundary.createWorkspace()).resolves.toEqual(workspace);
+          expect((await store.recoverRun(runId))?.workspaces[0]?.workspace).toEqual(workspace);
+          expect((await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state).toBe(
+            'ACTIVE'
+          );
+        }
+        expect(gitCalls).toBe(1);
+        expect(await peer.recoverFencedMutationPermits(scopeId)).toEqual([]);
+        if (outcome === 'impact-failed') {
+          const workspacePath = join(directory, 'workspace');
+          mkdirSync(workspacePath);
+          writeFileSync(join(workspacePath, 'file.ts'), 'before');
+          const task = runRequest.tasks[0];
+          const startingAttempt = (await store.recoverAttempts(runId))[0]?.attempt;
+          if (task === undefined || startingAttempt === undefined) {
+            throw new Error('Missing approved agent request');
+          }
+          const tools = boundary.createAgentTools(
+            {
+              attempt: startingAttempt,
+              runId,
+              taskId: task.id,
+              task,
+              workspace,
+              instructions: task.goal,
+              onStarted: async () => undefined
+            },
+            {
+              persistence: new Proxy(store, {
+                get(target, property, receiver) {
+                  if (property === 'persistImpact') {
+                    return async () => {
+                      throw new Error('Simulated impact persistence failure');
+                    };
+                  }
+                  const value: unknown = Reflect.get(target, property, receiver);
+                  return typeof value === 'function' ? value.bind(target) : value;
+                }
+              }),
+              writeGuard: {
+                acquire: async () => {
+                  throw new Error('Local lease fallback');
+                },
+                release: async () => {
+                  throw new Error('Local lease fallback');
+                },
+                heartbeat: async () => {
+                  throw new Error('Local lease fallback');
+                },
+                markStale: async () => {
+                  throw new Error('Local lease fallback');
+                }
+              },
+              resolveResource: () => ({ type: 'file', projectId: 'project-1', fileId: 'file-1' }),
+              resolveFileId: () => 'file-1'
+            }
+          );
+          await expect(tools.write('file.ts', 'written')).rejects.toThrow(
+            'Simulated impact persistence failure'
+          );
+          expect(readFileSync(join(workspacePath, 'file.ts'), 'utf8')).toBe('written');
+          expect((await authority.recoverRepositoryMutationAuthority(scopeId))[0]?.state).toBe(
+            'HELD_UNCERTAIN'
+          );
+          expect(await authority.recoverFencedMutationPermits(scopeId)).toEqual([]);
+          await expect(tools.write('file.ts', 'stale')).rejects.toThrow();
+          expect(readFileSync(join(workspacePath, 'file.ts'), 'utf8')).toBe('written');
+        }
+      } finally {
+        peer.close();
+        authority.close();
+        store.close();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('requires a bound run, advances only a persisted attempt, and fences its callback', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'forge-admission-'));
     const filename = join(directory, 'authority.sqlite');
@@ -87,9 +251,19 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
     const authority = new SqliteGlobalMutationAuthority(filename);
     const peer = new SqliteGlobalMutationAuthority(filename);
     try {
+      const workspacePath = join(directory, 'workspace');
+      mkdirSync(workspacePath);
+      writeFileSync(join(workspacePath, 'file.ts'), 'old');
+      const runRequest = {
+        ...request,
+        taskBindings: request.taskBindings.map((entry) => ({
+          ...entry,
+          workspace: { ...entry.workspace, workspacePath }
+        }))
+      };
       const scopeId = await authority.registerScope(request.run.repositoryId);
-      await store.createRun(request);
-      const binding = request.taskBindings[0];
+      await store.createRun(runRequest);
+      const binding = runRequest.taskBindings[0];
       if (binding === undefined) {
         throw new Error('Missing test binding');
       }
@@ -151,6 +325,61 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
       if (startingBuilder === undefined) {
         throw new Error('Missing committed builder attempt');
       }
+      let gitCalls = 0;
+      const boundary = new GlobalBuilderRepairExecutionBoundary({
+        authority: peer,
+        admission: result.admission,
+        binding,
+        persistence: store,
+        workspaceManager: {
+          async create() {
+            gitCalls++;
+            return { ...binding.workspace, phase: 'READY_TO_INTEGRATE' as const, revision: 1 };
+          }
+        }
+      });
+      await expect(boundary.createWorkspace()).rejects.toThrow();
+      expect(gitCalls).toBe(0);
+      expect(await peer.recoverFencedMutationPermits(scopeId)).toEqual([]);
+      const task = runRequest.tasks[0];
+      if (task === undefined) {
+        throw new Error('Missing test task');
+      }
+      const tools = boundary.createAgentTools(
+        {
+          attempt: startingBuilder,
+          runId,
+          taskId: task.id,
+          task,
+          workspace: { ...binding.workspace, phase: 'READY_TO_INTEGRATE', revision: 1 },
+          instructions: task.goal,
+          onStarted: async () => undefined
+        },
+        {
+          persistence: store,
+          writeGuard: {
+            acquire: async () => {
+              throw new Error('Global tools must not fall back to local lease acquisition');
+            },
+            release: async () => {
+              throw new Error('Global tools must not release a local lease');
+            },
+            heartbeat: async () => {
+              throw new Error('Global tools must not heartbeat a local lease');
+            },
+            markStale: async () => {
+              throw new Error('Global tools must not mark a local lease stale');
+            }
+          },
+          resolveResource: () => ({ type: 'file', projectId: 'project-1', fileId: 'file-1' }),
+          resolveFileId: () => 'file-1'
+        }
+      );
+      await expect(tools.write('file.ts', 'new')).resolves.toMatchObject({ status: 'written' });
+      expect(readFileSync(join(workspacePath, 'file.ts'), 'utf8')).toBe('new');
+      expect(await peer.recoverFencedMutationPermits(scopeId)).toEqual([]);
+      await expect(tools.executeRepositoryMutation(async () => gitCalls++)).rejects.toThrow();
+      expect(gitCalls).toBe(0);
       // Discard the first response: a new seam instance must recover the same
       // committed claim and token from the persisted STARTING attempt.
       const builderReplay = await new GlobalBuilderRepairAdmission(authority).admitBuilder(
@@ -217,6 +446,8 @@ describe('GlobalBuilderRepairAdmission with durable SQLite authority', () => {
         })
       ).rejects.toThrow();
       expect(called).toBe(1);
+      await expect(tools.edit('file.ts', 'new', 'stale')).rejects.toThrow();
+      expect(readFileSync(join(workspacePath, 'file.ts'), 'utf8')).toBe('new');
 
       const repair = {
         id: 'repair-A',

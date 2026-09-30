@@ -85,6 +85,7 @@ describe('AgentToolRuntime', () => {
     directories.push(workspacePath);
     expect(() =>
       createTools(workspacePath, new InMemoryWriteGuard(), new LeasePersistence(), {
+        onMutationUncertain: async () => {},
         port: new MutationPort({
           beginFencedMutation: async () => ({ id: 'permit-1', completionSecret: 'secret' }),
           endFencedMutation: async () => {}
@@ -103,6 +104,7 @@ describe('AgentToolRuntime', () => {
     const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
     directories.push(workspacePath);
     const mutation = {
+      onMutationUncertain: async () => {},
       port: new MutationPort({
         beginFencedMutation: async () => ({ id: 'permit-1', completionSecret: 'secret' }),
         endFencedMutation: async () => {}
@@ -162,6 +164,7 @@ describe('AgentToolRuntime', () => {
       }
     });
     const tools = createTools(workspacePath, new InMemoryWriteGuard(), new LeasePersistence(), {
+      onMutationUncertain: async () => {},
       port,
       claim: {
         scopeId: 'scope-1',
@@ -179,6 +182,83 @@ describe('AgentToolRuntime', () => {
     await expect(tools.write('value.txt', 'stale\n')).rejects.toThrow('stale token');
     expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('after\n');
     expect(calls).toEqual(['begin:file', 'end', 'begin:file', 'begin:file']);
+  });
+
+  it('reports a failed impact record after a file write before ending its permit', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
+    directories.push(workspacePath);
+    writeFileSync(join(workspacePath, 'value.txt'), 'before');
+    const persistence = new LeasePersistence();
+    persistence.persistImpact = async () => {
+      throw new Error('impact failed');
+    };
+    const sequence: string[] = [];
+    const tools = createTools(workspacePath, new InMemoryWriteGuard(), persistence, {
+      port: new MutationPort({
+        beginFencedMutation: async () => ({ id: 'permit', completionSecret: 'secret' }),
+        endFencedMutation: async () => {
+          sequence.push('permit ended');
+        }
+      }),
+      claim: {
+        scopeId: 'scope-1',
+        claimId: 'claim-1',
+        token: 1,
+        owner: { runId: 'run-1', taskId: 'task-1', attemptId: 'attempt-1', agentId: 'agent-1' }
+      },
+      onMutationUncertain: async () => {
+        sequence.push('claim held uncertain');
+      }
+    });
+    await expect(tools.edit('value.txt', 'before', 'after')).rejects.toThrow('impact failed');
+    expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('after');
+    expect(sequence).toEqual(['claim held uncertain', 'permit ended']);
+  });
+
+  it('retains ownership when a repository command fails after starting or permit completion fails', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
+    directories.push(workspacePath);
+    const sequence: string[] = [];
+    let completionFails = false;
+    const tools = createTools(workspacePath, new InMemoryWriteGuard(), new LeasePersistence(), {
+      port: new MutationPort({
+        beginFencedMutation: async () => ({ id: 'permit', completionSecret: 'secret' }),
+        endFencedMutation: async () => {
+          sequence.push('permit ended');
+          if (completionFails) {
+            throw new Error('completion failed');
+          }
+        }
+      }),
+      claim: {
+        scopeId: 'scope-1',
+        claimId: 'claim-1',
+        token: 1,
+        owner: { runId: 'run-1', taskId: 'task-1', attemptId: 'attempt-1', agentId: 'agent-1' }
+      },
+      onMutationUncertain: async () => {
+        sequence.push('claim held uncertain');
+      }
+    });
+    await expect(
+      tools.executeRepositoryMutation(async () => {
+        sequence.push('command started');
+        throw new Error('partial command failure');
+      })
+    ).rejects.toThrow('partial command failure');
+    expect(sequence).toEqual(['command started', 'claim held uncertain', 'permit ended']);
+
+    completionFails = true;
+    await expect(tools.executeRepositoryMutation(async () => 'completed')).rejects.toThrow(
+      'completion failed'
+    );
+    expect(sequence).toEqual([
+      'command started',
+      'claim held uncertain',
+      'permit ended',
+      'permit ended',
+      'claim held uncertain'
+    ]);
   });
 
   it('holds the permit through persisted impact and refuses repository commands without repository-wide authority', async () => {
@@ -207,6 +287,7 @@ describe('AgentToolRuntime', () => {
       return { id: 'permit-1', completionSecret: 'secret' };
     });
     const tools = createTools(workspacePath, new InMemoryWriteGuard(), persistence, {
+      onMutationUncertain: async () => {},
       port: new MutationPort({ beginFencedMutation: begin, endFencedMutation: ended }),
       claim: {
         scopeId: 'scope-1',

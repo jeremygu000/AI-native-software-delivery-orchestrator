@@ -959,6 +959,7 @@ describe('PiAgentRunner', () => {
           resolveFileId: (path) => `core:${path}`,
           writeGuard: new InMemoryWriteGuard(),
           mutation: {
+            onMutationUncertain: async () => {},
             port: new MutationPort({
               beginFencedMutation: begin,
               endFencedMutation: async () => {}

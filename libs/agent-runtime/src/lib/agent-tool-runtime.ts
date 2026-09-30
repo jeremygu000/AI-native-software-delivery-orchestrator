@@ -37,6 +37,8 @@ export interface AgentToolRuntimeContext {
   readonly mutation?: {
     readonly port: FencedMutationPort;
     readonly claim: Omit<CurrentMutationTokenRequest, 'resource'>;
+    /** Required in the global path: retain ownership after a callback may have mutated externally. */
+    readonly onMutationUncertain: (error: unknown) => Promise<void>;
   };
 }
 
@@ -136,10 +138,7 @@ export class AgentToolRuntime {
 
   /** Commands may mutate arbitrary workspace files, so require repository-wide authority. */
   async executeRepositoryMutation<T>(sideEffect: () => Promise<T>): Promise<T> {
-    const mutation = this.#context.mutation;
-    return mutation === undefined
-      ? sideEffect()
-      : mutation.port.execute({ ...mutation.claim, resource: { type: 'repository' } }, sideEffect);
+    return this.#executeMutation({ type: 'repository' }, sideEffect);
   }
 
   observedImpact(): TaskImpact['observed'] {
@@ -214,10 +213,35 @@ export class AgentToolRuntime {
     target: { readonly resource: WritableResource },
     sideEffect: () => Promise<T>
   ): Promise<T> {
+    return this.#executeMutation(target.resource, sideEffect);
+  }
+
+  async #executeMutation<T>(resource: WritableResource, sideEffect: () => Promise<T>): Promise<T> {
     const mutation = this.#context.mutation;
-    return mutation === undefined
-      ? sideEffect()
-      : mutation.port.execute({ ...mutation.claim, resource: target.resource }, sideEffect);
+    if (mutation === undefined) {
+      return sideEffect();
+    }
+    let callbackStarted = false;
+    try {
+      return await mutation.port.execute({ ...mutation.claim, resource }, async () => {
+        callbackStarted = true;
+        try {
+          return await sideEffect();
+        } catch (error) {
+          // Keep the permit in flight until uncertainty is persisted. A failed
+          // write or command can have changed files before throwing.
+          await mutation.onMutationUncertain(error);
+          callbackStarted = false;
+          throw error;
+        }
+      });
+    } catch (error) {
+      if (callbackStarted) {
+        // Also cover a lost permit completion after the callback succeeded.
+        await mutation.onMutationUncertain(error);
+      }
+      throw error;
+    }
   }
 
   async #writePrepared(

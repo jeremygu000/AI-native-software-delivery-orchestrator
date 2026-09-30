@@ -3746,3 +3746,43 @@ For this remediation, `pnpm check` passes formatting, TypeScript project-referen
 checks, linting, and all 773 tests. It still exits unsuccessfully on the unchanged
 90% aggregate coverage gate: statements 87.96%, branches 82.73%, and lines
 87.88%. This gate failure is separate from the admission replay finding.
+
+Independent review accepted `b58b2eb`'s replay-safe admission building block. The
+next production-boundary increment introduces `GlobalBuilderRepairExecutionBoundary`
+for one already-admitted, workspace-bound builder or repair claim. Think of a global
+claim as permission to change a particular repository and a fenced permit as the
+short-lived record that a specific write is in progress. The new boundary requires
+the exact approved run, task, and workspace identity. Its Git workspace creation
+callback, including the subsequent durable workspace record, runs under a
+**repository-wide** permit. A project-only claim cannot begin that callback and
+therefore cannot create a Git worktree or branch. If Git or its record fails after
+the callback starts, the global claim is marked HELD_UNCERTAIN, retaining the
+barrier to another owner until the external writer's quiescence is independently
+established. A returned workspace whose identity differs from the approved binding
+is likewise rejected. The boundary also constructs agent tools with the admitted
+mutation context explicitly supplied: actual file writes and impact records use
+their file/project permit, repository-wide commands require a repository permit,
+and neither path falls back to a process-local lease. If a file changes but its
+impact record fails to persist, the claim is also marked uncertain instead of
+silently allowing another owner to write.
+
+Real SQLite authority tests with separate connections check denial before Git is
+called for a project-only plan, a valid file write and rejection of a stale write,
+Git and its record under a live permit for an explicitly approved repository plan,
+and uncertain ownership when the durable record fails after Git or a file write.
+Agent-tool tests also retain uncertain ownership if an already-started command
+fails or the permit cannot be completed; a failed permit request never begins
+the command. These checks exercise the callback boundary and workspace identity
+but **do not** activate a GLOBAL_READY production worker: the existing worker still rejects that mode, and
+its legacy builder/repair services have not been replaced by a lifecycle that
+consumes this boundary. Global integration, dynamic resource expansion, external
+agent shutdown, and safe global release remain unfinished. Normal project-only
+plans cannot create Git workspaces in the proposed global route without a separate
+approved repository authority. M4.2 remains OPEN; M4.3 has not started. The
+number-token/BIGINT and diagnostic resource-ID issues remain P2.
+
+For this boundary increment, `pnpm check` passed formatting, TypeScript
+project-reference validation, linting, and all 778 tests across 72 suites. It
+still exits unsuccessfully at the repository's 90% aggregate coverage gate:
+statements 87.98%, branches 82.71%, and lines 87.90%. The three directly
+relevant agent-tool, Pi-runner, and SQLite boundary suites pass all 40 tests.
