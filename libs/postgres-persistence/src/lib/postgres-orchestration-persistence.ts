@@ -209,6 +209,19 @@ export class PostgresOrchestrationPersistence
     await this.#sql.end({ timeout: 5 });
   }
 
+  /** Legacy production composition cannot fall back to local leases after global cutover. */
+  async assertLegacyWorkerCompositionAllowed(): Promise<void> {
+    if (!this.#globalGateInstalled) {
+      return;
+    }
+    const rows = await this.#sql.unsafe(
+      `select state from ${this.#schema}.forge_global_control where id=1`
+    );
+    if (rows.length !== 1 || rows[0]?.state !== 'LEGACY_ALLOWED') {
+      throw new Error('Legacy worker composition is closed by global cutover');
+    }
+  }
+
   async #row(tx: Query, runId: string, kind: RecordKind, key: string): Promise<string | undefined> {
     const rows = await tx.unsafe(
       `select payload from ${this.#schema}.forge_records where run_id = $1 and kind = $2 and key = $3`,

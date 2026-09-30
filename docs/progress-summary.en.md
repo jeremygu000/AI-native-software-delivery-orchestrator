@@ -3600,3 +3600,46 @@ The focused agent tool and Pi runner suites pass all 33 tests. Formatting, TypeS
 project-reference checking, and linting pass. The full `pnpm check` reports 764 passing tests
 and one skipped test, but still exits unsuccessfully: the unrelated Restate integration suite
 cannot find a working container runtime in this environment.
+
+An independent review accepted the agent tool and Pi controlled-mutation seam at commit
+`6536ab8`; it did not accept production M4.2. The next production-composition increment
+addresses a dangerous mode-selection mistake while the global worker path is still being built.
+The existing production worker creates the older, per-run persistence and coding services.
+It cannot safely operate after the deployment has closed old writer admission: simply omitting
+the optional global claim from a tool constructor would leave its local write path available.
+The production worker now asks its durable SQLite or PostgreSQL store whether legacy worker
+composition is still permitted **before** creating coding services. Both stores read the
+deployment's persistent cutover state rather than relying on a configuration flag. If cutover
+has started, composition fails instead of quietly selecting local authority; PostgreSQL also
+checks the current state when an already-connected store is reused. Existing database writer
+admission checks continue to protect actual old writer creation if cutover races this startup
+check. Test-only injected persistence remains an explicit testing seam, not production mode
+selection.
+
+The tool runtime now also accepts the actual workspace ID. If a durable claim identifies a
+workspace, its owner must match that ID as well as the run, task, attempt, and agent before
+tools are created. The runtime composition passes `workspace.id` from the builder or repair
+request; the durable provider still makes the final permit decision for scope, token, owner,
+and resource. Tests cover absent, mismatched, and matching workspace identities; a real SQLite
+cutover rejects worker creation, and real PostgreSQL tests reject both an already-ready worker
+and a store connected before cutover. The focused four suites pass 135 tests.
+
+This is a fail-closed guard for the **legacy** production route, not an activated global route.
+No production builder or repair yet obtains a global claim or supplies mandatory mutation
+context; CLI run/scope binding, dynamic global expansion, and integration/Git permit boundaries
+are still missing. Existing old workers must be independently stopped and verified during
+cutover; a startup check does not revoke a process already running. M4.2 remains **OPEN** and
+M4.3 has not started. An external file write that succeeds before impact persistence fails must
+also keep its higher-level global claim uncertain rather than automatically release it when
+the future global orchestration path is connected. The public number-token range and diagnostic
+resource IDs remain P2 follow-ups.
+
+Verification for this increment: the four focused suites pass 135 tests, and formatting,
+TypeScript project-reference checking, linting, and `git diff --check` pass. The full
+`pnpm check` is not green: it reports 768 passing tests and one skipped test, while the unrelated
+Restate integration suite cannot start without a container runtime. Its compiled CLI/worker
+acceptance suite also hit a 10-second child-process limit in one case (`CLI failed (null)`);
+an initial separate run hit that limit in a different case. Both affected cases passed
+when isolated, and a further complete rerun of the compiled CLI/worker acceptance suite
+passed all five cases. The original `pnpm check` result is still a failure because the
+Restate container runtime was unavailable; its first process-boundary run was not green.

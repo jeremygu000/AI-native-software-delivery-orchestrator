@@ -3156,3 +3156,37 @@ writer 或针对 PostgreSQL 死锁 `40P01` 重试。
 agent 工具和 Pi runner 的定向测试 33 项全部通过。格式、TypeScript 项目引用类型检查与
 静态检查均通过。完整 `pnpm check` 报告 764 项通过、1 项跳过，但仍以失败退出：本机
 缺少可用容器运行环境，导致无关的 Restate 集成测试无法启动。
+
+独立复审已接受提交 `6536ab8` 的 agent 工具与 Pi 受控写入接缝，但没有接受生产侧
+M4.2。下一轮生产组合层增量先解决全局 worker 路径尚未建成时的一种危险模式选择错误。
+当前生产 worker 创建的是旧的、每个 run 单独管理的持久化和编码服务。部署关闭旧 writer
+准入后，它不能再安全工作：如果仅因构造工具时漏传可选的全局 claim 而继续走本地写入
+路径，就会绕开预期的全局权限。现在生产 worker 在创建编码服务**之前**，先向 SQLite
+或 PostgreSQL 持久化存储确认旧 worker 组合仍被允许。两个后端都读取数据库保存的切换
+状态，而不是依赖配置开关。切换开始后，组合直接失败，不会悄悄选择本地权限；对已经建立
+连接的 PostgreSQL 存储，也会重新读取当前状态。如果切换与这次启动检查并发，原有数据库
+写入准入检查仍阻止新建旧 writer。测试注入的持久化对象继续只是明确的测试接缝，不承担
+生产模式选择。
+
+工具运行时现在还接受实际 workspace ID。若持久化 claim 的 owner 指定了 workspace，
+它必须与该 ID 以及 run、task、attempt、agent 同时匹配，才能创建工具。运行时组合层从
+builder 或 repair 请求传入 `workspace.id`；scope、token、owner 和资源的最终 permit
+判断仍由持久化权限提供者完成。测试覆盖 workspace ID 缺失、不一致和一致的情况；真实
+SQLite 切换后 worker 创建会被拒绝；真实 PostgreSQL 测试覆盖已经 GLOBAL_READY 的
+worker，以及连接建立之后才发生切换的情况。四组定向测试共 135 项通过。
+
+这只是对**旧**生产路径的 fail-closed 保护，并未启用全局路径。生产 builder／repair
+尚未获得全局 claim，也没有强制传入 mutation context；CLI 的 run／scope 绑定、动态
+全局扩展以及 integration／Git permit 边界仍未实现。切换时仍须独立停机并验证已运行的
+旧 worker：启动检查无法撤销已经运行的进程。M4.2 继续 **OPEN**，M4.3 尚未开始。
+今后全局编排路径接入时，如果文件写入已经成功而影响记录保存失败，上层也必须保留
+不确定状态的全局 claim，不能自动释放。对外 number token 的范围以及诊断资源 ID 的
+歧义仍是 P2 后续事项。
+
+本次增量的验证：四组定向测试 135 项全部通过；格式检查、TypeScript 项目引用类型检查、
+静态检查与 `git diff --check` 均通过。完整 `pnpm check` 尚未通过：报告 768 项通过、
+1 项跳过；无关的 Restate 集成测试因本机缺少容器运行环境无法启动。编译版 CLI／worker
+验收测试还曾有一个用例触发 10 秒子进程时限（`CLI failed (null)`）；第一次单独重跑整组
+测试时，另一用例触发同一时限。两个受影响用例分别单独运行均通过，此后再完整重跑
+编译版 CLI／worker 验收套件，5 项全部通过。原始 `pnpm check` 仍是失败结果，因为
+Restate 缺少容器运行环境；原始运行中的跨进程套件也并未通过。

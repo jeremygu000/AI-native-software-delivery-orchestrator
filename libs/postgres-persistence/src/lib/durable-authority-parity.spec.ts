@@ -266,6 +266,43 @@ const createGlobalPermitFixture = async (): Promise<
 
 globalMutationPermitContract('PostgreSQL isolated server', createGlobalPermitFixture);
 
+it('refuses a legacy PostgreSQL worker at GLOBAL_READY even on an already connected store', async () => {
+  const fixture = await createGlobalPermitFixture();
+  try {
+    await expect(fixture.store.assertLegacyWorkerCompositionAllowed()).rejects.toThrow(
+      'Legacy worker composition is closed by global cutover'
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+it('refuses a legacy PostgreSQL worker when the cutover starts after store connection', async () => {
+  const schema = `forge_worker_cutover_${++fixtureOrdinal}`;
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const admin = postgres(connectionString);
+  let store: PostgresOrchestrationPersistence | undefined;
+  let authority: PostgresGlobalMutationAuthority | undefined;
+  try {
+    await migratePostgresAuthoritySchema(
+      { connectionString: ownerConnectionString, schema, role },
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    store = await PostgresOrchestrationPersistence.connect(runtime);
+    authority = await PostgresGlobalMutationAuthority.connect(runtime);
+    await store.assertLegacyWorkerCompositionAllowed();
+    await authority.beginLegacyCutover();
+    await expect(store.assertLegacyWorkerCompositionAllowed()).rejects.toThrow(
+      'Legacy worker composition is closed by global cutover'
+    );
+  } finally {
+    await Promise.all([store?.close(), authority?.close()]);
+    await admin.unsafe(`drop schema if exists "${schema}" cascade`);
+    await admin.end();
+  }
+});
+
 const createGlobalCutoverFixture = async (): Promise<GlobalMutationCutoverFixture> => {
   const schema = `forge_global_race_${++fixtureOrdinal}`;
   const migration = { connectionString: ownerConnectionString, schema, role };

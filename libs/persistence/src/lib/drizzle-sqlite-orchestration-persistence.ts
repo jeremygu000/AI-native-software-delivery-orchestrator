@@ -2351,6 +2351,11 @@ export class DrizzleSqliteOrchestrationPersistence
     }
   }
 
+  /** A legacy worker must not silently select local tool authority after global cutover. */
+  assertLegacyWorkerCompositionAllowed(): void {
+    this.#assertLegacyWriterAdmissionOpen();
+  }
+
   #assertRunIsCancellationRequested(runId: string): void {
     const run = this.#db.select({ state: runs.state }).from(runs).where(eq(runs.id, runId)).get();
     if (run === undefined) {

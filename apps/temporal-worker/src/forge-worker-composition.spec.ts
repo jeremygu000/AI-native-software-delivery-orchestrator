@@ -36,7 +36,10 @@ import {
   PiAgentRunner,
   type PiSessionGateway
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
-import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/persistence';
+import {
+  DrizzleSqliteOrchestrationPersistence,
+  SqliteGlobalMutationAuthority
+} from '@ai-native-software-delivery-orchestrator/persistence';
 import {
   codeReviewPolicyFingerprint,
   createCodeReviewPolicy
@@ -57,6 +60,27 @@ import {
 const reviewPolicyFingerprint = codeReviewPolicyFingerprint(
   createCodeReviewPolicy({ provider: 'test', model: 'test' })
 );
+
+it('rejects legacy production composition after global cutover before a Pi runner can be created', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'forge-worker-cutover-'));
+  const databasePath = join(directory, 'authority.sqlite');
+  const store = new DrizzleSqliteOrchestrationPersistence(databasePath);
+  store.close();
+  const global = new SqliteGlobalMutationAuthority(databasePath);
+  try {
+    await global.beginLegacyCutover();
+    await global.completeLegacyCutover('All legacy writers have stopped.');
+    await expect(
+      createForgeWorkerComposition({
+        ...createTestWorkerCompositionDeployment(),
+        authority: { backend: 'sqlite', databasePath }
+      })
+    ).rejects.toThrow('Legacy mutation admission is closed by global cutover');
+  } finally {
+    global.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 class MemoryPersistence
   implements

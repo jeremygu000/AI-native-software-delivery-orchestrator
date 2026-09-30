@@ -25,6 +25,7 @@ export interface AgentToolRuntimeContext {
   readonly taskId: string;
   readonly attemptId: string;
   readonly agentId: string;
+  readonly workspaceId?: string;
   readonly workspacePath: string;
   readonly impact?: TaskImpact;
   readonly initialLeases?: readonly WriteLease[];
@@ -58,7 +59,8 @@ export class AgentToolRuntime {
       (owner.runId !== context.runId ||
         owner.taskId !== context.taskId ||
         owner.attemptId !== context.attemptId ||
-        owner.agentId !== context.agentId)
+        owner.agentId !== context.agentId ||
+        (owner.workspaceId !== undefined && owner.workspaceId !== context.workspaceId))
     ) {
       throw new AgentToolDeniedError('Durable mutation owner does not match the agent attempt');
     }

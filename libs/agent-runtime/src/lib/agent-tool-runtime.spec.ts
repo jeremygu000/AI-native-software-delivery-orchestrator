@@ -35,13 +35,15 @@ const createTools = (
   workspacePath: string,
   writeGuard: WriteGuard,
   persistence: LeasePersistence,
-  mutation?: ConstructorParameters<typeof AgentToolRuntime>[0]['mutation']
+  mutation?: ConstructorParameters<typeof AgentToolRuntime>[0]['mutation'],
+  workspaceId?: string
 ) =>
   new AgentToolRuntime({
     runId: 'run-1',
     taskId: 'task-1',
     attemptId: 'attempt-1',
     agentId: 'agent-1',
+    ...(workspaceId === undefined ? {} : { workspaceId }),
     workspacePath,
     writeGuard,
     ...(mutation === undefined ? {} : { mutation }),
@@ -95,6 +97,50 @@ describe('AgentToolRuntime', () => {
         }
       })
     ).toThrow('Durable mutation owner does not match the agent attempt');
+  });
+
+  it('rejects a workspace-bound claim when physical workspace identity is absent or mismatched', () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
+    directories.push(workspacePath);
+    const mutation = {
+      port: new MutationPort({
+        beginFencedMutation: async () => ({ id: 'permit-1', completionSecret: 'secret' }),
+        endFencedMutation: async () => {}
+      }),
+      claim: {
+        scopeId: 'scope-1',
+        claimId: 'claim-1',
+        token: 1,
+        owner: {
+          runId: 'run-1',
+          taskId: 'task-1',
+          attemptId: 'attempt-1',
+          agentId: 'agent-1',
+          workspaceId: 'workspace-1'
+        }
+      }
+    };
+    expect(() =>
+      createTools(workspacePath, new InMemoryWriteGuard(), new LeasePersistence(), mutation)
+    ).toThrow('Durable mutation owner does not match the agent attempt');
+    expect(() =>
+      createTools(
+        workspacePath,
+        new InMemoryWriteGuard(),
+        new LeasePersistence(),
+        mutation,
+        'workspace-2'
+      )
+    ).toThrow('Durable mutation owner does not match the agent attempt');
+    expect(() =>
+      createTools(
+        workspacePath,
+        new InMemoryWriteGuard(),
+        new LeasePersistence(),
+        mutation,
+        'workspace-1'
+      )
+    ).not.toThrow();
   });
 
   it('fences a file edit inside a live permit and rejects stale writes before reading or changing content', async () => {

@@ -195,6 +195,15 @@ export async function createForgeWorkerComposition(
     overrides.persistence ?? (await openAuthorityPersistence(deployment.authority));
   let composition: ForgeRuntimeComposition;
   try {
+    if (overrides.persistence === undefined) {
+      if (
+        !('assertLegacyWorkerCompositionAllowed' in persistence) ||
+        typeof persistence.assertLegacyWorkerCompositionAllowed !== 'function'
+      ) {
+        throw new Error('Legacy worker composition requires an authority mode check');
+      }
+      await persistence.assertLegacyWorkerCompositionAllowed();
+    }
     composition = await createForgeRuntimeComposition(
       { ...workerOverrides(deployment), ...overrides, persistence },
       {

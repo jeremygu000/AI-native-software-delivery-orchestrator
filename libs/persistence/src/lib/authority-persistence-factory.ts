@@ -31,6 +31,7 @@ export type AuthorityPersistence = OrchestrationPersistence &
   TaskRepairWorkItemStore &
   TaskVerificationEvidenceStore & {
     ensureInitialDispatch: NonNullable<OrchestrationPersistence['ensureInitialDispatch']>;
+    assertLegacyWorkerCompositionAllowed(): Promise<void> | void;
     close(): Promise<void> | void;
   };
 

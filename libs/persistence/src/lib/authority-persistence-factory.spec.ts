@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 
 import {
   authorityConfigurationFingerprint,
@@ -33,6 +34,30 @@ describe('production authority routing', () => {
       const store = await openAuthorityPersistence(configuration);
       try {
         expect(await store.recoverRun('missing')).toBeUndefined();
+      } finally {
+        await store.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a legacy worker after SQLite global cutover rather than falling back to local tools', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'forge-route-cutover-'));
+    const databasePath = join(directory, 'run.sqlite');
+    try {
+      const store = await openAuthorityPersistence({ backend: 'sqlite', databasePath });
+      try {
+        expect(store.assertLegacyWorkerCompositionAllowed()).toBeUndefined();
+        const control = new Database(databasePath);
+        try {
+          control.prepare("update forge_global_control set state='GLOBAL_READY' where id=1").run();
+        } finally {
+          control.close();
+        }
+        expect(() => store.assertLegacyWorkerCompositionAllowed()).toThrow(
+          'Legacy mutation admission is closed by global cutover'
+        );
       } finally {
         await store.close();
       }
