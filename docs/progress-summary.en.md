@@ -3885,3 +3885,44 @@ writer shutdown, and final release are unimplemented. M4.2 remains OPEN and
 M4.3 has not started. The public number-token/BIGINT and diagnostic resource-ID
 questions remain P2. This document-only increment has no new runtime tests;
 it changes no previously accepted contract, provider, or migration.
+
+Independent review of exact remote SHA `c7585b0` found that this continuation
+design is **not yet approved**. Three authority decisions were missing. The
+revised proposal now makes the workspace parent a purpose-bound Git setup
+claim: a durable phase marker is installed before Git, and the provider must
+reject ordinary mutation permits for that parent, even though its repository
+lease would otherwise cover file and project writes. Only a dedicated permit
+for the exact workspace may start, with at most one permit lineage. Phase
+transitions, ordinary release/reclaim rejection, cancellation and evidence-
+backed abandonment must serialize on the same scope lock. A marker committed
+before Git begins survives a crash; if cancellation wins before the dedicated
+permit begins, Git cannot start. Neither state can be escaped through an
+ordinary release or a second workspace attempt.
+
+The revised proposal also separates permissions by purpose. The parent needs
+an explicitly approved repository lease for worktree/branch setup; the child
+gets **only** the separately approved agent-execution resources in the atomic
+handoff. Git-only repository authority does not become an agent's general
+writing permission. An agent needing repository-wide commands requires a
+separate execution approval. The handoff still closes the uncertain parent and
+grants the higher-token child in one transaction, so competing runs never see
+a released parent without its replacement.
+
+Finally, an independent recovery service or operator, using credentials the
+worker does not hold, must persist a signed, identifiable attestation. It must
+first revoke the original execution generation so the scheduler and permit
+entry cannot restart it, obtain a supervised stop confirmation for the worker
+and any child writers, account for all parent permits, and directly inspect
+the actual clean worktree and Git repository, commit, branch and integration
+identities against approvals pinned before Git began. The attestation binds
+the exact scope, parent claim/token, owner, workspace/revision, observed
+permits, worker generation, and plan digests; exact retry uses its immutable
+ID and digest. A heartbeat timeout or a matching path is not proof. Handoff
+and abandonment both require this independent proof and zero unresolved
+permits; missing proof leaves the parent blocking. This is still a **document-
+only proposal awaiting independent review**, not a working recovery service,
+provider state machine or enabled GLOBAL_READY worker. M4.2 stays OPEN and
+M4.3 has not started. No runtime code, schema or tests changed in this
+revision; the last full check had format/type/lint and 782 tests pass but
+`pnpm check` fail the existing 90% aggregate coverage threshold (87.98%
+statements, 82.71% branches, 87.90% lines).
