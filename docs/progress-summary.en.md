@@ -3501,3 +3501,34 @@ in this environment. This correction addresses the reviewed privilege hole; it s
 independent acceptance. The global
 PostgreSQL adapter, controlled overlap and third-connection proof, and production fenced-write
 boundary remain unimplemented, so M4.2 is OPEN.
+
+Independent review of `f47c24532c372d5d41fa44c7bb5c48c03f7f278c` accepted that privilege
+correction: the nine-table PostgreSQL version 3 schema and legacy-writer gate now provide an
+approved starting point for the global adapter. This next increment adds
+`PostgresGlobalMutationAuthority`, a runtime-only implementation of the shared
+`GlobalMutationAuthority` contract on the existing version 3 tables. A scope groups repository
+aliases that must share write authority; a run is bound to one such scope. Under one PostgreSQL
+transaction the adapter takes the deployment cutover gate, then the scope and run locks. It can
+register identities; inventory, classify, and import historical writers during cutover; activate
+global claims; check persisted run, task binding, attempt, and resource approval before granting
+a claim; and advance a builder or repair attempt to STARTING together with its lease and token.
+Conflicting active or uncertain leases block later claims. A permit with a one-time completion
+secret protects in-flight controlled writes, while evidence-gated orphan settlement and uncertain
+claim reclamation keep a stopped or lost worker from silently handing authority to another run.
+PostgreSQL BIGINT tokens are parsed exactly and refused before JavaScript's safe-integer limit.
+
+The real PostgreSQL fixture now runs the four shared permit scenarios and eight controlled
+cutover races for builder, repair, integration, and dynamic lease admissions, including both
+orders at the deployment gate. Additional cases reject invented or overbroad claims, check
+atomic repair history, verify unknown-alias historical imports, reject token exhaustion without
+partial state, and demonstrate same-scope cross-run blocking and handover through an independent
+third connection. The focused PostgreSQL suite passes all 88 tests. This increment is awaiting
+independent review; production CLI/worker mutation entry points are not yet wired through this
+adapter or its controlled-write port. The existing version 3 migration and legacy gate are not
+changed. The deployment-wide token counter remains a documented implementation-shape question,
+and the BIGINT-safe public token contract and diagnostic resource ID ambiguity remain follow-ups.
+M4.2 is **OPEN** until the production fenced-write boundary and its acceptance evidence are
+implemented and reviewed; multi-run deployment acceptance belongs to M4.3.
+Formatting, TypeScript project-reference checking, and linting pass. The full `pnpm check`
+run reports 752 passing tests and one skipped test, but exits unsuccessfully because the
+unrelated Restate integration suite cannot find a working container runtime in this environment.

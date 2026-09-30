@@ -3074,3 +3074,29 @@ run 重新绑定到另一 scope。现在版本 3 启动闸门会对全部九张�
 Restate 集成测试无法启动，因此整条命令未能通过。这项修正针对复审指出的权限漏洞，仍待独立
 复审验收。PostgreSQL global adapter、受控重叠事务与第三连接证明、生产
 fenced-write 边界仍未实现，因此 M4.2 继续为 OPEN。
+
+对 `f47c24532c372d5d41fa44c7bb5c48c03f7f278c` 的独立复审已接受这项权限修正：
+九张表的 PostgreSQL 版本 3 schema 和旧 writer 闸门可作为 global adapter 的已认可起点。
+本次增量新增 `PostgresGlobalMutationAuthority`，在现有版本 3 表上以受限运行账户实现
+共享的 `GlobalMutationAuthority` 契约。scope 将必须共用写入权限的 repository 别名组合
+在一起，run 则绑定到一个 scope。adapter 在同一个 PostgreSQL 事务中依次锁定整个部署
+的切换闸门、scope 和 run。它可以注册身份；切换时盘点、分类并导入历史 writer；启动
+全局 claim；授予 claim 前核验已持久化的 run、任务绑定、attempt 与资源授权；并把
+builder 或 repair attempt 升级到 STARTING，同时原子保存 lease 和 token。有冲突的
+ACTIVE 或 HELD_UNCERTAIN lease 会阻挡后来的 claim。带一次性完成密钥的 permit 保护
+正在进行的受控写入；丢失 worker 后只有提供停机证据，才能清理孤儿 permit 或收回
+不确定的 claim，避免悄悄将权限转交其他 run。读取 PostgreSQL BIGINT token 时先精确
+解析，超过 JavaScript 安全整数范围前会拒绝分配。
+
+真实 PostgreSQL fixture 现在运行四项共享 permit 场景、八项受控 cutover 竞态；后者
+覆盖 builder、repair、integration 和动态 lease 准入，并验证部署闸门两种先后顺序。
+其他回归检查伪造或过宽的 claim、repair 历史原子更新、未知别名历史 owner 的导入、
+token 耗尽时不留下部分状态，以及独立第三连接观察同 scope 不同 run 的阻挡和交接。
+PostgreSQL 定向测试 88 项全部通过。本增量仍待独立复审；生产 CLI／worker 写入入口
+尚未通过这个 adapter 和受控写入端口接线。已有版本 3 迁移与旧 writer 闸门未改动。
+部署级 token 计数器的实现形态、对外 token 的 BIGINT 安全契约和诊断用途资源 ID 的
+歧义仍需后续处理。生产 fenced-write 边界及其验收证据实现并复审之前，M4.2 继续
+**OPEN**；多 run 部署验收属于 M4.3。
+格式检查、TypeScript 项目引用类型检查与静态检查均通过。完整 `pnpm check`
+报告 752 项通过、1 项跳过，但由于本机缺少可用容器运行环境，无关的 Restate 集成测试
+无法启动，因此整条命令仍以失败退出。

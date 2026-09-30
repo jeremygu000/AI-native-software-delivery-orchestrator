@@ -7,7 +7,11 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
 import { ForgeReadModel } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
-import { taskVerificationEvidenceFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
+import {
+  taskLeasePlanFingerprint,
+  taskVerificationEvidenceFingerprint,
+  type GlobalMutationClaim
+} from '@ai-native-software-delivery-orchestrator/domain';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 
 import {
@@ -18,6 +22,13 @@ import {
   durableAuthorityRunRequest,
   type DurableAuthorityFixture
 } from '../../../persistence/src/lib/durable-authority.contract.test.js';
+import {
+  globalMutationCutoverContract,
+  globalMutationPermitContract,
+  type GlobalMutationCutoverFixture,
+  type GlobalMutationPermitFixture
+} from '../../../persistence/src/lib/global-mutation-authority.contract.test.js';
+import { PostgresGlobalMutationAuthority } from './postgres-global-mutation-authority.js';
 import { PostgresOrchestrationPersistence } from './postgres-orchestration-persistence.js';
 import {
   assertPostgresAuthoritySchema,
@@ -154,6 +165,660 @@ const createFixture = async (): Promise<DurableAuthorityFixture & { schema: stri
 };
 
 durableAuthorityContract('PostgreSQL isolated server', createFixture);
+
+const createGlobalPermitFixture = async (): Promise<
+  GlobalMutationPermitFixture & {
+    schema: string;
+    admin: ReturnType<typeof postgres>;
+    store: PostgresOrchestrationPersistence;
+  }
+> => {
+  const schema = `forge_global_adapter_${++fixtureOrdinal}`;
+  const migration = { connectionString: ownerConnectionString, schema, role };
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  let store: PostgresOrchestrationPersistence | undefined;
+  let authority: PostgresGlobalMutationAuthority | undefined;
+  let peer: PostgresGlobalMutationAuthority | undefined;
+  try {
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 3);
+    store = await PostgresOrchestrationPersistence.connect(runtime);
+    authority = await PostgresGlobalMutationAuthority.connect(runtime);
+    peer = await PostgresGlobalMutationAuthority.connect(runtime);
+    const scopeId = await authority.registerScope('contract-repository');
+    await authority.beginLegacyCutover();
+    await authority.completeLegacyCutover('The previous writers are stopped.');
+    await authority.activateScope(scopeId);
+    const runId = `global-run-${fixtureOrdinal}`;
+    const request = durableAuthorityRunRequest(runId);
+    await store.createRun(request);
+    await authority.bindRun(runId, request.run.repositoryId);
+    const binding = request.taskBindings[0];
+    if (binding === undefined) {
+      throw new Error('Missing global test binding');
+    }
+    for (const attemptId of ['original', 'replacement']) {
+      await store.persistAttempt({
+        runId,
+        attempt: {
+          id: attemptId,
+          runId,
+          taskId: 'task-1',
+          agentId: 'agent-1',
+          workspaceId: 'workspace-1',
+          leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
+          state: 'PREPARING',
+          revision: 1
+        }
+      });
+    }
+    const originalClaim: GlobalMutationClaim = {
+      scopeId,
+      claimId: 'original-claim',
+      owner: { runId, taskId: 'task-1', attemptId: 'original', agentId: 'agent-1' },
+      resources: [{ type: 'project', projectId: 'project-1' }]
+    };
+    const originalGrant = await authority.claimGlobalMutation(originalClaim);
+    if (originalGrant.status !== 'granted') {
+      throw new Error('Fixture claim was not granted');
+    }
+    let ownerClosed = false;
+    return {
+      schema,
+      admin,
+      store,
+      authority,
+      peer,
+      scopeId,
+      originalClaim,
+      originalGrant,
+      replacementClaim: {
+        ...originalClaim,
+        claimId: 'replacement-claim',
+        owner: { ...originalClaim.owner, attemptId: 'replacement' }
+      },
+      closeOwnerConnectionWithoutEnd: async () => {
+        await authority.close();
+        ownerClosed = true;
+      },
+      close: async () => {
+        if (!ownerClosed) {
+          await authority.close();
+        }
+        await peer.close();
+        await store.close();
+        await admin.unsafe(`drop schema "${schema}" cascade`);
+        await admin.end();
+      }
+    };
+  } catch (error) {
+    await Promise.all([authority?.close(), peer?.close(), store?.close()]);
+    await admin.unsafe(`drop schema if exists "${schema}" cascade`);
+    await admin.end();
+    throw error;
+  }
+};
+
+globalMutationPermitContract('PostgreSQL isolated server', createGlobalPermitFixture);
+
+const createGlobalCutoverFixture = async (): Promise<GlobalMutationCutoverFixture> => {
+  const schema = `forge_global_race_${++fixtureOrdinal}`;
+  const migration = { connectionString: ownerConnectionString, schema, role };
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  let store: PostgresOrchestrationPersistence | undefined;
+  let authority: PostgresGlobalMutationAuthority | undefined;
+  let peer: PostgresGlobalMutationAuthority | undefined;
+  let blocker: ReturnType<typeof postgres> | undefined;
+  let unblock: (() => void) | undefined;
+  let blocking: Promise<void> | undefined;
+  try {
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 3);
+    store = await PostgresOrchestrationPersistence.connect(runtime);
+    authority = await PostgresGlobalMutationAuthority.connect(runtime);
+    peer = await PostgresGlobalMutationAuthority.connect(runtime);
+    const scopeId = await authority.registerScope('registered-A');
+    const runId = `historical-${fixtureOrdinal}`;
+    const original = durableAuthorityRunRequest(runId);
+    const request = { ...original, run: { ...original.run, repositoryId: 'unregistered-B' } };
+    await store.createRun(request);
+    const plan = request.taskBindings[0]?.leasePlan;
+    if (plan === undefined) {
+      throw new Error('Missing historical binding');
+    }
+    await store.persistAttempt({
+      runId,
+      attempt: {
+        id: 'builder-attempt',
+        runId,
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        workspaceId: 'workspace-1',
+        leasePlanFingerprint: taskLeasePlanFingerprint(plan),
+        state: 'PREPARING',
+        revision: 1
+      }
+    });
+    const repair = {
+      ...durableAuthorityRepairAttempt('repair-attempt'),
+      runId,
+      parentReviewSubject: {
+        ...durableAuthorityRepairAttempt('repair-attempt').parentReviewSubject,
+        builderAttemptId: 'builder-attempt'
+      }
+    };
+    await store.persistRepairAttempt({ runId, attempt: repair });
+    const timestamp = new Date('2026-09-29T00:00:00.000Z');
+    const lease = {
+      id: 'admitted-lease',
+      runId,
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      resource: { type: 'project' as const, projectId: 'project-1' },
+      mode: 'exclusive' as const,
+      version: 1,
+      state: 'ACTIVE' as const,
+      acquiredAt: timestamp,
+      lastHeartbeatAt: timestamp
+    };
+    const savedStore = store;
+    const savedAuthority = authority;
+    const savedPeer = peer;
+    const admitted = async (kind: 'builder' | 'repair' | 'integration' | 'dynamic-lease') => {
+      if (kind === 'builder') {
+        await savedStore.claimBuilderStart({
+          runId,
+          attempt: {
+            id: 'builder-attempt',
+            runId,
+            taskId: 'task-1',
+            agentId: 'agent-1',
+            workspaceId: 'workspace-1',
+            leasePlanFingerprint: taskLeasePlanFingerprint(plan),
+            state: 'STARTING',
+            revision: 2,
+            startedAt: timestamp
+          },
+          leases: [lease]
+        });
+        return { ownerKey: `builder:${runId}:builder-attempt` };
+      }
+      if (kind === 'repair') {
+        await savedStore.claimRepairStart({
+          runId,
+          attempt: {
+            ...repair,
+            state: 'STARTING',
+            revision: 2,
+            startedAt: timestamp
+          }
+        });
+        return { ownerKey: `repair:${runId}:repair-attempt` };
+      }
+      if (kind === 'integration') {
+        await savedStore.claimIntegrationStart({
+          runId,
+          taskId: 'task-1',
+          workspaceId: 'workspace-1',
+          outputAttemptId: 'builder-attempt'
+        });
+        return { ownerKey: `integration:${runId}:task-1` };
+      }
+      await savedStore.persistLease({ runId, lease });
+      return { ownerKey: `lease:${runId}:admitted-lease` };
+    };
+    const waiting = async (
+      application: 'forge-authority' | 'forge-global-authority',
+      target: 'gate' | 'admission' | 'inventory' = 'gate'
+    ) => {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const rows = await admin`select 1 from pg_stat_activity where datname=current_database()
+          and application_name=${application} and wait_event_type='Lock'
+          and query like ${`%"${schema}".${target === 'gate' ? 'forge_global_control' : target === 'admission' ? 'forge_runs' : 'forge_global_legacy_owners'}%`} limit 1`;
+        if (rows.length) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(`${application} did not wait on the deployment gate`);
+    };
+    const holdContention = async (target: 'admission' | 'inventory') => {
+      blocker = postgres(runtimeConnectionString, { onnotice: () => undefined });
+      let signal: (() => void) | undefined;
+      const acquired = new Promise<void>((resolve) => {
+        signal = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        unblock = resolve;
+      });
+      blocking = blocker
+        .begin(async (tx) => {
+          if (target === 'admission') {
+            await tx.unsafe(`select id from "${schema}".forge_runs where id=$1 for update`, [
+              runId
+            ]);
+          } else {
+            await tx.unsafe(
+              `lock table "${schema}".forge_global_legacy_owners in access exclusive mode`
+            );
+          }
+          signal?.();
+          await release;
+        })
+        .then(() => undefined);
+      await acquired;
+      return () => unblock?.();
+    };
+    const evidence = async () => {
+      const rows = await admin.unsafe(
+        `select kind,key,payload from "${schema}".forge_records
+        where run_id=$1 and kind in ('builder','repair','lease','integration-claim') order by kind,key`,
+        [runId]
+      );
+      return {
+        attempts: rows
+          .filter((row) => row.kind === 'builder' || row.kind === 'repair')
+          .map((row) => `${row.kind}:${row.key}:${row.payload}`),
+        leases: rows
+          .filter((row) => row.kind === 'lease')
+          .map((row) => `${row.key}:${row.payload}`),
+        integrationClaims: rows
+          .filter((row) => row.kind === 'integration-claim')
+          .map((row) => `${row.key}:${row.payload}`)
+      };
+    };
+    return {
+      authority: savedAuthority,
+      peer: savedPeer,
+      scopeId,
+      registeredRepositoryId: 'registered-A',
+      unregisteredRepositoryId: 'unregistered-B',
+      historicalRunId: runId,
+      holdLegacyAdmissionAtGate: async (kind) => {
+        const release = await holdContention('admission');
+        const finished = admitted(kind);
+        await waiting('forge-authority', 'admission');
+        const gate =
+          await admin.unsafe(`select 1 from pg_locks l join pg_class c on c.oid=l.relation
+          where c.oid='"${schema}".forge_global_control'::regclass and l.mode='RowShareLock' and l.granted
+          and l.pid in (select pid from pg_stat_activity where application_name='forge-authority' and wait_event_type='Lock')`);
+        expect(gate).toHaveLength(1);
+        return { finished, release };
+      },
+      holdCutoverAtGate: async () => {
+        const release = await holdContention('inventory');
+        const finished = savedAuthority.beginLegacyCutover();
+        await waiting('forge-global-authority', 'inventory');
+        const gate =
+          await admin.unsafe(`select 1 from pg_locks l join pg_class c on c.oid=l.relation
+          where c.oid='"${schema}".forge_global_control'::regclass and l.mode='RowShareLock' and l.granted
+          and l.pid in (select pid from pg_stat_activity where application_name='forge-global-authority' and wait_event_type='Lock')`);
+        expect(gate).toHaveLength(1);
+        return { finished, release };
+      },
+      admitLegacyWriter: async (kind) => {
+        await admitted(kind);
+      },
+      assertWaitingOnGate: async (operation) => {
+        await waiting(operation === 'cutover' ? 'forge-global-authority' : 'forge-authority');
+      },
+      readLegacyWriterEvidence: evidence,
+      assertRejectedAdmissionHasNoStartResidue: async (kind) => {
+        const rows = await evidence();
+        if (kind === 'builder') {
+          expect(rows.attempts.find((value) => value.startsWith('builder:'))).toContain(
+            '"state":"PREPARING"'
+          );
+          expect(rows.leases).toEqual([]);
+        }
+        if (kind === 'repair') {
+          expect(rows.attempts.find((value) => value.startsWith('repair:'))).toContain(
+            '"state":"PREPARING"'
+          );
+          const history = await admin.unsafe(
+            `select 1 from "${schema}".forge_records where run_id=$1 and kind='repair-history'`,
+            [runId]
+          );
+          expect(history).toHaveLength(0);
+        }
+      },
+      close: async () => {
+        unblock?.();
+        await blocking?.catch(() => undefined);
+        await blocker?.end();
+        await Promise.all([savedAuthority.close(), savedPeer.close(), savedStore.close()]);
+        await admin.unsafe(`drop schema "${schema}" cascade`);
+        await admin.end();
+      }
+    };
+  } catch (error) {
+    unblock?.();
+    await blocking?.catch(() => undefined);
+    await Promise.all([blocker?.end(), authority?.close(), peer?.close(), store?.close()]);
+    await admin.unsafe(`drop schema if exists "${schema}" cascade`);
+    await admin.end();
+    throw error;
+  }
+};
+
+globalMutationCutoverContract('PostgreSQL isolated server', createGlobalCutoverFixture);
+
+it('fences competing runs in the same scope across a third PostgreSQL connection', async () => {
+  const fixture = await createGlobalPermitFixture();
+  const { authority, peer, store, originalClaim, originalGrant, scopeId, schema, admin } = fixture;
+  const third = await PostgresGlobalMutationAuthority.connect({
+    connectionString: runtimeConnectionString,
+    schema,
+    role: runtimeRole
+  });
+  try {
+    await authority.registerAlias(scopeId, 'second-alias');
+    const runId = 'second-run';
+    const request = durableAuthorityRunRequest(runId);
+    await store.createRun({ ...request, run: { ...request.run, repositoryId: 'second-alias' } });
+    await third.bindRun(runId, 'second-alias');
+    const binding = request.taskBindings[0];
+    if (binding === undefined) {
+      throw new Error('Missing competing run binding');
+    }
+    await store.persistAttempt({
+      runId,
+      attempt: {
+        id: 'second-builder',
+        runId,
+        taskId: 'task-1',
+        agentId: 'agent-1',
+        workspaceId: 'workspace-1',
+        leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
+        state: 'PREPARING',
+        revision: 1
+      }
+    });
+    const competing: GlobalMutationClaim = {
+      scopeId,
+      claimId: 'second-claim',
+      owner: { runId, taskId: 'task-1', attemptId: 'second-builder', agentId: 'agent-1' },
+      resources: [{ type: 'project', projectId: 'project-1' }]
+    };
+    expect(await third.claimGlobalMutation(competing)).toMatchObject({
+      status: 'blocked',
+      blockers: [
+        expect.objectContaining({ claimId: originalClaim.claimId, token: originalGrant.token })
+      ]
+    });
+    const lease = (await peer.recoverRepositoryMutationAuthority(scopeId))[0];
+    if (lease === undefined) {
+      throw new Error('Missing original lease');
+    }
+    await peer.markMutationUncertain({
+      scopeId,
+      claimId: originalClaim.claimId,
+      owner: originalClaim.owner,
+      token: originalGrant.token,
+      evidence: 'Worker outcome is uncertain.'
+    });
+    expect(await third.claimGlobalMutation(competing)).toMatchObject({
+      status: 'blocked',
+      blockers: [expect.objectContaining({ state: 'HELD_UNCERTAIN' })]
+    });
+    await authority.reclaimUncertainMutation({
+      scopeId,
+      claimId: originalClaim.claimId,
+      owner: originalClaim.owner,
+      token: originalGrant.token,
+      expectedVersion: lease.version + 1,
+      verifiedQuiescenceEvidence: 'The old worker has stopped.'
+    });
+    const granted = await third.claimGlobalMutation(competing);
+    expect(granted).toMatchObject({ status: 'granted' });
+    if (granted.status !== 'granted') {
+      throw new Error('Competing claim was not granted');
+    }
+    expect(granted.token).toBeGreaterThan(originalGrant.token);
+    const rows = await admin.unsafe(
+      `select claim_id,token,state from "${schema}".forge_global_claims order by claim_id`
+    );
+    expect(rows).toMatchObject([
+      { claim_id: originalClaim.claimId, state: 'RELEASED' },
+      { claim_id: competing.claimId, state: 'ACTIVE' }
+    ]);
+    expect(await peer.recoverRepositoryMutationAuthority(scopeId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ claimId: competing.claimId, token: granted.token })
+      ])
+    );
+  } finally {
+    await third.close();
+    await fixture.close();
+  }
+});
+
+it('rejects invented, mismatched, or overbroad global admissions without consuming a token', async () => {
+  const fixture = await createGlobalPermitFixture();
+  try {
+    const { peer, originalClaim, replacementClaim, schema, admin, scopeId, originalGrant } =
+      fixture;
+    const before = await admin.unsafe(
+      `select next_token from "${schema}".forge_global_control where id=1`
+    );
+    for (const [claimId, owner] of [
+      ['unknown-attempt', { ...replacementClaim.owner, attemptId: 'absent' }],
+      ['wrong-task', { ...replacementClaim.owner, taskId: 'absent' }],
+      ['wrong-agent', { ...replacementClaim.owner, agentId: 'absent' }],
+      ['already-started', originalClaim.owner]
+    ] as const) {
+      await expect(
+        peer.claimGlobalMutation({ ...replacementClaim, claimId, owner })
+      ).rejects.toThrow();
+    }
+    for (const resources of [
+      [{ type: 'repository' as const }],
+      [{ type: 'project' as const, projectId: 'different-project' }]
+    ]) {
+      await expect(peer.claimGlobalMutation({ ...replacementClaim, resources })).rejects.toThrow(
+        'exceeds the approved lease plan'
+      );
+    }
+    expect(
+      await admin.unsafe(`select next_token from "${schema}".forge_global_control where id=1`)
+    ).toEqual(before);
+    expect(
+      await admin.unsafe(`select claim_id from "${schema}".forge_global_claims`)
+    ).toMatchObject([{ claim_id: originalClaim.claimId }]);
+    expect(await peer.claimGlobalMutation(originalClaim)).toMatchObject({
+      status: 'granted',
+      token: originalGrant.token
+    });
+    expect(await peer.claimGlobalMutation(replacementClaim)).toMatchObject({ status: 'blocked' });
+    const lease = (await peer.recoverRepositoryMutationAuthority(scopeId))[0];
+    if (lease === undefined) {
+      throw new Error('Missing original claim');
+    }
+    await peer.releaseGlobalMutation({
+      scopeId,
+      claimId: originalClaim.claimId,
+      owner: originalClaim.owner,
+      token: originalGrant.token,
+      expectedVersion: lease.version,
+      stopEvidence: 'Worker stopped.'
+    });
+    const replacement = await peer.claimGlobalMutation(replacementClaim);
+    expect(replacement).toMatchObject({ status: 'granted' });
+    if (replacement.status !== 'granted') {
+      throw new Error('Missing replacement claim');
+    }
+    expect(replacement.token).toBeGreaterThan(originalGrant.token);
+    const row = await admin.unsafe(
+      `select payload from "${schema}".forge_records where run_id=$1 and kind='builder' and key='replacement'`,
+      [originalClaim.owner.runId]
+    );
+    expect(JSON.parse(String(row[0]?.payload))).toMatchObject({ state: 'STARTING', revision: 2 });
+  } finally {
+    await fixture.close();
+  }
+});
+
+it('advances an admitted repair attempt and its history in the same claim transaction', async () => {
+  const fixture = await createGlobalPermitFixture();
+  try {
+    const { store, peer, admin, schema, scopeId, originalClaim, originalGrant } = fixture;
+    const runId = originalClaim.owner.runId;
+    const repair = {
+      ...durableAuthorityRepairAttempt('repair-attempt'),
+      runId,
+      parentReviewSubject: {
+        ...durableAuthorityRepairAttempt('repair-attempt').parentReviewSubject,
+        builderAttemptId: 'original'
+      }
+    };
+    await store.persistRepairAttempt({ runId, attempt: repair });
+    const claim: GlobalMutationClaim = {
+      scopeId,
+      claimId: 'repair-claim',
+      owner: { runId, taskId: 'task-1', attemptId: repair.id, agentId: repair.agentId },
+      resources: [{ type: 'project', projectId: 'project-1' }]
+    };
+    await expect(peer.claimGlobalMutation(claim)).rejects.toThrow('no admitted work item');
+    const binding = await store.recoverTaskBinding(runId, 'task-1');
+    if (binding === undefined) {
+      throw new Error('Missing repair binding');
+    }
+    await store.persistRepairWorkItem({
+      ...durableAuthorityRepairWorkItem({ ...repair, runId }),
+      builderAttemptId: 'original',
+      leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan)
+    });
+    expect(await peer.claimGlobalMutation(claim)).toMatchObject({ status: 'blocked' });
+    const lease = (await peer.recoverRepositoryMutationAuthority(scopeId))[0];
+    if (lease === undefined) {
+      throw new Error('Missing original lease');
+    }
+    await peer.releaseGlobalMutation({
+      scopeId,
+      claimId: originalClaim.claimId,
+      owner: originalClaim.owner,
+      token: originalGrant.token,
+      expectedVersion: lease.version,
+      stopEvidence: 'Worker stopped.'
+    });
+    expect(await peer.claimGlobalMutation(claim)).toMatchObject({ status: 'granted' });
+    const rows = await admin.unsafe(
+      `select kind,payload from "${schema}".forge_records where run_id=$1 and kind in ('repair','repair-history') order by kind`,
+      [runId]
+    );
+    expect(rows.map((row) => [row.kind, JSON.parse(String(row.payload)).state])).toEqual([
+      ['repair', 'STARTING'],
+      ['repair-history', 'PREPARING']
+    ]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+it('keeps unknown-alias historical owners blocking every scope until classified and imported', async () => {
+  const schema = `forge_global_import_${++fixtureOrdinal}`;
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  let store: PostgresOrchestrationPersistence | undefined;
+  let authority: PostgresGlobalMutationAuthority | undefined;
+  let peer: PostgresGlobalMutationAuthority | undefined;
+  try {
+    await migratePostgresAuthoritySchema(
+      { connectionString: ownerConnectionString, schema, role },
+      runtimeRole,
+      3
+    );
+    store = await PostgresOrchestrationPersistence.connect(runtime);
+    authority = await PostgresGlobalMutationAuthority.connect(runtime);
+    peer = await PostgresGlobalMutationAuthority.connect(runtime);
+    const scopeId = await authority.registerScope('known-repository');
+    await store.createRun({
+      ...durableAuthorityRunRequest('historical-run'),
+      run: {
+        ...durableAuthorityRunRequest('historical-run').run,
+        repositoryId: 'unregistered-repository'
+      }
+    });
+    await authority.beginLegacyCutover();
+    expect(await peer.recoverLegacyOwners()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'run:historical-run',
+          repositoryId: 'unregistered-repository',
+          kind: 'run'
+        })
+      ])
+    );
+    await expect(peer.completeLegacyCutover('Workers stopped.')).rejects.toThrow('unresolved');
+    await expect(peer.activateScope(scopeId)).rejects.toThrow('not globally ready');
+    await peer.importLegacyOwner('run:historical-run', scopeId, {
+      type: 'file',
+      projectId: 'guess',
+      fileId: 'guess'
+    });
+    await peer.completeLegacyCutover('All previous worker processes are stopped.');
+    await peer.activateScope(scopeId);
+    expect(await authority.registerScope('unregistered-repository')).toBe(scopeId);
+    const third = await PostgresGlobalMutationAuthority.connect(runtime);
+    try {
+      expect(await third.recoverRepositoryMutationAuthority(scopeId)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            claimId: 'legacy:run:historical-run',
+            state: 'HELD_UNCERTAIN',
+            resource: { type: 'repository' }
+          })
+        ])
+      );
+    } finally {
+      await third.close();
+    }
+    const audit = await admin.unsafe(`select action,evidence from "${schema}".forge_global_audit`);
+    expect(audit).toMatchObject([
+      { action: 'complete-legacy-cutover', evidence: 'All previous worker processes are stopped.' }
+    ]);
+  } finally {
+    await Promise.all([store?.close(), authority?.close(), peer?.close()]);
+    await admin.unsafe(`drop schema if exists "${schema}" cascade`);
+    await admin.end();
+  }
+});
+
+it('fails closed before allocating an unsafe BIGINT token', async () => {
+  const fixture = await createGlobalPermitFixture();
+  try {
+    const { admin, schema, peer, originalClaim, originalGrant, replacementClaim, scopeId } =
+      fixture;
+    const lease = (await peer.recoverRepositoryMutationAuthority(scopeId))[0];
+    if (lease === undefined) {
+      throw new Error('Missing original lease');
+    }
+    await peer.releaseGlobalMutation({
+      scopeId,
+      claimId: originalClaim.claimId,
+      owner: originalClaim.owner,
+      token: originalGrant.token,
+      expectedVersion: lease.version,
+      stopEvidence: 'Worker stopped.'
+    });
+    await admin.unsafe(`update "${schema}".forge_global_control set next_token=$1 where id=1`, [
+      String(Number.MAX_SAFE_INTEGER)
+    ]);
+    await expect(peer.claimGlobalMutation(replacementClaim)).rejects.toThrow('token exhausted');
+    const rows = await admin.unsafe(
+      `select payload from "${schema}".forge_records where run_id=$1 and kind='builder' and key='replacement'`,
+      [originalClaim.owner.runId]
+    );
+    expect(JSON.parse(String(rows[0]?.payload))).toMatchObject({ state: 'PREPARING', revision: 1 });
+    expect(
+      await admin.unsafe(
+        `select claim_id from "${schema}".forge_global_claims where claim_id='replacement-claim'`
+      )
+    ).toEqual([]);
+  } finally {
+    await fixture.close();
+  }
+});
 
 it('installs, upgrades, and safely reruns migrations without losing persisted authority', async () => {
   const schema = `forge_upgrade_${++fixtureOrdinal}`;

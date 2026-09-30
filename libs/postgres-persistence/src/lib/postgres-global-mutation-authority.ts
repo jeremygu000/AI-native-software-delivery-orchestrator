@@ -1,0 +1,1068 @@
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+
+import postgres from 'postgres';
+import {
+  agentExecutionAttemptSchema,
+  areWritableResourcesConflicting,
+  canonicalTaskLeaseResources,
+  GlobalMutationInFlightError,
+  isWritableResourceCoveredBy,
+  persistedTaskExecutionBindingSchema,
+  taskLeasePlanFingerprint,
+  taskRepairAttemptSchema,
+  taskRepairWorkItemSchema,
+  writableResourceIdentity,
+  writableResourceSchema,
+  type CurrentMutationTokenRequest,
+  type FencedMutationExecutionPermit,
+  type GlobalMutationAuthority,
+  type GlobalMutationClaim,
+  type GlobalMutationClaimResult,
+  type GlobalMutationLease,
+  type GlobalMutationOwner,
+  type LegacyMutationOwner,
+  type PersistedFencedMutationPermit,
+  type WritableResource
+} from '@ai-native-software-delivery-orchestrator/domain';
+
+import type { PostgresEvidenceStoreConfiguration } from './postgres-evidence-store.js';
+import {
+  assertPostgresAuthorityLogin,
+  assertPostgresGlobalAuthoritySchema
+} from './postgres-authority-schema.js';
+
+type Sql = ReturnType<typeof postgres>;
+type Tx = postgres.TransactionSql;
+type Query = Sql | Tx;
+type Row = postgres.Row;
+
+const required = (value: string, name: string): string => {
+  if (!value.trim()) {
+    throw new Error(`${name} must not be empty`);
+  }
+  return value;
+};
+const json = (value: unknown): unknown => JSON.parse(String(value));
+const fields = (value: unknown): Record<string, unknown> => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Invalid persisted global authority payload');
+  }
+  return Object.fromEntries(Object.entries(value));
+};
+const runIdentity = (value: unknown): { id: string; repositoryId: string } => {
+  const run = fields(fields(json(value)).run);
+  if (typeof run.id !== 'string' || typeof run.repositoryId !== 'string') {
+    throw new Error('Invalid historical run repository identity');
+  }
+  return { id: run.id, repositoryId: run.repositoryId };
+};
+const legacyOwner = (value: unknown): LegacyMutationOwner => {
+  const item = fields(json(value));
+  if (
+    typeof item.key !== 'string' ||
+    typeof item.runId !== 'string' ||
+    typeof item.repositoryId !== 'string' ||
+    !['run', 'lease', 'builder', 'repair', 'integration'].includes(String(item.kind))
+  ) {
+    throw new Error('Invalid historical mutation owner');
+  }
+  const kind = item.kind;
+  if (
+    kind !== 'run' &&
+    kind !== 'lease' &&
+    kind !== 'builder' &&
+    kind !== 'repair' &&
+    kind !== 'integration'
+  ) {
+    throw new Error('Invalid historical mutation owner kind');
+  }
+  return {
+    key: item.key,
+    runId: item.runId,
+    repositoryId: item.repositoryId,
+    kind,
+    ...(item.resource === undefined
+      ? {}
+      : { resource: writableResourceSchema.parse(item.resource) })
+  };
+};
+const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+const resource = (value: unknown): WritableResource => writableResourceSchema.parse(json(value));
+const resourceKey = (value: WritableResource): string =>
+  `${value.type}\u0000${writableResourceIdentity(value)}`;
+const owner = (value: unknown): GlobalMutationOwner => {
+  const item = fields(json(value));
+  for (const key of ['runId', 'taskId', 'attemptId', 'agentId']) {
+    if (typeof item[key] !== 'string') {
+      throw new Error('Invalid persisted global mutation owner');
+    }
+  }
+  if (item.workspaceId !== undefined && typeof item.workspaceId !== 'string') {
+    throw new Error('Invalid persisted global mutation owner');
+  }
+  if (
+    typeof item.runId !== 'string' ||
+    typeof item.taskId !== 'string' ||
+    typeof item.attemptId !== 'string' ||
+    typeof item.agentId !== 'string'
+  ) {
+    throw new Error('Invalid persisted global mutation owner');
+  }
+  return {
+    runId: item.runId,
+    taskId: item.taskId,
+    attemptId: item.attemptId,
+    agentId: item.agentId,
+    ...(typeof item.workspaceId === 'string' ? { workspaceId: item.workspaceId } : {})
+  };
+};
+const safeInteger = (value: unknown): number => {
+  const big = BigInt(String(value));
+  if (big < 0n || big > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Global mutation integer exceeds the safe JavaScript range');
+  }
+  return Number(big);
+};
+const attemptJson = (value: unknown): unknown =>
+  JSON.parse(String(value), (key: string, entry: unknown): unknown =>
+    (key === 'startedAt' || key === 'completedAt') && typeof entry === 'string'
+      ? new Date(entry)
+      : entry
+  );
+const verifier = (secret: string): Buffer => createHash('sha256').update(secret).digest();
+
+/** Runtime-only v3 authority; all transitions use gate -> scope -> run lock order. */
+export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority {
+  readonly #sql: Sql;
+  readonly #schema: string;
+
+  private constructor(configuration: PostgresEvidenceStoreConfiguration) {
+    this.#schema = `"${configuration.schema}"`;
+    this.#sql = postgres(configuration.connectionString, {
+      connection: { application_name: 'forge-global-authority' },
+      onnotice: () => undefined
+    });
+  }
+
+  static async connect(
+    configuration: PostgresEvidenceStoreConfiguration
+  ): Promise<PostgresGlobalMutationAuthority> {
+    assertPostgresAuthorityLogin(configuration);
+    const authority = new PostgresGlobalMutationAuthority(configuration);
+    try {
+      await assertPostgresGlobalAuthoritySchema(authority.#sql, configuration);
+      return authority;
+    } catch (error) {
+      await authority.close();
+      throw error;
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.#sql.end({ timeout: 5 });
+  }
+
+  async #one(
+    tx: Query,
+    statement: string,
+    parameters: postgres.ParameterOrJSON<never>[] = []
+  ): Promise<Row | undefined> {
+    return (await tx.unsafe(statement, parameters))[0];
+  }
+
+  async #locked<T>(
+    work: (tx: Tx, state: string) => Promise<T>,
+    scopeId?: string,
+    runId?: string
+  ): Promise<T> {
+    const result = await this.#sql.begin(async (tx) => {
+      const control = await this.#one(
+        tx,
+        `select state from ${this.#schema}.forge_global_control where id=1 for update`
+      );
+      if (control === undefined) {
+        throw new Error('Missing global authority control row');
+      }
+      if (scopeId !== undefined) {
+        await this.#scope(tx, scopeId, true);
+      }
+      if (runId !== undefined) {
+        const run = await this.#one(
+          tx,
+          `select id from ${this.#schema}.forge_runs where id=$1 for update`,
+          [runId]
+        );
+        if (run === undefined) {
+          throw new Error(`Unknown orchestration run: ${runId}`);
+        }
+      }
+      return { value: await work(tx, String(control.state)) };
+    });
+    return result.value;
+  }
+
+  async #scope(tx: Query, scopeId: string, lock = false): Promise<string> {
+    const row = await this.#one(
+      tx,
+      `select state from ${this.#schema}.forge_global_scopes where id=$1 ${lock ? 'for update' : ''}`,
+      [scopeId]
+    );
+    if (row === undefined) {
+      throw new Error(`Unknown repository scope: ${scopeId}`);
+    }
+    return String(row.state);
+  }
+
+  async #claim(tx: Query, scopeId: string, claimId: string): Promise<Row> {
+    const row = await this.#one(
+      tx,
+      `select * from ${this.#schema}.forge_global_claims where scope_id=$1 and claim_id=$2`,
+      [scopeId, claimId]
+    );
+    if (row === undefined) {
+      throw new Error(`Unknown global mutation claim: ${scopeId}/${claimId}`);
+    }
+    return row;
+  }
+
+  async #leases(tx: Query, scopeId: string, claimId?: string): Promise<GlobalMutationLease[]> {
+    const rows = await tx.unsafe(
+      `select c.*,l.lease_id,l.resource_json from ${this.#schema}.forge_global_claims c
+       join ${this.#schema}.forge_global_leases l using (scope_id,claim_id)
+       where c.scope_id=$1 ${claimId === undefined ? '' : 'and c.claim_id=$2'}
+       order by c.token,c.claim_id,l.lease_id`,
+      claimId === undefined ? [scopeId] : [scopeId, claimId]
+    );
+    return rows.map((row) => ({
+      scopeId: String(row.scope_id),
+      claimId: String(row.claim_id),
+      leaseId: String(row.lease_id),
+      token: safeInteger(row.token),
+      version: safeInteger(row.version),
+      resource: resource(row.resource_json),
+      owner: owner(row.owner_json),
+      state: this.#claimState(row.state),
+      ...(row.evidence === null ? {} : { evidence: String(row.evidence) })
+    }));
+  }
+
+  #claimState(value: unknown): GlobalMutationLease['state'] {
+    if (value === 'ACTIVE' || value === 'HELD_UNCERTAIN' || value === 'RELEASED') {
+      return value;
+    }
+    throw new Error('Invalid global mutation claim state');
+  }
+
+  async #nextToken(tx: Tx): Promise<number> {
+    const row = await this.#one(
+      tx,
+      `select next_token from ${this.#schema}.forge_global_control where id=1`
+    );
+    const next = BigInt(String(row?.next_token)) + 1n;
+    if (next > BigInt(Number.MAX_SAFE_INTEGER) || next <= 0n) {
+      throw new Error('Global mutation token exhausted');
+    }
+    await tx.unsafe(`update ${this.#schema}.forge_global_control set next_token=$1 where id=1`, [
+      next.toString()
+    ]);
+    return Number(next);
+  }
+
+  async registerScope(repositoryId: string): Promise<string> {
+    required(repositoryId, 'Repository ID');
+    return this.#locked(async (tx) => {
+      const existing = await this.#one(
+        tx,
+        `select scope_id from ${this.#schema}.forge_global_aliases where repository_id=$1`,
+        [repositoryId]
+      );
+      if (existing !== undefined) {
+        return String(existing.scope_id);
+      }
+      const scopeId = randomUUID();
+      await tx.unsafe(`insert into ${this.#schema}.forge_global_scopes values ($1,'REGISTERING')`, [
+        scopeId
+      ]);
+      await tx.unsafe(`insert into ${this.#schema}.forge_global_aliases values ($1,$2)`, [
+        repositoryId,
+        scopeId
+      ]);
+      return scopeId;
+    });
+  }
+
+  async registerAlias(scopeId: string, repositoryId: string): Promise<void> {
+    required(repositoryId, 'Repository ID');
+    await this.#locked(async (tx) => {
+      const existing = await this.#one(
+        tx,
+        `select scope_id from ${this.#schema}.forge_global_aliases where repository_id=$1`,
+        [repositoryId]
+      );
+      if (existing !== undefined && existing.scope_id !== scopeId) {
+        throw new Error('Alias scope conflict');
+      }
+      if (existing === undefined) {
+        await tx.unsafe(`insert into ${this.#schema}.forge_global_aliases values ($1,$2)`, [
+          repositoryId,
+          scopeId
+        ]);
+      }
+    }, scopeId);
+  }
+
+  async bindRun(runId: string, repositoryId: string): Promise<void> {
+    const scopeId = await this.#boundScope(runId, repositoryId);
+    await this.#locked(
+      async (tx) => {
+        const row = await this.#one(
+          tx,
+          `select payload from ${this.#schema}.forge_runs where id=$1`,
+          [runId]
+        );
+        const run = runIdentity(row?.payload);
+        if (run.repositoryId !== repositoryId || run.id !== runId) {
+          throw new Error('Run repository identity mismatch');
+        }
+        const old = await this.#one(
+          tx,
+          `select repository_id,scope_id from ${this.#schema}.forge_global_run_bindings where run_id=$1`,
+          [runId]
+        );
+        const alias = await this.#one(
+          tx,
+          `select scope_id from ${this.#schema}.forge_global_aliases where repository_id=$1`,
+          [repositoryId]
+        );
+        if (alias === undefined || alias.scope_id !== scopeId) {
+          throw new Error('Unregistered repository alias or changed scope');
+        }
+        if (
+          old !== undefined &&
+          (old.repository_id !== repositoryId || old.scope_id !== alias.scope_id)
+        ) {
+          throw new Error('Run binding is immutable');
+        }
+        if (old === undefined) {
+          await tx.unsafe(
+            `insert into ${this.#schema}.forge_global_run_bindings values ($1,$2,$3)`,
+            [runId, repositoryId, alias.scope_id]
+          );
+        }
+      },
+      scopeId,
+      runId
+    );
+  }
+
+  // Resolve identity before locking; the gate rechecks the alias inside the transaction.
+  async #boundScope(runId: string, repositoryId: string): Promise<string> {
+    const row = await this.#one(
+      this.#sql,
+      `select scope_id from ${this.#schema}.forge_global_aliases where repository_id=$1`,
+      [repositoryId]
+    );
+    if (row === undefined) {
+      throw new Error(`Unregistered repository alias for ${runId}`);
+    }
+    return String(row.scope_id);
+  }
+
+  async #inventory(tx: Tx): Promise<LegacyMutationOwner[]> {
+    const runs = await tx.unsafe(
+      `select id,state,payload from ${this.#schema}.forge_runs order by id`
+    );
+    const repositories = new Map<string, string>();
+    const owners: LegacyMutationOwner[] = [];
+    for (const row of runs) {
+      const value = runIdentity(row.payload);
+      if (value.id !== row.id) {
+        throw new Error('Invalid historical run repository identity');
+      }
+      repositories.set(String(row.id), value.repositoryId);
+      if (row.state === 'ACTIVE' || row.state === 'CANCEL_REQUESTED') {
+        owners.push({
+          key: `run:${row.id}`,
+          runId: String(row.id),
+          repositoryId: value.repositoryId,
+          kind: 'run'
+        });
+      }
+    }
+    const records = await tx.unsafe(
+      `select run_id,kind,key,payload from ${this.#schema}.forge_records
+       where kind in ('lease','builder','repair','integration-claim') order by run_id,kind,key`
+    );
+    for (const row of records) {
+      const repositoryId = repositories.get(String(row.run_id));
+      if (repositoryId === undefined) {
+        throw new Error('Historical owner run is missing');
+      }
+      if (row.kind === 'integration-claim') {
+        owners.push({
+          key: `integration:${row.run_id}:${row.key}`,
+          runId: String(row.run_id),
+          repositoryId,
+          kind: 'integration'
+        });
+        continue;
+      }
+      const value = fields(json(row.payload));
+      if (!['ACTIVE', 'STARTING', 'RUNNING', 'UNKNOWN', 'STALE'].includes(String(value.state))) {
+        continue;
+      }
+      const kind = row.kind;
+      if (kind !== 'lease' && kind !== 'builder' && kind !== 'repair') {
+        throw new Error('Invalid historical mutation owner kind');
+      }
+      owners.push({
+        key: `${kind}:${row.run_id}:${row.key}`,
+        runId: String(row.run_id),
+        repositoryId,
+        kind,
+        ...(value.resource === undefined
+          ? {}
+          : { resource: writableResourceSchema.parse(value.resource) })
+      });
+    }
+    return owners;
+  }
+
+  async beginLegacyCutover(): Promise<void> {
+    await this.#locked(async (tx, state) => {
+      if (state !== 'LEGACY_ALLOWED') {
+        throw new Error('Legacy cutover already began');
+      }
+      await tx.unsafe(
+        `update ${this.#schema}.forge_global_control set state='LEGACY_CUTOVER' where id=1`
+      );
+      for (const item of await this.#inventory(tx)) {
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_global_legacy_owners (key,owner_json) values ($1,$2)`,
+          [item.key, JSON.stringify(item)]
+        );
+      }
+    });
+  }
+
+  async recoverLegacyOwners(): Promise<readonly LegacyMutationOwner[]> {
+    const rows = await this.#sql.unsafe(
+      `select owner_json from ${this.#schema}.forge_global_legacy_owners order by key`
+    );
+    return rows.map((row) => legacyOwner(row.owner_json));
+  }
+
+  async settleLegacyOwner(key: string, quiescenceEvidence: string): Promise<void> {
+    required(quiescenceEvidence, 'Quiescence evidence');
+    await this.#locked(async (tx) => {
+      const row = await this.#one(
+        tx,
+        `select disposition from ${this.#schema}.forge_global_legacy_owners where key=$1`,
+        [key]
+      );
+      if (row === undefined || row.disposition !== null) {
+        throw new Error('Legacy owner is not unresolved');
+      }
+      await tx.unsafe(
+        `update ${this.#schema}.forge_global_legacy_owners set disposition='SETTLED',evidence=$2 where key=$1`,
+        [key, quiescenceEvidence]
+      );
+    });
+  }
+
+  async importLegacyOwner(
+    key: string,
+    scopeId: string,
+    requested?: WritableResource
+  ): Promise<void> {
+    const runId = await this.#legacyRunId(key);
+    await this.#locked(
+      async (tx) => {
+        const row = await this.#one(
+          tx,
+          `select owner_json,disposition from ${this.#schema}.forge_global_legacy_owners where key=$1`,
+          [key]
+        );
+        if (row === undefined || row.disposition !== null) {
+          throw new Error('Legacy owner is not unresolved');
+        }
+        const historical = legacyOwner(row.owner_json);
+        if (historical.runId !== runId) {
+          throw new Error('Historical owner changed during classification');
+        }
+        const run = await this.#one(
+          tx,
+          `select payload from ${this.#schema}.forge_runs where id=$1`,
+          [historical.runId]
+        );
+        const payload = runIdentity(run?.payload);
+        if (payload.id !== historical.runId || payload.repositoryId !== historical.repositoryId) {
+          throw new Error('Historical owner repository identity no longer matches its run');
+        }
+        const alias = await this.#one(
+          tx,
+          `select scope_id from ${this.#schema}.forge_global_aliases where repository_id=$1`,
+          [historical.repositoryId]
+        );
+        if (alias !== undefined && alias.scope_id !== scopeId) {
+          throw new Error('Legacy alias scope conflict');
+        }
+        if (alias === undefined) {
+          await tx.unsafe(`insert into ${this.#schema}.forge_global_aliases values ($1,$2)`, [
+            historical.repositoryId,
+            scopeId
+          ]);
+        }
+        const binding = await this.#one(
+          tx,
+          `select repository_id,scope_id from ${this.#schema}.forge_global_run_bindings where run_id=$1`,
+          [historical.runId]
+        );
+        if (
+          binding !== undefined &&
+          (binding.repository_id !== historical.repositoryId || binding.scope_id !== scopeId)
+        ) {
+          throw new Error('Historical run scope binding conflict');
+        }
+        if (binding === undefined) {
+          await tx.unsafe(
+            `insert into ${this.#schema}.forge_global_run_bindings values ($1,$2,$3)`,
+            [historical.runId, historical.repositoryId, scopeId]
+          );
+        }
+        const leaseResource =
+          historical.resource === undefined
+            ? { type: 'repository' as const }
+            : requested === undefined
+              ? writableResourceSchema.parse(historical.resource)
+              : writableResourceSchema.parse(requested);
+        if (
+          historical.resource !== undefined &&
+          !isWritableResourceCoveredBy(leaseResource, historical.resource)
+        ) {
+          throw new Error('Imported authority cannot be narrower than historical evidence');
+        }
+        const token = await this.#nextToken(tx);
+        const claimId = `legacy:${key}`;
+        const importedOwner: GlobalMutationOwner = {
+          runId: historical.runId,
+          taskId: 'legacy',
+          attemptId: key,
+          agentId: 'legacy'
+        };
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_global_claims values ($1,$2,$3,$4,'HELD_UNCERTAIN',1,$5)`,
+          [
+            scopeId,
+            claimId,
+            JSON.stringify(importedOwner),
+            token,
+            'Historical owner imported during global cutover'
+          ]
+        );
+        await tx.unsafe(`insert into ${this.#schema}.forge_global_leases values ($1,$2,$3,$4)`, [
+          scopeId,
+          claimId,
+          randomUUID(),
+          JSON.stringify(leaseResource)
+        ]);
+        await tx.unsafe(
+          `update ${this.#schema}.forge_global_legacy_owners set disposition='IMPORTED',evidence=$2 where key=$1`,
+          [key, scopeId]
+        );
+      },
+      scopeId,
+      runId
+    );
+  }
+
+  async #legacyRunId(key: string): Promise<string> {
+    const row = await this.#one(
+      this.#sql,
+      `select owner_json from ${this.#schema}.forge_global_legacy_owners where key=$1`,
+      [key]
+    );
+    if (row === undefined) {
+      throw new Error('Legacy owner is not unresolved');
+    }
+    return legacyOwner(row.owner_json).runId;
+  }
+
+  async completeLegacyCutover(verifiedOldWriterShutdownEvidence: string): Promise<void> {
+    required(verifiedOldWriterShutdownEvidence, 'Old writer shutdown evidence');
+    await this.#locked(async (tx, state) => {
+      if (state !== 'LEGACY_CUTOVER') {
+        throw new Error('Legacy cutover not in progress');
+      }
+      const unresolved = await this.#one(
+        tx,
+        `select 1 from ${this.#schema}.forge_global_legacy_owners where disposition is null limit 1`
+      );
+      if (unresolved !== undefined) {
+        throw new Error('Historical legacy owners remain unresolved');
+      }
+      await tx.unsafe(
+        `update ${this.#schema}.forge_global_control set state='GLOBAL_READY' where id=1`
+      );
+      await this.#audit(
+        tx,
+        'complete-legacy-cutover',
+        'deployment',
+        verifiedOldWriterShutdownEvidence
+      );
+    });
+  }
+
+  async activateScope(scopeId: string): Promise<void> {
+    await this.#locked(async (tx, state) => {
+      if (state !== 'GLOBAL_READY') {
+        throw new Error('Deployment is not globally ready');
+      }
+      await tx.unsafe(
+        `update ${this.#schema}.forge_global_scopes set state='ACTIVE_FOR_GLOBAL_CLAIMS' where id=$1`,
+        [scopeId]
+      );
+    }, scopeId);
+  }
+
+  async #record(tx: Query, runId: string, kind: string, key: string): Promise<string | undefined> {
+    const row = await this.#one(
+      tx,
+      `select payload from ${this.#schema}.forge_records where run_id=$1 and kind=$2 and key=$3`,
+      [runId, kind, key]
+    );
+    return row === undefined ? undefined : String(row.payload);
+  }
+
+  async #authorizedAttempt(
+    tx: Tx,
+    claim: GlobalMutationClaim,
+    retry: boolean
+  ): Promise<{
+    kind: 'builder' | 'repair';
+    attempt:
+      | ReturnType<typeof agentExecutionAttemptSchema.parse>
+      | ReturnType<typeof taskRepairAttemptSchema.parse>;
+    previous: string;
+  }> {
+    const { runId, taskId, attemptId, agentId, workspaceId } = claim.owner;
+    const run = await this.#one(
+      tx,
+      `select state,payload from ${this.#schema}.forge_runs where id=$1`,
+      [runId]
+    );
+    const binding = await this.#one(
+      tx,
+      `select repository_id,scope_id from ${this.#schema}.forge_global_run_bindings where run_id=$1`,
+      [runId]
+    );
+    const approved = fields(json(run?.payload));
+    const identity = runIdentity(run?.payload);
+    if (
+      run?.state !== 'ACTIVE' ||
+      binding?.scope_id !== claim.scopeId ||
+      binding.repository_id !== identity.repositoryId ||
+      identity.id !== runId
+    ) {
+      throw new Error('Claim run is not active in the approved repository scope');
+    }
+    if (
+      !Array.isArray(approved.tasks) ||
+      !approved.tasks.some((task: unknown) => fields(task).id === taskId)
+    ) {
+      throw new Error('Global mutation owner task is not in the approved run');
+    }
+    const record = await this.#record(tx, runId, 'binding', taskId);
+    if (record === undefined) {
+      throw new Error('Mutation attempt has no approved task execution binding');
+    }
+    const taskBinding = persistedTaskExecutionBindingSchema.parse(json(record));
+    if (taskBinding.runId !== runId || taskBinding.taskId !== taskId) {
+      throw new Error('Mutation attempt does not match its approved task binding');
+    }
+    const builder = await this.#record(tx, runId, 'builder', attemptId);
+    const repair = await this.#record(tx, runId, 'repair', attemptId);
+    if ((builder === undefined) === (repair === undefined)) {
+      throw new Error('Global mutation owner needs one unambiguous persisted attempt');
+    }
+    const kind = builder === undefined ? 'repair' : 'builder';
+    const previous = builder ?? repair;
+    if (previous === undefined) {
+      throw new Error('Missing persisted attempt');
+    }
+    const attempt =
+      kind === 'builder'
+        ? agentExecutionAttemptSchema.parse(attemptJson(previous))
+        : taskRepairAttemptSchema.parse(attemptJson(previous));
+    if (
+      attempt.runId !== runId ||
+      attempt.taskId !== taskId ||
+      attempt.id !== attemptId ||
+      attempt.agentId !== agentId ||
+      (workspaceId !== undefined && attempt.workspaceId !== workspaceId) ||
+      (retry ? !['STARTING', 'RUNNING'].includes(attempt.state) : attempt.state !== 'PREPARING')
+    ) {
+      throw new Error('Attempt lifecycle or owner does not authorize global mutation admission');
+    }
+    if (kind === 'builder') {
+      if (
+        taskBinding.agentId !== agentId ||
+        taskBinding.workspace.id !== attempt.workspaceId ||
+        taskLeasePlanFingerprint(taskBinding.leasePlan) !==
+          agentExecutionAttemptSchema.parse(attempt).leasePlanFingerprint
+      ) {
+        throw new Error('Builder attempt does not match its approved task binding');
+      }
+    } else {
+      const repairAttempt = taskRepairAttemptSchema.parse(attempt);
+      const item = await this.#record(tx, runId, 'repair-item', attemptId);
+      if (item === undefined) {
+        throw new Error('Repair attempt has no admitted work item');
+      }
+      const work = taskRepairWorkItemSchema.parse(json(item));
+      if (
+        work.runId !== runId ||
+        work.taskId !== taskId ||
+        work.repairAttemptId !== attemptId ||
+        work.workspaceId !== attempt.workspaceId ||
+        work.parentReviewIteration !== repairAttempt.parentReviewIteration ||
+        work.builderAttemptId !== repairAttempt.parentReviewSubject.builderAttemptId ||
+        work.leasePlanFingerprint !== taskLeasePlanFingerprint(taskBinding.leasePlan)
+      ) {
+        throw new Error('Repair attempt does not match its admitted work item');
+      }
+    }
+    if (
+      claim.resources.some(
+        (requested) =>
+          !taskBinding.leasePlan.predictedResources.some((allowed) =>
+            isWritableResourceCoveredBy(allowed, requested)
+          )
+      )
+    ) {
+      throw new Error('Global claim resource exceeds the approved lease plan');
+    }
+    return { kind, attempt, previous };
+  }
+
+  async claimGlobalMutation(claim: GlobalMutationClaim): Promise<GlobalMutationClaimResult> {
+    return this.#locked(
+      async (tx, state) => {
+        if (
+          state !== 'GLOBAL_READY' ||
+          (await this.#scope(tx, claim.scopeId)) !== 'ACTIVE_FOR_GLOBAL_CLAIMS'
+        ) {
+          throw new Error('Global mutation claims are not active');
+        }
+        required(claim.claimId, 'Claim ID');
+        if (!claim.resources.length) {
+          throw new Error('A global claim needs resources');
+        }
+        const resources = canonicalTaskLeaseResources(
+          claim.resources.map((entry) => writableResourceSchema.parse(entry))
+        );
+        if (new Set(resources.map(resourceKey)).size !== resources.length) {
+          throw new Error('Duplicate claim resource');
+        }
+        const request = { ...claim, resources };
+        const old = await this.#one(
+          tx,
+          `select * from ${this.#schema}.forge_global_claims where scope_id=$1 and claim_id=$2`,
+          [claim.scopeId, claim.claimId]
+        );
+        if (old !== undefined) {
+          await this.#authorizedAttempt(tx, request, true);
+          const existing = await this.#leases(tx, claim.scopeId, claim.claimId);
+          if (
+            old.state !== 'ACTIVE' ||
+            !same(owner(old.owner_json), claim.owner) ||
+            !same(
+              existing.map((lease) => resourceKey(lease.resource)).toSorted(),
+              resources.map(resourceKey).toSorted()
+            )
+          ) {
+            throw new Error('Claim ID replay conflicts with durable authority');
+          }
+          return {
+            status: 'granted',
+            token: safeInteger(old.token),
+            leases: existing
+          };
+        }
+        const admitted = await this.#authorizedAttempt(tx, request, false);
+        const blockers = (await this.#leases(tx, claim.scopeId)).filter(
+          (lease) =>
+            lease.state !== 'RELEASED' &&
+            resources.some((entry) => areWritableResourcesConflicting(lease.resource, entry))
+        );
+        if (blockers.length) {
+          return { status: 'blocked', blockers };
+        }
+        const token = await this.#nextToken(tx);
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_global_claims values ($1,$2,$3,$4,'ACTIVE',1,null)`,
+          [claim.scopeId, claim.claimId, JSON.stringify(claim.owner), token]
+        );
+        for (const entry of resources) {
+          await tx.unsafe(`insert into ${this.#schema}.forge_global_leases values ($1,$2,$3,$4)`, [
+            claim.scopeId,
+            claim.claimId,
+            randomUUID(),
+            JSON.stringify(entry)
+          ]);
+        }
+        const started = {
+          ...admitted.attempt,
+          state: 'STARTING' as const,
+          revision: admitted.attempt.revision + 1,
+          startedAt: new Date()
+        };
+        if (admitted.kind === 'builder') {
+          agentExecutionAttemptSchema.parse(started);
+        } else {
+          taskRepairAttemptSchema.parse(started);
+          await tx.unsafe(
+            `insert into ${this.#schema}.forge_records values ($1,'repair-history',$2,$3)`,
+            [
+              claim.owner.runId,
+              `${claim.owner.attemptId}:${String(admitted.attempt.revision).padStart(8, '0')}`,
+              admitted.previous
+            ]
+          );
+        }
+        await tx.unsafe(
+          `update ${this.#schema}.forge_records set payload=$4 where run_id=$1 and kind=$2 and key=$3`,
+          [claim.owner.runId, admitted.kind, claim.owner.attemptId, JSON.stringify(started)]
+        );
+        return {
+          status: 'granted',
+          token,
+          leases: await this.#leases(tx, claim.scopeId, claim.claimId)
+        };
+      },
+      claim.scopeId,
+      claim.owner.runId
+    );
+  }
+
+  async recoverRepositoryMutationAuthority(
+    scopeId: string
+  ): Promise<readonly GlobalMutationLease[]> {
+    await this.#scope(this.#sql, scopeId);
+    return this.#leases(this.#sql, scopeId);
+  }
+
+  async recoverFencedMutationPermits(
+    scopeId: string,
+    claimId?: string
+  ): Promise<readonly PersistedFencedMutationPermit[]> {
+    await this.#scope(this.#sql, scopeId);
+    const rows = await this.#sql.unsafe(
+      `select * from ${this.#schema}.forge_global_permits where scope_id=$1 ${claimId === undefined ? '' : 'and claim_id=$2'} order by id`,
+      claimId === undefined ? [scopeId] : [scopeId, claimId]
+    );
+    return rows.map((row) => ({
+      id: String(row.id),
+      scopeId: String(row.scope_id),
+      claimId: String(row.claim_id),
+      owner: owner(row.owner_json),
+      token: safeInteger(row.token),
+      resource: resource(row.resource_json)
+    }));
+  }
+
+  async #assertCurrent(tx: Query, request: CurrentMutationTokenRequest): Promise<void> {
+    const claim = await this.#claim(tx, request.scopeId, request.claimId);
+    if (
+      claim.state !== 'ACTIVE' ||
+      safeInteger(claim.token) !== request.token ||
+      !same(owner(claim.owner_json), request.owner) ||
+      !(await this.#leases(tx, request.scopeId, request.claimId)).some((lease) =>
+        isWritableResourceCoveredBy(lease.resource, writableResourceSchema.parse(request.resource))
+      )
+    ) {
+      throw new Error('Stale or uncovered global mutation token');
+    }
+  }
+
+  async assertCurrentMutationToken(request: CurrentMutationTokenRequest): Promise<void> {
+    await this.#locked(async (tx) => this.#assertCurrent(tx, request), request.scopeId);
+  }
+
+  async beginFencedMutation(
+    request: CurrentMutationTokenRequest
+  ): Promise<FencedMutationExecutionPermit> {
+    return this.#locked(async (tx) => {
+      await this.#assertCurrent(tx, request);
+      const permit = {
+        id: randomUUID(),
+        completionSecret: randomBytes(32).toString('hex')
+      };
+      await tx.unsafe(
+        `insert into ${this.#schema}.forge_global_permits values ($1,$2,$3,$4,$5,$6,$7)`,
+        [
+          permit.id,
+          request.scopeId,
+          request.claimId,
+          JSON.stringify(request.owner),
+          request.token,
+          JSON.stringify(writableResourceSchema.parse(request.resource)),
+          verifier(permit.completionSecret).toString('hex')
+        ]
+      );
+      return permit;
+    }, request.scopeId);
+  }
+
+  async #permitScope(id: string): Promise<string> {
+    const row = await this.#one(
+      this.#sql,
+      `select scope_id from ${this.#schema}.forge_global_permits where id=$1`,
+      [id]
+    );
+    if (row === undefined) {
+      throw new Error('Invalid fenced mutation completion capability');
+    }
+    return String(row.scope_id);
+  }
+
+  async endFencedMutation(permit: FencedMutationExecutionPermit): Promise<void> {
+    const scopeId = await this.#permitScope(permit.id);
+    await this.#locked(async (tx) => {
+      const row = await this.#one(
+        tx,
+        `select scope_id,verifier from ${this.#schema}.forge_global_permits where id=$1`,
+        [permit.id]
+      );
+      if (row?.scope_id !== scopeId) {
+        throw new Error('Fenced mutation permit changed scope');
+      }
+      const actual = row === undefined ? Buffer.alloc(0) : Buffer.from(String(row.verifier), 'hex');
+      const supplied = verifier(permit.completionSecret);
+      if (actual.length !== supplied.length || !timingSafeEqual(actual, supplied)) {
+        throw new Error('Invalid fenced mutation completion capability');
+      }
+      await tx.unsafe(`delete from ${this.#schema}.forge_global_permits where id=$1`, [permit.id]);
+    }, scopeId);
+  }
+
+  async #audit(tx: Tx, action: string, subject: string, evidence: string): Promise<void> {
+    await tx.unsafe(`insert into ${this.#schema}.forge_global_audit values ($1,$2,$3,$4)`, [
+      randomUUID(),
+      action,
+      subject,
+      evidence
+    ]);
+  }
+
+  async settleOrphanedFencedMutation(
+    permit: PersistedFencedMutationPermit,
+    verifiedQuiescenceEvidence: string
+  ): Promise<void> {
+    required(verifiedQuiescenceEvidence, 'Quiescence evidence');
+    await this.#locked(async (tx) => {
+      const row = await this.#one(
+        tx,
+        `select * from ${this.#schema}.forge_global_permits where id=$1`,
+        [permit.id]
+      );
+      if (
+        row === undefined ||
+        row.scope_id !== permit.scopeId ||
+        row.claim_id !== permit.claimId ||
+        safeInteger(row.token) !== permit.token ||
+        !same(owner(row.owner_json), permit.owner) ||
+        !same(resource(row.resource_json), permit.resource) ||
+        (await this.#claim(tx, permit.scopeId, permit.claimId)).state !== 'HELD_UNCERTAIN'
+      ) {
+        throw new Error('Orphan permit is not eligible for settlement');
+      }
+      await tx.unsafe(`delete from ${this.#schema}.forge_global_permits where id=$1`, [permit.id]);
+      await this.#audit(tx, 'settle-orphaned-permit', permit.id, verifiedQuiescenceEvidence);
+    }, permit.scopeId);
+  }
+
+  #assertOwner(row: Row, claimOwner: GlobalMutationOwner, token: number): void {
+    if (safeInteger(row.token) !== token || !same(owner(row.owner_json), claimOwner)) {
+      throw new Error('Global mutation owner or token mismatch');
+    }
+  }
+
+  async #assertNoPermits(tx: Tx, scopeId: string, claimId: string): Promise<void> {
+    const row = await this.#one(
+      tx,
+      `select 1 from ${this.#schema}.forge_global_permits where scope_id=$1 and claim_id=$2 limit 1`,
+      [scopeId, claimId]
+    );
+    if (row !== undefined) {
+      throw new GlobalMutationInFlightError();
+    }
+  }
+
+  async releaseGlobalMutation(request: {
+    scopeId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+    expectedVersion: number;
+    stopEvidence: string;
+  }): Promise<void> {
+    required(request.stopEvidence, 'Stop evidence');
+    await this.#locked(async (tx) => {
+      const row = await this.#claim(tx, request.scopeId, request.claimId);
+      this.#assertOwner(row, request.owner, request.token);
+      if (row.state !== 'ACTIVE' || safeInteger(row.version) !== request.expectedVersion) {
+        throw new Error('Invalid active claim release');
+      }
+      await this.#assertNoPermits(tx, request.scopeId, request.claimId);
+      await tx.unsafe(
+        `update ${this.#schema}.forge_global_claims set state='RELEASED',version=version+1,evidence=$3 where scope_id=$1 and claim_id=$2`,
+        [request.scopeId, request.claimId, request.stopEvidence]
+      );
+    }, request.scopeId);
+  }
+
+  async markMutationUncertain(request: {
+    scopeId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+    evidence: string;
+  }): Promise<void> {
+    required(request.evidence, 'Uncertainty evidence');
+    await this.#locked(async (tx) => {
+      const row = await this.#claim(tx, request.scopeId, request.claimId);
+      this.#assertOwner(row, request.owner, request.token);
+      if (row.state !== 'ACTIVE') {
+        throw new Error('Only an active claim can become uncertain');
+      }
+      await tx.unsafe(
+        `update ${this.#schema}.forge_global_claims set state='HELD_UNCERTAIN',version=version+1,evidence=$3 where scope_id=$1 and claim_id=$2`,
+        [request.scopeId, request.claimId, request.evidence]
+      );
+    }, request.scopeId);
+  }
+
+  async reclaimUncertainMutation(request: {
+    scopeId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+    expectedVersion: number;
+    verifiedQuiescenceEvidence: string;
+  }): Promise<void> {
+    required(request.verifiedQuiescenceEvidence, 'Quiescence evidence');
+    await this.#locked(async (tx) => {
+      const row = await this.#claim(tx, request.scopeId, request.claimId);
+      this.#assertOwner(row, request.owner, request.token);
+      if (row.state !== 'HELD_UNCERTAIN' || safeInteger(row.version) !== request.expectedVersion) {
+        throw new Error('Invalid uncertain claim reclamation');
+      }
+      await this.#assertNoPermits(tx, request.scopeId, request.claimId);
+      await tx.unsafe(
+        `update ${this.#schema}.forge_global_claims set state='RELEASED',version=version+1,evidence=$3 where scope_id=$1 and claim_id=$2`,
+        [request.scopeId, request.claimId, request.verifiedQuiescenceEvidence]
+      );
+    }, request.scopeId);
+  }
+}
