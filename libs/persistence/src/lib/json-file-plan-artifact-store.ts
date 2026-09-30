@@ -9,14 +9,16 @@ import type {
   PlanApprovalClaim,
   PlanApprovalStore,
   PlanArtifact,
-  PlanArtifactStore
+  PlanArtifactStore,
+  WorkspaceSetupApproval
 } from '@ai-native-software-delivery-orchestrator/planning';
 import {
   areEquivalentApprovalClaims,
   canonicalPlanJson,
   parsePlanApproval,
   parsePlanApprovalClaim,
-  parsePlanArtifact
+  parsePlanArtifact,
+  parseWorkspaceSetupApproval
 } from '@ai-native-software-delivery-orchestrator/planning';
 
 export class PlanArtifactStoreError extends Error {
@@ -37,6 +39,7 @@ const artifactFileName = (artifactId: string, revision: number): string =>
   `${artifactId}.r${revision}.json`;
 const approvalFileName = (approvalId: string): string => `approval.${approvalId}.json`;
 const approvalClaimFileName = (approvalId: string): string => `approval.${approvalId}.claim.json`;
+const setupApprovalFileName = (approvalId: string): string => `setup-approval.${approvalId}.json`;
 
 const errorCode = (error: unknown): string | undefined =>
   typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
@@ -302,6 +305,57 @@ export class JsonFilePlanApprovalStore implements PlanApprovalStore {
       'Plan approval',
       (message) => new PlanApprovalStoreError(message)
     );
+  }
+}
+
+/** Immutable decision record; this store does not grant runtime or provider authority. */
+export class JsonFileWorkspaceSetupApprovalStore {
+  readonly #directory: string;
+  readonly #forbiddenRepositoryRoot?: string;
+
+  constructor(directory: string, forbiddenRepositoryRoot?: string) {
+    this.#directory = resolve(directory);
+    this.#forbiddenRepositoryRoot = forbiddenRepositoryRoot;
+  }
+
+  pathFor(setupApprovalId: string): string {
+    return join(
+      this.#directory,
+      setupApprovalFileName(parseRecordId(setupApprovalId, 'Git setup approval'))
+    );
+  }
+
+  async save(candidate: WorkspaceSetupApproval): Promise<void> {
+    const approval = parseWorkspaceSetupApproval(candidate);
+    await prepareExternalDirectory(
+      this.#directory,
+      this.#forbiddenRepositoryRoot,
+      'Git setup approval',
+      (message) => new PlanApprovalStoreError(message)
+    );
+    await publishImmutableRecord({
+      directory: this.#directory,
+      recordId: approval.setupApprovalId,
+      target: this.pathFor(approval.setupApprovalId),
+      candidate: approval,
+      loadExisting: () => this.load(approval.setupApprovalId),
+      equivalent: (existing, requested) =>
+        canonicalPlanJson(existing) === canonicalPlanJson(requested),
+      conflictError: () =>
+        new PlanApprovalStoreError(`Git setup approval is immutable: ${approval.setupApprovalId}`)
+    });
+  }
+
+  async load(setupApprovalId: string): Promise<WorkspaceSetupApproval | undefined> {
+    const candidate = await readOptionalJson(this.pathFor(setupApprovalId));
+    if (candidate === undefined) {
+      return undefined;
+    }
+    const approval = parseWorkspaceSetupApproval(candidate);
+    if (approval.setupApprovalId !== setupApprovalId) {
+      throw new PlanApprovalStoreError('Git setup approval key does not match its file name');
+    }
+    return approval;
   }
 }
 

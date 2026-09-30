@@ -9,7 +9,8 @@ import type {
 import {
   createPlanApproval,
   createPlanApprovalClaim,
-  createPlanArtifact
+  createPlanArtifact,
+  createWorkspaceSetupApproval
 } from '@ai-native-software-delivery-orchestrator/planning';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -39,6 +40,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 import {
   JsonFilePlanApprovalStore,
   JsonFilePlanArtifactStore,
+  JsonFileWorkspaceSetupApprovalStore,
   PlanApprovalStoreError,
   PlanArtifactStoreError,
   resolvePlanArtifactDirectory
@@ -150,6 +152,66 @@ afterEach(async () => {
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))
   );
+});
+
+describe('JsonFileWorkspaceSetupApprovalStore', () => {
+  const setup = () => {
+    const plan = artifact();
+    return createWorkspaceSetupApproval({
+      setupApprovalId: 'setup-1',
+      artifact: plan,
+      executionApproval: createPlanApproval({
+        approvalId: 'execution-1',
+        artifact: plan,
+        approvedBy: 'execution-reviewer',
+        approvedAt: '2026-08-13T01:00:00.000Z'
+      }),
+      taskId: 'task-a',
+      approvedBy: 'git-reviewer',
+      approvedAt: '2026-08-13T02:00:00.000Z'
+    });
+  };
+
+  it('publishes one immutable independent Git setup decision across store instances', async () => {
+    const directory = await createDirectory();
+    const first = new JsonFileWorkspaceSetupApprovalStore(directory);
+    const second = new JsonFileWorkspaceSetupApprovalStore(directory);
+    const decision = setup();
+    await Promise.all([first.save(decision), second.save(decision)]);
+    expect(await second.load(decision.setupApprovalId)).toEqual(decision);
+    const different = createWorkspaceSetupApproval({
+      setupApprovalId: 'setup-1',
+      artifact: artifact(),
+      executionApproval: createPlanApproval({
+        approvalId: 'execution-1',
+        artifact: artifact(),
+        approvedBy: 'execution-reviewer',
+        approvedAt: '2026-08-13T01:00:00.000Z'
+      }),
+      taskId: 'task-a',
+      approvedBy: 'other-reviewer',
+      approvedAt: '2026-08-13T02:00:00.000Z'
+    });
+    await expect(second.save(different)).rejects.toThrow('immutable');
+    await writeFile(first.pathFor('other-id'), JSON.stringify(decision), 'utf8');
+    await expect(second.load('other-id')).rejects.toThrow('does not match its file name');
+  });
+
+  it('rejects unsafe storage paths and missing or tampered setup records', async () => {
+    const directory = await createDirectory();
+    const repositoryRoot = await createDirectory();
+    const store = new JsonFileWorkspaceSetupApprovalStore(directory, repositoryRoot);
+    expect(() => store.pathFor('../escape')).toThrow(PlanApprovalStoreError);
+    await expect(store.load('missing')).resolves.toBeUndefined();
+    const forbidden = new JsonFileWorkspaceSetupApprovalStore(
+      join(repositoryRoot, 'approvals'),
+      repositoryRoot
+    );
+    await expect(forbidden.save(setup())).rejects.toThrow('inside the analyzed repository');
+    await store.save(setup());
+    await writeFile(store.pathFor('setup-1'), '{', 'utf8');
+    await expect(store.load('setup-1')).rejects.toThrow();
+  });
 });
 
 describe('JsonFilePlanArtifactStore', () => {

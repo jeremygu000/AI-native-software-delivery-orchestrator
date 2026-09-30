@@ -50,6 +50,14 @@ export {
 } from './lib/plan-approval.js';
 export type { PlanApproval, PlanApprovalClaim, PlanApprovalStore } from './lib/plan-approval.js';
 export {
+  assertWorkspaceSetupApproval,
+  createWorkspaceSetupApproval,
+  parseWorkspaceSetupApproval,
+  workspaceSetupApprovalSchema,
+  WorkspaceSetupApprovalIntegrityError
+} from './lib/workspace-setup-approval.js';
+export type { WorkspaceSetupApproval } from './lib/workspace-setup-approval.js';
+export {
   parsePlanExecutionIntent,
   PlanExecutionBinder,
   PlanExecutionBindingError

@@ -4007,3 +4007,43 @@ to the runtime role. Only after that can arming and the single-lineage
 dedicated Git permit be implemented. The production GLOBAL_READY worker stays
 disabled; M4.2 remains OPEN and M4.3 has not started. The public number-token
 versus BIGINT and diagnostic resource-ID questions remain P2.
+
+An independent review accepted the version-6 metadata reservation at
+`b6b454c` as a prerequisite, not as setup admission. The next investigation
+found that the existing version-1 plan approval names a reviewer and binds an
+execution artifact, but contains no separate decision to authorize Git
+worktree creation. Worker execution also has no trusted generation issuer or
+durable revocation. Neither an ordinary approval ID nor a random value chosen
+by a worker can fill those gaps.
+
+This increment introduces a **separate, immutable Git setup decision record**
+in the planning library. Its own ID and content fingerprint differ from the
+execution approval. It specifies exactly one approved task, repository ID and
+root, pinned base commit, repository-wide resource and the single
+`git-worktree-create` operation; it binds the original artifact revision and
+fingerprint as well as the execution approval fingerprint. Creating and
+validating the record rejects mismatched or missing task/plan/approval identity,
+an earlier decision timestamp, content tampering and attempts to add other
+operations. A JSON-file store outside the analyzed repository publishes the
+decision immutably and rejects a different decision under the same ID, even
+when two store instances race. Focused tests cover the decision and its
+filesystem persistence. Existing version-1 plan artifacts, approvals, run
+bindings, PostgreSQL migrations and provider privileges remain unchanged.
+
+This is a **record format and storage boundary**, not a trusted authorization
+service: `approvedBy` is not an authenticated identity, and the runtime never
+consumes this record. No provider can use it to grant a setup claim, populate
+the reserved v6 fields or start a Git permit. Before enabling that path,
+separate authorization credentials/identity and a verifiable approval source
+must be integrated, and a trusted supervisor must issue and durably revoke
+execution generations. The claim and phase marker must then be created in
+one scope transaction without granting PostgreSQL runtime general phase-table
+INSERT. The production GLOBAL_READY worker remains disabled; M4.2 stays OPEN
+and M4.3 has not started. Public number-token versus BIGINT and diagnostic
+resource-ID ambiguity remain P2.
+
+Verification for this record-and-storage increment: focused planning and
+filesystem tests pass 22/22; `pnpm check` passes formatting, TypeScript
+references, type-aware linting and all 791 tests across 73 suites. The
+command still exits at the unchanged 90% aggregate coverage threshold:
+statements 88.17%, branches 82.85%, lines 88.08%.

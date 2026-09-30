@@ -16,6 +16,7 @@ export {
 export {
   JsonFilePlanApprovalStore,
   JsonFilePlanArtifactStore,
+  JsonFileWorkspaceSetupApprovalStore,
   PlanArtifactStoreError,
   resolvePlanArtifactDirectory
 } from './lib/json-file-plan-artifact-store.js';
