@@ -10,3 +10,9 @@ export {
   type GitSnapshotCommandRunner
 } from './lib/git-repository-snapshot-provider.js';
 export { GitIntegrationCheckoutProvisioner } from './lib/git-integration-checkout-provisioner.js';
+export {
+  GitWorkspaceStateInspector,
+  GitWorkspaceInspectionError,
+  type GitWorkspaceInspection,
+  type GitWorkspaceInspectionRequest
+} from './lib/git-workspace-state-inspector.js';
