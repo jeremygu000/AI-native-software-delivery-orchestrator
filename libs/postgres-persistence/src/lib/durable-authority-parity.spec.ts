@@ -268,6 +268,210 @@ const createGlobalPermitFixture = async (): Promise<
 
 globalMutationPermitContract('PostgreSQL isolated server', createGlobalPermitFixture);
 
+it('preserves owner-seeded generation rows across migration reruns without runtime write access', async () => {
+  const fixture = await createGlobalPermitFixture();
+  const migration = { connectionString: ownerConnectionString, schema: fixture.schema, role };
+  try {
+    await fixture.admin.unsafe(
+      `insert into "${fixture.schema}".forge_global_generations
+       (id,scope_id,parent_claim_id,run_id,task_id,attempt_id,workspace_id,
+        supervisor_id,setup_plan_digest,execution_plan_digest,state)
+       values ('generation-1',$1,$2,$3,$4,$5,'workspace-1','supervisor-1',
+         'setup-digest','execution-digest','ISSUED')`,
+      [
+        fixture.scopeId,
+        fixture.originalClaim.claimId,
+        fixture.originalClaim.owner.runId,
+        fixture.originalClaim.owner.taskId,
+        fixture.originalClaim.owner.attemptId
+      ]
+    );
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    expect(
+      await fixture.admin.unsafe(
+        `select id,state,scope_id,parent_claim_id from "${fixture.schema}".forge_global_generations`
+      )
+    ).toMatchObject([
+      {
+        id: 'generation-1',
+        state: 'ISSUED',
+        scope_id: fixture.scopeId,
+        parent_claim_id: fixture.originalClaim.claimId
+      }
+    ]);
+    const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
+    try {
+      await expect(
+        runtime.unsafe(
+          `update "${fixture.schema}".forge_global_generations set state='REVOKED' where id='generation-1'`
+        )
+      ).rejects.toThrow();
+    } finally {
+      await runtime.end();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+it('serializes a registry update before a scoped permit without granting runtime registry writes', async () => {
+  const fixture = await createGlobalPermitFixture();
+  const owner = postgres(ownerConnectionString, { onnotice: () => undefined });
+  let release: (() => void) | undefined;
+  let acquired: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => {
+    acquired = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const registryLock = `forge-trust:"${fixture.schema}"`;
+  const write = owner.begin(async (tx) => {
+    await tx`select pg_advisory_xact_lock(hashtext(${registryLock}))`;
+    acquired?.();
+    await held;
+    await tx.unsafe(
+      `update "${fixture.schema}".forge_global_trust_registry set revision=revision+1, policy_version='policy-1' where id=1`
+    );
+    await tx.unsafe(
+      `insert into "${fixture.schema}".forge_global_trust_keys (key_id,public_key,state)
+       values ('key-1','test-public-key','ACTIVE')`
+    );
+  });
+  try {
+    await ready;
+    const request = {
+      scopeId: fixture.scopeId,
+      claimId: fixture.originalClaim.claimId,
+      owner: fixture.originalClaim.owner,
+      token: fixture.originalGrant.token,
+      resource: fixture.originalClaim.resources[0] ?? { type: 'repository' as const }
+    };
+    const permit = fixture.peer.beginFencedMutation(request);
+    let blocked = false;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const rows = await fixture.admin`select pg_blocking_pids(pid) as blockers
+        from pg_stat_activity where application_name='forge-global-authority'
+          and wait_event_type='Lock' and query like '%pg_advisory_xact_lock_shared%'`;
+      if (rows.length > 0) {
+        const blockers: unknown = rows[0]?.blockers;
+        expect(Array.isArray(blockers) && blockers.length > 0).toBe(true);
+        blocked = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(blocked).toBe(true);
+    release?.();
+    await write;
+    const capability = await permit;
+    await fixture.peer.endFencedMutation(capability);
+    expect(
+      await fixture.admin.unsafe(
+        `select revision,policy_version from "${fixture.schema}".forge_global_trust_registry`
+      )
+    ).toMatchObject([{ revision: '1', policy_version: 'policy-1' }]);
+    expect(
+      await fixture.admin.unsafe(
+        `select key_id,state from "${fixture.schema}".forge_global_trust_keys`
+      )
+    ).toMatchObject([{ key_id: 'key-1', state: 'ACTIVE' }]);
+  } finally {
+    release?.();
+    await write.catch(() => undefined);
+    await owner.end();
+    await fixture.close();
+  }
+});
+
+it('holds a trust read through scoped permit commit before an administrator can revoke', async () => {
+  const fixture = await createGlobalPermitFixture();
+  const owner = postgres(ownerConnectionString, {
+    connection: { application_name: 'forge-trust-admin' },
+    onnotice: () => undefined
+  });
+  const blocker = postgres(ownerConnectionString, { onnotice: () => undefined });
+  let release: (() => void) | undefined;
+  let acquired: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => {
+    acquired = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const locked = blocker.begin(async (tx) => {
+    await tx.unsafe(`lock table "${fixture.schema}".forge_global_scopes in access exclusive mode`);
+    acquired?.();
+    await held;
+  });
+  try {
+    await ready;
+    const request = {
+      scopeId: fixture.scopeId,
+      claimId: fixture.originalClaim.claimId,
+      owner: fixture.originalClaim.owner,
+      token: fixture.originalGrant.token,
+      resource: fixture.originalClaim.resources[0] ?? { type: 'repository' as const }
+    };
+    const permit = fixture.peer.beginFencedMutation(request);
+    const waitingPermit = await blockedBackend(
+      fixture.admin,
+      fixture.schema,
+      'forge-global-authority',
+      'forge_global_scopes'
+    );
+    const writer = owner.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtext(${`forge-trust:"${fixture.schema}"`}))`;
+      await tx.unsafe(
+        `update "${fixture.schema}".forge_global_trust_registry set revision=revision+1 where id=1`
+      );
+      await tx.unsafe(
+        `insert into "${fixture.schema}".forge_global_trust_revocations
+         (kind,digest,registry_revision) values ('AUTHORIZATION','revoked-authorization',1)`
+      );
+    });
+    let writerBlocked = false;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const rows = await fixture.admin`select pg_blocking_pids(pid) as blockers
+        from pg_stat_activity where application_name='forge-trust-admin'
+          and wait_event_type='Lock' and query like '%pg_advisory_xact_lock%'`;
+      if (
+        rows.some((row) => Array.isArray(row.blockers) && row.blockers.includes(waitingPermit.pid))
+      ) {
+        writerBlocked = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(writerBlocked).toBe(true);
+    release?.();
+    await locked;
+    const capability = await permit;
+    await writer;
+    await fixture.peer.endFencedMutation(capability);
+    expect(
+      await fixture.admin.unsafe(
+        `select revision from "${fixture.schema}".forge_global_trust_registry`
+      )
+    ).toMatchObject([{ revision: '1' }]);
+    expect(
+      await fixture.admin.unsafe(
+        `select kind,digest,registry_revision from "${fixture.schema}".forge_global_trust_revocations`
+      )
+    ).toMatchObject([
+      { kind: 'AUTHORIZATION', digest: 'revoked-authorization', registry_revision: '1' }
+    ]);
+  } finally {
+    release?.();
+    await locked.catch(() => undefined);
+    await Promise.all([owner.end(), blocker.end(), fixture.close()]);
+  }
+}, 15_000);
+
 it('gates ordinary PostgreSQL mutation, replay, release and reclaim for a marked setup parent', async () => {
   const fixture = await createGlobalPermitFixture();
   try {
@@ -1468,11 +1672,15 @@ it('installs M4.2 global authority tables through migration owner and gates runt
       'forge_global_audit',
       'forge_global_claims',
       'forge_global_control',
+      'forge_global_generations',
       'forge_global_leases',
       'forge_global_legacy_owners',
       'forge_global_permits',
       'forge_global_run_bindings',
       'forge_global_scopes',
+      'forge_global_trust_keys',
+      'forge_global_trust_registry',
+      'forge_global_trust_revocations',
       'forge_global_workspace_phases',
       'forge_records',
       'forge_runs',
@@ -1503,7 +1711,38 @@ it('installs M4.2 global authority tables through migration owner and gates runt
     const versions = await admin.unsafe(
       `select version from "${schema}".forge_schema_migrations order by version`
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(
+      await runtimeSql.unsafe(
+        `select revision,policy_version from "${schema}".forge_global_trust_registry`
+      )
+    ).toMatchObject([{ revision: '0', policy_version: 'UNCONFIGURED' }]);
+    for (const [table, column] of [
+      ['forge_global_trust_registry', 'policy_version'],
+      ['forge_global_trust_keys', 'state'],
+      ['forge_global_trust_revocations', 'digest'],
+      ['forge_global_generations', 'state']
+    ]) {
+      await expect(
+        runtimeSql.unsafe(`update "${schema}".${table} set ${column}='forged'`)
+      ).rejects.toThrow();
+    }
+    await admin.unsafe(`grant insert on "${schema}".forge_global_trust_keys to "${runtimeRole}"`);
+    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+      'global authority runtime privileges are incompatible: forge_global_trust_keys'
+    );
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
+    await assertPostgresGlobalAuthoritySchema(runtimeSql, runtime);
+    await expect(
+      runtimeSql.unsafe(
+        `insert into "${schema}".forge_global_trust_keys (key_id,public_key,state)
+         values ('forged','forged','ACTIVE')`
+      )
+    ).rejects.toThrow();
     const phaseColumns = await admin.unsafe(
       `select column_name from information_schema.columns
         where table_schema=$1 and table_name='forge_global_workspace_phases'
@@ -1564,6 +1803,11 @@ it('upgrades existing v5 workspace phases without changing their authority or mi
     );
     await migratePostgresAuthoritySchema(migration, runtimeRole, 6);
     await migratePostgresAuthoritySchema(migration, runtimeRole, 6);
+    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+      'schema version is incompatible'
+    );
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 7);
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 7);
     await assertPostgresGlobalAuthoritySchema(runtimeSql, runtime);
     expect(
       await owner.unsafe(`select checksum from "${schema}".forge_schema_migrations where version=5`)
@@ -1929,7 +2173,7 @@ it('closes PostgreSQL legacy writer creation after the deployment cutover barrie
   }
 });
 
-it.each([0, 7, Number.NaN])(
+it.each([0, 8, Number.NaN])(
   'rejects unsupported runtime migration target %s before creating schema objects',
   async (target) => {
     const schema = `forge_bad_target_${++fixtureOrdinal}`;

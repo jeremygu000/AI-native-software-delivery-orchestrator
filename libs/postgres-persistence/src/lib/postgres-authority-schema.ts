@@ -106,17 +106,47 @@ const migrations = [
       `alter table {schema}.forge_global_workspace_phases add column execution_generation text`,
       `alter table {schema}.forge_global_workspace_phases add column workspace_id text`
     ]
+  },
+  {
+    version: 7,
+    statements: [
+      `create table {schema}.forge_global_trust_registry (
+        id integer primary key check (id = 1), revision bigint not null,
+        policy_version text not null
+      )`,
+      `insert into {schema}.forge_global_trust_registry (id,revision,policy_version)
+        values (1,0,'UNCONFIGURED')`,
+      `create table {schema}.forge_global_trust_keys (
+        key_id text primary key, public_key text not null,
+        state text not null check (state in ('ACTIVE','RETIRED','REVOKED'))
+      )`,
+      `create table {schema}.forge_global_trust_revocations (
+        kind text not null check (kind in ('DECISION','AUTHORIZATION')),
+        digest text not null, registry_revision bigint not null,
+        primary key (kind,digest)
+      )`,
+      `create table {schema}.forge_global_generations (
+        id text primary key, scope_id text not null references {schema}.forge_global_scopes(id),
+        parent_claim_id text not null, run_id text not null, task_id text not null,
+        attempt_id text not null, workspace_id text not null, supervisor_id text not null,
+        setup_plan_digest text not null, execution_plan_digest text not null,
+        state text not null check (state in ('ISSUED','REVOKED')),
+        foreign key (scope_id,parent_claim_id)
+          references {schema}.forge_global_claims(scope_id,claim_id)
+      )`
+    ]
   }
 ] as const;
 
 export const POSTGRES_AUTHORITY_SCHEMA_VERSION = 2;
-export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 6;
+export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 7;
 export type PostgresAuthoritySchemaVersion =
   | 1
   | typeof POSTGRES_AUTHORITY_SCHEMA_VERSION
   | 3
   | 4
   | 5
+  | 6
   | typeof POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION;
 
 const checksum = (statements: readonly string[]): string =>
@@ -132,7 +162,11 @@ const globalTables = [
   'forge_global_permits',
   'forge_global_legacy_owners',
   'forge_global_audit',
-  'forge_global_workspace_phases'
+  'forge_global_workspace_phases',
+  'forge_global_trust_registry',
+  'forge_global_trust_keys',
+  'forge_global_trust_revocations',
+  'forge_global_generations'
 ] as const;
 const globalRuntimePrivileges = {
   forge_global_control: ['SELECT', 'UPDATE'],
@@ -144,7 +178,11 @@ const globalRuntimePrivileges = {
   forge_global_permits: ['SELECT', 'INSERT', 'DELETE'],
   forge_global_legacy_owners: ['SELECT', 'INSERT', 'UPDATE'],
   forge_global_audit: ['SELECT', 'INSERT'],
-  forge_global_workspace_phases: ['SELECT']
+  forge_global_workspace_phases: ['SELECT'],
+  forge_global_trust_registry: ['SELECT'],
+  forge_global_trust_keys: ['SELECT'],
+  forge_global_trust_revocations: ['SELECT'],
+  forge_global_generations: ['SELECT']
 } as const satisfies Record<(typeof globalTables)[number], readonly string[]>;
 
 /** The runtime adapter accepts only an explicit login, never role-assumption startup options. */
@@ -251,8 +289,44 @@ const globalColumns = {
     ['execution_plan_digest', 'text', false],
     ['execution_generation', 'text', false],
     ['workspace_id', 'text', false]
+  ],
+  forge_global_trust_registry: [
+    ['id', 'integer', true],
+    ['revision', 'bigint', true],
+    ['policy_version', 'text', true]
+  ],
+  forge_global_trust_keys: [
+    ['key_id', 'text', true],
+    ['public_key', 'text', true],
+    ['state', 'text', true]
+  ],
+  forge_global_trust_revocations: [
+    ['kind', 'text', true],
+    ['digest', 'text', true],
+    ['registry_revision', 'bigint', true]
+  ],
+  forge_global_generations: [
+    ['id', 'text', true],
+    ['scope_id', 'text', true],
+    ['parent_claim_id', 'text', true],
+    ['run_id', 'text', true],
+    ['task_id', 'text', true],
+    ['attempt_id', 'text', true],
+    ['workspace_id', 'text', true],
+    ['supervisor_id', 'text', true],
+    ['setup_plan_digest', 'text', true],
+    ['execution_plan_digest', 'text', true],
+    ['state', 'text', true]
   ]
 } as const;
+
+const installedGlobalTables = (version: number): readonly (typeof globalTables)[number][] =>
+  globalTables.filter(
+    (name) =>
+      (version >= 5 || name !== 'forge_global_workspace_phases') &&
+      (version >= 7 ||
+        (!name.startsWith('forge_global_trust_') && name !== 'forge_global_generations'))
+  );
 
 const assertGlobalAuthorityShape = async (
   sql: TransactionSql | Sql,
@@ -276,8 +350,7 @@ const assertGlobalAuthorityShape = async (
       ])
     ) !==
     JSON.stringify(
-      globalTables
-        .filter((name) => version >= 5 || name !== 'forge_global_workspace_phases')
+      installedGlobalTables(version)
         .toSorted()
         .map((name) => [name, 'r', 'p', false, false])
     )
@@ -291,8 +364,7 @@ const assertGlobalAuthorityShape = async (
     where n.nspname=${schema} and c.relname like 'forge_global_%'
       and c.relkind='r' and a.attnum>0 and not a.attisdropped
     order by c.relname,a.attnum`;
-  const expected = globalTables
-    .filter((table) => version >= 5 || table !== 'forge_global_workspace_phases')
+  const expected = installedGlobalTables(version)
     .toSorted()
     .flatMap((table) => {
       const original = globalColumns[table]
@@ -342,6 +414,40 @@ const assertGlobalAuthorityShape = async (
       `FOREIGN KEY (scope_id) REFERENCES ${schema}.forge_global_scopes(id)`
     ],
     ['forge_global_claims', 'p', 'PRIMARY KEY (scope_id, claim_id)'],
+    ...(version >= 7
+      ? [
+          [
+            'forge_global_generations',
+            'c',
+            "CHECK ((state = ANY (ARRAY['ISSUED'::text, 'REVOKED'::text])))"
+          ],
+          [
+            'forge_global_generations',
+            'f',
+            `FOREIGN KEY (scope_id) REFERENCES ${schema}.forge_global_scopes(id)`
+          ],
+          [
+            'forge_global_generations',
+            'f',
+            `FOREIGN KEY (scope_id, parent_claim_id) REFERENCES ${schema}.forge_global_claims(scope_id, claim_id)`
+          ],
+          ['forge_global_generations', 'p', 'PRIMARY KEY (id)'],
+          [
+            'forge_global_trust_keys',
+            'c',
+            "CHECK ((state = ANY (ARRAY['ACTIVE'::text, 'RETIRED'::text, 'REVOKED'::text])))"
+          ],
+          ['forge_global_trust_keys', 'p', 'PRIMARY KEY (key_id)'],
+          ['forge_global_trust_registry', 'c', 'CHECK ((id = 1))'],
+          ['forge_global_trust_registry', 'p', 'PRIMARY KEY (id)'],
+          [
+            'forge_global_trust_revocations',
+            'c',
+            "CHECK ((kind = ANY (ARRAY['DECISION'::text, 'AUTHORIZATION'::text])))"
+          ],
+          ['forge_global_trust_revocations', 'p', 'PRIMARY KEY (kind, digest)']
+        ]
+      : []),
     ['forge_global_control', 'c', 'CHECK ((id = 1))'],
     ['forge_global_control', 'p', 'PRIMARY KEY (id)'],
     [
@@ -382,7 +488,9 @@ const assertGlobalAuthorityShape = async (
       : [])
   ].toSorted(
     ([tableA, kindA, defA], [tableB, kindB, defB]) =>
-      tableA.localeCompare(tableB) || kindA.localeCompare(kindB) || defA.localeCompare(defB)
+      tableA.localeCompare(tableB) ||
+      kindA.localeCompare(kindB) ||
+      (defA < defB ? -1 : defA > defB ? 1 : 0)
   );
   if (
     JSON.stringify(constraints.map((row) => [row.table_name, row.kind, row.definition])) !==
@@ -584,11 +692,7 @@ export const migratePostgresAuthoritySchema = async (
               'forge_schema_migrations',
               'forge_runs',
               'forge_records',
-              ...(applied.length >= 3
-                ? globalTables.filter(
-                    (name) => applied.length >= 5 || name !== 'forge_global_workspace_phases'
-                  )
-                : [])
+              ...(applied.length >= 3 ? installedGlobalTables(applied.length) : [])
             ];
       if (
         installedObjects.length !== expectedTables.length ||
@@ -654,9 +758,7 @@ const grantRuntimePrivileges = async (
   await tx.unsafe(`grant select, insert, update on ${schema}.forge_runs to ${role}`);
   await tx.unsafe(`grant select, insert, update, delete on ${schema}.forge_records to ${role}`);
   if (version >= 3) {
-    for (const table of globalTables.filter(
-      (name) => version >= 5 || name !== 'forge_global_workspace_phases'
-    )) {
+    for (const table of installedGlobalTables(version)) {
       await tx.unsafe(`revoke all on ${schema}.${table} from public`);
       await tx.unsafe(`revoke all on ${schema}.${table} from ${role}`);
       await tx.unsafe(
@@ -670,7 +772,7 @@ const grantRuntimePrivileges = async (
 export const assertPostgresAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration,
-  requiredVersion: 2 | 3 | 4 | 5 | 6 = POSTGRES_AUTHORITY_SCHEMA_VERSION
+  requiredVersion: 2 | 3 | 4 | 5 | 6 | 7 = POSTGRES_AUTHORITY_SCHEMA_VERSION
 ): Promise<void> => {
   assertPostgresAuthorityLogin(configuration);
   if (sql.options.user !== configuration.role) {
@@ -748,11 +850,7 @@ export const assertPostgresAuthoritySchema = async (
     'forge_schema_migrations',
     'forge_runs',
     'forge_records',
-    ...(applied.length >= 3
-      ? globalTables.filter(
-          (name) => applied.length >= 5 || name !== 'forge_global_workspace_phases'
-        )
-      : [])
+    ...(applied.length >= 3 ? installedGlobalTables(applied.length) : [])
   ];
   for (const name of tables) {
     const object = objects.find((row) => row.relname === name);
@@ -849,9 +947,7 @@ export const assertPostgresAuthoritySchema = async (
   await assertAuthorityShape(sql, configuration.schema, applied.length);
   if (applied.length >= 3) {
     await assertGlobalAuthorityShape(sql, configuration.schema, applied.length);
-    for (const table of globalTables.filter(
-      (name) => applied.length >= 5 || name !== 'forge_global_workspace_phases'
-    )) {
+    for (const table of installedGlobalTables(applied.length)) {
       const relation = `${configuration.schema}.${table}`;
       const globalPrivileges = await sql`select
         has_table_privilege(current_user, ${relation}, 'SELECT') as read,
@@ -916,7 +1012,7 @@ export const assertPostgresAuthoritySchema = async (
   }
 };
 
-/** M4.2 runtime gate: the migration owner must install version 6 before connecting. */
+/** M4.2 runtime gate: the migration owner must install version 7 before connecting. */
 export const assertPostgresGlobalAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration

@@ -4184,5 +4184,52 @@ future resumes and permits stop, its generation is revoked, and outstanding
 effects require independent containment and recovery. The frozen continuation
 design now states that registry locking precedes its existing scope-then-run
 order. Failure cases and required concurrency tests cover these boundaries.
-The trust/generation proposal still awaits independent approval and
-implementation; M4.2 remains OPEN and the GLOBAL_READY worker remains disabled.
+At the time of this design revision, it still awaited independent approval;
+the review described below subsequently approved the design, while the
+implementation remains incomplete. M4.2 remains OPEN and the GLOBAL_READY
+worker remains disabled.
+
+## PostgreSQL trust-registry and execution-generation storage foundation
+
+The independent review of `3da3986` approved the unified trust-registry and
+execution-generation **design**, not its implementation. The next increment
+reserves durable PostgreSQL storage through an installer-owned, separately
+versioned migration 7. Earlier migrations and their checksums stay unchanged.
+The new singleton registry starts at revision zero with policy `UNCONFIGURED`;
+separate tables reserve immutable key identities and their states, exact
+decision/authorization revocations, and execution-generation identities and
+states linked to a scope and parent claim. These are storage slots, not a
+trusted signer, a functioning issuer, or permission to start Git or an agent.
+The runtime PostgreSQL login can only read all four new tables, just as it can
+only read the workspace-phase table; it cannot create a key, revoke an
+authorization, issue a generation, or modify one. Migration startup verifies
+the new table shapes and privileges and rejects an unmigrated version 6.
+
+For steady-state PostgreSQL scope operations, a transaction now takes a
+schema-specific shared trust advisory lock **before** the scope and run locks,
+reads the registry singleton, and holds that lock through commit. A restricted
+administrator will have to take the matching exclusive lock before changing
+trust state; an administrator interface and its enforceable permission model
+are not yet implemented. Real PostgreSQL tests pause each side in turn and
+check `pg_blocking_pids`: an administrator-style update wins before a permit,
+or an in-progress permit holds its trust read until commit and the update waits.
+Other tests show that the owner migration preserves recorded generation rows,
+the runtime cannot edit them or the registry, and an accidental runtime INSERT
+grant is detected and repaired. The registry is initially unconfigured; none
+of these tests assert that it authenticates an approver or enforces key
+revocation on an existing ordinary claim.
+
+SQLite does not have a role-separated, independently protected registry here.
+It remains fail-closed for the proposed trusted setup path; no in-database
+worker-writable table is presented as a replacement for an external trust root.
+Restricted trust administration, one-live-generation issuance and revocation,
+separate setup approval, atomic setup-parent admission, dedicated Git permits,
+handoff and the production worker remain to be implemented and independently
+tested. The GLOBAL_READY production worker remains disabled, M4.2 is OPEN and
+M4.3 has not started. Public number tokens versus BIGINT and diagnostic
+resource-ID ambiguity remain P2.
+
+Verification: `pnpm check` passes formatting, TypeScript project-reference
+checks, type-aware lint and all 808 tests in 77 files. Coverage remains above
+the configured gates: 92.04% statements, 85.63% branches, 94.18% functions
+and 91.97% lines. The focused real PostgreSQL suite passes 104/104 tests.

@@ -210,6 +210,17 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     runId?: string
   ): Promise<T> {
     const result = await this.#sql.begin(async (tx) => {
+      // Runtime holds only SELECT on trust state; FOR SHARE would require
+      // UPDATE privilege. Trust administration must use the matching exclusive
+      // advisory transaction lock before changing registry rows.
+      await tx`select pg_advisory_xact_lock_shared(hashtext(${`forge-trust:${this.#schema}`}))`;
+      const registry = await this.#one(
+        tx,
+        `select revision from ${this.#schema}.forge_global_trust_registry where id=1`
+      );
+      if (registry === undefined) {
+        throw new Error('Missing global trust registry row');
+      }
       const control = await this.#one(
         tx,
         `select state from ${this.#schema}.forge_global_control where id=1`
