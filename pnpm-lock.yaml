@@ -114,6 +114,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/planning':
         specifier: workspace:*
         version: link:../../libs/planning
+      '@ai-native-software-delivery-orchestrator/postgres-persistence':
+        specifier: workspace:*
+        version: link:../../libs/postgres-persistence
       '@ai-native-software-delivery-orchestrator/repository-analysis':
         specifier: workspace:*
         version: link:../../libs/repository-analysis
@@ -136,9 +139,6 @@ importers:
         specifier: ^1.24.0
         version: 1.24.0
     devDependencies:
-      '@ai-native-software-delivery-orchestrator/postgres-persistence':
-        specifier: workspace:*
-        version: link:../../libs/postgres-persistence
       '@temporalio/client':
         specifier: ^1.24.0
         version: 1.24.0
@@ -148,6 +148,9 @@ importers:
       '@temporalio/worker':
         specifier: ^1.24.0
         version: 1.24.0(@swc/helpers@0.5.23)(esbuild@0.28.2)
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
 
   libs/agent-runtime:
     dependencies:

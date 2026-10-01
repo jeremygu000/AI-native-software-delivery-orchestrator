@@ -3717,3 +3717,13 @@ begin 操作在返回密钥之前，先持有当前信任的读取锁，再锁�
 在**另行完成持久化代际撤销**后，主管可以终止容器、等待退出，并再次确认同一个容器保持已退出且不会自动重启。主管还在启动时固定工作区目录的设备号和 inode，后续若目录被替换就拒绝继续。另一个只读辅助接口在现有真实 Git 初始状态检查的前后分别复核同一容器及目录。可选的真实 Docker 测试让实际子进程通过 linked Git worktree 持续写文件，验证终止容器后文件不再变化、同一代际无法重建、Git 初始状态符合批准内容，以及替换工作区目录后检查拒绝；仅在环境提供本地可用、摘要固定的 `FORGE_TEST_DOCKER_IMAGE` 时运行。没有 Docker 的环境仍会在启动 Docker 进程前测试镜像格式、主管身份、命令和工作区校验。`pnpm check` 的格式、TypeScript 项目引用、lint 和 79 个文件中的 856 项测试全部通过（跳过一项可选 Docker 集成测试）；语句、分支、函数、代码行覆盖率分别为 90.95%、85.12%、93.53%、90.85%，超过 90/85/90/90 门槛。另用本地固定摘要的 Node 镜像单独运行了真实 Docker 测试并通过。
 
 这些结果仍**只是观察，不是签名静默证明或交接权限**：主管尚未与 PostgreSQL 代际签发者接线，也没有认证过的恢复主体把容器绑定到持久化代际；Docker／Git 的结果没有被持久签名，也没有在原子 authority 事务中核对。拥有 daemon 管理权的人仍可重启或移除已停止的容器，因此恢复期间必须由独立主管确保 worker 始终拿不到 daemon 凭据。孤儿 Git permit 清算、新鲜度受限的签名证明、不确定 setup 父 claim 到执行 child 的原子交接、生产 `GLOBAL_READY` worker 准入、SQLite 的受保护信任根仍未实现。M4.2 保持 OPEN，M4.3 尚未开始；公开 number token／BIGINT 和诊断资源 ID 歧义仍为 P2。
+
+## 独立观察已停机的 PostgreSQL 工作区代际
+
+独立复审接受了 `62490f4` 的 Docker 主管增量：它可以观察容器是否停止，并检查真实 Git worktree，但还没有把这些观察与 PostgreSQL 中持久化的执行代际接起来。本次在 `apps/temporal-worker/src/postgres-workspace-recovery.ts` 增加独立恢复进程的组合，分别使用普通全局 authority 读取账号和受限代际签发账号；签发账号不会传给现有生产 legacy worker。工厂还要求两个账号指向同一数据库 schema，并单独持有 Docker 主管身份；现有 worker 启动路径保持不变，`GLOBAL_READY` 执行仍未开放。
+
+拿到受监管容器身份后，观察器首先读取 PostgreSQL 的 setup 父 claim 快照，核对 scope、parent、工作区、代际和主管。它**先持久撤销代际，才要求 Docker 主管停止容器**。停机后再次读取数据库，要求代际已经撤销、同一个专用 Git permit 已完成、父 claim 仍处于 `HELD_UNCERTAIN` 和 `WORKSPACE_UNCERTAIN`、批准的 run 仍 ACTIVE 且初始工作区已经保存。随后把工作区与批准的 run 和任务绑定核对；Docker 主管在既有只读真实 Git 检查前后确认同一容器持续停止。观察器最后重新读取批准的 run 和 PostgreSQL authority；如果代际、permit、工作区、父 token／版本、签名元数据或批准的 Git 身份发生变化，就拒绝返回观察结果。规范化文件系统路径后再比较，避免平台路径别名造成误判。返回值只包含观察结果，不是可复用的授权。
+
+新增 worker 单元测试覆盖撤销顺序、签发者失败、待完成 permit、持久身份不匹配和 Git 检查期间发生变化的情况。另一项测试启动隔离的真实 PostgreSQL 服务，建立真实 Git 仓库和 linked worktree，仅由 migration-owner **测试夹具**布置一个已经完成的 setup 状态，再验证受限代际签发者写入 `REVOKED`、父 claim 维持 `HELD_UNCERTAIN`，并且没有 child claim。这项测试中的 Docker 主管接口是模拟的；此前的可选真实 Docker 测试独立验证了后代进程终止和工作区隔离。`pnpm check` 的格式、严格 TypeScript 项目引用、lint 和 81 个文件中的 861 项测试全部通过（跳过 1 项可选 Docker 测试）；语句、分支、函数、代码行覆盖率分别为 90.90%、85.29%、93.56%、90.80%，超过 90/85/90/90 门槛。增加 PostgreSQL workspace 依赖和 TypeScript 项目引用后，`pnpm build` 也通过。
+
+这个恢复观察器**不产生签名或独立认证的静默证明**，不清算遗失完成密钥的 Git permit，不释放不确定的 setup 父 claim，不准入执行 child，也不运行 builder、repair 或 integration activity。数据库中持久撤销代际和 Docker 停机是两个独立操作，观察结果并未处于统一的跨系统锁下。实际生产 `GLOBAL_READY` worker 仍被禁止；独立恢复部署必须把签发者和 Docker 凭据与写入者隔离。SQLite 仍缺少受保护信任根。M4.2 保持 OPEN、M4.3 尚未开始；公开 number-token／BIGINT 边界和诊断资源 ID 歧义仍为 P2。
