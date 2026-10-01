@@ -3703,3 +3703,9 @@ begin 操作在返回密钥之前，先持有当前信任的读取锁，再锁�
 ## 初始状态检查拒绝嵌套 Git worktree
 
 独立复审发现检查器的缺口：它只拒绝 worktree 与集成仓库路径完全相同；如果在获批集成仓库**内部**创建真实的 linked worktree，Git 身份、钉住的基础提交和清洁状态检查仍会通过。之前测试的嵌套路径并不存在，未覆盖这一情形。现在检查器按规范化路径的目录分量比较，拒绝**任一方向**的包含关系；名称前缀相似的兄弟目录仍被视为分离。真实 Git 回归分别在集成仓库内、现有 worktree 内创建 linked worktree 并验证拒绝，同时保留正常兄弟 worktree 的成功用例。返回的 `clean` 观察结果仅指 linked worktree，并不代表集成仓库清洁。七项真实 Git 定向测试及 `pnpm check` 全部通过：78 个文件中的 852/852 项测试，语句、分支、函数、代码行覆盖率分别为 91.89%、85.93%、94.27%、91.81%，超过 90/85/90/90 门槛。本修复没有增加 authority 能力或修改 PostgreSQL；独立静默证明、父子交接及生产 `GLOBAL_READY` worker 仍未实现，M4.2 保持 OPEN，M4.3 尚未开始。
+
+## 读取一致的 workspace setup 恢复快照
+
+独立复审已接受 `ec392708` 的真实 Git 初始状态检查器及嵌套 worktree 修正。恢复还需要区分数据库里的持久事实和外部进程确已停止的证明。PostgreSQL 全局 authority 现在提供只读的 `recoverWorkspaceSetupEvidence(scopeId, parentClaimId)`，供未来独立认证的恢复服务取证。它先持有与正常授权相同的 trust registry 共享串行锁，再锁定 scope 和已绑定的 run，读取确切的 setup parent、仅限仓库的 lease、阶段、获批的 run/task/STARTING attempt、执行代际、唯一 Git permit lineage，以及可选的已保存初始 workspace。scope、owner、workspace 或获批执行计划不一致时直接拒绝。返回结果包含 permit ID 和完成状态，**绝不包含完成密钥**；因此可定位丢失的回调，而无需签发新的 permit 或暗中清除旧 permit。
+
+这个快照既不认证恢复主体，也不能证明 worker、后代进程或 Git 已经无法写入；它不会清算孤儿 permit、关闭不确定的 parent、签发执行 child，或把另行读取的 Git 检查结果当作权限。仍需独立撤销代际并由 supervisor 证明不可恢复执行，取得有新鲜度校验的签名 Git 证明，再由受限恢复主体清算并进行原子父子交接。本次没有修改 PostgreSQL migration、权限、SQLite 或生产 worker 启动行为；M4.2 保持 OPEN，M4.3 尚未开始。真实隔离 PostgreSQL 回归覆盖 INITIAL_ADMITTED、待完成的 Git permit、代际撤销、WORKSPACE_UNCERTAIN、可选的已保存初始 workspace，以及代际或 workspace 记录不一致时不清除 parent 和 permit 的拒绝行为。`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 和 78 个文件中的 854/854 项测试全部通过；语句、分支、函数、代码行覆盖率分别为 91.85%、86.13%、94.27%、91.77%，超过 90/85/90/90 门槛。

@@ -855,6 +855,201 @@ it('leaves the exact Git permit unresolved if uncertainty cannot be recorded bef
   }
 });
 
+it('recovers a consistent, read-only workspace parent snapshot across setup and uncertain phases', async () => {
+  const fixture = await createTrustedSetupFixture();
+  const admission = await PostgresWorkspaceSetupAdmission.connect({
+    connectionString: setupAdmissionConnectionString,
+    schema: fixture.schema,
+    role: setupAdmissionRole
+  });
+  const issuer = await PostgresExecutionGenerationIssuer.connect({
+    connectionString: generationIssuerConnectionString,
+    schema: fixture.schema,
+    role: generationIssuerRole
+  });
+  const request = {
+    ...fixture.request,
+    parentClaimId: 'recovery-snapshot-parent',
+    attemptId: 'approved-setup-attempt',
+    generationId: 'recovery-snapshot-generation',
+    supervisorId: 'recovery-supervisor',
+    binding: fixture.approvedBinding
+  };
+  try {
+    await fixture.authority.releaseGlobalMutation({
+      ...fixture.originalClaim,
+      token: fixture.originalGrant.token,
+      expectedVersion: fixture.originalGrant.leases[0]?.version ?? 1,
+      stopEvidence: 'The original writer stopped.'
+    });
+    const grant = await admission.admit(request);
+    if (grant.status !== 'granted') {
+      throw new Error('Expected approved setup parent');
+    }
+    await expect(
+      fixture.peer.recoverWorkspaceSetupEvidence(request.scopeId, request.parentClaimId)
+    ).resolves.toMatchObject({
+      phase: 'INITIAL_ADMITTED',
+      parentState: 'ACTIVE',
+      token: grant.token,
+      version: 1,
+      workspaceId: request.workspaceId
+    });
+    await issuer.issue({
+      generationId: request.generationId,
+      scopeId: request.scopeId,
+      parentClaimId: request.parentClaimId,
+      runId: request.runId,
+      taskId: request.setupApproval.taskId,
+      attemptId: request.attemptId,
+      workspaceId: request.workspaceId,
+      supervisorId: request.supervisorId,
+      setupPlanDigest: request.setupApproval.setupApprovalFingerprint.slice(7),
+      executionPlanDigest: fingerprintPlanValue(request.binding.leasePlan).slice(7)
+    });
+    await admission.arm(request);
+    const permit = await admission.beginWorkspaceCreationPermit({
+      ...request,
+      token: grant.token,
+      version: 1
+    });
+    const pending = await fixture.peer.recoverWorkspaceSetupEvidence(
+      request.scopeId,
+      request.parentClaimId
+    );
+    expect(pending).toMatchObject({
+      phase: 'WORKSPACE_ARMED',
+      parentState: 'ACTIVE',
+      generation: { id: request.generationId, state: 'ISSUED', supervisorId: request.supervisorId },
+      permit: { id: permit.id, completed: false }
+    });
+    expect(pending.workspace).toBeUndefined();
+    expect(JSON.stringify(pending)).not.toContain(permit.completionSecret);
+    await issuer.revoke(request.generationId, request.scopeId);
+    expect(
+      (await fixture.peer.recoverWorkspaceSetupEvidence(request.scopeId, request.parentClaimId))
+        .generation
+    ).toMatchObject({ state: 'REVOKED' });
+    await admission.finishWorkspaceCreationPermit(
+      permit,
+      'Outcome requires independent inspection'
+    );
+    expect(
+      await fixture.peer.recoverWorkspaceSetupEvidence(request.scopeId, request.parentClaimId)
+    ).toMatchObject({
+      phase: 'WORKSPACE_UNCERTAIN',
+      parentState: 'HELD_UNCERTAIN',
+      version: 2,
+      generation: { state: 'REVOKED' },
+      permit: { id: permit.id, completed: true }
+    });
+    await fixture.admin.unsafe(
+      `insert into "${fixture.schema}".forge_records (run_id,kind,key,payload)
+       values ($1,'workspace',$2,$3)`,
+      [
+        request.runId,
+        request.workspaceId,
+        JSON.stringify({ ...request.binding.workspace, revision: 1, phase: 'READY_TO_INTEGRATE' })
+      ]
+    );
+    expect(
+      await fixture.peer.recoverWorkspaceSetupEvidence(request.scopeId, request.parentClaimId)
+    ).toMatchObject({
+      workspace: { revision: 1, workspacePath: request.binding.workspace.workspacePath }
+    });
+    await fixture.admin.unsafe(
+      `update "${fixture.schema}".forge_records
+       set payload=jsonb_set(payload::jsonb,'{branchName}',to_jsonb('unapproved-branch'::text))::text
+       where run_id=$1 and kind='workspace' and key=$2`,
+      [request.runId, request.workspaceId]
+    );
+    await expect(
+      fixture.peer.recoverWorkspaceSetupEvidence(request.scopeId, request.parentClaimId)
+    ).rejects.toThrow('saved Git identity');
+    expect(
+      await fixture.admin.unsafe(
+        `select count(*)::integer as count from "${fixture.schema}".forge_global_claims where claim_id=$1`,
+        [request.parentClaimId]
+      )
+    ).toMatchObject([{ count: 1 }]);
+  } finally {
+    await Promise.all([issuer.close(), admission.close(), fixture.close()]);
+  }
+});
+
+it('fails closed on a mismatched durable generation without settling a workspace permit', async () => {
+  const fixture = await createTrustedSetupFixture();
+  const admission = await PostgresWorkspaceSetupAdmission.connect({
+    connectionString: setupAdmissionConnectionString,
+    schema: fixture.schema,
+    role: setupAdmissionRole
+  });
+  const issuer = await PostgresExecutionGenerationIssuer.connect({
+    connectionString: generationIssuerConnectionString,
+    schema: fixture.schema,
+    role: generationIssuerRole
+  });
+  const request = {
+    ...fixture.request,
+    parentClaimId: 'corrupt-recovery-parent',
+    attemptId: 'approved-setup-attempt',
+    generationId: 'corrupt-recovery-generation',
+    supervisorId: 'supervisor-one',
+    binding: fixture.approvedBinding
+  };
+  try {
+    await fixture.authority.releaseGlobalMutation({
+      ...fixture.originalClaim,
+      token: fixture.originalGrant.token,
+      expectedVersion: fixture.originalGrant.leases[0]?.version ?? 1,
+      stopEvidence: 'Prior writer stopped.'
+    });
+    const grant = await admission.admit(request);
+    if (grant.status !== 'granted') {
+      throw new Error('Setup parent must be admitted');
+    }
+    await issuer.issue({
+      generationId: request.generationId,
+      scopeId: request.scopeId,
+      parentClaimId: request.parentClaimId,
+      runId: request.runId,
+      taskId: request.setupApproval.taskId,
+      attemptId: request.attemptId,
+      workspaceId: request.workspaceId,
+      supervisorId: request.supervisorId,
+      setupPlanDigest: request.setupApproval.setupApprovalFingerprint.slice(7),
+      executionPlanDigest: fingerprintPlanValue(request.binding.leasePlan).slice(7)
+    });
+    await admission.arm(request);
+    const permit = await admission.beginWorkspaceCreationPermit({
+      ...request,
+      token: grant.token,
+      version: 1
+    });
+    await fixture.admin.unsafe(
+      `update "${fixture.schema}".forge_global_generations set workspace_id='other-workspace' where id=$1`,
+      [request.generationId]
+    );
+    await expect(
+      fixture.peer.recoverWorkspaceSetupEvidence(request.scopeId, request.parentClaimId)
+    ).rejects.toThrow('generation disagrees');
+    expect(
+      await fixture.admin.unsafe(
+        `select completed from "${fixture.schema}".forge_global_workspace_permit_lineages where permit_id=$1`,
+        [permit.id]
+      )
+    ).toMatchObject([{ completed: false }]);
+    expect(
+      await fixture.admin.unsafe(
+        `select state from "${fixture.schema}".forge_global_claims where claim_id=$1`,
+        [request.parentClaimId]
+      )
+    ).toMatchObject([{ state: 'ACTIVE' }]);
+  } finally {
+    await Promise.all([issuer.close(), admission.close(), fixture.close()]);
+  }
+});
+
 it('denies the dedicated Git callback if cancellation wins before permit begin', async () => {
   const fixture = await createTrustedSetupFixture();
   const admission = await PostgresWorkspaceSetupAdmission.connect({

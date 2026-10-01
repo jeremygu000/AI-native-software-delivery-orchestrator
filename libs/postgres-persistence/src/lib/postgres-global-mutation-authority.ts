@@ -17,6 +17,7 @@ import {
   GlobalMutationInFlightError,
   isWritableResourceCoveredBy,
   persistedTaskExecutionBindingSchema,
+  taskWorkspaceSchema,
   taskLeasePlanFingerprint,
   taskRepairAttemptSchema,
   taskRepairWorkItemSchema,
@@ -147,6 +148,34 @@ export type WorkspaceSetupTrustInspection = {
   readonly decisionDigest: string;
   readonly authorizationDigest: string;
 };
+
+/** A consistent authority snapshot for independent recovery, never a quiescence attestation. */
+export interface WorkspaceSetupRecoverySnapshot {
+  readonly scopeId: string;
+  readonly parentClaimId: string;
+  readonly owner: GlobalMutationOwner;
+  readonly token: number;
+  readonly version: number;
+  readonly parentState: 'ACTIVE' | 'HELD_UNCERTAIN';
+  readonly phase: 'INITIAL_ADMITTED' | 'WORKSPACE_ARMED' | 'WORKSPACE_UNCERTAIN';
+  readonly workspaceId: string;
+  readonly setupPlanDigest: string;
+  readonly executionPlanDigest: string;
+  readonly signingKey: string;
+  readonly authorizationDigest: string;
+  readonly runState: string;
+  readonly generation?: {
+    readonly id: string;
+    readonly state: 'ISSUED' | 'REVOKED';
+    readonly supervisorId: string;
+  };
+  readonly permit?: { readonly id: string; readonly completed: boolean };
+  readonly workspace?: {
+    readonly revision: number;
+    readonly workspacePath: string;
+    readonly branchName: string;
+  };
+}
 
 const workspaceSetupPolicy = 'git-workspace-setup-v1';
 
@@ -450,6 +479,228 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         };
       },
       request.runId
+    );
+  }
+
+  /** Holds the trust read prefix and scope/run locks while reading all recovery facts. */
+  async recoverWorkspaceSetupEvidence(
+    scopeId: string,
+    parentClaimId: string
+  ): Promise<WorkspaceSetupRecoverySnapshot> {
+    const initial = await this.#claim(this.#sql, scopeId, parentClaimId);
+    const runId = owner(initial.owner_json).runId;
+    return this.#scopedLocked(
+      scopeId,
+      async (tx) => {
+        const parent = await this.#claim(tx, scopeId, parentClaimId);
+        const claimOwner = owner(parent.owner_json);
+        if (claimOwner.runId !== runId || claimOwner.workspaceId === undefined) {
+          throw new Error('Workspace recovery parent identity changed');
+        }
+        const phase = await this.#one(
+          tx,
+          `select * from ${this.#schema}.forge_global_workspace_phases where scope_id=$1 and parent_claim_id=$2`,
+          [scopeId, parentClaimId]
+        );
+        const bindingRow = await this.#one(
+          tx,
+          `select payload from ${this.#schema}.forge_records where run_id=$1 and kind='binding' and key=$2`,
+          [runId, claimOwner.taskId]
+        );
+        const run = await this.#one(
+          tx,
+          `select state,payload from ${this.#schema}.forge_runs where id=$1`,
+          [runId]
+        );
+        if (phase === undefined || bindingRow === undefined || run === undefined) {
+          throw new Error('Workspace recovery authority is incomplete');
+        }
+        const binding = persistedTaskExecutionBindingSchema.parse(json(bindingRow.payload));
+        const identity = runIdentity(run.payload);
+        const approvedRun = fields(fields(json(run.payload)).run);
+        const approval = fields(approvedRun.authority);
+        const attemptRow = await this.#one(
+          tx,
+          `select payload from ${this.#schema}.forge_records where run_id=$1 and kind='builder' and key=$2`,
+          [runId, claimOwner.attemptId]
+        );
+        const attempt = attemptRow === undefined ? undefined : fields(json(attemptRow.payload));
+        const registered = await this.#one(
+          tx,
+          `select b.scope_id,a.scope_id as alias_scope_id,b.repository_id from ${this.#schema}.forge_global_run_bindings b
+           join ${this.#schema}.forge_global_aliases a on a.repository_id=b.repository_id where b.run_id=$1`,
+          [runId]
+        );
+        if (
+          registered?.scope_id !== scopeId ||
+          registered.alias_scope_id !== scopeId ||
+          registered.repository_id !== identity.repositoryId ||
+          identity.id !== runId ||
+          approvedRun.repositoryId !== identity.repositoryId ||
+          approval.repositoryRoot !== binding.workspace.integrationRepositoryPath ||
+          binding.runId !== runId ||
+          binding.taskId !== claimOwner.taskId ||
+          binding.agentId !== claimOwner.agentId ||
+          binding.workspace.id !== claimOwner.workspaceId ||
+          attempt?.runId !== runId ||
+          attempt.taskId !== claimOwner.taskId ||
+          attempt.id !== claimOwner.attemptId ||
+          attempt.agentId !== claimOwner.agentId ||
+          attempt.workspaceId !== claimOwner.workspaceId ||
+          attempt.leasePlanFingerprint !== taskLeasePlanFingerprint(binding.leasePlan) ||
+          attempt.state !== 'STARTING' ||
+          phase.workspace_id !== claimOwner.workspaceId ||
+          typeof phase.setup_plan_digest !== 'string' ||
+          phase.execution_plan_digest !== fingerprintPlanValue(binding.leasePlan).slice(7) ||
+          typeof phase.signing_key !== 'string' ||
+          typeof phase.authorization_digest !== 'string' ||
+          !['INITIAL_ADMITTED', 'WORKSPACE_ARMED', 'WORKSPACE_UNCERTAIN'].includes(
+            String(phase.phase)
+          ) ||
+          (parent.state !== 'ACTIVE' && parent.state !== 'HELD_UNCERTAIN')
+        ) {
+          throw new Error('Workspace recovery binding or phase disagrees with the parent');
+        }
+        const leases = await this.#leases(tx, scopeId, parentClaimId);
+        if (
+          leases.length !== 1 ||
+          leases[0]?.resource.type !== 'repository' ||
+          leases[0].token !== safeInteger(parent.token)
+        ) {
+          throw new Error('Workspace recovery parent lacks its exact repository lease');
+        }
+        const generation =
+          phase.execution_generation === null
+            ? undefined
+            : await this.#one(
+                tx,
+                `select * from ${this.#schema}.forge_global_generations where id=$1`,
+                [phase.execution_generation]
+              );
+        if (
+          (phase.execution_generation !== null && generation === undefined) ||
+          (generation !== undefined &&
+            (generation.scope_id !== scopeId ||
+              generation.parent_claim_id !== parentClaimId ||
+              generation.run_id !== runId ||
+              generation.task_id !== claimOwner.taskId ||
+              generation.attempt_id !== claimOwner.attemptId ||
+              generation.workspace_id !== claimOwner.workspaceId ||
+              generation.setup_plan_digest !== phase.setup_plan_digest ||
+              generation.execution_plan_digest !== phase.execution_plan_digest ||
+              (generation.state !== 'ISSUED' && generation.state !== 'REVOKED')))
+        ) {
+          throw new Error('Workspace recovery generation disagrees with the parent');
+        }
+        const permit = await this.#one(
+          tx,
+          `select * from ${this.#schema}.forge_global_workspace_permit_lineages
+           where scope_id=$1 and parent_claim_id=$2`,
+          [scopeId, parentClaimId]
+        );
+        if (
+          (permit !== undefined &&
+            (permit.owner_json !== parent.owner_json ||
+              safeInteger(permit.token) !== safeInteger(parent.token) ||
+              permit.generation_id !== phase.execution_generation ||
+              permit.workspace_id !== claimOwner.workspaceId)) ||
+          (phase.phase === 'INITIAL_ADMITTED' &&
+            (parent.state !== 'ACTIVE' || permit !== undefined)) ||
+          (phase.phase === 'WORKSPACE_ARMED' &&
+            (parent.state !== 'ACTIVE' ||
+              generation === undefined ||
+              permit?.completed === true)) ||
+          (phase.phase === 'WORKSPACE_UNCERTAIN' &&
+            (parent.state !== 'HELD_UNCERTAIN' || permit?.completed !== true))
+        ) {
+          throw new Error('Workspace recovery phase and permit lineage disagree');
+        }
+        const saved = await this.#one(
+          tx,
+          `select payload from ${this.#schema}.forge_records where run_id=$1 and kind='workspace' and key=$2`,
+          [runId, claimOwner.workspaceId]
+        );
+        const workspace =
+          saved === undefined ? undefined : taskWorkspaceSchema.parse(json(saved.payload));
+        if (
+          workspace !== undefined &&
+          (workspace.id !== claimOwner.workspaceId ||
+            workspace.runId !== runId ||
+            workspace.taskId !== claimOwner.taskId ||
+            workspace.revision !== 1 ||
+            workspace.phase !== 'READY_TO_INTEGRATE' ||
+            workspace.integrationRepositoryPath !== binding.workspace.integrationRepositoryPath ||
+            workspace.workspacePath !== binding.workspace.workspacePath ||
+            workspace.branchName !== binding.workspace.branchName ||
+            workspace.baseRef !== binding.workspace.baseRef ||
+            workspace.integrationRef !== binding.workspace.integrationRef)
+        ) {
+          throw new Error('Workspace recovery saved Git identity is not initial and approved');
+        }
+        const phaseState = phase.phase;
+        const parentState = parent.state;
+        const setupPlanDigest = phase.setup_plan_digest;
+        const executionPlanDigest = phase.execution_plan_digest;
+        const signingKey = phase.signing_key;
+        const authorizationDigest = phase.authorization_digest;
+        if (
+          (phaseState !== 'INITIAL_ADMITTED' &&
+            phaseState !== 'WORKSPACE_ARMED' &&
+            phaseState !== 'WORKSPACE_UNCERTAIN') ||
+          (parentState !== 'ACTIVE' && parentState !== 'HELD_UNCERTAIN') ||
+          typeof setupPlanDigest !== 'string' ||
+          typeof executionPlanDigest !== 'string' ||
+          typeof signingKey !== 'string' ||
+          typeof authorizationDigest !== 'string'
+        ) {
+          throw new Error('Invalid workspace recovery state');
+        }
+        const generationState = generation?.state;
+        if (
+          generation !== undefined &&
+          generationState !== 'ISSUED' &&
+          generationState !== 'REVOKED'
+        ) {
+          throw new Error('Invalid workspace recovery generation state');
+        }
+        return {
+          scopeId,
+          parentClaimId,
+          owner: claimOwner,
+          token: safeInteger(parent.token),
+          version: safeInteger(parent.version),
+          parentState,
+          phase: phaseState,
+          workspaceId: claimOwner.workspaceId,
+          setupPlanDigest,
+          executionPlanDigest,
+          signingKey,
+          authorizationDigest,
+          runState: String(run.state),
+          ...(generation === undefined
+            ? {}
+            : {
+                generation: {
+                  id: String(generation.id),
+                  state: generationState,
+                  supervisorId: String(generation.supervisor_id)
+                }
+              }),
+          ...(permit === undefined
+            ? {}
+            : { permit: { id: String(permit.permit_id), completed: permit.completed === true } }),
+          ...(workspace === undefined
+            ? {}
+            : {
+                workspace: {
+                  revision: workspace.revision,
+                  workspacePath: workspace.workspacePath,
+                  branchName: workspace.branchName
+                }
+              })
+        };
+      },
+      runId
     );
   }
 
