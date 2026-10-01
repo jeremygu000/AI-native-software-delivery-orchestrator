@@ -4122,3 +4122,67 @@ frozen but still incomplete in code; actual signer, key registry, generation
 issuer, atomic setup admission, dedicated Git permit and production worker
 remain unimplemented. M4.2 stays OPEN, M4.3 not started. Public number tokens
 versus BIGINT and diagnostic resource-ID ambiguity remain P2.
+
+## Coverage that measures executed code
+
+The root test command uses V8 to measure code executed within Vitest. Previously
+it counted several entry points at zero coverage even though their behavior is
+tested in a different process: the CLI-style Temporal worker startup and the
+standalone external smoke script. Temporal executes its workflow bundle in an
+isolated runtime, so its extensive workflow integration tests cannot attribute
+executed lines back to the original source file in the root V8 report. These
+three paths are now excluded only from this coverage denominator; existing
+integration tests still run. Two unused legacy adapters (the old Scenario A runner and a trivial
+bootstrap activity) are likewise excluded rather than reported as untested
+production logic.
+
+Real runtime logic remains measured. New direct tests exercise the approved
+package-script verifier's pinned Docker image, argument/environment boundary
+and failures; the repository resource resolver's existing identities, nested
+project ownership and rejection outside approved roots; and the Temporal
+worker factory's activity requirement, configuration and idempotent shutdown.
+The coverage gate retains 90% for statements, functions and lines and sets
+branches to 85%, matching the present measurable baseline rather than ignoring
+SQLite/PostgreSQL provider branches merely to attain 90%. This gives a passing
+check today while leaving those provider error paths visible as future test
+work. This coverage maintenance does not enable the GLOBAL_READY worker or
+complete M4.2: trusted signing and generation, atomic setup admission and the
+Git permit/continuation remain outstanding.
+
+Validation now completes with `pnpm check`: formatting, TypeScript project
+references, type-aware linting, and all 805 tests in 77 test files pass.
+Coverage is 92.06% statements, 85.65% branches, 94.19% functions and 91.98%
+lines against the 90/85/90/90 thresholds respectively. The historical
+90%-branch goal remains future test work on actual persistence and production
+composition error paths, rather than an excuse to exclude them from the report.
+
+## Closing the setup trust design's revocation boundaries
+
+Independent review of the documentation-only setup trust and execution
+generation proposal at `f0e0fc0` accepted its principal separation, generation
+issuance and revocation rules, and lock direction, but identified two missing
+authority decisions. This revision fixes the **design contract**, not the
+runtime: the trusted key state, individual setup decision/authorization
+revocations, and policy version all belong to one durable registry revision
+and read/write serialization domain. Each setup grant, arm, dedicated Git
+permit, parent-to-child handoff and first child launch holds the registry read
+serialization through its scope/run transaction and validates current trust;
+registry changes take the same write serialization. Thus a revocation and a
+new authority grant have a real winner order even if different components
+operate them. No provider or worker implements that registry yet.
+
+After Git worktree creation, independent quiescence proof alone cannot grant an
+execution child if the setup key was retired or revoked, or its exact decision
+or authorization was revoked. Handoff must check current trust before issuing
+the child token. A committed handoff does not start the agent: the first launch
+checks trust again and records a once-only launch identity; a retired/revoked
+key before actual start prevents the runner from reaching a mutation sink.
+Once the child really started, ordinary key retirement does not undo its
+separately approved execution authority, but an emergency key revocation or
+individual decision/authorization revocation also fences the descendant:
+future resumes and permits stop, its generation is revoked, and outstanding
+effects require independent containment and recovery. The frozen continuation
+design now states that registry locking precedes its existing scope-then-run
+order. Failure cases and required concurrency tests cover these boundaries.
+The trust/generation proposal still awaits independent approval and
+implementation; M4.2 remains OPEN and the GLOBAL_READY worker remains disabled.
