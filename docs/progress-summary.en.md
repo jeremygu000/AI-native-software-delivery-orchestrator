@@ -4442,3 +4442,48 @@ type-aware lint and all 828 tests in 77 files. Coverage is 91.90% statements,
 85.86% branches, 94.17% functions and 91.82% lines, above the 90/85/90/90
 gates. The isolated PostgreSQL suite passes 124/124 tests. No production
 worker or Git operation is enabled by these results.
+
+## Closing setup-admission privilege drift
+
+Independent review of `62231ba` found that the new signing-service database
+login could still acquire PostgreSQL `TRIGGER` or `REFERENCES` privileges, or
+`CREATE` on a schema, without the setup-admission checks noticing. A trigger or
+other database object created with such a grant could undermine the restricted
+function boundary even though the login cannot directly update authority rows.
+This is a privilege-audit correction; the version 9 migration statement, setup
+claim state machine, trust lock order and production worker remain unchanged.
+
+The signing-service connection and runtime startup now reject effective table
+`TRIGGER`/`REFERENCES` and column `REFERENCES` grants in addition to the other
+table and column mutation privileges. They also reject `CREATE` on any
+accessible non-system schema. A migration rerun removes accidentally granted
+table privileges and `CREATE` on the authority schema. Direct column grants are
+checked as well: the installer either removes them through its existing
+grant-repair process or refuses to proceed until the owner repairs them. A
+`CREATE` grant on some other application schema is not silently revoked by
+this migration; its owner must remove it before startup can succeed.
+
+Real PostgreSQL tests grant the signing-service role table `TRIGGER` and
+`REFERENCES`, column `REFERENCES`, and schema `CREATE` both on the authority
+schema and on another schema. They prove that connection and startup reject
+the drift, that migration reruns remove grants they own and fail closed on
+unrelated-schema grants, and that startup recovers after repair. The restricted
+login remains reserved for an independently authenticated signing service;
+SQLite still has no independent trust root. Dedicated Git permits, generation
+enforcement, handoff and the GLOBAL_READY production worker remain unfinished;
+M4.2 is OPEN and M4.3 has not started. Public number-token/BIGINT and diagnostic
+resource-ID ambiguity remain P2.
+
+After closing this privilege gap, the workspace dependencies were refreshed to
+their compatible current patch/minor releases: Restate SDK packages, Vitest and
+its coverage provider, Oxlint/Oxfmt, Drizzle and its toolkit, and Node type
+definitions. Workspace links and the pinned Pi coding-agent integration were
+preserved; replacing that deprecated agent requires a separate compatibility
+review. The newer lint release also required small, behavior-preserving
+function-scoping changes in the Docker command sandbox and immutable plan-store
+tests. `pnpm check` now passes formatting, TypeScript project-reference builds,
+type-aware lint and all 833 tests across 77 files; statement, branch, function
+and line coverage are 91.96%, 85.86%, 94.21% and 91.88%, respectively, above
+their 90/85/90/90 thresholds. The isolated PostgreSQL suite passes 129/129,
+and `pnpm build` passes after the dependency refresh. These checks do not
+change the unfinished M4.2 production boundaries described above.

@@ -154,24 +154,24 @@ afterEach(async () => {
   );
 });
 
-describe('JsonFileWorkspaceSetupApprovalStore', () => {
-  const setup = () => {
-    const plan = artifact();
-    return createWorkspaceSetupApproval({
-      setupApprovalId: 'setup-1',
+const setup = () => {
+  const plan = artifact();
+  return createWorkspaceSetupApproval({
+    setupApprovalId: 'setup-1',
+    artifact: plan,
+    executionApproval: createPlanApproval({
+      approvalId: 'execution-1',
       artifact: plan,
-      executionApproval: createPlanApproval({
-        approvalId: 'execution-1',
-        artifact: plan,
-        approvedBy: 'execution-reviewer',
-        approvedAt: '2026-08-13T01:00:00.000Z'
-      }),
-      taskId: 'task-a',
-      approvedBy: 'git-reviewer',
-      approvedAt: '2026-08-13T02:00:00.000Z'
-    });
-  };
+      approvedBy: 'execution-reviewer',
+      approvedAt: '2026-08-13T01:00:00.000Z'
+    }),
+    taskId: 'task-a',
+    approvedBy: 'git-reviewer',
+    approvedAt: '2026-08-13T02:00:00.000Z'
+  });
+};
 
+describe('JsonFileWorkspaceSetupApprovalStore', () => {
   it('publishes one immutable independent Git setup decision across store instances', async () => {
     const directory = await createDirectory();
     const first = new JsonFileWorkspaceSetupApprovalStore(directory);
@@ -336,15 +336,15 @@ describe('JsonFilePlanArtifactStore', () => {
   });
 });
 
-describe('JsonFilePlanApprovalStore', () => {
-  const approval = () =>
-    createPlanApproval({
-      approvalId: 'approval-1',
-      artifact: artifact(),
-      approvedBy: 'reviewer@example.com',
-      approvedAt: '2026-08-13T01:00:00.000Z'
-    });
+const approval = () =>
+  createPlanApproval({
+    approvalId: 'approval-1',
+    artifact: artifact(),
+    approvedBy: 'reviewer@example.com',
+    approvedAt: '2026-08-13T01:00:00.000Z'
+  });
 
+describe('JsonFilePlanApprovalStore', () => {
   it('atomically saves and loads an exact approval', async () => {
     const store = new JsonFilePlanApprovalStore(await createDirectory());
     const record = approval();

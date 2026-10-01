@@ -206,6 +206,10 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
             shell: false,
             stdio: 'ignore'
           });
+          const complete = () => {
+            containerSettled = true;
+            finish({ status: 'completed', exitCode: exitCode ?? -1, stdout, stderr });
+          };
           const removeContainer = () => {
             const remover = spawn(this.#dockerExecutable, ['rm', '-f', containerName], {
               cwd: request.cwd,
@@ -213,10 +217,6 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
               shell: false,
               stdio: 'ignore'
             });
-            const complete = () => {
-              containerSettled = true;
-              finish({ status: 'completed', exitCode: exitCode ?? -1, stdout, stderr });
-            };
             remover.once('error', complete);
             remover.once('close', complete);
           };

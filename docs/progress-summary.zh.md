@@ -3657,3 +3657,13 @@ PostgreSQL 全局 authority 适配器现在提供只读的 `inspectCurrentWorksp
 隔离的真实 PostgreSQL 回归覆盖签名和 workspace 身份错误、阻塞准入没有阶段或新 token 残留、精确重试，以及已标记父 claim 不可取得普通 mutation permit。受控竞态使用实际受限信任管理员撤销签名决策，并在两种提交顺序下由 `pg_blocking_pids` 指认等待者：准入先提交时父 claim 在撤销之前建立；撤销先提交时没有新 claim、阶段或 token。这里完成的**仅是 setup 父 claim 准入**。签发／撤销执行代际、工作区 arming、Git 专用单一 lineage permit、独立静默证明、父子交接和生产 worker 接线均未实现。SQLite 仍没有独立信任根，GLOBAL_READY 生产 worker 继续禁用；M4.2 保持 OPEN，M4.3 尚未开始。公开 number token／BIGINT 和诊断资源 ID 歧义仍为 P2。
 
 验证结果：`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 和 77 个文件中的 828 项测试全部通过；语句、分支、函数和代码行覆盖率分别为 91.90%、85.86%、94.17%、91.82%，达到 90/85/90/90 门槛。隔离的真实 PostgreSQL 测试 124/124 通过。这些验证并未启用生产 worker 或 Git 操作。
+
+## 封闭 setup 准入角色的权限漂移
+
+独立复审 `62231ba` 指出，新签名服务数据库账号即使不能直接更新权威记录，也可能在未被发现的情况下获得 PostgreSQL 表级 `TRIGGER` 或 `REFERENCES`、列级 `REFERENCES`，或者某个 schema 上的 `CREATE` 权限。这些权限可能让账号通过触发器或其他数据库对象绕过受限函数边界。本次只修复权限审计，不改第 9 版迁移语句、setup claim 状态机、信任锁序或生产 worker。
+
+签名服务连接及运行时启动现在同时拒绝有效的表级 `TRIGGER`／`REFERENCES`、列级 `REFERENCES` 和原有的各种表列写权限；它们也拒绝任何可访问的非系统 schema 上的 `CREATE`。重跑迁移会清除误授的表权限及权威 schema 上的 `CREATE`。安装程序还检查直接列授权：通过既有授权修复流程清除它们，或在所有者修复前失效关闭。若误授发生在别的应用 schema，本项目的迁移不会擅自撤销他人的权限，必须由该 schema 的所有者修复后才能恢复启动。
+
+真实 PostgreSQL 测试分别误授签名服务角色表级 `TRIGGER` 与 `REFERENCES`、列级 `REFERENCES`，以及权威 schema 和另一个 schema 的 `CREATE`。测试验证连接与启动都会拒绝漂移，迁移重跑会修复其管理范围内的授权，并在无权处理的 schema 漂移下拒绝继续；修复后启动恢复。受限凭据依然只能交给独立认证的签名服务；SQLite 仍无独立信任根。Git 专用 permit、代际校验、交接以及 GLOBAL_READY 生产 worker 尚未完成；M4.2 继续 OPEN，M4.3 尚未开始。公开 number token／BIGINT 和诊断资源 ID 歧义仍为 P2。
+
+封闭权限缺口后，工作区依赖升级到兼容的当前补丁或次要版本：Restate SDK、Vitest 及覆盖率提供者、Oxlint/Oxfmt、Drizzle 及其工具、Node 类型定义。工作区内部链接及已固定版本的 Pi coding-agent 集成保持不变；替换这个已弃用的 agent 需要另行验证兼容性。新版本 lint 还要求在 Docker command sandbox 和不可变计划存储测试中做少量不改变行为的函数作用域调整。`pnpm check` 的格式、TypeScript 项目引用构建、类型感知 lint 及 77 个文件中的 833 项测试全部通过；语句、分支、函数和代码行覆盖率分别为 91.96%、85.86%、94.21%、91.88%，超过 90/85/90/90 门槛。隔离的真实 PostgreSQL 测试 129/129 通过，升级依赖后的 `pnpm build` 也通过。这些检查没有改变上文尚未完成的 M4.2 生产边界。

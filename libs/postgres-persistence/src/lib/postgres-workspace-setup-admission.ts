@@ -58,7 +58,12 @@ export class PostgresWorkspaceSetupAdmission {
         where n.nspname=${configuration.schema} and c.relkind in ('r','p') and (
           has_table_privilege(current_user,c.oid,'INSERT') or has_table_privilege(current_user,c.oid,'UPDATE') or
           has_table_privilege(current_user,c.oid,'DELETE') or has_table_privilege(current_user,c.oid,'TRUNCATE') or
-          has_any_column_privilege(current_user,c.oid,'INSERT') or has_any_column_privilege(current_user,c.oid,'UPDATE')) limit 1`;
+          has_table_privilege(current_user,c.oid,'REFERENCES') or has_table_privilege(current_user,c.oid,'TRIGGER') or
+          has_any_column_privilege(current_user,c.oid,'INSERT') or has_any_column_privilege(current_user,c.oid,'UPDATE') or
+          has_any_column_privilege(current_user,c.oid,'REFERENCES')) limit 1`;
+      const schemaCreate = await sql`select 1 from pg_namespace n
+        where n.nspname !~ '^pg_' and n.nspname <> 'information_schema'
+          and has_schema_privilege(current_user,n.oid,'CREATE') limit 1`;
       const keyRead =
         await sql`select has_table_privilege(current_user,${configuration.schema}::text || '.forge_global_trust_keys','SELECT') as allowed`;
       if (
@@ -79,6 +84,7 @@ export class PostgresWorkspaceSetupAdmission {
         fn[0].public_execute !== false ||
         fn[0].can_grant !== false ||
         direct.length !== 0 ||
+        schemaCreate.length !== 0 ||
         keyRead[0]?.allowed !== true
       ) {
         throw new Error('PostgreSQL setup admission requires its restricted signing-service login');

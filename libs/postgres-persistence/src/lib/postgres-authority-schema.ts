@@ -1057,12 +1057,21 @@ const assertRestrictedWriterFunctions = async (
        where n.nspname=${schema} and c.relkind in ('r','p') and (
          has_table_privilege(${setupRole},c.oid,'INSERT') or
          has_table_privilege(${setupRole},c.oid,'UPDATE') or
-         has_table_privilege(${setupRole},c.oid,'DELETE') or
-         has_table_privilege(${setupRole},c.oid,'TRUNCATE') or
-         has_any_column_privilege(${setupRole},c.oid,'INSERT') or
-         has_any_column_privilege(${setupRole},c.oid,'UPDATE')) limit 1`;
+          has_table_privilege(${setupRole},c.oid,'DELETE') or
+          has_table_privilege(${setupRole},c.oid,'TRUNCATE') or
+          has_table_privilege(${setupRole},c.oid,'REFERENCES') or
+          has_table_privilege(${setupRole},c.oid,'TRIGGER') or
+          has_any_column_privilege(${setupRole},c.oid,'INSERT') or
+          has_any_column_privilege(${setupRole},c.oid,'UPDATE') or
+          has_any_column_privilege(${setupRole},c.oid,'REFERENCES')) limit 1`;
     if (directWrites.length > 0) {
       throw new Error('PostgreSQL setup admission role has direct table writes');
+    }
+    const schemaCreate = await sql`select 1 from pg_namespace n
+        where n.nspname !~ '^pg_' and n.nspname <> 'information_schema'
+          and has_schema_privilege(${setupRole},n.oid,'CREATE') limit 1`;
+    if (schemaCreate.length > 0) {
+      throw new Error('PostgreSQL setup admission role has schema CREATE privileges');
     }
   }
   if (writers !== undefined) {
@@ -1286,6 +1295,15 @@ export const migratePostgresAuthoritySchema = async (
           ]) {
             await tx.unsafe(`revoke all on ${schema}.${table} from ${roleName}`);
           }
+          const setupColumnDrift = await tx`select c.relname from pg_class c
+            join pg_namespace n on n.oid=c.relnamespace
+            join pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
+            cross join lateral aclexplode(a.attacl) acl
+            where n.nspname=${configuration.schema} and c.relkind in ('r','p')
+              and acl.grantee=${setupRole}::regrole::oid limit 1`;
+          if (setupColumnDrift.length > 0) {
+            throw new Error('PostgreSQL authority writer column grants require owner repair');
+          }
           await tx.unsafe(`grant select on ${schema}.forge_global_trust_keys to ${roleName}`);
           await tx.unsafe(`grant execute on function ${schema}.${functionName} to ${roleName}`);
           await tx.unsafe(`comment on function ${schema}.${functionName} is '${setupRole}'`);
@@ -1356,13 +1374,13 @@ export const migratePostgresAuthoritySchema = async (
             await tx.unsafe(`grant execute on function ${schema}.${signature} to ${writer}`);
           }
           const columnDrift = await tx`select c.relname from pg_class c
-            join pg_namespace n on n.oid=c.relnamespace
-            join pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
-            cross join lateral aclexplode(a.attacl) acl
-            where n.nspname=${configuration.schema} and c.relkind in ('r','p')
-              and acl.grantee in (${writerRoles.trustAdminRole}::regrole::oid,
-                ${writerRoles.generationIssuerRole}::regrole::oid)
-            limit 1`;
+             join pg_namespace n on n.oid=c.relnamespace
+             join pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
+             cross join lateral aclexplode(a.attacl) acl
+             where n.nspname=${configuration.schema} and c.relkind in ('r','p')
+               and acl.grantee in (${writerRoles.trustAdminRole}::regrole::oid,
+                 ${writerRoles.generationIssuerRole}::regrole::oid)
+             limit 1`;
           if (columnDrift.length > 0) {
             throw new Error('PostgreSQL authority writer column grants require owner repair');
           }
