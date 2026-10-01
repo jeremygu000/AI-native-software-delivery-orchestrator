@@ -1,4 +1,4 @@
-import { createPublicKey } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes } from 'node:crypto';
 
 import postgres from 'postgres';
 import {
@@ -56,7 +56,7 @@ export class PostgresWorkspaceSetupAdmission {
       const otherFunctions = await sql`select p.proname as name,
         has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute
         from pg_proc p join pg_namespace n on n.oid=p.pronamespace
-         where n.nspname=${configuration.schema} and p.proname not in ('forge_setup_admit','forge_setup_arm')
+          where n.nspname=${configuration.schema} and p.proname not in ('forge_setup_admit','forge_setup_arm','forge_workspace_permit_begin','forge_workspace_permit_finish')
          order by p.proname`;
       const armFunction = await sql`select p.prosecdef as security_definer,
          p.proowner::regrole::text as owner, obj_description(p.oid,'pg_proc') as designated,
@@ -64,7 +64,21 @@ export class PostgresWorkspaceSetupAdmission {
          has_function_privilege('public',p.oid,'EXECUTE') as public_execute,
          has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION') as can_grant
          from pg_proc p join pg_namespace n on n.oid=p.pronamespace
-         where n.nspname=${configuration.schema} and p.proname='forge_setup_arm'`;
+          where n.nspname=${configuration.schema} and p.proname='forge_setup_arm'`;
+      const permitFunction = await sql`select p.prosecdef as security_definer,
+          p.proowner::regrole::text as owner, obj_description(p.oid,'pg_proc') as designated,
+          has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute,
+          has_function_privilege('public',p.oid,'EXECUTE') as public_execute,
+          has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION') as can_grant
+          from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+          where n.nspname=${configuration.schema} and p.proname='forge_workspace_permit_begin'`;
+      const finishFunction = await sql`select p.prosecdef as security_definer,
+          p.proowner::regrole::text as owner, obj_description(p.oid,'pg_proc') as designated,
+          has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute,
+          has_function_privilege('public',p.oid,'EXECUTE') as public_execute,
+          has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION') as can_grant
+          from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+          where n.nspname=${configuration.schema} and p.proname='forge_workspace_permit_finish'`;
       const direct =
         await sql`select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
         where n.nspname=${configuration.schema} and c.relkind in ('r','p') and (
@@ -101,6 +115,20 @@ export class PostgresWorkspaceSetupAdmission {
         armFunction[0].can_execute !== true ||
         armFunction[0].public_execute !== false ||
         armFunction[0].can_grant !== false ||
+        permitFunction.length !== 1 ||
+        permitFunction[0]?.security_definer !== true ||
+        permitFunction[0].owner !== fn[0].owner ||
+        permitFunction[0].designated !== configuration.role ||
+        permitFunction[0].can_execute !== true ||
+        permitFunction[0].public_execute !== false ||
+        permitFunction[0].can_grant !== false ||
+        finishFunction.length !== 1 ||
+        finishFunction[0]?.security_definer !== true ||
+        finishFunction[0].owner !== fn[0].owner ||
+        finishFunction[0].designated !== configuration.role ||
+        finishFunction[0].can_execute !== true ||
+        finishFunction[0].public_execute !== false ||
+        finishFunction[0].can_grant !== false ||
         otherFunctions.length !== 2 ||
         otherFunctions[0]?.name !== 'forge_generation_write' ||
         otherFunctions[0].can_execute !== false ||
@@ -266,5 +294,119 @@ export class PostgresWorkspaceSetupAdmission {
     if (rows[0]?.result !== 'ARMED') {
       throw new Error('Unexpected workspace setup arming result');
     }
+  }
+
+  /** The signing service alone owns this capability. It is not a generic mutation permit. */
+  async beginWorkspaceCreationPermit(request: {
+    readonly scopeId: string;
+    readonly runId: string;
+    readonly attemptId: string;
+    readonly parentClaimId: string;
+    readonly workspaceId: string;
+    readonly generationId: string;
+    readonly supervisorId: string;
+    readonly token: number;
+    readonly version: number;
+    readonly artifact: PlanArtifact;
+    readonly executionApproval: PlanApproval;
+    readonly setupApproval: WorkspaceSetupApproval;
+    readonly authorization: WorkspaceSetupAuthorization;
+    readonly binding: PersistedTaskExecutionBinding;
+  }): Promise<{ readonly id: string; readonly completionSecret: string }> {
+    if (!Number.isSafeInteger(request.token) || !Number.isSafeInteger(request.version)) {
+      throw new Error('Invalid workspace Git parent token or version');
+    }
+    const authorization = workspaceSetupAuthorizationSchema.parse(request.authorization);
+    const keyRows = await this.#sql.unsafe(
+      `select public_key from ${this.#schema}.forge_global_trust_keys where key_id=$1`,
+      [authorization.keyId]
+    );
+    const pem = keyRows[0]?.public_key;
+    if (typeof pem !== 'string' || createPublicKey(pem).asymmetricKeyType !== 'ed25519') {
+      throw new Error('Unregistered Git workspace setup signing key');
+    }
+    const setup = verifyWorkspaceSetupAuthorization({
+      ...request,
+      authorization,
+      trustedPublicKeys: new Map([[authorization.keyId, pem]])
+    });
+    if (
+      request.binding.runId !== request.runId ||
+      request.binding.taskId !== setup.taskId ||
+      request.binding.workspace.id !== request.workspaceId ||
+      request.binding.workspace.integrationRepositoryPath !== setup.repositoryRoot
+    ) {
+      throw new Error('Workspace setup binding does not match approved run and workspace');
+    }
+    const completionSecret = randomBytes(32).toString('hex');
+    const verifier = createHash('sha256').update(completionSecret).digest('hex');
+    const values = [
+      request.scopeId,
+      request.parentClaimId,
+      request.runId,
+      setup.taskId,
+      request.attemptId,
+      request.binding.agentId,
+      request.workspaceId,
+      request.generationId,
+      request.supervisorId,
+      String(request.token),
+      String(request.version),
+      verifier,
+      setup.setupApprovalFingerprint.slice(7),
+      fingerprintPlanValue(request.binding.leasePlan).slice(7),
+      authorization.keyId,
+      fingerprintPlanValue(authorization).slice(7),
+      pem,
+      setup.artifactId,
+      String(setup.artifactRevision),
+      setup.executionApprovalId,
+      setup.executionApprovalFingerprint,
+      setup.planFingerprint,
+      setup.repositoryId,
+      setup.repositoryRoot,
+      setup.baseCommit,
+      taskLeasePlanFingerprint(request.binding.leasePlan)
+    ];
+    const rows = await this.#sql.unsafe(
+      `select ${this.#schema}.forge_workspace_permit_begin(${values.map((_, index) => `$${index + 1}`).join(',')}) as id`,
+      values
+    );
+    if (typeof rows[0]?.id !== 'string') {
+      throw new Error('Unexpected workspace Git permit result');
+    }
+    return { id: rows[0].id, completionSecret };
+  }
+
+  /** Persist HELD_UNCERTAIN and retire this exact secret in the same transaction. */
+  async finishWorkspaceCreationPermit(
+    permit: { readonly id: string; readonly completionSecret: string },
+    uncertaintyEvidence: string
+  ): Promise<void> {
+    const rows = await this.#sql.unsafe(
+      `select ${this.#schema}.forge_workspace_permit_finish($1,$2,$3) as result`,
+      [permit.id, permit.completionSecret, uncertaintyEvidence]
+    );
+    if (rows[0]?.result !== 'UNCERTAIN') {
+      throw new Error('Unexpected workspace Git completion result');
+    }
+  }
+
+  /** Keep the single exact lineage unresolved if uncertainty cannot be recorded. */
+  async executeWorkspaceCreation<T>(
+    request: Parameters<PostgresWorkspaceSetupAdmission['beginWorkspaceCreationPermit']>[0],
+    createWorkspace: () => Promise<T>,
+    uncertaintyEvidence: (error?: unknown) => string
+  ): Promise<T> {
+    const permit = await this.beginWorkspaceCreationPermit(request);
+    let result: T;
+    try {
+      result = await createWorkspace();
+    } catch (error) {
+      await this.finishWorkspaceCreationPermit(permit, uncertaintyEvidence(error));
+      throw error;
+    }
+    await this.finishWorkspaceCreationPermit(permit, uncertaintyEvidence());
+    return result;
   }
 }

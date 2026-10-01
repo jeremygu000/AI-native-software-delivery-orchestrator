@@ -3681,3 +3681,13 @@ PostgreSQL 全局 authority 适配器现在提供只读的 `inspectCurrentWorksp
 PostgreSQL 第 10 版迁移仅追加受限的安全定义 arming 操作，不修改第 1 至 9 版。签名服务角色先核验签名的 setup 决策，再调用该操作；worker 无权调用。数据库在同一事务中先持有当前信任的读取串行锁，再锁定已登记的 scope 和绑定的 run，检查生效的策略及签名密钥、未撤销的准确决策和授权、GLOBAL_READY 与 ACTIVE 状态、只有仓库 lease 的 setup 父 claim、准确批准的任务与工作区，以及对应的 `ISSUED` 代际。全部通过后才将阶段从 `INITIAL_ADMITTED` 改为 `WORKSPACE_ARMED`。相同请求可安全重试；缺失或撤销的代际、取消的 run、撤销的批准都不会改变阶段。运行时对阶段与代际表仍只有读取权限；setup 角色仅在原有准入函数之外取得经过精确审计的 arming 函数执行权。
 
 `WORKSPACE_ARMED` **不代表 Git 可以执行**：已标记的父 claim 仍拒绝一切普通 mutation permit、release 和 reclaim。专用的单一 lineage Git permit、受监管的回调及不确定结果处理、签名静默证明、父子交接、SQLite 独立信任根和 GLOBAL_READY 生产 worker 均尚未实现。M4.2 仍为 OPEN，M4.3 尚未开始；公开 number token／BIGINT 和诊断资源 ID 歧义仍为 P2。隔离的真实 PostgreSQL 测试 136/136 通过，覆盖代际签发前后的 arming、精确重试、代际与信任撤销、run 取消、普通 Git permit 被拒，以及持久化 run 已批准的基础提交被篡改时拒绝 arming。`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 及 77 个文件中的 840 项测试全部通过；语句、分支、函数、代码行覆盖率分别为 91.94%、85.88%、94.22%、91.86%，超过 90/85/90/90 门槛。
+
+## PostgreSQL 专用、单一 lineage 的工作区 Git permit
+
+独立复审接受了 `d2335c3` 的 arming 前置条件：工作区父 claim 可以进入 `WORKSPACE_ARMED`，普通 mutation port 仍必须拒绝它。因此下一步增加**单独的** PostgreSQL permit，只允许一次准确的 Git 工作区创建回调。第 11 版迁移仅追加新对象，不修改第 1 至 10 版。新 lineage 表按父 claim 保留唯一 permit、准确的 owner、token、执行代际和 workspace、随机完成密钥的哈希及完成状态。运行时对该表只有读取权限；只有独立认证的签名服务受限账号能调用两个新的安全定义操作，worker 无权调用，也不能直接修改 lineage 或阶段表。
+
+begin 操作在返回密钥之前，先持有当前信任的读取锁，再锁定已登记 scope 和绑定的 run。它要求生效的签名密钥和策略、未撤销的准确决策及授权、批准的工件／仓库／任务／工作区身份未变且 ACTIVE 的 run、只有仓库 lease 的 ACTIVE 父 claim 和 `WORKSPACE_ARMED` 标记，以及包括 supervisor 身份在内的准确 `ISSUED` 代际。提交唯一 lineage 之后才返回完成能力。来自另一个签名服务连接的第二次请求，以及 lineage 完成后的请求，都不能再签发 permit。签名服务适配器先验证独立批准的 setup 决策签名；数据库在 permit 事务内重新验证当前信任和持久化 authority。签名服务凭据是独立的信任边界，绝不能交给 worker。
+
+回调结束后，只有出示准确完成密钥和非空结果证据，才能在**同一个事务**内把父 claim 变为 `HELD_UNCERTAIN`、标记变为 `WORKSPACE_UNCERTAIN`、lineage 记为完成。如果不确定状态的记录失败，lineage 保持待处理，不能凭新 permit 重跑回调。即使回调返回成功，也必须由独立服务证明真实 Git 状态与静默后才能继续。隔离的真实 PostgreSQL 回归覆盖代际和阶段前置条件、错误 supervisor／version／密钥、跨连接重复签发、普通与 runtime permit 权限被拒、Git 开始前取消，以及不确定状态写入失败后只留一个待处理 lineage。回调辅助接口仅属于受限签名服务边界，不是生产 worker 接线。签名静默证明、父子交接、SQLite 独立信任根、最终安全 release 与 GLOBAL_READY 生产 worker 尚未实现；M4.2 保持 OPEN，M4.3 尚未开始。公开 number token／BIGINT 和诊断资源 ID 歧义仍为 P2。
+
+针对 permit 签发与执行代际撤销，还在真实 PostgreSQL 锁上控制了两种提交顺序。`pg_blocking_pids` 指认真正等待的事务：签发先提交时留下唯一 lineage，之后的撤销不能清除它；撤销先提交时拒绝签发且不产生 lineage。隔离的 PostgreSQL 测试 141/141 通过。`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint，以及 77 个文件中的 845 项测试全部通过；语句、分支、函数、代码行覆盖率分别为 91.87%、85.88%、94.24%、91.79%，高于 90/85/90/90 门槛。本增量仍待独立复审，不能据此宣布 M4.2 完成。
