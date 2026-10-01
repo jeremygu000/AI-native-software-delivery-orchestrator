@@ -135,11 +135,160 @@ const migrations = [
           references {schema}.forge_global_claims(scope_id,claim_id)
       )`
     ]
+  },
+  {
+    version: 8,
+    statements: [
+      `create function {schema}.forge_trust_write(action text, identity text, detail text)
+       returns bigint language plpgsql security definer set search_path = pg_catalog as $$
+       declare current_revision bigint; existing record; next_revision bigint;
+       begin
+         perform pg_advisory_xact_lock(hashtext('forge-trust:{schema}'));
+         select revision into current_revision from {schema}.forge_global_trust_registry where id=1 for update;
+         if not found or current_revision = 9223372036854775807 then
+           raise exception 'Missing or exhausted trust registry';
+         end if;
+         if identity is null or identity = '' or detail is null or detail = '' then
+           raise exception 'Trust writer identity and detail are required';
+         end if;
+         if action = 'REGISTER_KEY' then
+           select public_key,state into existing from {schema}.forge_global_trust_keys where key_id=identity;
+            if found then
+              if existing.public_key <> detail or existing.state <> 'ACTIVE' then
+                raise exception 'Trust key identity cannot be replaced or reactivated';
+              end if;
+             return current_revision;
+           end if;
+           insert into {schema}.forge_global_trust_keys (key_id,public_key,state)
+             values (identity,detail,'ACTIVE');
+         elsif action = 'RETIRE_KEY' or action = 'REVOKE_KEY' then
+            select public_key,state into existing from {schema}.forge_global_trust_keys where key_id=identity;
+            if not found then raise exception 'Unknown trust key'; end if;
+            if detail <> existing.public_key then raise exception 'Trust key identity cannot be replaced'; end if;
+            if existing.state = 'REVOKED' or (existing.state = 'RETIRED' and action = 'RETIRE_KEY') then
+              return current_revision;
+            end if;
+           update {schema}.forge_global_trust_keys
+             set state = case when action='RETIRE_KEY' then 'RETIRED' else 'REVOKED' end
+             where key_id=identity;
+         elsif action = 'REVOKE_DECISION' or action = 'REVOKE_AUTHORIZATION' then
+           if identity !~ '^[0-9a-f]{64}$' or detail <> identity then
+             raise exception 'Exact trust revocation digest is required';
+           end if;
+           if exists (select 1 from {schema}.forge_global_trust_revocations
+             where kind=case when action='REVOKE_DECISION' then 'DECISION' else 'AUTHORIZATION' end
+               and digest=identity) then return current_revision; end if;
+           insert into {schema}.forge_global_trust_revocations (kind,digest,registry_revision)
+             values (case when action='REVOKE_DECISION' then 'DECISION' else 'AUTHORIZATION' end,
+               identity,current_revision+1);
+         elsif action = 'SET_POLICY' then
+           if identity <> 'policy' then raise exception 'Invalid policy identity'; end if;
+           if (select policy_version from {schema}.forge_global_trust_registry where id=1) = detail then
+             return current_revision;
+           end if;
+         else
+           raise exception 'Unsupported trust writer operation';
+         end if;
+         next_revision := current_revision + 1;
+         update {schema}.forge_global_trust_registry
+           set revision=next_revision,
+               policy_version=case when action='SET_POLICY' then detail else policy_version end
+           where id=1;
+         return next_revision;
+       end $$`,
+      `revoke all on function {schema}.forge_trust_write(text,text,text) from public`,
+      `create function {schema}.forge_generation_write(action text, generation_id text,
+         target_scope text, parent_id text, run_identity text, task_identity text,
+         attempt_identity text, workspace_identity text, supervisor_identity text,
+         setup_digest text, execution_digest text)
+       returns text language plpgsql security definer set search_path = pg_catalog as $$
+       declare prior record; claim_owner jsonb; phase record;
+       begin
+         if generation_id is null or generation_id = '' or target_scope is null or target_scope = '' then
+           raise exception 'Generation and scope identities are required';
+         end if;
+         if action <> 'ISSUE' and action <> 'REVOKE' then
+           raise exception 'Unsupported generation operation';
+         end if;
+         perform pg_advisory_xact_lock_shared(hashtext('forge-trust:{schema}'));
+         if not exists (select 1 from {schema}.forge_global_scopes
+           where id=target_scope for update) then
+           raise exception 'Unknown generation scope';
+         end if;
+         select * into prior from {schema}.forge_global_generations where id=generation_id;
+         if action='REVOKE' then
+           if not found or prior.scope_id <> target_scope then raise exception 'Unknown generation'; end if;
+           if prior.state='REVOKED' then return 'REVOKED'; end if;
+           update {schema}.forge_global_generations set state='REVOKED' where id=generation_id;
+           return 'REVOKED';
+         end if;
+         if not exists (select 1 from {schema}.forge_global_scopes
+           where id=target_scope and state='ACTIVE_FOR_GLOBAL_CLAIMS') then
+           raise exception 'Inactive generation scope';
+         end if;
+         if parent_id is null or parent_id = '' or run_identity is null or run_identity = ''
+           or task_identity is null or task_identity = '' or attempt_identity is null or attempt_identity = ''
+           or workspace_identity is null or workspace_identity = ''
+           or supervisor_identity is null or supervisor_identity = ''
+           or setup_digest !~ '^[0-9a-f]{64}$' or execution_digest !~ '^[0-9a-f]{64}$' then
+           raise exception 'Incomplete generation binding';
+         end if;
+         if found then
+           if prior.state <> 'ISSUED' or prior.scope_id <> target_scope
+             or prior.parent_claim_id <> parent_id or prior.run_id <> run_identity
+             or prior.task_id <> task_identity or prior.attempt_id <> attempt_identity
+             or prior.workspace_id <> workspace_identity or prior.supervisor_id <> supervisor_identity
+             or prior.setup_plan_digest <> setup_digest or prior.execution_plan_digest <> execution_digest then
+             raise exception 'Generation identity cannot be replaced or reactivated';
+           end if;
+           return 'ISSUED';
+         end if;
+         select owner_json::jsonb into claim_owner from {schema}.forge_global_claims
+           where scope_id=target_scope and claim_id=parent_id and state='ACTIVE';
+         if not found or claim_owner->>'runId' is distinct from run_identity
+           or claim_owner->>'taskId' is distinct from task_identity
+           or claim_owner->>'attemptId' is distinct from attempt_identity
+           or claim_owner->>'workspaceId' is distinct from workspace_identity then
+           raise exception 'Generation parent claim mismatch';
+         end if;
+         if not exists (select 1 from {schema}.forge_global_run_bindings b
+           join {schema}.forge_runs r on r.id=b.run_id
+           where b.run_id=run_identity and b.scope_id=target_scope and r.state='ACTIVE' for update of r) then
+           raise exception 'Generation run is not active and bound';
+         end if;
+         select * into phase from {schema}.forge_global_workspace_phases
+           where scope_id=target_scope and parent_claim_id=parent_id;
+         if not found or phase.phase is distinct from 'INITIAL_ADMITTED'
+           or phase.workspace_id is distinct from workspace_identity
+           or phase.setup_plan_digest is distinct from setup_digest
+           or phase.execution_plan_digest is distinct from execution_digest then
+           raise exception 'Generation setup phase mismatch';
+         end if;
+         if phase.execution_generation is not null and phase.execution_generation <> generation_id then
+           raise exception 'Generation setup phase already names another generation';
+         end if;
+          if exists (select 1 from {schema}.forge_global_generations
+            where scope_id=target_scope
+              and run_id=run_identity and task_id=task_identity and attempt_id=attempt_identity
+              and workspace_id=workspace_identity and state='ISSUED') then
+           raise exception 'A competing execution generation is already live';
+         end if;
+         insert into {schema}.forge_global_generations
+           (id,scope_id,parent_claim_id,run_id,task_id,attempt_id,workspace_id,
+            supervisor_id,setup_plan_digest,execution_plan_digest,state)
+           values (generation_id,target_scope,parent_id,run_identity,task_identity,
+             attempt_identity,workspace_identity,supervisor_identity,setup_digest,execution_digest,'ISSUED');
+         update {schema}.forge_global_workspace_phases set execution_generation=generation_id
+           where scope_id=target_scope and parent_claim_id=parent_id;
+         return 'ISSUED';
+       end $$`,
+      `revoke all on function {schema}.forge_generation_write(text,text,text,text,text,text,text,text,text,text,text) from public`
+    ]
   }
 ] as const;
 
 export const POSTGRES_AUTHORITY_SCHEMA_VERSION = 2;
-export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 7;
+export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 8;
 export type PostgresAuthoritySchemaVersion =
   | 1
   | typeof POSTGRES_AUTHORITY_SCHEMA_VERSION
@@ -147,7 +296,13 @@ export type PostgresAuthoritySchemaVersion =
   | 4
   | 5
   | 6
+  | 7
   | typeof POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION;
+
+export type PostgresAuthorityWriterRoles = {
+  trustAdminRole: string;
+  generationIssuerRole: string;
+};
 
 const checksum = (statements: readonly string[]): string =>
   createHash('sha256').update(statements.join('\n')).digest('hex');
@@ -636,11 +791,47 @@ const assertAuthorityShape = async (
   }
 };
 
+const assertRestrictedWriterFunctions = async (
+  sql: TransactionSql | Sql,
+  schema: string,
+  runtimeRole: string
+): Promise<void> => {
+  const functions = await sql`select p.proname as name, oidvectortypes(p.proargtypes) as arguments,
+    p.proowner::regrole::text as owner, p.prosecdef as security_definer,
+    p.proconfig as configuration,
+    has_function_privilege(${runtimeRole},p.oid,'EXECUTE') as runtime_execute,
+    has_function_privilege('public',p.oid,'EXECUTE') as public_execute
+    from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname=${schema} order by p.proname`;
+  const expected = [
+    ['forge_generation_write', 'text, text, text, text, text, text, text, text, text, text, text'],
+    ['forge_trust_write', 'text, text, text']
+  ];
+  const owner =
+    await sql`select nspowner::regrole::text as name from pg_namespace where nspname=${schema}`;
+  if (
+    functions.length !== expected.length ||
+    functions.some(
+      (fn, index) =>
+        fn.name !== expected[index]?.[0] ||
+        fn.arguments !== expected[index]?.[1] ||
+        fn.owner !== owner[0]?.name ||
+        fn.security_definer !== true ||
+        JSON.stringify(fn.configuration) !== JSON.stringify(['search_path=pg_catalog']) ||
+        fn.runtime_execute !== false ||
+        fn.public_execute !== false
+    )
+  ) {
+    throw new Error('PostgreSQL restricted authority writer functions are incompatible');
+  }
+};
+
 /** Installer-only operation. Never invoke it from an activity or runtime connection. */
 export const migratePostgresAuthoritySchema = async (
   configuration: PostgresEvidenceStoreConfiguration,
   runtimeRole: string,
-  targetVersion: PostgresAuthoritySchemaVersion = POSTGRES_AUTHORITY_SCHEMA_VERSION
+  targetVersion: PostgresAuthoritySchemaVersion = POSTGRES_AUTHORITY_SCHEMA_VERSION,
+  writerRoles?: PostgresAuthorityWriterRoles
 ): Promise<void> => {
   assertPostgresEvidenceStoreConfiguration(configuration);
   if (!migrations.some((migration) => migration.version === targetVersion)) {
@@ -648,6 +839,21 @@ export const migratePostgresAuthoritySchema = async (
   }
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(runtimeRole) || runtimeRole === configuration.role) {
     throw new Error('PostgreSQL migration owner and runtime roles must be distinct identifiers');
+  }
+  if (
+    writerRoles !== undefined &&
+    (targetVersion < 8 ||
+      ![writerRoles.trustAdminRole, writerRoles.generationIssuerRole].every((name) =>
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)
+      ) ||
+      new Set([
+        configuration.role,
+        runtimeRole,
+        writerRoles.trustAdminRole,
+        writerRoles.generationIssuerRole
+      ]).size !== 4)
+  ) {
+    throw new Error('PostgreSQL authority writer roles must be distinct, valid logins on v8');
   }
   const sql = postgres(configuration.connectionString);
   const schema = quote(configuration.schema);
@@ -732,6 +938,78 @@ export const migratePostgresAuthoritySchema = async (
         await assertGlobalAuthorityShape(tx, configuration.schema, targetVersion);
       }
       await grantRuntimePrivileges(tx, schema, runtimeRole, targetVersion);
+      if (targetVersion >= 8) {
+        for (const signature of [
+          'forge_trust_write(text,text,text)',
+          'forge_generation_write(text,text,text,text,text,text,text,text,text,text,text)'
+        ]) {
+          await tx.unsafe(`revoke all on function ${schema}.${signature} from public`);
+          await tx.unsafe(
+            `revoke all on function ${schema}.${signature} from ${quote(runtimeRole)}`
+          );
+        }
+        if (writerRoles === undefined) {
+          const granted = await tx`select proname from pg_proc p
+            join pg_namespace n on n.oid=p.pronamespace
+            where n.nspname=${configuration.schema}
+              and proname in ('forge_trust_write','forge_generation_write')
+              and (select count(*) from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+                   where a.grantee not in (0,p.proowner,current_user::regrole::oid,${runtimeRole}::regrole::oid)) > 0`;
+          if (granted.length > 0) {
+            throw new Error('Writer roles must be supplied to repair PostgreSQL function grants');
+          }
+        }
+        if (writerRoles !== undefined) {
+          const writerPrincipals = await tx`select r.rolname as name, r.rolsuper, r.rolcreatedb,
+            r.rolcreaterole,
+            pg_has_role(r.oid,${configuration.role}::name,'MEMBER') as migration_member,
+            pg_has_role(r.oid,${runtimeRole}::name,'MEMBER') as runtime_member,
+            has_database_privilege(r.oid,current_database(),'CREATE') as create_database,
+            has_database_privilege(r.oid,current_database(),'TEMP') as create_temp
+            from pg_roles r where r.rolname in (${writerRoles.trustAdminRole},${writerRoles.generationIssuerRole})`;
+          if (
+            writerPrincipals.length !== 2 ||
+            writerPrincipals.some(
+              (entry) =>
+                entry.rolsuper !== false ||
+                entry.rolcreatedb !== false ||
+                entry.rolcreaterole !== false ||
+                entry.migration_member !== false ||
+                entry.runtime_member !== false ||
+                entry.create_database !== false ||
+                entry.create_temp !== false
+            )
+          ) {
+            throw new Error('PostgreSQL authority writer roles are not restricted');
+          }
+          for (const writerRole of [writerRoles.trustAdminRole, writerRoles.generationIssuerRole]) {
+            for (const signature of [
+              'forge_trust_write(text,text,text)',
+              'forge_generation_write(text,text,text,text,text,text,text,text,text,text,text)'
+            ]) {
+              await tx.unsafe(
+                `revoke all on function ${schema}.${signature} from ${quote(writerRole)}`
+              );
+            }
+          }
+          for (const [roleName, signature] of [
+            [writerRoles.trustAdminRole, 'forge_trust_write(text,text,text)'],
+            [
+              writerRoles.generationIssuerRole,
+              'forge_generation_write(text,text,text,text,text,text,text,text,text,text,text)'
+            ]
+          ]) {
+            const writer = quote(roleName);
+            await tx.unsafe(`revoke all on schema ${schema} from ${writer}`);
+            await tx.unsafe(`grant usage on schema ${schema} to ${writer}`);
+            for (const table of installedGlobalTables(targetVersion)) {
+              await tx.unsafe(`revoke all on ${schema}.${table} from ${writer}`);
+            }
+            await tx.unsafe(`grant execute on function ${schema}.${signature} to ${writer}`);
+          }
+        }
+        await assertRestrictedWriterFunctions(tx, configuration.schema, runtimeRole);
+      }
     });
   } finally {
     await sql.end({ timeout: 5 });
@@ -772,7 +1050,7 @@ const grantRuntimePrivileges = async (
 export const assertPostgresAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration,
-  requiredVersion: 2 | 3 | 4 | 5 | 6 | 7 = POSTGRES_AUTHORITY_SCHEMA_VERSION
+  requiredVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 = POSTGRES_AUTHORITY_SCHEMA_VERSION
 ): Promise<void> => {
   assertPostgresAuthorityLogin(configuration);
   if (sql.options.user !== configuration.role) {
@@ -945,6 +1223,9 @@ export const assertPostgresAuthoritySchema = async (
     throw new Error('PostgreSQL authority runtime privileges are incompatible');
   }
   await assertAuthorityShape(sql, configuration.schema, applied.length);
+  if (applied.length >= 8) {
+    await assertRestrictedWriterFunctions(sql, configuration.schema, configuration.role);
+  }
   if (applied.length >= 3) {
     await assertGlobalAuthorityShape(sql, configuration.schema, applied.length);
     for (const table of installedGlobalTables(applied.length)) {
@@ -1012,7 +1293,7 @@ export const assertPostgresAuthoritySchema = async (
   }
 };
 
-/** M4.2 runtime gate: the migration owner must install version 7 before connecting. */
+/** M4.2 runtime gate: the migration owner must install version 8 before connecting. */
 export const assertPostgresGlobalAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration

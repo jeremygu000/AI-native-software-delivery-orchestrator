@@ -4233,3 +4233,46 @@ Verification: `pnpm check` passes formatting, TypeScript project-reference
 checks, type-aware lint and all 808 tests in 77 files. Coverage remains above
 the configured gates: 92.04% statements, 85.63% branches, 94.18% functions
 and 91.97% lines. The focused real PostgreSQL suite passes 104/104 tests.
+
+## Restricted PostgreSQL trust writers and generation issuer
+
+The independent review of `242e014` accepted the PostgreSQL version 7
+storage and trust-lock **foundation**, while confirming that a migration owner
+could still edit the registry without honoring the advisory lock. This next
+increment adds a separate version 8 migration without modifying earlier
+migration checksums. It installs two installer-owned PostgreSQL functions with
+restricted entry points. A separately provisioned trust administrator may
+register, retire or revoke a key, revoke an exact setup decision or signed
+authorization, or change the policy version. Each real change advances the
+same durable registry revision under the exclusive trust lock; an exact retry
+does not advance it again, and a retired or revoked key cannot become active
+again. An independently provisioned generation issuer may record one live
+execution generation tied to an active scope, bound active run, active parent
+claim and matching workspace-phase evidence, or irreversibly revoke it.
+Generation issuance holds the shared trust lock before the scope and run locks.
+The PostgreSQL runtime login still has only read access to the trust and
+generation tables and cannot execute either administrator function. The two
+restricted logins have no direct authority-table write access and can execute
+only their respective installer-owned functions. Startup checks the functions'
+signature, ownership, execution grants and security settings; the installer
+can repair an accidental runtime grant. The migration owner retains its
+separate administrative privileges and must remain protected operationally.
+
+Real PostgreSQL tests verify role isolation, immutable key and generation
+identity, idempotent registry revisions and revocation, scope-lock contention,
+and both winner orders between a restricted registry writer and a live
+mutation permit by inspecting `pg_blocking_pids`. Test fixtures seed a marked
+setup parent with the migration-owner login because no production operation
+can yet create that parent. These restricted write APIs are **not** a signer
+identity service or a production generation supervisor: caller authentication,
+key/decision verification against the live registry, generation checks in
+all permit and scheduler paths, independently protected SQLite trust state,
+atomic setup-parent admission, dedicated Git permits, handoff and production
+worker execution are still missing. The GLOBAL_READY worker remains disabled,
+M4.2 is OPEN, and M4.3 has not started. Public number tokens versus BIGINT and
+diagnostic resource-ID ambiguity remain P2.
+
+Verification: `pnpm check` passes formatting, TypeScript project references,
+type-aware lint and all 812 tests in 77 files. Coverage is 92.00% statements,
+85.68% branches, 94.19% functions and 91.92% lines, above the configured
+90/85/90/90 gates. The focused real PostgreSQL suite passes 108/108 tests.
