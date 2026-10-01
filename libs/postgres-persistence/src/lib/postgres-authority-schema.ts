@@ -798,7 +798,11 @@ const assertRestrictedWriterFunctions = async (
 ): Promise<void> => {
   const functions = await sql`select p.proname as name, oidvectortypes(p.proargtypes) as arguments,
     p.proowner::regrole::text as owner, p.prosecdef as security_definer,
-    p.proconfig as configuration,
+    p.proconfig as configuration, obj_description(p.oid,'pg_proc') as writer_roles,
+    (select coalesce(json_agg(json_build_object('grantee',a.grantee::regrole::text,
+       'privilege',a.privilege_type,'grantable',a.is_grantable) order by a.grantee), '[]'::json)
+       from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+       where a.grantee <> p.proowner) as grants,
     has_function_privilege(${runtimeRole},p.oid,'EXECUTE') as runtime_execute,
     has_function_privilege('public',p.oid,'EXECUTE') as public_execute
     from pg_proc p join pg_namespace n on n.oid=p.pronamespace
@@ -809,6 +813,33 @@ const assertRestrictedWriterFunctions = async (
   ];
   const owner =
     await sql`select nspowner::regrole::text as name from pg_namespace where nspname=${schema}`;
+  const recorded = functions[0]?.writer_roles;
+  let writers: PostgresAuthorityWriterRoles | undefined;
+  if (recorded !== null && recorded !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(String(recorded));
+      if (
+        typeof parsed !== 'object' ||
+        parsed === null ||
+        Object.keys(parsed).toSorted().join(',') !== 'generationIssuerRole,trustAdminRole' ||
+        !('trustAdminRole' in parsed) ||
+        !('generationIssuerRole' in parsed) ||
+        typeof parsed.trustAdminRole !== 'string' ||
+        typeof parsed.generationIssuerRole !== 'string' ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(parsed.trustAdminRole) ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(parsed.generationIssuerRole) ||
+        parsed.trustAdminRole === parsed.generationIssuerRole
+      ) {
+        throw new Error('invalid writer roles');
+      }
+      writers = {
+        trustAdminRole: parsed.trustAdminRole,
+        generationIssuerRole: parsed.generationIssuerRole
+      };
+    } catch {
+      throw new Error('PostgreSQL restricted authority writer role binding is incompatible');
+    }
+  }
   if (
     functions.length !== expected.length ||
     functions.some(
@@ -818,11 +849,53 @@ const assertRestrictedWriterFunctions = async (
         fn.owner !== owner[0]?.name ||
         fn.security_definer !== true ||
         JSON.stringify(fn.configuration) !== JSON.stringify(['search_path=pg_catalog']) ||
+        fn.writer_roles !== (writers === undefined ? null : JSON.stringify(writers)) ||
+        JSON.stringify(fn.grants) !==
+          JSON.stringify(
+            writers === undefined
+              ? []
+              : [
+                  {
+                    grantee:
+                      fn.name === 'forge_trust_write'
+                        ? writers.trustAdminRole
+                        : writers.generationIssuerRole,
+                    privilege: 'EXECUTE',
+                    grantable: false
+                  }
+                ]
+          ) ||
         fn.runtime_execute !== false ||
         fn.public_execute !== false
     )
   ) {
     throw new Error('PostgreSQL restricted authority writer functions are incompatible');
+  }
+  if (writers !== undefined) {
+    const directWrites = await sql`select c.relname from pg_class c
+      join pg_namespace n on n.oid=c.relnamespace
+      where n.nspname=${schema} and c.relkind in ('r','p') and (
+        has_table_privilege(${writers.trustAdminRole},c.oid,'INSERT') or
+        has_table_privilege(${writers.trustAdminRole},c.oid,'UPDATE') or
+        has_table_privilege(${writers.trustAdminRole},c.oid,'DELETE') or
+        has_table_privilege(${writers.trustAdminRole},c.oid,'TRUNCATE') or
+        has_table_privilege(${writers.trustAdminRole},c.oid,'REFERENCES') or
+        has_table_privilege(${writers.trustAdminRole},c.oid,'TRIGGER') or
+        has_any_column_privilege(${writers.trustAdminRole},c.oid,'INSERT') or
+        has_any_column_privilege(${writers.trustAdminRole},c.oid,'UPDATE') or
+        has_any_column_privilege(${writers.trustAdminRole},c.oid,'REFERENCES') or
+        has_table_privilege(${writers.generationIssuerRole},c.oid,'INSERT') or
+        has_table_privilege(${writers.generationIssuerRole},c.oid,'UPDATE') or
+        has_table_privilege(${writers.generationIssuerRole},c.oid,'DELETE') or
+        has_table_privilege(${writers.generationIssuerRole},c.oid,'TRUNCATE') or
+        has_table_privilege(${writers.generationIssuerRole},c.oid,'REFERENCES') or
+        has_table_privilege(${writers.generationIssuerRole},c.oid,'TRIGGER') or
+        has_any_column_privilege(${writers.generationIssuerRole},c.oid,'INSERT') or
+        has_any_column_privilege(${writers.generationIssuerRole},c.oid,'UPDATE') or
+        has_any_column_privilege(${writers.generationIssuerRole},c.oid,'REFERENCES')) limit 1`;
+    if (directWrites.length > 0) {
+      throw new Error('PostgreSQL restricted writer has direct table mutation privileges');
+    }
   }
 };
 
@@ -939,6 +1012,22 @@ export const migratePostgresAuthoritySchema = async (
       }
       await grantRuntimePrivileges(tx, schema, runtimeRole, targetVersion);
       if (targetVersion >= 8) {
+        const roleBinding =
+          writerRoles === undefined
+            ? null
+            : JSON.stringify({
+                trustAdminRole: writerRoles.trustAdminRole,
+                generationIssuerRole: writerRoles.generationIssuerRole
+              });
+        const previousBindings = await tx`select obj_description(p.oid,'pg_proc') as binding
+          from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+          where n.nspname=${configuration.schema} and p.proname in ('forge_trust_write','forge_generation_write')`;
+        if (
+          previousBindings.length !== 2 ||
+          previousBindings.some((row) => row.binding !== null && row.binding !== roleBinding)
+        ) {
+          throw new Error('PostgreSQL authority writer role binding cannot be changed');
+        }
         for (const signature of [
           'forge_trust_write(text,text,text)',
           'forge_generation_write(text,text,text,text,text,text,text,text,text,text,text)'
@@ -1002,10 +1091,34 @@ export const migratePostgresAuthoritySchema = async (
             const writer = quote(roleName);
             await tx.unsafe(`revoke all on schema ${schema} from ${writer}`);
             await tx.unsafe(`grant usage on schema ${schema} to ${writer}`);
-            for (const table of installedGlobalTables(targetVersion)) {
+            for (const table of [
+              'forge_schema_migrations',
+              'forge_runs',
+              'forge_records',
+              ...installedGlobalTables(targetVersion)
+            ]) {
               await tx.unsafe(`revoke all on ${schema}.${table} from ${writer}`);
             }
             await tx.unsafe(`grant execute on function ${schema}.${signature} to ${writer}`);
+          }
+          const columnDrift = await tx`select c.relname from pg_class c
+            join pg_namespace n on n.oid=c.relnamespace
+            join pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
+            cross join lateral aclexplode(a.attacl) acl
+            where n.nspname=${configuration.schema} and c.relkind in ('r','p')
+              and acl.grantee in (${writerRoles.trustAdminRole}::regrole::oid,
+                ${writerRoles.generationIssuerRole}::regrole::oid)
+            limit 1`;
+          if (columnDrift.length > 0) {
+            throw new Error('PostgreSQL authority writer column grants require owner repair');
+          }
+          for (const signature of [
+            'forge_trust_write(text,text,text)',
+            'forge_generation_write(text,text,text,text,text,text,text,text,text,text,text)'
+          ]) {
+            await tx.unsafe(
+              `comment on function ${schema}.${signature} is '${roleBinding?.replaceAll("'", "''")}'`
+            );
           }
         }
         await assertRestrictedWriterFunctions(tx, configuration.schema, runtimeRole);

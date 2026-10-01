@@ -71,8 +71,7 @@ const connectWriter = async (
     }
     const tables =
       await sql`select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
-      where n.nspname=${configuration.schema} and c.relname like 'forge_global_%'
-        and c.relkind='r' and (
+      where n.nspname=${configuration.schema} and c.relkind in ('r','p') and (
           has_table_privilege(current_user,c.oid,'INSERT') or
           has_table_privilege(current_user,c.oid,'UPDATE') or
           has_table_privilege(current_user,c.oid,'DELETE') or

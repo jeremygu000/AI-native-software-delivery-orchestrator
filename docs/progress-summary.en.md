@@ -4276,3 +4276,40 @@ Verification: `pnpm check` passes formatting, TypeScript project references,
 type-aware lint and all 812 tests in 77 files. Coverage is 92.00% statements,
 85.68% branches, 94.19% functions and 91.92% lines, above the configured
 90/85/90/90 gates. The focused real PostgreSQL suite passes 108/108 tests.
+
+## Closing the restricted-writer privilege audit gaps
+
+An independent review of `0c1a6c6` found two ways an accidentally broadened
+database grant could escape the version 8 checks. First, a trust administrator
+or generation issuer granted direct write access to `forge_runs`,
+`forge_records` or the migration ledger could change authority data without
+using its restricted function. The writer connection and runtime startup now
+check effective table and column mutation privileges across **every authority
+table**, including those three base tables. An installer rerun removes direct
+writer grants across the entire table set; it also checks that no writer column
+grant survives. Real PostgreSQL tests misgrant each base-table privilege and a
+run-state column privilege, then verify rejection and repair.
+
+Second, a third role granted EXECUTE on an installer-owned security-definer
+function could invoke it without the designated writer login. The installer
+now records the two designated writer-role identities as owner-controlled
+function metadata, without changing the already applied migration statements
+or their checksums. Runtime startup compares each function's complete EXECUTE
+ACL against its recorded role: only the function owner and its one designated
+writer are allowed. If the functions have not been configured with writer
+roles, only the owner may execute them. A migration rerun preserves this
+binding and **fails closed** on an additional third-party grant rather than
+silently accepting or reassigning the writer identity. A real PostgreSQL test
+grants another login schema access and EXECUTE, verifies both startup and
+installer rejection, then confirms startup succeeds after the owner removes
+the grant. The migration owner remains a separate trusted administrator.
+
+This repairs the two reviewed privilege-audit gaps; it does not turn the
+restricted functions into a signer, trusted generation supervisor or production
+setup admission. SQLite still lacks an independently protected trust root,
+and the GLOBAL_READY production worker remains disabled. M4.2 stays OPEN and
+M4.3 has not started. Number-token/BIGINT and diagnostic resource-ID issues
+remain P2. Verification: `pnpm check` passes formatting, TypeScript, type-aware
+lint and all 814 tests in 77 files; coverage is 91.98% statements, 85.73%
+branches, 94.20% functions and 91.90% lines against the 90/85/90/90 gates.
+The focused real PostgreSQL suite passes 110/110 tests.

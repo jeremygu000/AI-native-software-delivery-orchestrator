@@ -577,6 +577,108 @@ it('restricts trust writes to the administrator function and preserves key ident
   }
 });
 
+it('rejects direct writer grants on base authority tables and repairs them on migration rerun', async () => {
+  const fixture = await createGlobalPermitFixture();
+  const migration = { connectionString: ownerConnectionString, schema: fixture.schema, role };
+  const issuerConfig = {
+    connectionString: generationIssuerConnectionString,
+    schema: fixture.schema,
+    role: generationIssuerRole
+  };
+  const direct = postgres(generationIssuerConnectionString, { onnotice: () => undefined });
+  try {
+    for (const [table, privilege] of [
+      ['forge_runs', 'UPDATE'],
+      ['forge_records', 'INSERT'],
+      ['forge_schema_migrations', 'UPDATE']
+    ]) {
+      await fixture.admin.unsafe(
+        `grant ${privilege} on "${fixture.schema}".${table} to "${generationIssuerRole}"`
+      );
+      await expect(PostgresExecutionGenerationIssuer.connect(issuerConfig)).rejects.toThrow(
+        'direct table mutation privileges'
+      );
+      const runtimeSql = postgres(runtimeConnectionString, { onnotice: () => undefined });
+      try {
+        await expect(
+          assertPostgresGlobalAuthoritySchema(runtimeSql, {
+            connectionString: runtimeConnectionString,
+            schema: fixture.schema,
+            role: runtimeRole
+          })
+        ).rejects.toThrow('direct table mutation privileges');
+      } finally {
+        await runtimeSql.end();
+      }
+      await migratePostgresAuthoritySchema(migration, runtimeRole, 8, {
+        trustAdminRole,
+        generationIssuerRole
+      });
+      const issuer = await PostgresExecutionGenerationIssuer.connect(issuerConfig);
+      await issuer.close();
+      const granted = await direct.unsafe(
+        `select has_table_privilege(current_user,'"${fixture.schema}".${table}',$1) as allowed`,
+        [privilege]
+      );
+      expect(granted[0]?.allowed).toBe(false);
+    }
+    await fixture.admin.unsafe(
+      `grant update (state) on "${fixture.schema}".forge_runs to "${generationIssuerRole}"`
+    );
+    await expect(PostgresExecutionGenerationIssuer.connect(issuerConfig)).rejects.toThrow(
+      'direct table mutation privileges'
+    );
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 8, {
+      trustAdminRole,
+      generationIssuerRole
+    });
+    const column = await direct.unsafe(
+      `select has_column_privilege(current_user,'"${fixture.schema}".forge_runs','state','UPDATE') as allowed`
+    );
+    expect(column[0]?.allowed).toBe(false);
+  } finally {
+    await Promise.all([direct.end(), fixture.close()]);
+  }
+});
+
+it('rejects outsider EXECUTE on security-definer functions at startup and migration', async () => {
+  const fixture = await createGlobalPermitFixture();
+  const outsider = `forge_outsider_${++fixtureOrdinal}`;
+  const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
+  const runtimeConfig = {
+    connectionString: runtimeConnectionString,
+    schema: fixture.schema,
+    role: runtimeRole
+  };
+  try {
+    await fixture.admin.unsafe(`create role "${outsider}" login`);
+    await fixture.admin.unsafe(`grant usage on schema "${fixture.schema}" to "${outsider}"`);
+    await fixture.admin.unsafe(
+      `grant execute on function "${fixture.schema}".forge_trust_write(text,text,text) to "${outsider}"`
+    );
+    await expect(assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig)).rejects.toThrow(
+      'restricted authority writer functions are incompatible'
+    );
+    await expect(
+      migratePostgresAuthoritySchema(
+        { connectionString: ownerConnectionString, schema: fixture.schema, role },
+        runtimeRole,
+        8,
+        { trustAdminRole, generationIssuerRole }
+      )
+    ).rejects.toThrow('restricted authority writer functions are incompatible');
+    await fixture.admin.unsafe(
+      `revoke execute on function "${fixture.schema}".forge_trust_write(text,text,text) from "${outsider}"`
+    );
+    await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
+  } finally {
+    await runtime.end();
+    await fixture.admin.unsafe(`revoke usage on schema "${fixture.schema}" from "${outsider}"`);
+    await fixture.admin.unsafe(`drop role "${outsider}"`);
+    await fixture.close();
+  }
+});
+
 it('issues one exact live generation and revokes it without worker table write access', async () => {
   const fixture = await createGlobalPermitFixture();
   const issuer = await PostgresExecutionGenerationIssuer.connect({
