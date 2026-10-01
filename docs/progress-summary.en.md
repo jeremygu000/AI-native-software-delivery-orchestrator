@@ -4313,3 +4313,41 @@ remain P2. Verification: `pnpm check` passes formatting, TypeScript, type-aware
 lint and all 814 tests in 77 files; coverage is 91.98% statements, 85.73%
 branches, 94.20% functions and 91.90% lines against the 90/85/90/90 gates.
 The focused real PostgreSQL suite passes 110/110 tests.
+
+## Closing inherited authority on restricted PostgreSQL writer roles
+
+Independent review accepted the direct table-write and function-ACL checks in
+`eebbeaf`, but found one remaining privilege path: PostgreSQL role membership
+can give a third party the ability to execute a security-definer function even
+when the function's own grant list names only its designated writer role. For
+example, granting the trust-administrator role to another login lets that login
+inherit EXECUTE or switch into the administrator role. The same risk applies to
+the generation issuer.
+
+Installation and runtime startup now inspect PostgreSQL's role-membership
+records for **both** designated writer roles. Either direction of membership
+is rejected: another role may not inherit a writer role, and a writer role may
+not inherit another role. The writer connections apply the same restriction to
+their own login. The installer also requires these restricted writer roles to
+be login roles. The response is deliberately fail-closed: the migration does
+not silently revoke a role grant that belongs to the deployment's DBA or
+identity administrator. After that administrator removes the grant, startup
+works again. Previously installed migration statements and the trust and
+generation state machines are unchanged.
+
+Real PostgreSQL tests cover both the trust administrator and the generation
+issuer. An outside login demonstrably inherits function EXECUTE, can assume
+the writer role, and can reach the security-definer entry point before the
+drift is removed. For each role, startup and migration rerun reject the
+incoming grant; writer connection rejects it too. They also reject the reverse
+membership direction, and startup and writer connection recover after both
+grants are revoked. This closes the reviewed membership path but does not
+create a trusted signer, a supervisor, an atomic setup admission, or a
+production-ready global worker. SQLite still has no independent trust root;
+M4.2 remains OPEN and M4.3 has not started. Public number-token/BIGINT and
+diagnostic resource-ID ambiguity remain P2.
+
+Verification: `pnpm check` passes formatting, TypeScript project references,
+type-aware lint and all 816 tests in 77 files. Coverage is 92.00% statements,
+85.77% branches, 94.20% functions and 91.92% lines against the 90/85/90/90
+gates. The focused real PostgreSQL suite passes all 112 tests.

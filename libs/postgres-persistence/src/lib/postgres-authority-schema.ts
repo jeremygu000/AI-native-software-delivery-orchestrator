@@ -872,6 +872,15 @@ const assertRestrictedWriterFunctions = async (
     throw new Error('PostgreSQL restricted authority writer functions are incompatible');
   }
   if (writers !== undefined) {
+    const membership = await sql`select m.roleid::regrole::text as granted_role,
+      m.member::regrole::text as member from pg_auth_members m
+      where m.roleid in (${writers.trustAdminRole}::regrole::oid,
+        ${writers.generationIssuerRole}::regrole::oid)
+        or m.member in (${writers.trustAdminRole}::regrole::oid,
+          ${writers.generationIssuerRole}::regrole::oid) limit 1`;
+    if (membership.length > 0) {
+      throw new Error('PostgreSQL restricted writer role membership is incompatible');
+    }
     const directWrites = await sql`select c.relname from pg_class c
       join pg_namespace n on n.oid=c.relnamespace
       where n.nspname=${schema} and c.relkind in ('r','p') and (
@@ -1050,7 +1059,7 @@ export const migratePostgresAuthoritySchema = async (
         }
         if (writerRoles !== undefined) {
           const writerPrincipals = await tx`select r.rolname as name, r.rolsuper, r.rolcreatedb,
-            r.rolcreaterole,
+            r.rolcreaterole, r.rolcanlogin,
             pg_has_role(r.oid,${configuration.role}::name,'MEMBER') as migration_member,
             pg_has_role(r.oid,${runtimeRole}::name,'MEMBER') as runtime_member,
             has_database_privilege(r.oid,current_database(),'CREATE') as create_database,
@@ -1063,6 +1072,7 @@ export const migratePostgresAuthoritySchema = async (
                 entry.rolsuper !== false ||
                 entry.rolcreatedb !== false ||
                 entry.rolcreaterole !== false ||
+                entry.rolcanlogin !== true ||
                 entry.migration_member !== false ||
                 entry.runtime_member !== false ||
                 entry.create_database !== false ||

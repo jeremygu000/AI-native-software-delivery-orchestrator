@@ -30,6 +30,9 @@ const connectWriter = async (
       rolsuper, rolcreatedb, rolcreaterole,
       exists (select 1 from pg_roles other where other.oid <> current_user::regrole
         and pg_has_role(current_user::regrole::oid,other.oid,'MEMBER')) as membership,
+      exists (select 1 from pg_auth_members m
+        where m.roleid=current_user::regrole::oid
+          or m.member=current_user::regrole::oid) as direct_membership,
       has_database_privilege(current_user,current_database(),'CREATE') as create_database,
       has_database_privilege(current_user,current_database(),'TEMP') as create_temp
       from pg_roles where rolname=current_user`;
@@ -41,6 +44,7 @@ const connectWriter = async (
       principal.rolcreatedb !== false ||
       principal.rolcreaterole !== false ||
       principal.membership !== false ||
+      principal.direct_membership !== false ||
       principal.create_database !== false ||
       principal.create_temp !== false
     ) {
