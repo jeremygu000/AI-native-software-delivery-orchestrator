@@ -1422,6 +1422,105 @@ it('rejects setup admission CREATE on another accessible schema without silently
   }
 });
 
+it('rejects setup admission CREATE on pg_catalog until the database administrator revokes it', async () => {
+  const fixture = await createGlobalPermitFixture();
+  const setup = postgres(setupAdmissionConnectionString, { onnotice: () => undefined });
+  const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
+  const setupConfig = {
+    connectionString: setupAdmissionConnectionString,
+    schema: fixture.schema,
+    role: setupAdmissionRole
+  };
+  const runtimeConfig = {
+    connectionString: runtimeConnectionString,
+    schema: fixture.schema,
+    role: runtimeRole
+  };
+  try {
+    await fixture.admin.unsafe(`grant create on schema pg_catalog to "${setupAdmissionRole}"`);
+    const leaked =
+      await setup`select has_schema_privilege(current_user,'pg_catalog','CREATE') as allowed`;
+    expect(leaked[0]?.allowed).toBe(true);
+    await expect(PostgresWorkspaceSetupAdmission.connect(setupConfig)).rejects.toThrow(
+      'restricted signing-service login'
+    );
+    await expect(assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig)).rejects.toThrow(
+      'schema CREATE privileges'
+    );
+    await expect(
+      migratePostgresAuthoritySchema(
+        { connectionString: ownerConnectionString, schema: fixture.schema, role },
+        runtimeRole,
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+        { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+      )
+    ).rejects.toThrow('schema CREATE privileges');
+    await fixture.admin.unsafe(`revoke create on schema pg_catalog from "${setupAdmissionRole}"`);
+    await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
+    const admitted = await PostgresWorkspaceSetupAdmission.connect(setupConfig);
+    await admitted.close();
+  } finally {
+    await fixture.admin.unsafe(`revoke create on schema pg_catalog from "${setupAdmissionRole}"`);
+    await Promise.all([setup.end(), runtime.end(), fixture.close()]);
+  }
+});
+
+it.each([
+  ['trust registry', 'forge_trust_write(text,text,text)'],
+  [
+    'execution generation',
+    'forge_generation_write(text,text,text,text,text,text,text,text,text,text,text)'
+  ]
+] as const)('rejects setup admission EXECUTE on the %s writer', async (_label, signature) => {
+  const fixture = await createGlobalPermitFixture();
+  const setup = postgres(setupAdmissionConnectionString, { onnotice: () => undefined });
+  const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
+  const setupConfig = {
+    connectionString: setupAdmissionConnectionString,
+    schema: fixture.schema,
+    role: setupAdmissionRole
+  };
+  const runtimeConfig = {
+    connectionString: runtimeConnectionString,
+    schema: fixture.schema,
+    role: runtimeRole
+  };
+  try {
+    await fixture.admin.unsafe(
+      `grant execute on function "${fixture.schema}".${signature} to "${setupAdmissionRole}"`
+    );
+    const leaked = await setup.unsafe(
+      `select has_function_privilege(current_user,'"${fixture.schema}".${signature}','EXECUTE') as allowed`
+    );
+    expect(leaked[0]?.allowed).toBe(true);
+    await expect(PostgresWorkspaceSetupAdmission.connect(setupConfig)).rejects.toThrow(
+      'restricted signing-service login'
+    );
+    await expect(assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig)).rejects.toThrow(
+      'restricted authority writer functions are incompatible'
+    );
+    await expect(
+      migratePostgresAuthoritySchema(
+        { connectionString: ownerConnectionString, schema: fixture.schema, role },
+        runtimeRole,
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+        { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+      )
+    ).rejects.toThrow('restricted authority writer functions are incompatible');
+    await fixture.admin.unsafe(
+      `revoke execute on function "${fixture.schema}".${signature} from "${setupAdmissionRole}"`
+    );
+    await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
+    const admitted = await PostgresWorkspaceSetupAdmission.connect(setupConfig);
+    await admitted.close();
+  } finally {
+    await fixture.admin.unsafe(
+      `revoke execute on function "${fixture.schema}".${signature} from "${setupAdmissionRole}"`
+    );
+    await Promise.all([setup.end(), runtime.end(), fixture.close()]);
+  }
+});
+
 it('rejects outsider EXECUTE on security-definer functions at startup and migration', async () => {
   const fixture = await createGlobalPermitFixture();
   const outsider = `forge_outsider_${++fixtureOrdinal}`;

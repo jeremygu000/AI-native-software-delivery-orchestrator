@@ -1068,8 +1068,7 @@ const assertRestrictedWriterFunctions = async (
       throw new Error('PostgreSQL setup admission role has direct table writes');
     }
     const schemaCreate = await sql`select 1 from pg_namespace n
-        where n.nspname !~ '^pg_' and n.nspname <> 'information_schema'
-          and has_schema_privilege(${setupRole},n.oid,'CREATE') limit 1`;
+         where has_schema_privilege(${setupRole},n.oid,'CREATE') limit 1`;
     if (schemaCreate.length > 0) {
       throw new Error('PostgreSQL setup admission role has schema CREATE privileges');
     }

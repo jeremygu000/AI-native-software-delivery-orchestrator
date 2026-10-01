@@ -53,6 +53,11 @@ export class PostgresWorkspaceSetupAdmission {
         has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION') as can_grant
         from pg_proc p join pg_namespace n on n.oid=p.pronamespace
         where n.nspname=${configuration.schema} and p.proname='forge_setup_admit'`;
+      const otherFunctions = await sql`select p.proname as name,
+        has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute
+        from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+        where n.nspname=${configuration.schema} and p.proname<>'forge_setup_admit'
+        order by p.proname`;
       const direct =
         await sql`select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
         where n.nspname=${configuration.schema} and c.relkind in ('r','p') and (
@@ -62,8 +67,7 @@ export class PostgresWorkspaceSetupAdmission {
           has_any_column_privilege(current_user,c.oid,'INSERT') or has_any_column_privilege(current_user,c.oid,'UPDATE') or
           has_any_column_privilege(current_user,c.oid,'REFERENCES')) limit 1`;
       const schemaCreate = await sql`select 1 from pg_namespace n
-        where n.nspname !~ '^pg_' and n.nspname <> 'information_schema'
-          and has_schema_privilege(current_user,n.oid,'CREATE') limit 1`;
+        where has_schema_privilege(current_user,n.oid,'CREATE') limit 1`;
       const keyRead =
         await sql`select has_table_privilege(current_user,${configuration.schema}::text || '.forge_global_trust_keys','SELECT') as allowed`;
       if (
@@ -83,6 +87,11 @@ export class PostgresWorkspaceSetupAdmission {
         fn[0].can_execute !== true ||
         fn[0].public_execute !== false ||
         fn[0].can_grant !== false ||
+        otherFunctions.length !== 2 ||
+        otherFunctions[0]?.name !== 'forge_generation_write' ||
+        otherFunctions[0].can_execute !== false ||
+        otherFunctions[1]?.name !== 'forge_trust_write' ||
+        otherFunctions[1].can_execute !== false ||
         direct.length !== 0 ||
         schemaCreate.length !== 0 ||
         keyRead[0]?.allowed !== true

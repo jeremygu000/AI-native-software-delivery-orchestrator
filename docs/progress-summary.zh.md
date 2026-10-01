@@ -3667,3 +3667,9 @@ PostgreSQL 全局 authority 适配器现在提供只读的 `inspectCurrentWorksp
 真实 PostgreSQL 测试分别误授签名服务角色表级 `TRIGGER` 与 `REFERENCES`、列级 `REFERENCES`，以及权威 schema 和另一个 schema 的 `CREATE`。测试验证连接与启动都会拒绝漂移，迁移重跑会修复其管理范围内的授权，并在无权处理的 schema 漂移下拒绝继续；修复后启动恢复。受限凭据依然只能交给独立认证的签名服务；SQLite 仍无独立信任根。Git 专用 permit、代际校验、交接以及 GLOBAL_READY 生产 worker 尚未完成；M4.2 继续 OPEN，M4.3 尚未开始。公开 number token／BIGINT 和诊断资源 ID 歧义仍为 P2。
 
 封闭权限缺口后，工作区依赖升级到兼容的当前补丁或次要版本：Restate SDK、Vitest 及覆盖率提供者、Oxlint/Oxfmt、Drizzle 及其工具、Node 类型定义。工作区内部链接及已固定版本的 Pi coding-agent 集成保持不变；替换这个已弃用的 agent 需要另行验证兼容性。新版本 lint 还要求在 Docker command sandbox 和不可变计划存储测试中做少量不改变行为的函数作用域调整。`pnpm check` 的格式、TypeScript 项目引用构建、类型感知 lint 及 77 个文件中的 833 项测试全部通过；语句、分支、函数和代码行覆盖率分别为 91.96%、85.86%、94.21%、91.88%，超过 90/85/90/90 门槛。隔离的真实 PostgreSQL 测试 129/129 通过，升级依赖后的 `pnpm build` 也通过。这些检查没有改变上文尚未完成的 M4.2 生产边界。
+
+## 封闭系统 schema 与跨 authority 函数能力缺口
+
+独立复审从已接受的 `6515d7c` 基线检查至本地 `2940d3c` 的两个提交，接受了之前的表列权限修复和依赖升级，却发现签名服务登录角色仍可能得到两种未被自己连接检查识别的能力。原先的 `CREATE` 检查排除了 PostgreSQL 系统 schema，包括位于安全定义函数搜索路径中的 `pg_catalog`。另外，该连接只核验自己的 setup 函数，未检查相同凭据能否调用独立的信任或代际写入函数；运行时启动审计完成后再误授权，就可能跨越权限域。
+
+现在签名服务连接和全局 runtime 启动都会拒绝**任何** schema 上的 `CREATE`，包含 `pg_catalog`；迁移重跑不会擅自修改系统或其他所有者管理的 schema。签名服务连接还要求自己能够执行的权威函数恰好为 setup 函数，并明确确认这些凭据不能调用 `forge_trust_write` 或 `forge_generation_write`。真实 PostgreSQL 回归分别误授 `pg_catalog` 的 `CREATE` 和另外两个函数的 `EXECUTE`，证明连接、启动拒绝，管理员撤销后恢复；迁移重跑对这些不属于自己的授权保持失效关闭。没有修改带版本的迁移语句或 setup claim 事务。`pnpm check` 的格式、TypeScript、类型感知 lint 和 77 个文件中的 836 项测试全部通过；语句、分支、函数及代码行覆盖率分别为 91.96%、85.88%、94.21%、91.89%，达到 90/85/90/90 门槛。PostgreSQL 定向测试 132/132 通过。这轮修正仍待独立复审；M4.2 保持 OPEN，GLOBAL_READY 生产 worker 仍禁用，Git 专用 permit、代际校验、交接和 SQLite 独立信任根仍未实现。

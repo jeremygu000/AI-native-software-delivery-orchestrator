@@ -4487,3 +4487,33 @@ and line coverage are 91.96%, 85.86%, 94.21% and 91.88%, respectively, above
 their 90/85/90/90 thresholds. The isolated PostgreSQL suite passes 129/129,
 and `pnpm build` passes after the dependency refresh. These checks do not
 change the unfinished M4.2 production boundaries described above.
+
+## Closing system-schema and cross-authority capability gaps
+
+Independent review of the two commits from accepted baseline `6515d7c` through
+local `2940d3c` accepted the earlier table and column privilege repairs and
+dependency refresh, but found two remaining setup-login privileges that could
+escape its connection checks. The `CREATE` check excluded system schemas,
+including PostgreSQL's `pg_catalog`, which is in the security-definer function's
+search path. Also, the signing-service connection checked its own setup
+function but not whether the same login could execute the separate trust or
+generation writer functions. A grant made after runtime startup could therefore
+cross authority boundaries even if that earlier startup audit had passed.
+
+Both setup-login connection and global runtime startup now reject `CREATE` on
+**any** schema, including `pg_catalog`; a migration rerun does not try to
+change system or other externally owned schemas. The setup-login connection
+also requires exactly its own setup routine to be executable and verifies that
+neither `forge_trust_write` nor `forge_generation_write` can be executed with
+those credentials. Real PostgreSQL regression tests misgrant `pg_catalog`
+`CREATE` and each other function's `EXECUTE`, prove connection and startup
+refuse them, then prove the independent administrator can revoke the grants
+and restore operation. Migration reruns fail closed for these unauthorized
+privileges. No versioned migration statement or setup claim transaction was
+changed. `pnpm check` passes formatting, TypeScript, type-aware lint and
+836/836 tests in 77 files; coverage is 91.96% statements, 85.88% branches,
+94.21% functions and 91.89% lines against 90/85/90/90 thresholds. The
+PostgreSQL suite passes 132/132. This code still needs independent review;
+M4.2 remains OPEN, the GLOBAL_READY production worker remains disabled, and
+dedicated Git permits, generation enforcement, handoff and the SQLite trust
+root are not implemented.
