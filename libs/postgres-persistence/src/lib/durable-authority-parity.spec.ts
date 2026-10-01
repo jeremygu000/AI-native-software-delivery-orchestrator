@@ -38,6 +38,7 @@ import {
 import { approvalTestArtifact } from '../../../planning/src/lib/plan-artifact.fixture.js';
 import { PostgresGlobalMutationAuthority } from './postgres-global-mutation-authority.js';
 import { PostgresOrchestrationPersistence } from './postgres-orchestration-persistence.js';
+import { PostgresWorkspaceSetupAdmission } from './postgres-workspace-setup-admission.js';
 import {
   PostgresExecutionGenerationIssuer,
   PostgresTrustRegistryAdmin
@@ -58,8 +59,10 @@ let runtimeConnectionString: string;
 let ownerConnectionString: string;
 let trustAdminRole: string;
 let generationIssuerRole: string;
+let setupAdmissionRole: string;
 let trustAdminConnectionString: string;
 let generationIssuerConnectionString: string;
+let setupAdmissionConnectionString: string;
 const port = async (): Promise<number> =>
   new Promise((resolve, reject) => {
     const server = createServer();
@@ -103,10 +106,12 @@ beforeAll(async () => {
     runtimeRole = `forge_runtime_${process.pid}`;
     trustAdminRole = `forge_trust_admin_${process.pid}`;
     generationIssuerRole = `forge_generation_issuer_${process.pid}`;
+    setupAdmissionRole = `forge_setup_admission_${process.pid}`;
     await admin.unsafe(`create role "${role}" login`);
     await admin.unsafe(`create role "${runtimeRole}" login`);
     await admin.unsafe(`create role "${trustAdminRole}" login`);
     await admin.unsafe(`create role "${generationIssuerRole}" login`);
+    await admin.unsafe(`create role "${setupAdmissionRole}" login`);
     await admin`revoke create on database postgres from public`;
     await admin`revoke temporary on database postgres from public`;
     await admin`revoke create on schema public from public`;
@@ -115,6 +120,7 @@ beforeAll(async () => {
     runtimeConnectionString = `postgresql://${runtimeRole}@127.0.0.1:${assignedPort}/postgres`;
     trustAdminConnectionString = `postgresql://${trustAdminRole}@127.0.0.1:${assignedPort}/postgres`;
     generationIssuerConnectionString = `postgresql://${generationIssuerRole}@127.0.0.1:${assignedPort}/postgres`;
+    setupAdmissionConnectionString = `postgresql://${setupAdmissionRole}@127.0.0.1:${assignedPort}/postgres`;
     if (adminRole === role || adminRole === runtimeRole) {
       throw new Error('Fixture migration and runtime roles must not be superusers');
     }
@@ -207,7 +213,7 @@ const createGlobalPermitFixture = async (): Promise<
       migration,
       runtimeRole,
       POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-      { trustAdminRole, generationIssuerRole }
+      { trustAdminRole, generationIssuerRole, setupAdmissionRole }
     );
     store = await PostgresOrchestrationPersistence.connect(runtime);
     authority = await PostgresGlobalMutationAuthority.connect(runtime);
@@ -360,6 +366,30 @@ const createTrustedSetupFixture = async () => {
     ]
   });
   await fixture.authority.bindRun(runId, setupApproval.repositoryId);
+  const approvedBinding = {
+    ...binding,
+    taskId: setupApproval.taskId,
+    leasePlan: { ...binding.leasePlan, taskId: setupApproval.taskId },
+    workspace: {
+      ...binding.workspace,
+      taskId: setupApproval.taskId,
+      id: 'approved-workspace',
+      integrationRepositoryPath: artifact.repository.repositoryRoot
+    }
+  };
+  await fixture.store.persistAttempt({
+    runId,
+    attempt: {
+      id: 'approved-setup-attempt',
+      runId,
+      taskId: setupApproval.taskId,
+      agentId: approvedBinding.agentId,
+      workspaceId: approvedBinding.workspace.id,
+      leasePlanFingerprint: taskLeasePlanFingerprint(approvedBinding.leasePlan),
+      state: 'PREPARING',
+      revision: 1
+    }
+  });
   const trustAdmin = await PostgresTrustRegistryAdmin.connect({
     connectionString: trustAdminConnectionString,
     schema: fixture.schema,
@@ -380,12 +410,240 @@ const createTrustedSetupFixture = async () => {
     ...fixture,
     trustAdmin,
     request,
+    approvedBinding,
     close: async () => {
       await trustAdmin.close();
       await fixture.close();
     }
   };
 };
+
+it('atomically admits a signed repository-only setup parent and INITIAL_ADMITTED marker', async () => {
+  const fixture = await createTrustedSetupFixture();
+  const admission = await PostgresWorkspaceSetupAdmission.connect({
+    connectionString: setupAdmissionConnectionString,
+    schema: fixture.schema,
+    role: setupAdmissionRole
+  });
+  try {
+    const request = {
+      ...fixture.request,
+      attemptId: 'approved-setup-attempt',
+      parentClaimId: 'setup-parent-1',
+      binding: fixture.approvedBinding
+    };
+    await expect(
+      admission.admit({
+        ...request,
+        authorization: {
+          ...request.authorization,
+          signature: 'A'.repeat(86)
+        }
+      })
+    ).rejects.toThrow();
+    await expect(admission.admit({ ...request, workspaceId: 'wrong-workspace' })).rejects.toThrow(
+      'binding does not match'
+    );
+    expect(
+      await fixture.admin.unsafe(
+        `select next_token from "${fixture.schema}".forge_global_scopes where id=$1`,
+        [request.scopeId]
+      )
+    ).toMatchObject([{ next_token: '1' }]);
+    const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
+    const setupSql = postgres(setupAdmissionConnectionString, { onnotice: () => undefined });
+    try {
+      const permissions =
+        await runtime`select has_function_privilege(current_user,p.oid,'EXECUTE') as execute
+        from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+        where n.nspname=${fixture.schema} and p.proname='forge_setup_admit'`;
+      expect(permissions).toMatchObject([{ execute: false }]);
+      await expect(
+        setupSql.unsafe(
+          `update "${fixture.schema}".forge_global_workspace_phases set phase='WORKSPACE_ARMED'`
+        )
+      ).rejects.toThrow('permission denied');
+    } finally {
+      await Promise.all([runtime.end(), setupSql.end()]);
+    }
+    const blocked = await admission.admit(request);
+    expect(blocked).toEqual({ status: 'blocked' });
+    expect(
+      await fixture.admin.unsafe(
+        `select count(*)::integer as count from "${fixture.schema}".forge_global_workspace_phases`
+      )
+    ).toMatchObject([{ count: 0 }]);
+    await fixture.authority.releaseGlobalMutation({
+      ...fixture.originalClaim,
+      token: fixture.originalGrant.token,
+      expectedVersion: fixture.originalGrant.leases[0]?.version ?? 1,
+      stopEvidence: 'The original actor is confirmed stopped.'
+    });
+    const granted = await admission.admit(request);
+    expect(granted.status).toBe('granted');
+    expect(await admission.admit(request)).toEqual(granted);
+    await expect(admission.admit({ ...request, parentClaimId: 'other-parent' })).rejects.toThrow(
+      'Only a preparing attempt'
+    );
+    expect(
+      await fixture.admin.unsafe(
+        `select phase,signing_key,authorization_digest from "${fixture.schema}".forge_global_workspace_phases`
+      )
+    ).toMatchObject([{ phase: 'INITIAL_ADMITTED', signing_key: 'trusted-setup-key' }]);
+    expect(
+      await fixture.admin.unsafe(
+        `select resource_json from "${fixture.schema}".forge_global_leases where claim_id='setup-parent-1'`
+      )
+    ).toMatchObject([{ resource_json: '{"type":"repository"}' }]);
+    await expect(
+      fixture.peer.beginFencedMutation({
+        scopeId: request.scopeId,
+        claimId: request.parentClaimId,
+        owner: {
+          runId: request.runId,
+          taskId: request.setupApproval.taskId,
+          attemptId: request.attemptId,
+          agentId: request.binding.agentId,
+          workspaceId: request.workspaceId
+        },
+        token: granted.status === 'granted' ? granted.token : 0,
+        resource: { type: 'repository' }
+      })
+    ).rejects.toThrow('Workspace setup parent forbids ordinary');
+  } finally {
+    await admission.close();
+    await fixture.close();
+  }
+});
+
+it.each(['admission-first', 'revocation-first'] as const)(
+  'serializes setup parent admission and signer revocation (%s) with no residual failed grant',
+  async (order) => {
+    const fixture = await createTrustedSetupFixture();
+    const admission = await PostgresWorkspaceSetupAdmission.connect({
+      connectionString: setupAdmissionConnectionString,
+      schema: fixture.schema,
+      role: setupAdmissionRole
+    });
+    const blocker = postgres(ownerConnectionString, { onnotice: () => undefined });
+    const schema = fixture.schema;
+    const request = {
+      ...fixture.request,
+      attemptId: 'approved-setup-attempt',
+      parentClaimId: 'overlap-parent',
+      binding: fixture.approvedBinding
+    };
+    let release: (() => void) | undefined;
+    let ready: (() => void) | undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const acquired = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let held: Promise<unknown> | undefined;
+    let first: Promise<unknown> | undefined;
+    let second: Promise<unknown> | undefined;
+    try {
+      await fixture.authority.releaseGlobalMutation({
+        ...fixture.originalClaim,
+        token: fixture.originalGrant.token,
+        expectedVersion: fixture.originalGrant.leases[0]?.version ?? 1,
+        stopEvidence: 'The previous writer has stopped.'
+      });
+      held = blocker.begin(async (tx) => {
+        if (order === 'admission-first') {
+          await tx.unsafe(`lock table "${schema}".forge_global_scopes in access exclusive mode`);
+        } else {
+          await tx.unsafe(
+            `select id from "${schema}".forge_global_trust_registry where id=1 for update`
+          );
+        }
+        ready?.();
+        await released;
+      });
+      await acquired;
+      if (order === 'admission-first') {
+        first = admission.admit(request);
+        const waiting = await blockedBackend(
+          fixture.admin,
+          schema,
+          'forge-setup-admission',
+          'forge_global_scopes'
+        );
+        second = fixture.trustAdmin.revokeDecision(
+          request.setupApproval.setupApprovalFingerprint.slice(7)
+        );
+        let blocked = false;
+        for (let attempt = 0; attempt < 200; attempt++) {
+          const rows = await fixture.admin`select pg_blocking_pids(pid) as blockers
+            from pg_stat_activity where application_name='forge-trust-admin'
+              and wait_event_type='Lock' and query like '%forge_trust_write%'`;
+          if (
+            rows.some((row) => Array.isArray(row.blockers) && row.blockers.includes(waiting.pid))
+          ) {
+            blocked = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        expect(blocked).toBe(true);
+      } else {
+        first = fixture.trustAdmin.revokeDecision(
+          request.setupApproval.setupApprovalFingerprint.slice(7)
+        );
+        const waiting = await blockedBackend(
+          fixture.admin,
+          schema,
+          'forge-trust-admin',
+          'forge_global_trust_registry'
+        );
+        second = admission.admit(request);
+        let blocked = false;
+        for (let attempt = 0; attempt < 200; attempt++) {
+          const rows = await fixture.admin`select pg_blocking_pids(pid) as blockers
+            from pg_stat_activity where application_name='forge-setup-admission'
+              and wait_event_type='Lock' and query like '%forge_setup_admit%'`;
+          if (
+            rows.some((row) => Array.isArray(row.blockers) && row.blockers.includes(waiting.pid))
+          ) {
+            blocked = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        expect(blocked).toBe(true);
+      }
+      release?.();
+      await held;
+      if (order === 'admission-first') {
+        expect(first && (await first)).toMatchObject({ status: 'granted' });
+        await second;
+      } else {
+        await first;
+        await expect(second).rejects.toThrow('trust is not current');
+      }
+      const observer = await fixture.admin.unsafe(
+        `select s.next_token, (select count(*)::integer from "${schema}".forge_global_workspace_phases
+           where parent_claim_id='overlap-parent') as phases
+         from "${schema}".forge_global_scopes s where s.id=$1`,
+        [request.scopeId]
+      );
+      expect(observer).toMatchObject(
+        order === 'admission-first'
+          ? [{ next_token: '2', phases: 1 }]
+          : [{ next_token: '1', phases: 0 }]
+      );
+      await expect(admission.admit(request)).rejects.toThrow('trust is not current');
+    } finally {
+      release?.();
+      await held?.catch(() => undefined);
+      await Promise.all([first?.catch(() => undefined), second?.catch(() => undefined)]);
+      await Promise.all([blocker.end(), admission.close(), fixture.close()]);
+    }
+  },
+  15_000
+);
 
 it('inspects signed setup approval against current registered trust and durable run identity without granting authority', async () => {
   const fixture = await createTrustedSetupFixture();
@@ -612,7 +870,7 @@ it('preserves owner-seeded generation rows across migration reruns without runti
       migration,
       runtimeRole,
       POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-      { trustAdminRole, generationIssuerRole }
+      { trustAdminRole, generationIssuerRole, setupAdmissionRole }
     );
     expect(
       await fixture.admin.unsafe(
@@ -844,7 +1102,7 @@ it('restricts trust writes to the administrator function and preserves key ident
       { connectionString: ownerConnectionString, schema: fixture.schema, role },
       runtimeRole,
       POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-      { trustAdminRole, generationIssuerRole }
+      { trustAdminRole, generationIssuerRole, setupAdmissionRole }
     );
     await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
     expect(await admin.registerKey('key-1', publicKey)).toBe(1);
@@ -916,10 +1174,16 @@ it('rejects direct writer grants on base authority tables and repairs them on mi
       } finally {
         await runtimeSql.end();
       }
-      await migratePostgresAuthoritySchema(migration, runtimeRole, 8, {
-        trustAdminRole,
-        generationIssuerRole
-      });
+      await migratePostgresAuthoritySchema(
+        migration,
+        runtimeRole,
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+        {
+          trustAdminRole,
+          generationIssuerRole,
+          setupAdmissionRole
+        }
+      );
       const issuer = await PostgresExecutionGenerationIssuer.connect(issuerConfig);
       await issuer.close();
       const granted = await direct.unsafe(
@@ -934,10 +1198,16 @@ it('rejects direct writer grants on base authority tables and repairs them on mi
     await expect(PostgresExecutionGenerationIssuer.connect(issuerConfig)).rejects.toThrow(
       'direct table mutation privileges'
     );
-    await migratePostgresAuthoritySchema(migration, runtimeRole, 8, {
-      trustAdminRole,
-      generationIssuerRole
-    });
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+      {
+        trustAdminRole,
+        generationIssuerRole,
+        setupAdmissionRole
+      }
+    );
     const column = await direct.unsafe(
       `select has_column_privilege(current_user,'"${fixture.schema}".forge_runs','state','UPDATE') as allowed`
     );
@@ -969,8 +1239,8 @@ it('rejects outsider EXECUTE on security-definer functions at startup and migrat
       migratePostgresAuthoritySchema(
         { connectionString: ownerConnectionString, schema: fixture.schema, role },
         runtimeRole,
-        8,
-        { trustAdminRole, generationIssuerRole }
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+        { trustAdminRole, generationIssuerRole, setupAdmissionRole }
       )
     ).rejects.toThrow('restricted authority writer functions are incompatible');
     await fixture.admin.unsafe(
@@ -1008,7 +1278,7 @@ it.each([
       role: runtimeRole
     };
     const migration = { connectionString: ownerConnectionString, schema: fixture.schema, role };
-    const roles = { trustAdminRole, generationIssuerRole };
+    const roles = { trustAdminRole, generationIssuerRole, setupAdmissionRole };
     try {
       await fixture.admin.unsafe(`create role "${outsider}" login`);
       await fixture.admin.unsafe(`grant "${writer}" to "${outsider}"`);
@@ -1056,7 +1326,12 @@ it.each([
         'writer role membership is incompatible'
       );
       await expect(
-        migratePostgresAuthoritySchema(migration, runtimeRole, 8, roles)
+        migratePostgresAuthoritySchema(
+          migration,
+          runtimeRole,
+          POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+          roles
+        )
       ).rejects.toThrow('writer role membership is incompatible');
       await fixture.admin.unsafe(`revoke "${writer}" from "${outsider}"`);
       await assertPostgresGlobalAuthoritySchema(runtimeSql, runtimeConfig);
@@ -1066,7 +1341,12 @@ it.each([
         'writer role membership is incompatible'
       );
       await expect(
-        migratePostgresAuthoritySchema(migration, runtimeRole, 8, roles)
+        migratePostgresAuthoritySchema(
+          migration,
+          runtimeRole,
+          POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+          roles
+        )
       ).rejects.toThrow('writer role membership is incompatible');
       await fixture.admin.unsafe(`revoke "${outsider}" from "${writer}"`);
       await assertPostgresGlobalAuthoritySchema(runtimeSql, runtimeConfig);
@@ -1756,6 +2036,7 @@ const blockedBackend = async (
     | 'forge-authority'
     | 'forge-global-authority'
     | 'forge-generation-issuer'
+    | 'forge-setup-admission'
     | 'forge-trust-admin',
   table:
     | 'forge_runs'
@@ -1768,7 +2049,8 @@ const blockedBackend = async (
       where datname=current_database() and application_name=${application}
       and wait_event_type='Lock' and (
         query like ${`%"${schema}".${table}%`} or
-         (${application}='forge-generation-issuer' and query like '%forge_generation_write%') or
+          (${application}='forge-generation-issuer' and query like '%forge_generation_write%') or
+          (${application}='forge-setup-admission' and query like '%forge_setup_admit%') or
          (${application}='forge-trust-admin' and query like '%forge_trust_write%'))`;
     const row = rows[0];
     if (row !== undefined) {
@@ -2620,7 +2902,7 @@ it('installs M4.2 global authority tables through migration owner and gates runt
     const versions = await admin.unsafe(
       `select version from "${schema}".forge_schema_migrations order by version`
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(
       await runtimeSql.unsafe(
         `select revision,policy_version from "${schema}".forge_global_trust_registry`
@@ -2665,7 +2947,9 @@ it('installs M4.2 global authority tables through migration owner and gates runt
       'setup_plan_digest',
       'execution_plan_digest',
       'execution_generation',
-      'workspace_id'
+      'workspace_id',
+      'signing_key',
+      'authorization_digest'
     ]);
     await expect(
       runtimeSql.unsafe(
@@ -2717,6 +3001,14 @@ it('upgrades existing v5 workspace phases without changing their authority or mi
     );
     await migratePostgresAuthoritySchema(migration, runtimeRole, 8);
     await migratePostgresAuthoritySchema(migration, runtimeRole, 8);
+    await expect(assertPostgresGlobalAuthoritySchema(runtimeSql, runtime)).rejects.toThrow(
+      'schema version is incompatible'
+    );
+    await migratePostgresAuthoritySchema(
+      migration,
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
+    );
     await assertPostgresGlobalAuthoritySchema(runtimeSql, runtime);
     expect(
       await owner.unsafe(`select checksum from "${schema}".forge_schema_migrations where version=5`)
@@ -3082,7 +3374,7 @@ it('closes PostgreSQL legacy writer creation after the deployment cutover barrie
   }
 });
 
-it.each([0, 9, Number.NaN])(
+it.each([0, 10, Number.NaN])(
   'rejects unsupported runtime migration target %s before creating schema objects',
   async (target) => {
     const schema = `forge_bad_target_${++fixtureOrdinal}`;

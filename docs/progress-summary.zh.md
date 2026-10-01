@@ -3647,3 +3647,13 @@ PostgreSQL 全局 authority 适配器现在提供只读的 `inspectCurrentWorksp
 返回的登记版本号和摘要**只是检查证据**：该方法不会创建 claim、执行代际、工作区阶段或 Git permit，也不能授予写入能力。未来的 setup 准入必须在自己的原子 authority 事务中重新完成检查，不能稍后拿这次只读结果兑换权限。隔离的真实 PostgreSQL 测试验证签名／身份不匹配和没有 setup 残留；受控竞态把读事务停在已经取得共享信任锁之后，证明受限管理员的密钥、决策、授权或策略变更不能抢先提交。反向顺序下，真正的受限管理员写事务先取得独占信任锁并提交变更：`pg_blocking_pids` 证明新的读事务等待该写入者，随后检查拒绝。这仍是事务前置条件，不是生产 setup 准入：可信签名服务和执行监管者尚未接线，SQLite 没有独立信任根，GLOBAL_READY worker 继续关闭。M4.2 保持 OPEN，M4.3 尚未开始。公开 number token／BIGINT 和诊断资源 ID 歧义仍为 P2。
 
 验证：`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 和 77 个文件的 825 项测试全部通过；语句、分支、函数、代码行覆盖率分别为 91.99%、85.81%、94.20%、91.92%，达到 90/85/90/90 门槛。定向真实 PostgreSQL 测试 121/121 通过；新增 workspace 依赖和 TypeScript 项目引用后，`pnpm build` 也通过。
+
+## PostgreSQL Git 工作区 setup 父 claim 的原子准入
+
+独立复审接受了 `6515d7c` 的只读当前信任检查，同时要求检查结果不能成为稍后兑换的授权：信任管理员可能在检查与授予之间撤销决策。因此本轮另设仅供独立认证的签名服务持有的 PostgreSQL 受限 setup 准入登录身份。服务先核验独立批准的仓库级 Git setup 决策签名，以及计划和执行批准之间的关系。此账号是仅供签名服务使用的特权凭据，绝不交给 worker；数据库本身不实现 Ed25519 验签。由数据库所有者控制的安全定义函数在**同一个**信任读取锁→scope→run 事务中重新检查当前密钥、策略、准确撤销、持久化 run、已登记别名、批准的任务和工作区身份，而不接受早先检查留下的结果。
+
+独立的 PostgreSQL 第 9 版迁移不修改第 1 至 8 版。受限函数要么在冲突时不消耗 token 就返回阻塞，要么原子地将 PREPARING builder attempt 更新为 STARTING，同时写入只有仓库资源的 ACTIVE setup 父 claim、唯一 lease 及 INITIAL_ADMITTED 阶段标记。匹配的 STARTING 重试返回原 token，其他父 claim 不可复用该 attempt。运行时对阶段表仍只能读取，也不能执行 setup 函数。安装程序将独立的 setup 登录角色绑定到函数，审计其直接写表权限、角色成员关系及完整 EXECUTE 授权清单；worker 凭据拿不到签名服务的准入权限。
+
+隔离的真实 PostgreSQL 回归覆盖签名和 workspace 身份错误、阻塞准入没有阶段或新 token 残留、精确重试，以及已标记父 claim 不可取得普通 mutation permit。受控竞态使用实际受限信任管理员撤销签名决策，并在两种提交顺序下由 `pg_blocking_pids` 指认等待者：准入先提交时父 claim 在撤销之前建立；撤销先提交时没有新 claim、阶段或 token。这里完成的**仅是 setup 父 claim 准入**。签发／撤销执行代际、工作区 arming、Git 专用单一 lineage permit、独立静默证明、父子交接和生产 worker 接线均未实现。SQLite 仍没有独立信任根，GLOBAL_READY 生产 worker 继续禁用；M4.2 保持 OPEN，M4.3 尚未开始。公开 number token／BIGINT 和诊断资源 ID 歧义仍为 P2。
+
+验证结果：`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 和 77 个文件中的 828 项测试全部通过；语句、分支、函数和代码行覆盖率分别为 91.90%、85.86%、94.17%、91.82%，达到 90/85/90/90 门槛。隔离的真实 PostgreSQL 测试 124/124 通过。这些验证并未启用生产 worker 或 Git 操作。

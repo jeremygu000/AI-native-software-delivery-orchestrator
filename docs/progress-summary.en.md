@@ -4395,3 +4395,50 @@ type-aware lint and all 825 tests in 77 files. Coverage is 91.99% statements,
 85.81% branches, 94.20% functions and 91.92% lines against the 90/85/90/90
 gates. The focused real PostgreSQL suite passes 121/121 tests, and `pnpm build`
 passes after adding the workspace dependency and TypeScript reference.
+
+## Atomically admitting a PostgreSQL Git workspace setup parent
+
+Independent review accepted the read-only current-trust inspection in
+`6515d7c`, with an important condition: its result must never become a reusable
+grant. A trust administrator could revoke the decision between inspection and
+claim creation. This increment therefore adds a separate restricted PostgreSQL
+setup-admission login for an independently authenticated signing service. The
+service validates the signed, separately approved repository-only Git setup
+decision against the plan and execution approval. The service login is a
+privileged credential reserved for that signer, never the runtime worker; the
+database does not independently implement Ed25519 verification. Its
+security-definer entry point repeats current key, policy, exact-revocation,
+persisted run, registered alias, approved task and workspace checks under one
+trust-read → scope → run transaction. It does not redeem an earlier inspection
+result.
+
+PostgreSQL schema version 9 is appended without changing versions 1–8. The
+restricted function either blocks without allocating a token, or atomically
+advances a PREPARING builder attempt to STARTING while inserting a repository-
+only ACTIVE setup-parent claim, its sole lease and an INITIAL_ADMITTED phase
+marker. A matching STARTING retry returns the original token; a different
+parent cannot reuse that attempt. Runtime retains read-only access to the
+phase table and cannot execute the setup function. The installer pins the
+separate setup login to the function, checks direct table writes, membership
+and exact EXECUTE grants, and does not give worker credentials the signing
+service's capability.
+
+Real isolated PostgreSQL tests cover invalid signature and workspace identity,
+blocked admission with no phase or token residue, exact replay and ordinary
+permit rejection on the marked parent. Controlled overlap proves both commit
+orders with the actual trust administrator revoking a signed decision:
+`pg_blocking_pids` identifies the blocked writer or setup admission. A winning
+admission commits its claim before revocation; a winning revocation leaves no
+claim, phase or new token. This is **only setup-parent admission**. Issuing and
+revoking its execution generation, arming workspace creation, the dedicated
+single-lineage Git permit, independently proven quiescence, parent-to-child
+handoff and production worker integration remain unimplemented. SQLite has no
+independent trust root. GLOBAL_READY production workers remain disabled;
+M4.2 remains OPEN and M4.3 has not started. The public number-token/BIGINT
+boundary and diagnostic resource-ID ambiguity remain P2.
+
+Verification: `pnpm check` passes formatting, TypeScript project references,
+type-aware lint and all 828 tests in 77 files. Coverage is 91.90% statements,
+85.86% branches, 94.17% functions and 91.82% lines, above the 90/85/90/90
+gates. The isolated PostgreSQL suite passes 124/124 tests. No production
+worker or Git operation is enabled by these results.
