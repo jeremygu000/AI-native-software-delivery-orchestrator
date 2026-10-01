@@ -16,3 +16,9 @@ export {
   type GitWorkspaceInspection,
   type GitWorkspaceInspectionRequest
 } from './lib/git-workspace-state-inspector.js';
+export {
+  DockerWorkspaceGenerationSupervisor,
+  DockerGenerationSupervisorError,
+  type SupervisedWorkspaceGeneration,
+  type StoppedWorkspaceGeneration
+} from './lib/docker-generation-supervisor.js';
