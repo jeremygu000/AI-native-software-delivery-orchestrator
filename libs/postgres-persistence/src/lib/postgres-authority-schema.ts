@@ -429,11 +429,127 @@ const migrations = [
         end $$`,
       `revoke all on function {schema}.forge_setup_admit(${Array(21).fill('text').join(',')}) from public`
     ]
+  },
+  {
+    version: 10,
+    statements: [
+      `create function {schema}.forge_setup_arm(target_scope text, parent_id text,
+          run_identity text, task_identity text, attempt_identity text, agent_identity text,
+          workspace_identity text, generation_identity text, setup_digest text,
+          execution_digest text, signing_identity text, authorization_identity text,
+          signing_public_key text, artifact_identity text, artifact_revision text,
+          execution_approval_identity text, execution_fingerprint text,
+          plan_fingerprint text, repository_identity text, repository_root text,
+          base_commit text, attempt_fingerprint text)
+        returns text language plpgsql security definer set search_path = pg_catalog as $$
+        declare phase_row record; parent_row record; generation_row record;
+          run_row record; binding_row jsonb;
+        begin
+          perform pg_advisory_xact_lock_shared(hashtext('forge-trust:{schema}'));
+          if not exists (select 1 from {schema}.forge_global_trust_registry
+            where id=1 and policy_version='git-workspace-setup-v1')
+            or not exists (select 1 from {schema}.forge_global_trust_keys
+              where key_id=signing_identity and state='ACTIVE'
+                and public_key=signing_public_key)
+            or exists (select 1 from {schema}.forge_global_trust_revocations
+              where (kind='DECISION' and digest=setup_digest)
+                 or (kind='AUTHORIZATION' and digest=authorization_identity)) then
+            raise exception 'Workspace setup trust is not current';
+          end if;
+          if not exists (select 1 from {schema}.forge_global_control
+            where id=1 and state='GLOBAL_READY') then
+            raise exception 'Global mutation authority is not ready';
+          end if;
+          if not exists (select 1 from {schema}.forge_global_scopes
+            where id=target_scope and state='ACTIVE_FOR_GLOBAL_CLAIMS' for update) then
+            raise exception 'Workspace setup scope is not active';
+          end if;
+          select state,payload into run_row from {schema}.forge_runs
+            where id=run_identity for update;
+          if not found or run_row.state <> 'ACTIVE'
+            or run_row.payload::jsonb->'run'->>'id' is distinct from run_identity
+            or run_row.payload::jsonb->'run'->>'repositoryId' is distinct from repository_identity
+            or run_row.payload::jsonb->'run'->'authority'->>'artifactId' is distinct from artifact_identity
+            or run_row.payload::jsonb->'run'->'authority'->>'artifactRevision' is distinct from artifact_revision
+            or run_row.payload::jsonb->'run'->'authority'->>'approvalId' is distinct from execution_approval_identity
+            or run_row.payload::jsonb->'run'->'authority'->>'approvalFingerprint' is distinct from execution_fingerprint
+            or run_row.payload::jsonb->'run'->'authority'->>'planFingerprint' is distinct from plan_fingerprint
+            or run_row.payload::jsonb->'run'->'authority'->>'repositoryRoot' is distinct from repository_root
+            or run_row.payload::jsonb->'run'->'authority'->>'baseCommit' is distinct from base_commit
+            or not exists (select 1 from {schema}.forge_global_run_bindings b
+              join {schema}.forge_global_aliases a on a.repository_id=b.repository_id
+              where b.run_id=run_identity and b.scope_id=target_scope
+                and a.scope_id=target_scope and a.repository_id=repository_identity) then
+            raise exception 'Workspace setup run is not active and bound';
+          end if;
+          select owner_json::jsonb as owner, token, state into parent_row
+            from {schema}.forge_global_claims
+            where scope_id=target_scope and claim_id=parent_id;
+          select * into phase_row from {schema}.forge_global_workspace_phases
+            where scope_id=target_scope and parent_claim_id=parent_id;
+          if parent_row.state is distinct from 'ACTIVE'
+            or parent_row.owner is distinct from jsonb_build_object('runId',run_identity,
+              'taskId',task_identity,'attemptId',attempt_identity,'agentId',agent_identity,
+              'workspaceId',workspace_identity)
+            or phase_row.phase not in ('INITIAL_ADMITTED','WORKSPACE_ARMED')
+            or phase_row.workspace_id is distinct from workspace_identity
+            or phase_row.setup_plan_digest is distinct from setup_digest
+            or phase_row.execution_plan_digest is distinct from execution_digest
+            or phase_row.signing_key is distinct from signing_identity
+            or phase_row.authorization_digest is distinct from authorization_identity
+            or phase_row.execution_generation is distinct from generation_identity
+            or (select count(*) from {schema}.forge_global_leases
+              where scope_id=target_scope and claim_id=parent_id) <> 1
+            or not exists (select 1 from {schema}.forge_global_leases
+              where scope_id=target_scope and claim_id=parent_id
+                and resource_json::jsonb='{"type":"repository"}'::jsonb) then
+            raise exception 'Workspace setup parent or phase is incompatible';
+          end if;
+          select * into generation_row from {schema}.forge_global_generations
+            where id=generation_identity;
+          if not found or generation_row.state <> 'ISSUED'
+            or generation_row.scope_id <> target_scope
+            or generation_row.parent_claim_id <> parent_id
+            or generation_row.run_id <> run_identity
+            or generation_row.task_id <> task_identity
+            or generation_row.attempt_id <> attempt_identity
+            or generation_row.workspace_id <> workspace_identity
+            or generation_row.setup_plan_digest <> setup_digest
+            or generation_row.execution_plan_digest <> execution_digest then
+            raise exception 'Workspace setup execution generation is not current';
+          end if;
+          select payload::jsonb into binding_row from {schema}.forge_records
+            where run_id=run_identity and kind='binding' and key=task_identity;
+          if binding_row is null or binding_row->>'runId' is distinct from run_identity
+            or binding_row->>'taskId' is distinct from task_identity
+            or binding_row->>'agentId' is distinct from agent_identity
+            or binding_row->'workspace'->>'id' is distinct from workspace_identity
+            or binding_row->'workspace'->>'integrationRepositoryPath' is distinct from
+              run_row.payload::jsonb->'run'->'authority'->>'repositoryRoot'
+            or not exists (select 1 from jsonb_array_elements(run_row.payload::jsonb->'tasks') t
+              where t->>'id'=task_identity)
+            or not exists (select 1 from {schema}.forge_records
+              where run_id=run_identity and kind='builder' and key=attempt_identity
+                and payload::jsonb->>'state'='STARTING'
+                and payload::jsonb->>'runId'=run_identity
+                and payload::jsonb->>'taskId'=task_identity
+                and payload::jsonb->>'workspaceId'=workspace_identity
+                and payload::jsonb->>'agentId'=agent_identity
+                and payload::jsonb->>'leasePlanFingerprint'=attempt_fingerprint) then
+            raise exception 'Workspace setup attempt or approved workspace is incompatible';
+          end if;
+          if phase_row.phase='WORKSPACE_ARMED' then return 'ARMED'; end if;
+          update {schema}.forge_global_workspace_phases set phase='WORKSPACE_ARMED'
+            where scope_id=target_scope and parent_claim_id=parent_id;
+          return 'ARMED';
+        end $$`,
+      `revoke all on function {schema}.forge_setup_arm(${Array(22).fill('text').join(',')}) from public`
+    ]
   }
 ] as const;
 
 export const POSTGRES_AUTHORITY_SCHEMA_VERSION = 2;
-export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 9;
+export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 10;
 export type PostgresAuthoritySchemaVersion =
   | 1
   | typeof POSTGRES_AUTHORITY_SCHEMA_VERSION
@@ -443,6 +559,7 @@ export type PostgresAuthoritySchemaVersion =
   | 6
   | 7
   | 8
+  | 9
   | typeof POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION;
 
 export type PostgresAuthorityWriterRoles = {
@@ -965,6 +1082,7 @@ const assertRestrictedWriterFunctions = async (
   const expected = [
     ['forge_generation_write', 'text, text, text, text, text, text, text, text, text, text, text'],
     ...(version >= 9 ? [['forge_setup_admit', Array(21).fill('text').join(', ')]] : []),
+    ...(version >= 10 ? [['forge_setup_arm', Array(22).fill('text').join(', ')]] : []),
     ['forge_trust_write', 'text, text, text']
   ];
   const owner =
@@ -972,6 +1090,8 @@ const assertRestrictedWriterFunctions = async (
   const recorded = functions[0]?.writer_roles;
   const setupBinding =
     version >= 9 ? functions.find((fn) => fn.name === 'forge_setup_admit')?.writer_roles : null;
+  const armBinding =
+    version >= 10 ? functions.find((fn) => fn.name === 'forge_setup_arm')?.writer_roles : null;
   let setupRole: string | undefined;
   if (setupBinding !== null && setupBinding !== undefined) {
     const value = String(setupBinding);
@@ -1007,6 +1127,7 @@ const assertRestrictedWriterFunctions = async (
     }
   }
   if (
+    (version >= 10 && armBinding !== setupBinding) ||
     functions.length !== expected.length ||
     functions.some(
       (fn, index) =>
@@ -1016,14 +1137,14 @@ const assertRestrictedWriterFunctions = async (
         fn.security_definer !== true ||
         JSON.stringify(fn.configuration) !== JSON.stringify(['search_path=pg_catalog']) ||
         fn.writer_roles !==
-          (fn.name === 'forge_setup_admit'
+          (fn.name === 'forge_setup_admit' || fn.name === 'forge_setup_arm'
             ? (setupRole ?? null)
             : writers === undefined
               ? null
               : JSON.stringify(writers)) ||
         JSON.stringify(fn.grants) !==
           JSON.stringify(
-            fn.name === 'forge_setup_admit'
+            fn.name === 'forge_setup_admit' || fn.name === 'forge_setup_arm'
               ? setupRole === undefined
                 ? []
                 : [{ grantee: setupRole, privilege: 'EXECUTE', grantable: false }]
@@ -1246,7 +1367,8 @@ export const migratePostgresAuthoritySchema = async (
         for (const signature of [
           'forge_trust_write(text,text,text)',
           'forge_generation_write(text,text,text,text,text,text,text,text,text,text,text)',
-          ...(targetVersion >= 9 ? [`forge_setup_admit(${Array(21).fill('text').join(',')})`] : [])
+          ...(targetVersion >= 9 ? [`forge_setup_admit(${Array(21).fill('text').join(',')})`] : []),
+          ...(targetVersion >= 10 ? [`forge_setup_arm(${Array(22).fill('text').join(',')})`] : [])
         ]) {
           await tx.unsafe(`revoke all on function ${schema}.${signature} from public`);
           await tx.unsafe(
@@ -1256,11 +1378,12 @@ export const migratePostgresAuthoritySchema = async (
         if (targetVersion >= 9 && writerRoles?.setupAdmissionRole !== undefined) {
           const setupRole = writerRoles.setupAdmissionRole;
           const recorded = await tx`select obj_description(p.oid,'pg_proc') as binding
-             from pg_proc p join pg_namespace n on n.oid=p.pronamespace
-             where n.nspname=${configuration.schema} and p.proname='forge_setup_admit'`;
+              from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+              where n.nspname=${configuration.schema} and p.proname in
+                ('forge_setup_admit', 'forge_setup_arm')`;
           if (
-            recorded.length !== 1 ||
-            (recorded[0]?.binding !== null && recorded[0]?.binding !== setupRole)
+            recorded.length !== (targetVersion >= 10 ? 2 : 1) ||
+            recorded.some((row) => row.binding !== null && row.binding !== setupRole)
           ) {
             throw new Error('PostgreSQL setup admission role binding cannot be changed');
           }
@@ -1281,9 +1404,14 @@ export const migratePostgresAuthoritySchema = async (
           ) {
             throw new Error('PostgreSQL setup admission role is not restricted');
           }
-          const functionName = `forge_setup_admit(${Array(21).fill('text').join(',')})`;
           const roleName = quote(setupRole);
-          await tx.unsafe(`revoke all on function ${schema}.${functionName} from ${roleName}`);
+          const setupFunctions = [
+            `forge_setup_admit(${Array(21).fill('text').join(',')})`,
+            ...(targetVersion >= 10 ? [`forge_setup_arm(${Array(22).fill('text').join(',')})`] : [])
+          ];
+          for (const functionName of setupFunctions) {
+            await tx.unsafe(`revoke all on function ${schema}.${functionName} from ${roleName}`);
+          }
           await tx.unsafe(`revoke all on schema ${schema} from ${roleName}`);
           await tx.unsafe(`grant usage on schema ${schema} to ${roleName}`);
           for (const table of [
@@ -1304,8 +1432,10 @@ export const migratePostgresAuthoritySchema = async (
             throw new Error('PostgreSQL authority writer column grants require owner repair');
           }
           await tx.unsafe(`grant select on ${schema}.forge_global_trust_keys to ${roleName}`);
-          await tx.unsafe(`grant execute on function ${schema}.${functionName} to ${roleName}`);
-          await tx.unsafe(`comment on function ${schema}.${functionName} is '${setupRole}'`);
+          for (const functionName of setupFunctions) {
+            await tx.unsafe(`grant execute on function ${schema}.${functionName} to ${roleName}`);
+            await tx.unsafe(`comment on function ${schema}.${functionName} is '${setupRole}'`);
+          }
         }
         if (writerRoles === undefined) {
           const granted = await tx`select proname from pg_proc p
@@ -1434,7 +1564,7 @@ const grantRuntimePrivileges = async (
 export const assertPostgresAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration,
-  requiredVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = POSTGRES_AUTHORITY_SCHEMA_VERSION
+  requiredVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = POSTGRES_AUTHORITY_SCHEMA_VERSION
 ): Promise<void> => {
   assertPostgresAuthorityLogin(configuration);
   if (sql.options.user !== configuration.role) {

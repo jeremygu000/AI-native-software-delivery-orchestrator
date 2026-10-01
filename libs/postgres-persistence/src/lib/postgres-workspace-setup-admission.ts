@@ -56,8 +56,15 @@ export class PostgresWorkspaceSetupAdmission {
       const otherFunctions = await sql`select p.proname as name,
         has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute
         from pg_proc p join pg_namespace n on n.oid=p.pronamespace
-        where n.nspname=${configuration.schema} and p.proname<>'forge_setup_admit'
-        order by p.proname`;
+         where n.nspname=${configuration.schema} and p.proname not in ('forge_setup_admit','forge_setup_arm')
+         order by p.proname`;
+      const armFunction = await sql`select p.prosecdef as security_definer,
+         p.proowner::regrole::text as owner, obj_description(p.oid,'pg_proc') as designated,
+         has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute,
+         has_function_privilege('public',p.oid,'EXECUTE') as public_execute,
+         has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION') as can_grant
+         from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+         where n.nspname=${configuration.schema} and p.proname='forge_setup_arm'`;
       const direct =
         await sql`select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
         where n.nspname=${configuration.schema} and c.relkind in ('r','p') and (
@@ -87,6 +94,13 @@ export class PostgresWorkspaceSetupAdmission {
         fn[0].can_execute !== true ||
         fn[0].public_execute !== false ||
         fn[0].can_grant !== false ||
+        armFunction.length !== 1 ||
+        armFunction[0]?.security_definer !== true ||
+        armFunction[0].owner !== fn[0].owner ||
+        armFunction[0].designated !== configuration.role ||
+        armFunction[0].can_execute !== true ||
+        armFunction[0].public_execute !== false ||
+        armFunction[0].can_grant !== false ||
         otherFunctions.length !== 2 ||
         otherFunctions[0]?.name !== 'forge_generation_write' ||
         otherFunctions[0].can_execute !== false ||
@@ -183,5 +197,74 @@ export class PostgresWorkspaceSetupAdmission {
       throw new Error('Workspace setup token exceeds safe JavaScript range');
     }
     return { status: 'granted', token };
+  }
+
+  /** Arming never starts Git: a distinct one-lineage permit remains required. */
+  async arm(request: {
+    readonly scopeId: string;
+    readonly runId: string;
+    readonly attemptId: string;
+    readonly parentClaimId: string;
+    readonly workspaceId: string;
+    readonly generationId: string;
+    readonly artifact: PlanArtifact;
+    readonly executionApproval: PlanApproval;
+    readonly setupApproval: WorkspaceSetupApproval;
+    readonly authorization: WorkspaceSetupAuthorization;
+    readonly binding: PersistedTaskExecutionBinding;
+  }): Promise<void> {
+    const authorization = workspaceSetupAuthorizationSchema.parse(request.authorization);
+    const keyRows = await this.#sql.unsafe(
+      `select public_key from ${this.#schema}.forge_global_trust_keys where key_id=$1`,
+      [authorization.keyId]
+    );
+    const pem = keyRows[0]?.public_key;
+    if (typeof pem !== 'string' || createPublicKey(pem).asymmetricKeyType !== 'ed25519') {
+      throw new Error('Unregistered Git workspace setup signing key');
+    }
+    const setup = verifyWorkspaceSetupAuthorization({
+      ...request,
+      authorization,
+      trustedPublicKeys: new Map([[authorization.keyId, pem]])
+    });
+    if (
+      request.binding.runId !== request.runId ||
+      request.binding.taskId !== setup.taskId ||
+      request.binding.workspace.id !== request.workspaceId ||
+      request.binding.workspace.integrationRepositoryPath !== setup.repositoryRoot
+    ) {
+      throw new Error('Workspace setup binding does not match approved run and workspace');
+    }
+    const values = [
+      request.scopeId,
+      request.parentClaimId,
+      request.runId,
+      setup.taskId,
+      request.attemptId,
+      request.binding.agentId,
+      request.workspaceId,
+      request.generationId,
+      setup.setupApprovalFingerprint.slice(7),
+      fingerprintPlanValue(request.binding.leasePlan).slice(7),
+      authorization.keyId,
+      fingerprintPlanValue(authorization).slice(7),
+      pem,
+      setup.artifactId,
+      String(setup.artifactRevision),
+      setup.executionApprovalId,
+      setup.executionApprovalFingerprint,
+      setup.planFingerprint,
+      setup.repositoryId,
+      setup.repositoryRoot,
+      setup.baseCommit,
+      taskLeasePlanFingerprint(request.binding.leasePlan)
+    ];
+    const rows = await this.#sql.unsafe(
+      `select ${this.#schema}.forge_setup_arm(${values.map((_, index) => `$${index + 1}`).join(',')}) as result`,
+      values
+    );
+    if (rows[0]?.result !== 'ARMED') {
+      throw new Error('Unexpected workspace setup arming result');
+    }
   }
 }

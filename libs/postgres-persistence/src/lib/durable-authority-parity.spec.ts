@@ -10,6 +10,7 @@ import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrato
 import {
   createPlanApproval,
   createWorkspaceSetupApproval,
+  fingerprintPlanValue,
   workspaceSetupAuthorizationMessage
 } from '@ai-native-software-delivery-orchestrator/planning';
 import { ForgeReadModel } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
@@ -513,6 +514,214 @@ it('atomically admits a signed repository-only setup parent and INITIAL_ADMITTED
   } finally {
     await admission.close();
     await fixture.close();
+  }
+});
+
+it('arms only an issued, unrevoked generation with current trust and never grants an ordinary Git permit', async () => {
+  const fixture = await createTrustedSetupFixture();
+  const admission = await PostgresWorkspaceSetupAdmission.connect({
+    connectionString: setupAdmissionConnectionString,
+    schema: fixture.schema,
+    role: setupAdmissionRole
+  });
+  const issuer = await PostgresExecutionGenerationIssuer.connect({
+    connectionString: generationIssuerConnectionString,
+    schema: fixture.schema,
+    role: generationIssuerRole
+  });
+  const request = {
+    ...fixture.request,
+    attemptId: 'approved-setup-attempt',
+    parentClaimId: 'armed-parent',
+    binding: fixture.approvedBinding,
+    generationId: 'supervised-generation'
+  };
+  try {
+    await fixture.authority.releaseGlobalMutation({
+      ...fixture.originalClaim,
+      token: fixture.originalGrant.token,
+      expectedVersion: fixture.originalGrant.leases[0]?.version ?? 1,
+      stopEvidence: 'The prior writer has stopped.'
+    });
+    expect((await admission.admit(request)).status).toBe('granted');
+    await expect(admission.arm(request)).rejects.toThrow('parent or phase');
+    const generation = {
+      generationId: request.generationId,
+      scopeId: request.scopeId,
+      parentClaimId: request.parentClaimId,
+      runId: request.runId,
+      taskId: request.setupApproval.taskId,
+      attemptId: request.attemptId,
+      workspaceId: request.workspaceId,
+      supervisorId: 'supervisor-one',
+      setupPlanDigest: request.setupApproval.setupApprovalFingerprint.slice(7),
+      executionPlanDigest: fingerprintPlanValue(request.binding.leasePlan).slice(7)
+    };
+    await issuer.issue(generation);
+    await expect(
+      admission.arm({ ...request, generationId: 'unrelated-generation' })
+    ).rejects.toThrow('parent or phase');
+    const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
+    try {
+      const functionPrivilege =
+        await runtime`select has_function_privilege(current_user,p.oid,'EXECUTE') as allowed
+        from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+        where n.nspname=${fixture.schema} and p.proname='forge_setup_arm'`;
+      expect(functionPrivilege).toMatchObject([{ allowed: false }]);
+    } finally {
+      await runtime.end();
+    }
+    await admission.arm(request);
+    await admission.arm(request);
+    expect(
+      await fixture.admin.unsafe(
+        `select phase,execution_generation from "${fixture.schema}".forge_global_workspace_phases where parent_claim_id=$1`,
+        [request.parentClaimId]
+      )
+    ).toMatchObject([{ phase: 'WORKSPACE_ARMED', execution_generation: request.generationId }]);
+    await expect(
+      fixture.peer.beginFencedMutation({
+        scopeId: request.scopeId,
+        claimId: request.parentClaimId,
+        owner: {
+          runId: request.runId,
+          taskId: request.setupApproval.taskId,
+          attemptId: request.attemptId,
+          agentId: request.binding.agentId,
+          workspaceId: request.workspaceId
+        },
+        token: 2,
+        resource: { type: 'repository' }
+      })
+    ).rejects.toThrow('Workspace setup parent forbids ordinary');
+    await issuer.revoke(request.generationId, request.scopeId);
+    await expect(admission.arm(request)).rejects.toThrow('execution generation');
+    expect(
+      await fixture.admin.unsafe(
+        `select phase from "${fixture.schema}".forge_global_workspace_phases where parent_claim_id=$1`,
+        [request.parentClaimId]
+      )
+    ).toMatchObject([{ phase: 'WORKSPACE_ARMED' }]);
+  } finally {
+    await Promise.all([admission.close(), issuer.close(), fixture.close()]);
+  }
+});
+
+it.each(['trust-revoked', 'run-cancelled'] as const)(
+  'refuses workspace arming after %s without changing the admitted parent',
+  async (outcome) => {
+    const fixture = await createTrustedSetupFixture();
+    const admission = await PostgresWorkspaceSetupAdmission.connect({
+      connectionString: setupAdmissionConnectionString,
+      schema: fixture.schema,
+      role: setupAdmissionRole
+    });
+    const issuer = await PostgresExecutionGenerationIssuer.connect({
+      connectionString: generationIssuerConnectionString,
+      schema: fixture.schema,
+      role: generationIssuerRole
+    });
+    const request = {
+      ...fixture.request,
+      attemptId: 'approved-setup-attempt',
+      parentClaimId: 'cancelled-parent',
+      binding: fixture.approvedBinding,
+      generationId: 'current-generation'
+    };
+    try {
+      await fixture.authority.releaseGlobalMutation({
+        ...fixture.originalClaim,
+        token: fixture.originalGrant.token,
+        expectedVersion: fixture.originalGrant.leases[0]?.version ?? 1,
+        stopEvidence: 'The previous writer has stopped.'
+      });
+      expect((await admission.admit(request)).status).toBe('granted');
+      await issuer.issue({
+        generationId: request.generationId,
+        scopeId: request.scopeId,
+        parentClaimId: request.parentClaimId,
+        runId: request.runId,
+        taskId: request.setupApproval.taskId,
+        attemptId: request.attemptId,
+        workspaceId: request.workspaceId,
+        supervisorId: 'supervisor-one',
+        setupPlanDigest: request.setupApproval.setupApprovalFingerprint.slice(7),
+        executionPlanDigest: fingerprintPlanValue(request.binding.leasePlan).slice(7)
+      });
+      if (outcome === 'trust-revoked') {
+        await fixture.trustAdmin.revokeDecision(
+          request.setupApproval.setupApprovalFingerprint.slice(7)
+        );
+      } else {
+        await fixture.store.updateRunState(request.runId, 'CANCEL_REQUESTED');
+      }
+      await expect(admission.arm(request)).rejects.toThrow(
+        outcome === 'trust-revoked' ? 'trust is not current' : 'run is not active'
+      );
+      expect(
+        await fixture.admin.unsafe(
+          `select phase from "${fixture.schema}".forge_global_workspace_phases where parent_claim_id=$1`,
+          [request.parentClaimId]
+        )
+      ).toMatchObject([{ phase: 'INITIAL_ADMITTED' }]);
+    } finally {
+      await Promise.all([admission.close(), issuer.close(), fixture.close()]);
+    }
+  }
+);
+
+it('rejects arming if the persisted approved run identity changes after setup admission', async () => {
+  const fixture = await createTrustedSetupFixture();
+  const admission = await PostgresWorkspaceSetupAdmission.connect({
+    connectionString: setupAdmissionConnectionString,
+    schema: fixture.schema,
+    role: setupAdmissionRole
+  });
+  const issuer = await PostgresExecutionGenerationIssuer.connect({
+    connectionString: generationIssuerConnectionString,
+    schema: fixture.schema,
+    role: generationIssuerRole
+  });
+  const request = {
+    ...fixture.request,
+    attemptId: 'approved-setup-attempt',
+    parentClaimId: 'changed-run-parent',
+    binding: fixture.approvedBinding,
+    generationId: 'changed-run-generation'
+  };
+  try {
+    await fixture.authority.releaseGlobalMutation({
+      ...fixture.originalClaim,
+      token: fixture.originalGrant.token,
+      expectedVersion: fixture.originalGrant.leases[0]?.version ?? 1,
+      stopEvidence: 'The previous writer has stopped.'
+    });
+    expect((await admission.admit(request)).status).toBe('granted');
+    await issuer.issue({
+      generationId: request.generationId,
+      scopeId: request.scopeId,
+      parentClaimId: request.parentClaimId,
+      runId: request.runId,
+      taskId: request.setupApproval.taskId,
+      attemptId: request.attemptId,
+      workspaceId: request.workspaceId,
+      supervisorId: 'supervisor-one',
+      setupPlanDigest: request.setupApproval.setupApprovalFingerprint.slice(7),
+      executionPlanDigest: fingerprintPlanValue(request.binding.leasePlan).slice(7)
+    });
+    await fixture.admin.unsafe(
+      `update "${fixture.schema}".forge_runs set payload=jsonb_set(payload::jsonb,'{run,authority,baseCommit}',to_jsonb('different-base'::text))::text where id=$1`,
+      [request.runId]
+    );
+    await expect(admission.arm(request)).rejects.toThrow('run is not active and bound');
+    expect(
+      await fixture.admin.unsafe(
+        `select phase from "${fixture.schema}".forge_global_workspace_phases where parent_claim_id=$1`,
+        [request.parentClaimId]
+      )
+    ).toMatchObject([{ phase: 'INITIAL_ADMITTED' }]);
+  } finally {
+    await Promise.all([admission.close(), issuer.close(), fixture.close()]);
   }
 });
 
@@ -3206,7 +3415,7 @@ it('installs M4.2 global authority tables through migration owner and gates runt
     const versions = await admin.unsafe(
       `select version from "${schema}".forge_schema_migrations order by version`
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(
       await runtimeSql.unsafe(
         `select revision,policy_version from "${schema}".forge_global_trust_registry`
@@ -3678,7 +3887,7 @@ it('closes PostgreSQL legacy writer creation after the deployment cutover barrie
   }
 });
 
-it.each([0, 10, Number.NaN])(
+it.each([0, 11, Number.NaN])(
   'rejects unsupported runtime migration target %s before creating schema objects',
   async (target) => {
     const schema = `forge_bad_target_${++fixtureOrdinal}`;

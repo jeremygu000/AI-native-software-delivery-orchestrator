@@ -3673,3 +3673,11 @@ PostgreSQL 全局 authority 适配器现在提供只读的 `inspectCurrentWorksp
 独立复审从已接受的 `6515d7c` 基线检查至本地 `2940d3c` 的两个提交，接受了之前的表列权限修复和依赖升级，却发现签名服务登录角色仍可能得到两种未被自己连接检查识别的能力。原先的 `CREATE` 检查排除了 PostgreSQL 系统 schema，包括位于安全定义函数搜索路径中的 `pg_catalog`。另外，该连接只核验自己的 setup 函数，未检查相同凭据能否调用独立的信任或代际写入函数；运行时启动审计完成后再误授权，就可能跨越权限域。
 
 现在签名服务连接和全局 runtime 启动都会拒绝**任何** schema 上的 `CREATE`，包含 `pg_catalog`；迁移重跑不会擅自修改系统或其他所有者管理的 schema。签名服务连接还要求自己能够执行的权威函数恰好为 setup 函数，并明确确认这些凭据不能调用 `forge_trust_write` 或 `forge_generation_write`。真实 PostgreSQL 回归分别误授 `pg_catalog` 的 `CREATE` 和另外两个函数的 `EXECUTE`，证明连接、启动拒绝，管理员撤销后恢复；迁移重跑对这些不属于自己的授权保持失效关闭。没有修改带版本的迁移语句或 setup claim 事务。`pnpm check` 的格式、TypeScript、类型感知 lint 和 77 个文件中的 836 项测试全部通过；语句、分支、函数及代码行覆盖率分别为 91.96%、85.88%、94.21%、91.89%，达到 90/85/90/90 门槛。PostgreSQL 定向测试 132/132 通过。这轮修正仍待独立复审；M4.2 保持 OPEN，GLOBAL_READY 生产 worker 仍禁用，Git 专用 permit、代际校验、交接和 SQLite 独立信任根仍未实现。
+
+## 在不启动 Git 的情况下预备 PostgreSQL 工作区创建
+
+独立复审已接受 `dee1a10` 所实现的 PostgreSQL setup 父 claim 准入及权限边界。准入后的父 claim 仍处于 `INITIAL_ADMITTED`：即使它拥有仓库 lease，也不能通过普通 mutation permit 执行写入。受监管的 worker 将来创建 Git worktree 之前，必须由独立受限的代际签发者将持久化执行代际绑定到准确的 scope、父 claim、run、task、attempt、workspace，以及已批准的 setup 与执行计划摘要。现有签发操作把代际记为 `ISSUED`，并将其与阶段关联；随后撤销不可逆。代际签发是授权的前置条件，不表示外部进程已经启动或已安全停止。
+
+PostgreSQL 第 10 版迁移仅追加受限的安全定义 arming 操作，不修改第 1 至 9 版。签名服务角色先核验签名的 setup 决策，再调用该操作；worker 无权调用。数据库在同一事务中先持有当前信任的读取串行锁，再锁定已登记的 scope 和绑定的 run，检查生效的策略及签名密钥、未撤销的准确决策和授权、GLOBAL_READY 与 ACTIVE 状态、只有仓库 lease 的 setup 父 claim、准确批准的任务与工作区，以及对应的 `ISSUED` 代际。全部通过后才将阶段从 `INITIAL_ADMITTED` 改为 `WORKSPACE_ARMED`。相同请求可安全重试；缺失或撤销的代际、取消的 run、撤销的批准都不会改变阶段。运行时对阶段与代际表仍只有读取权限；setup 角色仅在原有准入函数之外取得经过精确审计的 arming 函数执行权。
+
+`WORKSPACE_ARMED` **不代表 Git 可以执行**：已标记的父 claim 仍拒绝一切普通 mutation permit、release 和 reclaim。专用的单一 lineage Git permit、受监管的回调及不确定结果处理、签名静默证明、父子交接、SQLite 独立信任根和 GLOBAL_READY 生产 worker 均尚未实现。M4.2 仍为 OPEN，M4.3 尚未开始；公开 number token／BIGINT 和诊断资源 ID 歧义仍为 P2。隔离的真实 PostgreSQL 测试 136/136 通过，覆盖代际签发前后的 arming、精确重试、代际与信任撤销、run 取消、普通 Git permit 被拒，以及持久化 run 已批准的基础提交被篡改时拒绝 arming。`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 及 77 个文件中的 840 项测试全部通过；语句、分支、函数、代码行覆盖率分别为 91.94%、85.88%、94.22%、91.86%，超过 90/85/90/90 门槛。
