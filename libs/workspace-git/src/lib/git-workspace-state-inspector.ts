@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import {
   taskWorkspaceSchema,
@@ -48,6 +48,15 @@ const git = (cwd: string, args: readonly string[]): Promise<string> =>
 
 const canonical = (path: string): Promise<string> => realpath(resolve(path));
 const commitOid = /^[0-9a-f]{40,64}$/;
+const sameOrWithin = (parent: string, child: string): boolean => {
+  const pathFromParent = relative(parent, child);
+  return (
+    pathFromParent === '' ||
+    (pathFromParent !== '..' &&
+      !pathFromParent.startsWith(`..${sep}`) &&
+      !isAbsolute(pathFromParent))
+  );
+};
 
 /** Read-only recovery observation. A separate supervisor must prove non-resumability and sign it. */
 export class GitWorkspaceStateInspector {
@@ -69,9 +78,12 @@ export class GitWorkspaceStateInspector {
     ]);
     if (
       integrationRepositoryPath !== approvedRepositoryRoot ||
-      worktreePath === integrationRepositoryPath
+      sameOrWithin(integrationRepositoryPath, worktreePath) ||
+      sameOrWithin(worktreePath, integrationRepositoryPath)
     ) {
-      throw new GitWorkspaceInspectionError('Workspace and approved integration repository differ');
+      throw new GitWorkspaceInspectionError(
+        'Workspace and approved integration repository must be separate'
+      );
     }
 
     const [worktreeRoot, integrationRoot, worktreeCommon, integrationCommon] = await Promise.all([

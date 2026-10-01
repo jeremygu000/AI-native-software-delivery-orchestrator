@@ -92,22 +92,53 @@ describe('GitWorkspaceStateInspector', () => {
     ).rejects.toThrow(GitWorkspaceInspectionError);
   });
 
-  it('rejects nested paths and progressed workspace records as initial setup evidence', async () => {
+  it('rejects a real linked worktree nested inside the approved integration repository', async () => {
     const { directory, workspace, baseCommit } = await fixture();
+    const nestedWorktree = join(directory, 'nested-worktree');
+    git(directory, 'worktree', 'add', '-b', 'forge/run-1/nested', nestedWorktree, baseCommit);
     const inspector = new GitWorkspaceStateInspector();
-    const request = {
-      workspace,
-      approvedRepositoryRoot: directory,
-      approvedBaseCommit: baseCommit
-    };
     await expect(
       inspector.inspect({
-        ...request,
-        workspace: { ...workspace, workspacePath: join(directory, 'subdir') }
+        workspace: {
+          ...workspace,
+          workspacePath: nestedWorktree,
+          branchName: 'forge/run-1/nested'
+        },
+        approvedRepositoryRoot: directory,
+        approvedBaseCommit: baseCommit
       })
-    ).rejects.toThrow();
+    ).rejects.toThrow('Workspace and approved integration repository must be separate');
+  });
+
+  it('rejects an approved integration repository nested inside a real linked worktree', async () => {
+    const { directory, workspace, baseCommit } = await fixture();
+    const nestedIntegration = join(workspace.workspacePath, 'nested-integration');
+    git(
+      directory,
+      'worktree',
+      'add',
+      '-b',
+      'forge/run-1/integration',
+      nestedIntegration,
+      baseCommit
+    );
     await expect(
-      inspector.inspect({ ...request, workspace: { ...workspace, revision: 2 } })
+      new GitWorkspaceStateInspector().inspect({
+        workspace: { ...workspace, integrationRepositoryPath: nestedIntegration },
+        approvedRepositoryRoot: nestedIntegration,
+        approvedBaseCommit: baseCommit
+      })
+    ).rejects.toThrow('Workspace and approved integration repository must be separate');
+  });
+
+  it('rejects progressed workspace records as initial setup evidence', async () => {
+    const { directory, workspace, baseCommit } = await fixture();
+    await expect(
+      new GitWorkspaceStateInspector().inspect({
+        workspace: { ...workspace, revision: 2 },
+        approvedRepositoryRoot: directory,
+        approvedBaseCommit: baseCommit
+      })
     ).rejects.toThrow(GitWorkspaceInspectionError);
   });
 
