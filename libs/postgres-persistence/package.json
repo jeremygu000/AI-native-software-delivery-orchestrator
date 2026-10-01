@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/planning": "workspace:*",
     "postgres": "^3.4.9"
   },
   "devDependencies": {

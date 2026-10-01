@@ -317,6 +317,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../domain
+      '@ai-native-software-delivery-orchestrator/planning':
+        specifier: workspace:*
+        version: link:../planning
       postgres:
         specifier: ^3.4.9
         version: 3.4.9

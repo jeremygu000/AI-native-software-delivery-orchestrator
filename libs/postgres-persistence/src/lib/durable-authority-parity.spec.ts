@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -7,6 +7,11 @@ import { join } from 'node:path';
 
 import postgres from 'postgres';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
+import {
+  createPlanApproval,
+  createWorkspaceSetupApproval,
+  workspaceSetupAuthorizationMessage
+} from '@ai-native-software-delivery-orchestrator/planning';
 import { ForgeReadModel } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 import {
   taskLeasePlanFingerprint,
@@ -30,6 +35,7 @@ import {
   type GlobalMutationCutoverFixture,
   type GlobalMutationPermitFixture
 } from '../../../persistence/src/lib/global-mutation-authority.contract.test.js';
+import { approvalTestArtifact } from '../../../planning/src/lib/plan-artifact.fixture.js';
 import { PostgresGlobalMutationAuthority } from './postgres-global-mutation-authority.js';
 import { PostgresOrchestrationPersistence } from './postgres-orchestration-persistence.js';
 import {
@@ -283,6 +289,306 @@ const createGlobalPermitFixture = async (): Promise<
 };
 
 globalMutationPermitContract('PostgreSQL isolated server', createGlobalPermitFixture);
+
+const createTrustedSetupFixture = async () => {
+  const fixture = await createGlobalPermitFixture();
+  const artifact = approvalTestArtifact();
+  const executionApproval = createPlanApproval({
+    approvalId: 'execution-1',
+    artifact,
+    approvedBy: 'execution-reviewer',
+    approvedAt: '2026-08-13T01:00:00.000Z'
+  });
+  const setupApproval = createWorkspaceSetupApproval({
+    setupApprovalId: 'setup-1',
+    artifact,
+    executionApproval,
+    taskId: 'task-a',
+    approvedBy: 'setup-reviewer',
+    approvedAt: '2026-08-13T02:00:00.000Z'
+  });
+  const keyId = 'trusted-setup-key';
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const authorization = {
+    schemaVersion: 1 as const,
+    keyId,
+    setupApprovalId: setupApproval.setupApprovalId,
+    setupApprovalFingerprint: setupApproval.setupApprovalFingerprint,
+    signature: sign(
+      null,
+      workspaceSetupAuthorizationMessage(setupApproval, keyId),
+      privateKey
+    ).toString('base64url')
+  };
+  const runId = `approved-setup-${fixture.schema}`;
+  const base = durableAuthorityRunRequest(runId);
+  const binding = base.taskBindings[0];
+  const task = base.tasks[0];
+  if (binding === undefined || task === undefined) {
+    throw new Error('Missing setup fixture task');
+  }
+  await fixture.authority.registerAlias(fixture.scopeId, artifact.repository.repositoryId);
+  await fixture.store.createRun({
+    ...base,
+    run: {
+      ...base.run,
+      repositoryId: artifact.repository.repositoryId,
+      authority: {
+        ...base.run.authority,
+        artifactId: artifact.artifactId,
+        artifactRevision: artifact.revision,
+        approvalId: executionApproval.approvalId,
+        planFingerprint: artifact.planFingerprint,
+        approvalFingerprint: executionApproval.approvalFingerprint,
+        repositoryRoot: artifact.repository.repositoryRoot,
+        baseCommit: artifact.repository.baseCommit
+      }
+    },
+    tasks: [{ ...task, id: setupApproval.taskId }],
+    taskBindings: [
+      {
+        ...binding,
+        taskId: setupApproval.taskId,
+        leasePlan: { ...binding.leasePlan, taskId: setupApproval.taskId },
+        workspace: {
+          ...binding.workspace,
+          taskId: setupApproval.taskId,
+          id: 'approved-workspace',
+          integrationRepositoryPath: artifact.repository.repositoryRoot
+        }
+      }
+    ]
+  });
+  await fixture.authority.bindRun(runId, setupApproval.repositoryId);
+  const trustAdmin = await PostgresTrustRegistryAdmin.connect({
+    connectionString: trustAdminConnectionString,
+    schema: fixture.schema,
+    role: trustAdminRole
+  });
+  await trustAdmin.registerKey(keyId, publicKey.export({ type: 'spki', format: 'pem' }));
+  await trustAdmin.setPolicyVersion('git-workspace-setup-v1');
+  const request = {
+    scopeId: fixture.scopeId,
+    runId,
+    workspaceId: 'approved-workspace',
+    artifact,
+    executionApproval,
+    setupApproval,
+    authorization
+  };
+  return {
+    ...fixture,
+    trustAdmin,
+    request,
+    close: async () => {
+      await trustAdmin.close();
+      await fixture.close();
+    }
+  };
+};
+
+it('inspects signed setup approval against current registered trust and durable run identity without granting authority', async () => {
+  const fixture = await createTrustedSetupFixture();
+  try {
+    const inspected = await fixture.peer.inspectCurrentWorkspaceSetupTrust(fixture.request);
+    expect(inspected).toMatchObject({ registryRevision: 2, keyId: 'trusted-setup-key' });
+    expect(inspected.decisionDigest).toHaveLength(64);
+    expect(inspected.authorizationDigest).toHaveLength(64);
+    await expect(
+      fixture.peer.inspectCurrentWorkspaceSetupTrust({
+        ...fixture.request,
+        workspaceId: 'different-workspace'
+      })
+    ).rejects.toThrow('approved workspace identity');
+    await expect(
+      fixture.peer.inspectCurrentWorkspaceSetupTrust({
+        ...fixture.request,
+        runId: fixture.originalClaim.owner.runId
+      })
+    ).rejects.toThrow('persisted run approval');
+    await expect(
+      fixture.peer.inspectCurrentWorkspaceSetupTrust({
+        ...fixture.request,
+        authorization: { ...fixture.request.authorization, signature: 'A'.repeat(86) }
+      })
+    ).rejects.toThrow();
+    expect(
+      await fixture.admin.unsafe(
+        `select count(*)::integer as count from "${fixture.schema}".forge_global_workspace_phases`
+      )
+    ).toMatchObject([{ count: 0 }]);
+    expect(
+      await fixture.admin.unsafe(
+        `select count(*)::integer as count from "${fixture.schema}".forge_global_generations`
+      )
+    ).toMatchObject([{ count: 0 }]);
+    const originalClaims = await fixture.peer.recoverRepositoryMutationAuthority(fixture.scopeId);
+    expect(originalClaims).toHaveLength(1);
+    await fixture.trustAdmin.revokeAuthorization(inspected.authorizationDigest);
+    await expect(fixture.peer.inspectCurrentWorkspaceSetupTrust(fixture.request)).rejects.toThrow(
+      'revoked'
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+it.each(['key', 'decision', 'authorization', 'policy'] as const)(
+  'serializes current setup trust inspection against %s revocation in both commit orders',
+  async (change) => {
+    const fixture = await createTrustedSetupFixture();
+    const blocker = postgres(ownerConnectionString, { onnotice: () => undefined });
+    let releaseScope: (() => void) | undefined;
+    let scopeReady: (() => void) | undefined;
+    const scopeReadySignal = new Promise<void>((resolve) => {
+      scopeReady = resolve;
+    });
+    const scopeHeld = new Promise<void>((resolve) => {
+      releaseScope = resolve;
+    });
+    const schema = fixture.schema;
+    const initial = await fixture.peer.inspectCurrentWorkspaceSetupTrust(fixture.request);
+    const heldScope = blocker.begin(async (tx) => {
+      await tx.unsafe(`lock table "${schema}".forge_global_scopes in access exclusive mode`);
+      scopeReady?.();
+      await scopeHeld;
+    });
+    const changeTrust = async () => {
+      if (change === 'key') {
+        const key = await fixture.admin.unsafe(
+          `select public_key from "${schema}".forge_global_trust_keys where key_id='trusted-setup-key'`
+        );
+        await fixture.trustAdmin.revokeKey('trusted-setup-key', String(key[0]?.public_key));
+      } else if (change === 'decision') {
+        await fixture.trustAdmin.revokeDecision(initial.decisionDigest);
+      } else if (change === 'authorization') {
+        await fixture.trustAdmin.revokeAuthorization(initial.authorizationDigest);
+      } else {
+        await fixture.trustAdmin.setPolicyVersion('disabled');
+      }
+    };
+    let read: Promise<unknown> | undefined;
+    let write: Promise<void> | undefined;
+    try {
+      await scopeReadySignal;
+      read = fixture.peer.inspectCurrentWorkspaceSetupTrust(fixture.request);
+      const waitingReader = await blockedBackend(
+        fixture.admin,
+        schema,
+        'forge-global-authority',
+        'forge_global_scopes'
+      );
+      write = changeTrust();
+      let writerBlocked = false;
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const rows = await fixture.admin`select pg_blocking_pids(pid) as blockers
+          from pg_stat_activity where application_name='forge-trust-admin'
+            and wait_event_type='Lock' and query like '%forge_trust_write%'`;
+        if (
+          rows.some(
+            (row) => Array.isArray(row.blockers) && row.blockers.includes(waitingReader.pid)
+          )
+        ) {
+          writerBlocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(writerBlocked).toBe(true);
+      releaseScope?.();
+      await heldScope;
+      expect(await read).toEqual(initial);
+      await write;
+      await expect(
+        fixture.peer.inspectCurrentWorkspaceSetupTrust(fixture.request)
+      ).rejects.toThrow();
+    } finally {
+      releaseScope?.();
+      await heldScope.catch(() => undefined);
+      await Promise.all([read?.catch(() => undefined), write?.catch(() => undefined)]);
+      await Promise.all([blocker.end(), fixture.close()]);
+    }
+  },
+  15_000
+);
+
+it.each(['key', 'decision', 'authorization', 'policy'] as const)(
+  'waits for an actual %s trust writer before inspecting current setup trust',
+  async (change) => {
+    const fixture = await createTrustedSetupFixture();
+    const blocker = postgres(ownerConnectionString, { onnotice: () => undefined });
+    const initial = await fixture.peer.inspectCurrentWorkspaceSetupTrust(fixture.request);
+    const schema = fixture.schema;
+    let releaseRegistry: (() => void) | undefined;
+    let registryReady: (() => void) | undefined;
+    const registryReadySignal = new Promise<void>((resolve) => {
+      registryReady = resolve;
+    });
+    const registryHeld = new Promise<void>((resolve) => {
+      releaseRegistry = resolve;
+    });
+    const heldRegistry = blocker.begin(async (tx) => {
+      await tx.unsafe(
+        `select id from "${schema}".forge_global_trust_registry where id=1 for update`
+      );
+      registryReady?.();
+      await registryHeld;
+    });
+    const changeTrust = async () => {
+      if (change === 'key') {
+        const key = await fixture.admin.unsafe(
+          `select public_key from "${schema}".forge_global_trust_keys where key_id='trusted-setup-key'`
+        );
+        await fixture.trustAdmin.revokeKey('trusted-setup-key', String(key[0]?.public_key));
+      } else if (change === 'decision') {
+        await fixture.trustAdmin.revokeDecision(initial.decisionDigest);
+      } else if (change === 'authorization') {
+        await fixture.trustAdmin.revokeAuthorization(initial.authorizationDigest);
+      } else {
+        await fixture.trustAdmin.setPolicyVersion('disabled');
+      }
+    };
+    let write: Promise<void> | undefined;
+    let read: Promise<unknown> | undefined;
+    try {
+      await registryReadySignal;
+      write = changeTrust();
+      const waitingWriter = await blockedBackend(
+        fixture.admin,
+        schema,
+        'forge-trust-admin',
+        'forge_global_trust_registry'
+      );
+      read = fixture.peer.inspectCurrentWorkspaceSetupTrust(fixture.request);
+      let readerBlocked = false;
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const rows = await fixture.admin`select pg_blocking_pids(pid) as blockers
+          from pg_stat_activity where application_name='forge-global-authority'
+            and wait_event_type='Lock' and query like '%pg_advisory_xact_lock_shared%'`;
+        if (
+          rows.some(
+            (row) => Array.isArray(row.blockers) && row.blockers.includes(waitingWriter.pid)
+          )
+        ) {
+          readerBlocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(readerBlocked).toBe(true);
+      releaseRegistry?.();
+      await heldRegistry;
+      await write;
+      await expect(read).rejects.toThrow();
+    } finally {
+      releaseRegistry?.();
+      await heldRegistry.catch(() => undefined);
+      await Promise.all([read?.catch(() => undefined), write?.catch(() => undefined)]);
+      await Promise.all([blocker.end(), fixture.close()]);
+    }
+  },
+  15_000
+);
 
 it('preserves owner-seeded generation rows across migration reruns without runtime write access', async () => {
   const fixture = await createGlobalPermitFixture();
@@ -1446,15 +1752,24 @@ const holdRow = async (schema: string, table: 'forge_runs' | 'forge_global_claim
 const blockedBackend = async (
   admin: ReturnType<typeof postgres>,
   schema: string,
-  application: 'forge-authority' | 'forge-global-authority' | 'forge-generation-issuer',
-  table: 'forge_runs' | 'forge_global_scopes' | 'forge_global_claims'
+  application:
+    | 'forge-authority'
+    | 'forge-global-authority'
+    | 'forge-generation-issuer'
+    | 'forge-trust-admin',
+  table:
+    | 'forge_runs'
+    | 'forge_global_scopes'
+    | 'forge_global_claims'
+    | 'forge_global_trust_registry'
 ): Promise<{ pid: number; blockers: number[] }> => {
   for (let attempt = 0; attempt < 200; attempt++) {
     const rows = await admin`select pid, pg_blocking_pids(pid) as blockers from pg_stat_activity
       where datname=current_database() and application_name=${application}
       and wait_event_type='Lock' and (
         query like ${`%"${schema}".${table}%`} or
-        (${application}='forge-generation-issuer' and query like '%forge_generation_write%'))`;
+         (${application}='forge-generation-issuer' and query like '%forge_generation_write%') or
+         (${application}='forge-trust-admin' and query like '%forge_trust_write%'))`;
     const row = rows[0];
     if (row !== undefined) {
       const blockers: unknown = row.blockers;

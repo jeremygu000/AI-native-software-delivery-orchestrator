@@ -4351,3 +4351,47 @@ Verification: `pnpm check` passes formatting, TypeScript project references,
 type-aware lint and all 816 tests in 77 files. Coverage is 92.00% statements,
 85.77% branches, 94.20% functions and 91.92% lines against the 90/85/90/90
 gates. The focused real PostgreSQL suite passes all 112 tests.
+
+## Inspecting current Git setup trust inside PostgreSQL authority
+
+Independent review accepted the restricted PostgreSQL writer-role membership
+closure in `c9d1af4`. The next prerequisite is to check a separately approved
+Git workspace decision against **current** trust, not merely against a signed
+document that was valid yesterday. A key may have been retired or revoked, an
+individual decision or signature may have been denylisted, or the deployment's
+policy may have changed before a worker requests authority. Neither a cached
+signature nor a caller-provided repository path may override those changes.
+
+The PostgreSQL global-authority adapter now offers a deliberately read-only
+`inspectCurrentWorkspaceSetupTrust` operation. Under one transaction it holds
+the trust registry's shared serialization lock, then the repository scope and
+run locks until commit. It requires the active `git-workspace-setup-v1` policy,
+an ACTIVE registered Ed25519 signing key, no exact decision or authorization
+revocation, and a valid signature over a separate Git setup approval. It also
+checks that the approved artifact and execution approval identify the same
+persisted ACTIVE run, registered repository alias, scope, task and workspace,
+including the pinned repository root. The planning package's existing signature
+verifier performs the cryptographic and approval checks; the dependency and
+TypeScript project reference are explicit workspace links.
+
+The returned revision and digests are **inspection evidence only**: this method
+creates no claim, execution generation, workspace phase, Git permit or ability
+to perform a write. A future setup grant must repeat the checks in its own
+atomic authority transaction; an inspection result cannot be redeemed later.
+Real isolated PostgreSQL tests check signature/identity mismatch and durable
+absence of setup residue. They pause a reader after it has taken the shared
+trust lock and prove that the restricted administrator cannot commit a key,
+decision, authorization or policy change first. In the reverse order, the
+actual restricted writer acquires exclusive trust serialization before its
+change commits: `pg_blocking_pids` shows the new reader waiting on that writer,
+and inspection rejects after the change commits. This is transactional groundwork, not production setup
+admission: no authenticated signing service or trusted supervisor is wired,
+SQLite has no independent trust root, and the GLOBAL_READY worker remains
+disabled. M4.2 remains OPEN; M4.3 has not started. Public number-token/BIGINT
+and diagnostic resource-ID ambiguity remain P2.
+
+Verification: `pnpm check` passes formatting, TypeScript project references,
+type-aware lint and all 825 tests in 77 files. Coverage is 91.99% statements,
+85.81% branches, 94.20% functions and 91.92% lines against the 90/85/90/90
+gates. The focused real PostgreSQL suite passes 121/121 tests, and `pnpm build`
+passes after adding the workspace dependency and TypeScript reference.

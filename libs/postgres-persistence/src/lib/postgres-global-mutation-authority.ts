@@ -2,6 +2,15 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 
 import postgres from 'postgres';
 import {
+  fingerprintPlanValue,
+  verifyWorkspaceSetupAuthorization,
+  workspaceSetupAuthorizationSchema,
+  type PlanApproval,
+  type PlanArtifact,
+  type WorkspaceSetupApproval,
+  type WorkspaceSetupAuthorization
+} from '@ai-native-software-delivery-orchestrator/planning';
+import {
   agentExecutionAttemptSchema,
   areWritableResourcesConflicting,
   canonicalTaskLeaseResources,
@@ -130,6 +139,16 @@ const attemptJson = (value: unknown): unknown =>
       : entry
   );
 const verifier = (secret: string): Buffer => createHash('sha256').update(secret).digest();
+
+/** Inspection evidence only. It is not a claim, permit, or reusable authorization. */
+export type WorkspaceSetupTrustInspection = {
+  readonly registryRevision: number;
+  readonly keyId: string;
+  readonly decisionDigest: string;
+  readonly authorizationDigest: string;
+};
+
+const workspaceSetupPolicy = 'git-workspace-setup-v1';
 
 /** Runtime-only v4 authority; deployment transitions use gate -> scope -> run,
  * while steady-state transitions read the one-way ready gate and lock scope -> run. */
@@ -322,6 +341,116 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
       next.toString()
     ]);
     return Number(next);
+  }
+
+  /**
+   * Inspect current trust and persisted run identity under trust -> scope -> run
+   * serialization. The result cannot authorize a later transaction: admission
+   * must repeat this check inside its own transaction before issuing a token.
+   */
+  async inspectCurrentWorkspaceSetupTrust(request: {
+    readonly scopeId: string;
+    readonly runId: string;
+    readonly workspaceId: string;
+    readonly artifact: PlanArtifact;
+    readonly executionApproval: PlanApproval;
+    readonly setupApproval: WorkspaceSetupApproval;
+    readonly authorization: WorkspaceSetupAuthorization;
+  }): Promise<WorkspaceSetupTrustInspection> {
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        if ((await this.#scope(tx, request.scopeId)) !== 'ACTIVE_FOR_GLOBAL_CLAIMS') {
+          throw new Error('Workspace setup scope is not active');
+        }
+        const registry = await this.#one(
+          tx,
+          `select revision,policy_version from ${this.#schema}.forge_global_trust_registry where id=1`
+        );
+        if (registry?.policy_version !== workspaceSetupPolicy) {
+          throw new Error('Workspace setup trust policy is not active');
+        }
+        const authorization = workspaceSetupAuthorizationSchema.parse(request.authorization);
+        const key = await this.#one(
+          tx,
+          `select public_key,state from ${this.#schema}.forge_global_trust_keys where key_id=$1`,
+          [authorization.keyId]
+        );
+        if (key?.state !== 'ACTIVE' || typeof key.public_key !== 'string') {
+          throw new Error('Workspace setup signing key is not currently active');
+        }
+        const decisionDigest = request.setupApproval.setupApprovalFingerprint.slice(
+          'sha256:'.length
+        );
+        const authorizationDigest = fingerprintPlanValue(authorization).slice('sha256:'.length);
+        const revoked = await tx.unsafe(
+          `select kind from ${this.#schema}.forge_global_trust_revocations
+         where (kind='DECISION' and digest=$1) or (kind='AUTHORIZATION' and digest=$2)`,
+          [decisionDigest, authorizationDigest]
+        );
+        if (revoked.length !== 0) {
+          throw new Error('Workspace setup decision or authorization is revoked');
+        }
+        const setup = verifyWorkspaceSetupAuthorization({
+          ...request,
+          authorization,
+          trustedPublicKeys: new Map([[authorization.keyId, key.public_key]])
+        });
+        const row = await this.#one(
+          tx,
+          `select r.state,r.payload,b.repository_id,b.scope_id,a.scope_id as alias_scope_id
+         from ${this.#schema}.forge_runs r
+         join ${this.#schema}.forge_global_run_bindings b on b.run_id=r.id
+         join ${this.#schema}.forge_global_aliases a on a.repository_id=b.repository_id
+         where r.id=$1`,
+          [request.runId]
+        );
+        if (
+          row?.state !== 'ACTIVE' ||
+          row.scope_id !== request.scopeId ||
+          row.alias_scope_id !== request.scopeId
+        ) {
+          throw new Error('Workspace setup run is not active and bound');
+        }
+        const persisted = fields(json(row.payload));
+        const run = fields(persisted.run);
+        const approved = fields(run.authority);
+        if (
+          run.id !== request.runId ||
+          run.repositoryId !== setup.repositoryId ||
+          row.repository_id !== setup.repositoryId ||
+          approved.artifactId !== setup.artifactId ||
+          approved.artifactRevision !== setup.artifactRevision ||
+          approved.approvalId !== setup.executionApprovalId ||
+          approved.planFingerprint !== setup.planFingerprint ||
+          approved.approvalFingerprint !== setup.executionApprovalFingerprint ||
+          approved.repositoryRoot !== setup.repositoryRoot ||
+          approved.baseCommit !== setup.baseCommit
+        ) {
+          throw new Error('Workspace setup does not match persisted run approval');
+        }
+        const binding = await this.#record(tx, request.runId, 'binding', setup.taskId);
+        if (binding === undefined) {
+          throw new Error('Workspace setup has no approved task binding');
+        }
+        const task = persistedTaskExecutionBindingSchema.parse(json(binding));
+        if (
+          task.runId !== request.runId ||
+          task.taskId !== setup.taskId ||
+          task.workspace.id !== request.workspaceId ||
+          task.workspace.integrationRepositoryPath !== setup.repositoryRoot
+        ) {
+          throw new Error('Workspace setup does not match approved workspace identity');
+        }
+        return {
+          registryRevision: safeInteger(registry.revision),
+          keyId: authorization.keyId,
+          decisionDigest,
+          authorizationDigest
+        };
+      },
+      request.runId
+    );
   }
 
   async registerScope(repositoryId: string): Promise<string> {
