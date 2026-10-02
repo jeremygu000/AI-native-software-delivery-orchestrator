@@ -23,6 +23,8 @@ import {
   taskRepairWorkItemSchema,
   writableResourceIdentity,
   writableResourceSchema,
+  type AgentExecutionAttempt,
+  type AgentSessionRef,
   type CurrentMutationTokenRequest,
   type FencedMutationExecutionPermit,
   type GlobalMutationAuthority,
@@ -1517,6 +1519,181 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
         };
       },
       runId
+    );
+  }
+
+  async #executionAttempt(
+    tx: Query,
+    request: {
+      scopeId: string;
+      parentClaimId: string;
+      claimId: string;
+      owner: GlobalMutationOwner;
+      token: number;
+    }
+  ): Promise<AgentExecutionAttempt> {
+    const phase = await this.#one(
+      tx,
+      `select phase,child_claim_id from ${this.#schema}.forge_global_workspace_phases where scope_id=$1 and parent_claim_id=$2`,
+      [request.scopeId, request.parentClaimId]
+    );
+    const claim = await this.#claim(tx, request.scopeId, request.claimId);
+    this.#assertOwner(claim, request.owner, request.token);
+    const record = await this.#record(tx, request.owner.runId, 'builder', request.owner.attemptId);
+    if (record === undefined) {
+      throw new Error('Execution child has no persisted builder attempt');
+    }
+    const attempt = agentExecutionAttemptSchema.parse(attemptJson(record));
+    if (
+      phase?.phase !== 'HANDOFF_COMMITTED' ||
+      phase.child_claim_id !== request.claimId ||
+      (claim.state !== 'ACTIVE' && claim.state !== 'HELD_UNCERTAIN') ||
+      attempt.runId !== request.owner.runId ||
+      attempt.taskId !== request.owner.taskId ||
+      attempt.agentId !== request.owner.agentId ||
+      attempt.workspaceId !== request.owner.workspaceId
+    ) {
+      throw new Error('Builder lifecycle is not bound to the execution child');
+    }
+    return attempt;
+  }
+
+  /** A session is durable before the runner is allowed to dispatch tools. */
+  async startExecutionChild(request: {
+    scopeId: string;
+    parentClaimId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+    expectedRevision: number;
+    sessionRef: AgentSessionRef;
+    previousSessionRef?: AgentSessionRef;
+  }): Promise<AgentExecutionAttempt> {
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        const attempt = await this.#executionAttempt(tx, request);
+        const lease = (await this.#leases(tx, request.scopeId, request.claimId))[0];
+        if (lease === undefined) {
+          throw new Error('Execution child has no execution resources');
+        }
+        await this.#assertCurrent(tx, { ...request, resource: lease.resource });
+        if (
+          attempt.state === 'RUNNING' &&
+          attempt.revision === request.expectedRevision + 1 &&
+          same(attempt.sessionRef, request.sessionRef)
+        ) {
+          return attempt;
+        }
+        if (
+          attempt.revision !== request.expectedRevision ||
+          (request.previousSessionRef === undefined
+            ? attempt.state !== 'STARTING'
+            : attempt.state !== 'RUNNING' || !same(attempt.sessionRef, request.previousSessionRef))
+        ) {
+          throw new Error('Execution child session start is stale or already running');
+        }
+        const running = agentExecutionAttemptSchema.parse({
+          ...attempt,
+          state: 'RUNNING',
+          revision: attempt.revision + 1,
+          sessionRef: request.sessionRef
+        });
+        await tx.unsafe(
+          `update ${this.#schema}.forge_records set payload=$3 where run_id=$1 and kind='builder' and key=$2`,
+          [request.owner.runId, request.owner.attemptId, JSON.stringify(running)]
+        );
+        return running;
+      },
+      request.owner.runId
+    );
+  }
+
+  /** Persist the terminal attempt and ownership outcome in one scope/run transaction.
+   * A runner return is not stop evidence: without independent confirmation the
+   * claim remains HELD_UNCERTAIN, including when the attempt completed successfully.
+   */
+  async finishExecutionChild(request: {
+    scopeId: string;
+    parentClaimId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+    expectedRevision: number;
+    state: 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'UNKNOWN';
+    detail: string;
+    stopEvidence?: string;
+  }): Promise<{ attempt: AgentExecutionAttempt; claimState: 'RELEASED' | 'HELD_UNCERTAIN' }> {
+    required(request.detail, 'Builder outcome evidence');
+    if (request.stopEvidence !== undefined) {
+      required(request.stopEvidence, 'Independent builder stop evidence');
+    }
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        const attempt = await this.#executionAttempt(tx, request);
+        if (
+          (attempt.state !== 'STARTING' && attempt.state !== 'RUNNING') ||
+          attempt.revision !== request.expectedRevision
+        ) {
+          throw new Error('Execution child terminal outcome is stale');
+        }
+        const claim = await this.#claim(tx, request.scopeId, request.claimId);
+        const permits = await this.#one(
+          tx,
+          `select 1 from ${this.#schema}.forge_global_permits where scope_id=$1 and claim_id=$2 limit 1`,
+          [request.scopeId, request.claimId]
+        );
+        const canRelease =
+          request.stopEvidence !== undefined &&
+          request.state !== 'UNKNOWN' &&
+          claim.state === 'ACTIVE' &&
+          permits === undefined;
+        if (canRelease) {
+          const lease = (await this.#leases(tx, request.scopeId, request.claimId))[0];
+          if (lease === undefined) {
+            throw new Error('Execution child has no execution resources');
+          }
+          // Cancellation or current-trust revocation never authorizes ordinary release.
+          // The caller can record the same outcome without stopEvidence to quarantine it.
+          await this.#assertCurrent(tx, { ...request, resource: lease.resource });
+        }
+        const terminal = agentExecutionAttemptSchema.parse({
+          ...attempt,
+          state: request.state,
+          revision: attempt.revision + 1,
+          completedAt: new Date(),
+          ...(request.state === 'COMPLETED'
+            ? {}
+            : {
+                failure: {
+                  type:
+                    request.state === 'UNKNOWN'
+                      ? 'unknown-outcome'
+                      : request.state === 'CANCELLED'
+                        ? 'cancelled'
+                        : 'execution-failed',
+                  detail: request.detail
+                }
+              })
+        });
+        const claimState = canRelease ? 'RELEASED' : 'HELD_UNCERTAIN';
+        await tx.unsafe(
+          `update ${this.#schema}.forge_records set payload=$3 where run_id=$1 and kind='builder' and key=$2`,
+          [request.owner.runId, request.owner.attemptId, JSON.stringify(terminal)]
+        );
+        await tx.unsafe(
+          `update ${this.#schema}.forge_global_claims set state=$3,version=version+1,evidence=$4 where scope_id=$1 and claim_id=$2`,
+          [
+            request.scopeId,
+            request.claimId,
+            claimState,
+            canRelease ? (request.stopEvidence ?? request.detail) : request.detail
+          ]
+        );
+        return { attempt: terminal, claimState };
+      },
+      request.owner.runId
     );
   }
 

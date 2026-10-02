@@ -27,6 +27,7 @@ import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { PostgresWorkspaceRecoveryObserver } from './postgres-workspace-recovery.js';
 import { PostgresWorkspaceHandoff } from './postgres-workspace-handoff.js';
 import { PostgresExecutionChildTools } from './postgres-execution-child.js';
+import { PostgresExecutionChildRunner } from './postgres-execution-child-runner.js';
 import {
   WorkspaceRecoveryAttestor,
   verifyWorkspaceRecoveryAttestation
@@ -97,9 +98,19 @@ afterAll(async () => {
   }
 });
 
-it.each(['completed', 'orphaned'] as const)(
-  'revokes a real PostgreSQL generation and hands off a %s Git permit only after inspection',
-  async (permitState) => {
+it.each([
+  ['completed', 'takeover'],
+  ['orphaned', 'takeover'],
+  ['completed', 'success'],
+  ['completed', 'failure'],
+  ['completed', 'cancel'],
+  ['completed', 'restart'],
+  ['completed', 'inflight'],
+  ['completed', 'concurrent'],
+  ['completed', 'unconfirmed']
+] as const)(
+  'hands off a %s Git permit and executes the %s child lifecycle',
+  async (permitState, lifecycle) => {
     const schema = `recovery_${process.pid}`;
     const integration = mkdtempSync(join(tmpdir(), 'forge-recovery-repo-'));
     const worktree = `${integration}-worktree`;
@@ -511,6 +522,124 @@ it.each(['completed', 'orphaned'] as const)(
           await admin.unsafe(
             `update "${schema}".forge_global_trust_keys set state='ACTIVE' where key_id='key'`
           );
+          if (lifecycle !== 'takeover') {
+            const childIdentity = {
+              scopeId,
+              parentClaimId: 'parent',
+              claimId: child.claimId,
+              owner: parentOwner,
+              token: child.token
+            };
+            const stopConfirmation = vi.fn(
+              async () => 'Independent test supervisor confirmed exit'
+            );
+            const toolsFactory = new PostgresExecutionChildTools({
+              authority: resumedAuthority,
+              persistence: executionStore,
+              resolveResource: () => ({ type: 'project', projectId: 'project' }),
+              resolveFileId: (path) => path
+            });
+            let launches = 0;
+            const lifecycleRunner = new PostgresExecutionChildRunner({
+              authority: resumedAuthority,
+              tools: toolsFactory,
+              ...(lifecycle === 'unconfirmed' ? {} : { confirmStopped: stopConfirmation }),
+              createRunner: (fencedTools) => {
+                launches += 1;
+                return {
+                  run: async (runRequest) => {
+                    expect(
+                      (await executionStore.recoverRun(request.run.id))?.attempts[0]?.attempt
+                    ).toMatchObject({
+                      state: 'RUNNING',
+                      revision: 3,
+                      sessionRef: { backend: 'forge-launch-reservation' }
+                    });
+                    if (lifecycle === 'concurrent') {
+                      await expect(
+                        lifecycleRunner.run(scopeId, 'parent', agentRequest)
+                      ).rejects.toThrow();
+                      expect(launches).toBe(1);
+                    }
+                    await runRequest.onStarted({
+                      sessionRef: { backend: 'pi', value: 'lifecycle-session' }
+                    });
+                    expect(
+                      (await executionStore.recoverRun(request.run.id))?.attempts[0]?.attempt
+                    ).toMatchObject({
+                      state: 'RUNNING',
+                      revision: 4,
+                      sessionRef: { backend: 'pi', value: 'lifecycle-session' }
+                    });
+                    if (lifecycle === 'failure') {
+                      throw new Error('External session lost after establishment');
+                    }
+                    if (lifecycle === 'cancel') {
+                      await executionStore.requestCancellation(request.run.id);
+                      await expect(
+                        fencedTools.write('after-cancel.txt', 'forbidden')
+                      ).rejects.toThrow();
+                      return { status: 'cancelled', detail: 'Session cancellation confirmed' };
+                    }
+                    if (lifecycle === 'inflight') {
+                      await resumedAuthority.beginFencedMutation({
+                        ...childIdentity,
+                        resource: { type: 'project', projectId: 'project' }
+                      });
+                    }
+                    await fencedTools.write('approved.txt', 'lifecycle-output');
+                    return { status: 'completed' };
+                  }
+                };
+              }
+            });
+            if (lifecycle === 'restart') {
+              const running = await resumedAuthority.startExecutionChild({
+                ...childIdentity,
+                expectedRevision: 2,
+                sessionRef: { backend: 'pi', value: 'previous-worker-session' }
+              });
+              await expect(
+                lifecycleRunner.run(scopeId, 'parent', { ...agentRequest, attempt: running })
+              ).rejects.toThrow('independent session recovery');
+              expect(stopConfirmation).not.toHaveBeenCalled();
+            } else if (lifecycle === 'failure') {
+              await expect(lifecycleRunner.run(scopeId, 'parent', agentRequest)).rejects.toThrow(
+                'External session lost'
+              );
+              expect(stopConfirmation).not.toHaveBeenCalled();
+            } else {
+              const outcome = await lifecycleRunner.run(scopeId, 'parent', agentRequest);
+              expect(outcome.claimState).toBe(
+                lifecycle === 'success' || lifecycle === 'concurrent'
+                  ? 'RELEASED'
+                  : 'HELD_UNCERTAIN'
+              );
+            }
+            const saved = await executionStore.recoverRun(request.run.id);
+            expect(saved?.attempts[0]?.attempt).toMatchObject({
+              state:
+                lifecycle === 'failure' || lifecycle === 'restart'
+                  ? 'UNKNOWN'
+                  : lifecycle === 'cancel'
+                    ? 'CANCELLED'
+                    : 'COMPLETED',
+              revision: lifecycle === 'restart' ? 4 : 5
+            });
+            const finalClaim = await admin.unsafe(
+              `select state from "${schema}".forge_global_claims where claim_id=$1`,
+              [child.claimId]
+            );
+            expect(finalClaim[0]?.state).toBe(
+              lifecycle === 'success' || lifecycle === 'concurrent' ? 'RELEASED' : 'HELD_UNCERTAIN'
+            );
+            await expect(attachTools(resumedAuthority)).rejects.toThrow();
+            expect(readFileSync(join(worktree, 'after-cancel.txt'), 'utf8')).toBe('before');
+            expect(
+              await resumedAuthority.recoverFencedMutationPermits(scopeId, child.claimId)
+            ).toHaveLength(lifecycle === 'inflight' ? 1 : 0);
+            return;
+          }
           await store.requestCancellation(request.run.id);
           await expect(resumed.write('after-cancel.txt', 'forbidden')).rejects.toThrow();
           expect(readFileSync(join(worktree, 'after-cancel.txt'), 'utf8')).toBe('before');

@@ -3749,3 +3749,15 @@ PostgreSQL 现在提供**只读的执行 child 接管接口**。它持有既有�
 worker 侧另增 `PostgresExecutionChildTools` 边界，把 agent 请求绑定到准确的持久化 child，并向 `AgentToolRuntime` 强制提供 `FencedMutationPort` 上下文；本地 write guard 会拒绝降级取得 lease。隔离的真实 PostgreSQL 加 linked-Git 测试先接管并写入获批文件，再使用独立 authority 连接恢复并写入，随后通过受控 Pi `forge_write` 工具回调验证 permit。child 只有 project 权限，因此仓库级命令被拒；撤销签名密钥、请求 run 取消或将 child 标记为不确定后，后续写入及重新接管都会在改动目标文件之前被阻止。`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 和 82 个文件中的 866 项测试全部通过（跳过 1 项可选 Docker 测试）；语句、分支、函数和代码行覆盖率为 90.71%、85.63%、93.37% 和 90.61%，高于 90/85/90/90 门槛。
 
 这只是**受控工具接管接缝**，不是已经启用的生产 builder。Pi 测试采用受控的进程内 gateway，不能证明真正的 Pi 会话无法绕过工具 broker 直接写工作区；当前隔离 Docker 镜像也无法通过网络访问 PostgreSQL permit broker。传统 builder／repair 的 attempt 转移、动态资源扩张、Git 集成、完成处理及最终安全释放仍没有完整的全局路径。因此现有生产 worker 继续拒绝 `GLOBAL_READY`；M4.2 保持 OPEN，M4.3 尚未开始，SQLite 也仍缺少独立且受保护的信任根。公开 number-token／BIGINT 边界和诊断资源 ID 歧义仍为 P2。
+
+## 通过执行 child 持久化 builder 生命周期，避免传统准入
+
+独立复审已经接受 `084a07a` 的受控工具接管边界。接下来缺少的是记录 agent 已经启动，以及它返回后应保留怎样的资源占用。调用旧持久化路径会在 cutover 后尝试准入传统写入者，因此新增 `PostgresExecutionChildRunner` 使用 child 专属的 PostgreSQL 生命周期操作。
+
+调用任何外部 runner 前，先原子地把获批的 STARTING attempt 改为 RUNNING，并写入唯一的 launch-reservation 会话标识。真正的会话回调必须凭准确的 revision 和原 reservation 替换会话标识，之后才可分发工具。重复请求不能利用旧 STARTING revision 启动第二个会话。恢复已经 RUNNING 的 attempt 时不会启动替代进程，而是记录 UNKNOWN，并将 child 保留为 HELD_UNCERTAIN，等待独立恢复确认旧会话的实际情况。
+
+终态 attempt 和 claim 占用状态在既有的 trust／scope／run 事务中一起写入。正常返回本身不能证明所有外部写入者已经停止。普通释放要求独立提供的停机确认、仍有效的 ACTIVE run 与 child 当前信任，以及不存在未完成的写入 permit。确认缺失或失败、会话结果不明、取消或仍有进行中的 permit，都会保留 HELD_UNCERTAIN 占用。这个生命周期不会创建第二个 worktree、取得本地 lease 或调用传统 builder 准入；历史 migration 和数据库权限均未修改。
+
+九项真实 PostgreSQL 加 linked-Git 集成用例覆盖工具接管、成功完成、会话失败、取消、重启、未结束 permit、缺少停机确认，以及已有 launch reservation 时的重复执行请求。它们通过独立连接核对持久化会话 revision、终态 attempt、占用状态及被禁止修改的文件。`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 和 82 个文件中的 873 项测试全部通过，跳过 1 项可选 Docker 测试；语句、分支、函数和代码行覆盖率为 90.70%、85.50%、93.40% 和 90.60%，高于既有的 90/85/90/90 门槛。编译后 CLI／worker 验收测试也成功运行了包和应用构建。
+
+这仍是使用受控测试 runner 的显式 global-only 执行接缝。停机确认器只是注入的独立服务边界，尚未部署认证过的 supervisor；真正隔离的 Pi gateway 和受控工具 broker 也仍未实现。终态提交后响应丢失的重试目前会失效关闭，而不会恢复已提交的终态结果。生产启动仍拒绝 GLOBAL_READY：repair、动态资源扩张、Git 集成和取消恢复必须具备完整全局执行路径后才能 cutover。M4.2 保持 OPEN，M4.3 尚未开始；number-token／BIGINT 和诊断资源 ID 问题仍为 P2。
