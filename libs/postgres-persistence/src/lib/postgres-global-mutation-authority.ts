@@ -34,6 +34,8 @@ import {
   type GlobalMutationOwner,
   type LegacyMutationOwner,
   type PersistedFencedMutationPermit,
+  type TaskRepairAttempt,
+  type TaskWorkspace,
   type WritableResource
 } from '@ai-native-software-delivery-orchestrator/domain';
 
@@ -1112,7 +1114,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
   }
 
   async #authorizedAttempt(
-    tx: Tx,
+    tx: Query,
     claim: GlobalMutationClaim,
     retry: boolean
   ): Promise<{
@@ -1697,6 +1699,283 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     );
   }
 
+  /** Attach to an admitted repair without minting another claim or widening scope. */
+  async recoverRepairExecution(request: {
+    scopeId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+  }): Promise<{
+    attempt: TaskRepairAttempt;
+    workspace: TaskWorkspace;
+    leases: readonly GlobalMutationLease[];
+  }> {
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        const claim = await this.#claim(tx, request.scopeId, request.claimId);
+        this.#assertOwner(claim, request.owner, request.token);
+        const leases = await this.#leases(tx, request.scopeId, request.claimId);
+        const bindingRecord = await this.#record(
+          tx,
+          request.owner.runId,
+          'binding',
+          request.owner.taskId
+        );
+        if (
+          bindingRecord === undefined ||
+          claim.state !== 'ACTIVE' ||
+          leases.length === 0 ||
+          request.owner.workspaceId === undefined
+        ) {
+          throw new Error('Repair execution has no active approved claim');
+        }
+        const binding = persistedTaskExecutionBindingSchema.parse(json(bindingRecord));
+        if (
+          !same(
+            leases.map((lease) => resourceKey(lease.resource)).toSorted(),
+            canonicalTaskLeaseResources(binding.leasePlan.predictedResources)
+              .map(resourceKey)
+              .toSorted()
+          )
+        ) {
+          throw new Error('Repair execution resources differ from the approved plan');
+        }
+        const admitted = await this.#authorizedAttempt(
+          tx,
+          { ...request, resources: leases.map((lease) => lease.resource) },
+          true
+        );
+        if (admitted.kind !== 'repair') {
+          throw new Error('Repair execution cannot attach to a builder claim');
+        }
+        const attempt = taskRepairAttemptSchema.parse(admitted.attempt);
+        const handoff = await this.#one(
+          tx,
+          `select p.phase from ${this.#schema}.forge_global_workspace_phases p join ${this.#schema}.forge_global_claims c on c.scope_id=p.scope_id and c.claim_id=p.parent_claim_id where p.scope_id=$1 and c.owner_json::jsonb->>'runId'=$2 and c.owner_json::jsonb->>'attemptId'=$3 and p.workspace_id=$4`,
+          [
+            request.scopeId,
+            attempt.runId,
+            attempt.parentReviewSubject.builderAttemptId,
+            attempt.workspaceId
+          ]
+        );
+        if (handoff?.phase !== 'HANDOFF_COMMITTED') {
+          throw new Error('Repair execution has no committed builder workspace handoff');
+        }
+        await this.#assertCurrent(tx, { ...request, resource: leases[0].resource });
+        const workspaceRecord = await this.#record(
+          tx,
+          request.owner.runId,
+          'workspace',
+          request.owner.workspaceId
+        );
+        if (workspaceRecord === undefined) {
+          throw new Error('Repair execution has no persisted workspace');
+        }
+        const workspace = taskWorkspaceSchema.parse(json(workspaceRecord));
+        if (
+          workspace.id !== attempt.workspaceId ||
+          attempt.parentReviewSubject.workspaceId !== workspace.id ||
+          attempt.parentReviewSubject.workspaceRevision !== workspace.revision ||
+          workspace.runId !== attempt.runId ||
+          workspace.taskId !== attempt.taskId ||
+          workspace.workspacePath !== binding.workspace.workspacePath ||
+          workspace.integrationRepositoryPath !== binding.workspace.integrationRepositoryPath ||
+          workspace.branchName !== binding.workspace.branchName ||
+          workspace.baseRef !== binding.workspace.baseRef ||
+          workspace.integrationRef !== binding.workspace.integrationRef ||
+          workspace.phase !== 'READY_TO_INTEGRATE'
+        ) {
+          throw new Error('Repair workspace differs from the approved task binding');
+        }
+        return { attempt, workspace, leases };
+      },
+      request.owner.runId
+    );
+  }
+
+  async #repairLifecycle(
+    tx: Query,
+    request: { scopeId: string; claimId: string; owner: GlobalMutationOwner; token: number }
+  ): Promise<TaskRepairAttempt> {
+    const claim = await this.#claim(tx, request.scopeId, request.claimId);
+    this.#assertOwner(claim, request.owner, request.token);
+    const record = await this.#record(tx, request.owner.runId, 'repair', request.owner.attemptId);
+    if (record === undefined || (claim.state !== 'ACTIVE' && claim.state !== 'HELD_UNCERTAIN')) {
+      throw new Error('Repair lifecycle has no unresolved claim');
+    }
+    const attempt = taskRepairAttemptSchema.parse(attemptJson(record));
+    const item = await this.#record(
+      tx,
+      request.owner.runId,
+      'repair-item',
+      request.owner.attemptId
+    );
+    if (item === undefined) {
+      throw new Error('Repair lifecycle has no admitted work item');
+    }
+    const work = taskRepairWorkItemSchema.parse(json(item));
+    if (
+      attempt.runId !== request.owner.runId ||
+      attempt.taskId !== request.owner.taskId ||
+      attempt.agentId !== request.owner.agentId ||
+      attempt.workspaceId !== request.owner.workspaceId ||
+      work.runId !== attempt.runId ||
+      work.taskId !== attempt.taskId ||
+      work.repairAttemptId !== attempt.id ||
+      work.workspaceId !== attempt.workspaceId ||
+      work.parentReviewIteration !== attempt.parentReviewIteration ||
+      work.builderAttemptId !== attempt.parentReviewSubject.builderAttemptId
+    ) {
+      throw new Error('Repair lifecycle owner differs from the admitted attempt');
+    }
+    return attempt;
+  }
+
+  async #persistGlobalRepair(
+    tx: Query,
+    before: TaskRepairAttempt,
+    after: TaskRepairAttempt
+  ): Promise<void> {
+    await tx.unsafe(
+      `insert into ${this.#schema}.forge_records values ($1,'repair-history',$2,$3)`,
+      [
+        before.runId,
+        `${before.id}:${String(before.revision).padStart(8, '0')}`,
+        JSON.stringify(before)
+      ]
+    );
+    await tx.unsafe(
+      `update ${this.#schema}.forge_records set payload=$3 where run_id=$1 and kind='repair' and key=$2`,
+      [after.runId, after.id, JSON.stringify(after)]
+    );
+  }
+
+  async startRepairExecution(request: {
+    scopeId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+    expectedRevision: number;
+    sessionRef: AgentSessionRef;
+    previousSessionRef?: AgentSessionRef;
+  }): Promise<TaskRepairAttempt> {
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        const attempt = await this.#repairLifecycle(tx, request);
+        const lease = (await this.#leases(tx, request.scopeId, request.claimId))[0];
+        if (lease === undefined) {
+          throw new Error('Repair execution has no resources');
+        }
+        await this.#assertCurrent(tx, { ...request, resource: lease.resource });
+        if (
+          attempt.state === 'RUNNING' &&
+          attempt.revision === request.expectedRevision + 1 &&
+          same(attempt.sessionRef, request.sessionRef)
+        ) {
+          return attempt;
+        }
+        if (
+          attempt.revision !== request.expectedRevision ||
+          (request.previousSessionRef === undefined
+            ? attempt.state !== 'STARTING'
+            : attempt.state !== 'RUNNING' || !same(attempt.sessionRef, request.previousSessionRef))
+        ) {
+          throw new Error('Repair session start is stale or already running');
+        }
+        const running = taskRepairAttemptSchema.parse({
+          ...attempt,
+          state: 'RUNNING',
+          revision: attempt.revision + 1,
+          sessionRef: request.sessionRef
+        });
+        await this.#persistGlobalRepair(tx, attempt, running);
+        return running;
+      },
+      request.owner.runId
+    );
+  }
+
+  async finishRepairExecution(request: {
+    scopeId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+    expectedRevision: number;
+    state: 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'UNKNOWN';
+    detail: string;
+    stopEvidence?: string;
+  }): Promise<{ attempt: TaskRepairAttempt; claimState: 'RELEASED' | 'HELD_UNCERTAIN' }> {
+    required(request.detail, 'Repair outcome evidence');
+    if (request.stopEvidence !== undefined) {
+      required(request.stopEvidence, 'Independent repair stop evidence');
+    }
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        const attempt = await this.#repairLifecycle(tx, request);
+        if (
+          !['STARTING', 'RUNNING'].includes(attempt.state) ||
+          attempt.revision !== request.expectedRevision
+        ) {
+          throw new Error('Repair terminal outcome is stale');
+        }
+        const claim = await this.#claim(tx, request.scopeId, request.claimId);
+        const permits = await this.#one(
+          tx,
+          `select 1 from ${this.#schema}.forge_global_permits where scope_id=$1 and claim_id=$2 limit 1`,
+          [request.scopeId, request.claimId]
+        );
+        const canRelease =
+          request.stopEvidence !== undefined &&
+          request.state !== 'UNKNOWN' &&
+          claim.state === 'ACTIVE' &&
+          permits === undefined;
+        if (canRelease) {
+          const lease = (await this.#leases(tx, request.scopeId, request.claimId))[0];
+          if (lease === undefined) {
+            throw new Error('Repair execution has no resources');
+          }
+          await this.#assertCurrent(tx, { ...request, resource: lease.resource });
+        }
+        const terminal = taskRepairAttemptSchema.parse({
+          ...attempt,
+          state: request.state,
+          revision: attempt.revision + 1,
+          completedAt: new Date(),
+          ...(request.state === 'COMPLETED'
+            ? {}
+            : {
+                failure: {
+                  type:
+                    request.state === 'UNKNOWN'
+                      ? 'unknown-outcome'
+                      : request.state === 'CANCELLED'
+                        ? 'cancelled'
+                        : 'execution-failed',
+                  detail: request.detail
+                }
+              })
+        });
+        const claimState = canRelease ? 'RELEASED' : 'HELD_UNCERTAIN';
+        await this.#persistGlobalRepair(tx, attempt, terminal);
+        await tx.unsafe(
+          `update ${this.#schema}.forge_global_claims set state=$3,version=version+1,evidence=$4 where scope_id=$1 and claim_id=$2`,
+          [
+            request.scopeId,
+            request.claimId,
+            claimState,
+            canRelease ? (request.stopEvidence ?? request.detail) : request.detail
+          ]
+        );
+        return { attempt: terminal, claimState };
+      },
+      request.owner.runId
+    );
+  }
+
   async recoverFencedMutationPermits(
     scopeId: string,
     claimId?: string
@@ -1718,12 +1997,31 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   async #assertCurrent(tx: Query, request: CurrentMutationTokenRequest): Promise<void> {
     await this.#assertOrdinaryClaim(tx, request.scopeId, request.claimId);
-    const phaseByChild = await this.#one(
+    let phaseByChild = await this.#one(
       tx,
       `select phase,signing_key,setup_plan_digest,authorization_digest,execution_generation from ${this.#schema}.forge_global_workspace_phases
        where scope_id=$1 and child_claim_id=$2`,
       [request.scopeId, request.claimId]
     );
+    const repairRecord = await this.#record(
+      tx,
+      request.owner.runId,
+      'repair',
+      request.owner.attemptId
+    );
+    if (repairRecord !== undefined) {
+      const repairAttempt = taskRepairAttemptSchema.parse(attemptJson(repairRecord));
+      phaseByChild = await this.#one(
+        tx,
+        `select p.phase,p.signing_key,p.setup_plan_digest,p.authorization_digest,p.execution_generation from ${this.#schema}.forge_global_workspace_phases p join ${this.#schema}.forge_global_claims c on c.scope_id=p.scope_id and c.claim_id=p.parent_claim_id where p.scope_id=$1 and c.owner_json::jsonb->>'runId'=$2 and c.owner_json::jsonb->>'attemptId'=$3 and p.workspace_id=$4`,
+        [
+          request.scopeId,
+          repairAttempt.runId,
+          repairAttempt.parentReviewSubject.builderAttemptId,
+          repairAttempt.workspaceId
+        ]
+      );
+    }
     if (phaseByChild !== undefined && phaseByChild.phase !== 'HANDOFF_COMMITTED') {
       throw new Error('Execution child has no committed handoff');
     }
@@ -1761,6 +2059,17 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
       }
     }
     const claim = await this.#claim(tx, request.scopeId, request.claimId);
+    const repair = await this.#record(tx, request.owner.runId, 'repair', request.owner.attemptId);
+    if (repair !== undefined) {
+      const admitted = await this.#authorizedAttempt(
+        tx,
+        { ...request, resources: [request.resource] },
+        true
+      );
+      if (admitted.kind !== 'repair' || request.owner.workspaceId === undefined) {
+        throw new Error('Repair mutation owner is not workspace-bound');
+      }
+    }
     const run = await this.#one(tx, `select state from ${this.#schema}.forge_runs where id=$1`, [
       request.owner.runId
     ]);

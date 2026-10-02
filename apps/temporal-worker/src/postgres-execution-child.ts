@@ -8,7 +8,7 @@ import type {
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { PostgresGlobalMutationAuthority } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 
-const forbiddenLocalGuard: WriteGuard = {
+export const forbiddenLocalGuard: WriteGuard = {
   acquire: async () => {
     throw new Error('A global child cannot acquire a local write lease');
   },

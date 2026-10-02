@@ -28,6 +28,7 @@ import { PostgresWorkspaceRecoveryObserver } from './postgres-workspace-recovery
 import { PostgresWorkspaceHandoff } from './postgres-workspace-handoff.js';
 import { PostgresExecutionChildTools } from './postgres-execution-child.js';
 import { PostgresExecutionChildRunner } from './postgres-execution-child-runner.js';
+import { PostgresRepairRunner } from './postgres-repair-runner.js';
 import {
   WorkspaceRecoveryAttestor,
   verifyWorkspaceRecoveryAttestation
@@ -107,6 +108,13 @@ it.each([
   ['completed', 'restart'],
   ['completed', 'inflight'],
   ['completed', 'concurrent'],
+  ['completed', 'repair-success'],
+  ['completed', 'repair-cancel'],
+  ['completed', 'repair-restart'],
+  ['completed', 'repair-failure'],
+  ['completed', 'repair-inflight'],
+  ['completed', 'repair-unconfirmed'],
+  ['completed', 'repair-trust'],
   ['completed', 'unconfirmed']
 ] as const)(
   'hands off a %s Git permit and executes the %s child lifecycle',
@@ -611,7 +619,9 @@ it.each([
             } else {
               const outcome = await lifecycleRunner.run(scopeId, 'parent', agentRequest);
               expect(outcome.claimState).toBe(
-                lifecycle === 'success' || lifecycle === 'concurrent'
+                lifecycle === 'success' ||
+                  lifecycle === 'concurrent' ||
+                  lifecycle.startsWith('repair-')
                   ? 'RELEASED'
                   : 'HELD_UNCERTAIN'
               );
@@ -631,13 +641,219 @@ it.each([
               [child.claimId]
             );
             expect(finalClaim[0]?.state).toBe(
-              lifecycle === 'success' || lifecycle === 'concurrent' ? 'RELEASED' : 'HELD_UNCERTAIN'
+              lifecycle === 'success' ||
+                lifecycle === 'concurrent' ||
+                lifecycle.startsWith('repair-')
+                ? 'RELEASED'
+                : 'HELD_UNCERTAIN'
             );
             await expect(attachTools(resumedAuthority)).rejects.toThrow();
             expect(readFileSync(join(worktree, 'after-cancel.txt'), 'utf8')).toBe('before');
             expect(
               await resumedAuthority.recoverFencedMutationPermits(scopeId, child.claimId)
             ).toHaveLength(lifecycle === 'inflight' ? 1 : 0);
+            if (lifecycle.startsWith('repair-')) {
+              const digest = `sha256:${'a'.repeat(64)}`;
+              const repair = {
+                id: 'global-repair',
+                runId: request.run.id,
+                taskId: agentRequest.taskId,
+                agentId: 'repair-agent',
+                workspaceId: workspace.id,
+                parentReviewIteration: 1,
+                repairIteration: 1,
+                state: 'PREPARING' as const,
+                revision: 1,
+                parentReviewSubject: {
+                  builderAttemptId: agentRequest.attempt.id,
+                  outputAttemptId: agentRequest.attempt.id,
+                  workspaceId: workspace.id,
+                  workspaceRevision: workspace.revision,
+                  workspaceChangeFingerprint: digest,
+                  impactFingerprint: digest,
+                  verificationFingerprint: digest
+                }
+              };
+              await executionStore.persistRepairAttempt({ runId: repair.runId, attempt: repair });
+              await executionStore.persistRepairWorkItem({
+                runId: repair.runId,
+                taskId: repair.taskId,
+                repairAttemptId: repair.id,
+                builderAttemptId: agentRequest.attempt.id,
+                workspaceId: workspace.id,
+                leasePlanFingerprint: taskLeasePlanFingerprint(request.taskBindings[0].leasePlan),
+                impactFingerprint: digest,
+                parentReviewIteration: 1,
+                reviewIteration: 2,
+                verificationPolicyFingerprint: digest,
+                codeReviewPolicyFingerprint: digest
+              });
+              const repairOwner = {
+                runId: repair.runId,
+                taskId: repair.taskId,
+                attemptId: repair.id,
+                agentId: repair.agentId,
+                workspaceId: repair.workspaceId
+              };
+              const grant = await resumedAuthority.claimGlobalMutation({
+                scopeId,
+                claimId: 'repair-claim',
+                owner: repairOwner,
+                resources: request.taskBindings[0].leasePlan.predictedResources
+              });
+              if (grant.status !== 'granted') {
+                throw new Error('Repair did not acquire global ownership');
+              }
+              const repairIdentity = {
+                scopeId,
+                claimId: 'repair-claim',
+                owner: repairOwner,
+                token: grant.token
+              };
+              const admittedRepair = await resumedAuthority.recoverRepairExecution(repairIdentity);
+              const repairRequest = {
+                ...agentRequest,
+                attempt: {
+                  ...agentRequest.attempt,
+                  id: repair.id,
+                  agentId: repair.agentId,
+                  state:
+                    admittedRepair.attempt.state === 'RUNNING'
+                      ? ('RUNNING' as const)
+                      : ('STARTING' as const),
+                  revision: admittedRepair.attempt.revision,
+                  leasePlanFingerprint: `repair:${digest}`
+                }
+              };
+              await expect(
+                resumedAuthority.recoverRepairExecution({
+                  ...repairIdentity,
+                  owner: { ...repairOwner, workspaceId: 'wrong-workspace' }
+                })
+              ).rejects.toThrow();
+              let repairLaunches = 0;
+              const repairRunner = new PostgresRepairRunner({
+                authority: resumedAuthority,
+                persistence: executionStore,
+                resolveResource: () => ({ type: 'project', projectId: 'project' }),
+                resolveFileId: (path) => path,
+                ...(lifecycle === 'repair-unconfirmed'
+                  ? {}
+                  : { confirmStopped: async () => 'Independent repair supervisor confirmed exit' }),
+                createRunner: (repairTools) => {
+                  repairLaunches += 1;
+                  return {
+                    run: async (session) => {
+                      expect(
+                        (await executionStore.recoverRepairAttempts(repair.runId))[0]?.attempt
+                      ).toMatchObject({
+                        state: 'RUNNING',
+                        revision: 3,
+                        sessionRef: { backend: 'forge-repair-launch-reservation' }
+                      });
+                      await expect(
+                        repairRunner.run(repairIdentity, repairRequest)
+                      ).rejects.toThrow();
+                      expect(repairLaunches).toBe(1);
+                      await session.onStarted({
+                        sessionRef: { backend: 'pi', value: 'repair-session' }
+                      });
+                      if (lifecycle === 'repair-failure') {
+                        throw new Error('Repair session lost');
+                      }
+                      if (lifecycle === 'repair-cancel') {
+                        await executionStore.requestCancellation(repair.runId);
+                        await expect(
+                          repairTools.write('after-cancel.txt', 'forbidden')
+                        ).rejects.toThrow();
+                        return {
+                          status: 'cancelled',
+                          detail: 'Repair session cancellation confirmed'
+                        };
+                      }
+                      if (lifecycle === 'repair-inflight') {
+                        await resumedAuthority.beginFencedMutation({
+                          ...repairIdentity,
+                          resource: { type: 'project', projectId: 'project' }
+                        });
+                      }
+                      if (lifecycle === 'repair-trust') {
+                        await admin.unsafe(
+                          `update "${schema}".forge_global_trust_keys set state='REVOKED' where key_id='key'`
+                        );
+                        await expect(
+                          repairTools.write('after-cancel.txt', 'forbidden')
+                        ).rejects.toThrow('trust is no longer current');
+                        return { status: 'completed' };
+                      }
+                      await expect(
+                        repairTools.executeRepositoryMutation(async () => undefined)
+                      ).rejects.toThrow();
+                      await repairTools.write('approved.txt', 'repair-output');
+                      return { status: 'completed' };
+                    }
+                  };
+                }
+              });
+              if (lifecycle === 'repair-restart') {
+                const runningRepair = await resumedAuthority.startRepairExecution({
+                  ...repairIdentity,
+                  expectedRevision: 2,
+                  sessionRef: { backend: 'pi', value: 'old-repair-session' }
+                });
+                await expect(
+                  repairRunner.run(repairIdentity, {
+                    ...repairRequest,
+                    attempt: {
+                      ...repairRequest.attempt,
+                      state: 'RUNNING',
+                      revision: runningRepair.revision
+                    }
+                  })
+                ).rejects.toThrow('independent session recovery');
+                expect(repairLaunches).toBe(0);
+              } else if (lifecycle === 'repair-failure') {
+                await expect(repairRunner.run(repairIdentity, repairRequest)).rejects.toThrow(
+                  'Repair session lost'
+                );
+              } else {
+                expect((await repairRunner.run(repairIdentity, repairRequest)).claimState).toBe(
+                  lifecycle === 'repair-success' ? 'RELEASED' : 'HELD_UNCERTAIN'
+                );
+              }
+              const repairedAttempts = await executionStore.recoverRepairAttempts(repair.runId);
+              expect(repairedAttempts[0]?.attempt).toMatchObject({
+                state:
+                  lifecycle === 'repair-restart' || lifecycle === 'repair-failure'
+                    ? 'UNKNOWN'
+                    : lifecycle === 'repair-cancel'
+                      ? 'CANCELLED'
+                      : 'COMPLETED',
+                revision: lifecycle === 'repair-restart' ? 4 : 5,
+                parentReviewSubject: repair.parentReviewSubject
+              });
+              const repairRows = await admin.unsafe(
+                `select kind,payload from "${schema}".forge_records where run_id=$1 and kind='repair-history' order by key`,
+                [repair.runId]
+              );
+              expect(repairRows.map((row) => JSON.parse(String(row.payload)).revision)).toEqual(
+                lifecycle === 'repair-restart' ? [1, 2, 3] : [1, 2, 3, 4]
+              );
+              expect(
+                await admin.unsafe(
+                  `select state from "${schema}".forge_global_claims where claim_id='repair-claim'`
+                )
+              ).toMatchObject([
+                { state: lifecycle === 'repair-success' ? 'RELEASED' : 'HELD_UNCERTAIN' }
+              ]);
+              expect(
+                await resumedAuthority.recoverFencedMutationPermits(scopeId, 'repair-claim')
+              ).toHaveLength(lifecycle === 'repair-inflight' ? 1 : 0);
+              await expect(
+                resumedAuthority.recoverRepairExecution(repairIdentity)
+              ).rejects.toThrow();
+              expect(readFileSync(join(worktree, 'after-cancel.txt'), 'utf8')).toBe('before');
+            }
             return;
           }
           await store.requestCancellation(request.run.id);

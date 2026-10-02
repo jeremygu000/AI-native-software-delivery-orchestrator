@@ -3761,3 +3761,13 @@ worker 侧另增 `PostgresExecutionChildTools` 边界，把 agent 请求绑定�
 九项真实 PostgreSQL 加 linked-Git 集成用例覆盖工具接管、成功完成、会话失败、取消、重启、未结束 permit、缺少停机确认，以及已有 launch reservation 时的重复执行请求。它们通过独立连接核对持久化会话 revision、终态 attempt、占用状态及被禁止修改的文件。`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 和 82 个文件中的 873 项测试全部通过，跳过 1 项可选 Docker 测试；语句、分支、函数和代码行覆盖率为 90.70%、85.50%、93.40% 和 90.60%，高于既有的 90/85/90/90 门槛。编译后 CLI／worker 验收测试也成功运行了包和应用构建。
 
 这仍是使用受控测试 runner 的显式 global-only 执行接缝。停机确认器只是注入的独立服务边界，尚未部署认证过的 supervisor；真正隔离的 Pi gateway 和受控工具 broker 也仍未实现。终态提交后响应丢失的重试目前会失效关闭，而不会恢复已提交的终态结果。生产启动仍拒绝 GLOBAL_READY：repair、动态资源扩张、Git 集成和取消恢复必须具备完整全局执行路径后才能 cutover。M4.2 保持 OPEN，M4.3 尚未开始；number-token／BIGINT 和诊断资源 ID 问题仍为 P2。
+
+## 通过全局占用执行已经准入的 repair
+
+独立复审已接受 `ef0d656` 并冻结 builder 生命周期。下一段新增 `PostgresRepairRunner`，消费已经准入的 repair claim 及不可变 work item，不调用传统 repair coordinator。PostgreSQL 在接管前核对 repair agent、workspace、父 review lineage、批准的执行资源及已提交的 builder workspace handoff。工具强制使用全局 permit，仓库命令不会继承 setup parent 权限；repair 写入及释放决策同时检查当前 setup 信任和 ACTIVE run。
+
+runner 在调用 agent 前持久化唯一的 RUNNING launch reservation，然后用 revision／session CAS 替换为真实会话。恢复已经 RUNNING 的 repair 时记录 UNKNOWN 并保留 HELD_UNCERTAIN 占用，不启动替代会话。每次会话及终态转移都在同一事务中保存旧 repair revision 的 history；终态 attempt 与 claim 占用同时提交。只有独立停机确认且没有未结束 permit 时，成功结果才可释放；取消、信任撤销、会话失败、缺少确认或进行中的 permit 均保留占用。不会创建新 worktree、降级为本地 lease 或调用传统 repair 准入。
+
+新增七项真实 PostgreSQL／linked-Git 场景，覆盖 repair 成功、取消、重启、会话失败、未结束 permit、缺少停机确认及信任撤销，并断言重复启动被拒、review lineage 和 history 不被改写。全量 `pnpm check` 通过 82 个文件中的 880 项测试，跳过一项可选 Docker 测试；格式、TypeScript 引用、lint 和覆盖率门槛全部通过。语句、分支、函数和代码行覆盖率为 90.64%、85.39%、93.40% 和 90.54%；编译后 CLI／worker 验收也成功执行包和应用构建。
+
+这只是受控 repair 执行生命周期，还不是完整的 review／verification 产品闭环或已部署的隔离 Pi gateway。验证命令、integration Git 操作、动态扩张和认证停机主管仍需要全局生产接线。生产 GLOBAL_READY 保持禁用；M4.2 保持 OPEN，M4.3 尚未开始。历史 migration 和权限未改；number-token／BIGINT 与诊断资源 ID 歧义仍为 P2。
