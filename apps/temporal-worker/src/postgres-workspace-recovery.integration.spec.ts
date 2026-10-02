@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,7 +19,18 @@ import {
   taskLeasePlanFingerprint,
   taskVerificationEvidenceFingerprint
 } from '@ai-native-software-delivery-orchestrator/domain';
-import { fingerprintPlanValue } from '@ai-native-software-delivery-orchestrator/planning';
+import {
+  fingerprintPlanValue,
+  createCodeReviewPolicy,
+  codeReviewPolicyFingerprint
+} from '@ai-native-software-delivery-orchestrator/planning';
+import {
+  createForgeRuntimeComposition,
+  verificationPolicyFingerprint
+} from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
+import { ForgeRunProgressionService } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
+import { createPostgresGlobalWorkerComposition } from './postgres-global-worker-composition.js';
+import { createForgeWorkerComposition } from './forge-worker-composition.js';
 import {
   migratePostgresAuthoritySchema,
   PostgresExecutionGenerationIssuer,
@@ -38,6 +52,7 @@ import { PostgresExecutionChildTools } from './postgres-execution-child.js';
 import { PostgresExecutionChildRunner } from './postgres-execution-child-runner.js';
 import { createPostgresDockerChildRunner } from './postgres-docker-child-runner.js';
 import { PostgresRepairRunner } from './postgres-repair-runner.js';
+import { createPostgresDockerRepairRunner } from './postgres-docker-repair-runner.js';
 import { PostgresIntegrationRunner } from './postgres-integration-runner.js';
 import {
   WorkspaceRecoveryAttestor,
@@ -109,7 +124,7 @@ afterAll(async () => {
   }
 });
 
-it.each([
+it.for([
   ['completed', 'takeover'],
   ['orphaned', 'takeover'],
   ['completed', 'success'],
@@ -125,6 +140,7 @@ it.each([
   ['completed', 'repair-inflight'],
   ['completed', 'repair-unconfirmed'],
   ['completed', 'repair-trust'],
+  ['completed', 'repair-dynamic'],
   ['completed', 'integration-success'],
   ['completed', 'integration-denied'],
   ['completed', 'integration-failure'],
@@ -135,10 +151,23 @@ it.each([
   ['completed', 'integration-inflight'],
   ['completed', 'integration-trust'],
   ['completed', 'integration-blocked'],
-  ['completed', 'unconfirmed']
+  ['completed', 'unconfirmed'],
+  ['completed', 'global-production'],
+  ['completed', 'global-factory'],
+  ['completed', 'global-cancel'],
+  ['completed', 'global-restart'],
+  ['completed', 'global-repair']
 ] as const)(
   'hands off a %s Git permit and executes the %s child lifecycle',
-  async (permitState, lifecycle) => {
+  { timeout: 60_000 },
+  async ([permitState, lifecycle], testContext) => {
+    if (
+      lifecycle.startsWith('global-') &&
+      (process.env.FORGE_TEST_PI_SDK_IMAGE === undefined ||
+        process.env.FORGE_TEST_GIT_IMAGE === undefined)
+    ) {
+      testContext.skip();
+    }
     const schema = `recovery_${process.pid}`;
     const integration = mkdtempSync(join(tmpdir(), 'forge-recovery-repo-'));
     const worktree = `${integration}-worktree`;
@@ -148,6 +177,8 @@ it.each([
     let issuer: PostgresExecutionGenerationIssuer | undefined;
     let store: PostgresOrchestrationPersistence | undefined;
     let containerId: string | undefined;
+    let productionComposition: Awaited<ReturnType<typeof createForgeWorkerComposition>> | undefined;
+    let modelServer: ReturnType<typeof createHttpServer> | undefined;
     try {
       git('init', '--initial-branch=main');
       git('config', 'user.name', 'Recovery Test');
@@ -155,6 +186,18 @@ it.each([
       writeFileSync(join(integration, 'approved.txt'), 'before');
       writeFileSync(join(integration, 'resumed.txt'), 'before');
       writeFileSync(join(integration, 'after-cancel.txt'), 'before');
+      if (lifecycle === 'global-factory') {
+        writeFileSync(
+          join(integration, 'package.json'),
+          JSON.stringify({ name: 'production-fixture', private: true })
+        );
+        writeFileSync(join(integration, 'pnpm-workspace.yaml'), 'packages:\n  - .\n');
+        writeFileSync(
+          join(integration, 'tsconfig.json'),
+          JSON.stringify({ compilerOptions: { module: 'nodenext', moduleResolution: 'nodenext' } })
+        );
+        git('add', 'package.json', 'pnpm-workspace.yaml', 'tsconfig.json');
+      }
       git('add', 'approved.txt', 'resumed.txt', 'after-cancel.txt');
       git('commit', '-m', 'base');
       const base = git('rev-parse', 'HEAD');
@@ -197,8 +240,18 @@ it.each([
             workingTreeFingerprint: `sha256:${'5'.repeat(64)}`,
             repositoryFactsFingerprint: `sha256:${'6'.repeat(64)}`,
             sharedResourcePolicyFingerprint: `sha256:${'7'.repeat(64)}`,
-            verificationPolicyFingerprint: `sha256:${'8'.repeat(64)}`,
-            codeReviewPolicyFingerprint: `sha256:${'9'.repeat(64)}`
+            verificationPolicyFingerprint: lifecycle.startsWith('global-')
+              ? verificationPolicyFingerprint
+              : `sha256:${'8'.repeat(64)}`,
+            codeReviewPolicyFingerprint: lifecycle.startsWith('global-')
+              ? codeReviewPolicyFingerprint(
+                  createCodeReviewPolicy(
+                    lifecycle === 'global-factory'
+                      ? { provider: 'openai', model: 'approved' }
+                      : { provider: 'test', model: 'test' }
+                  )
+                )
+              : `sha256:${'9'.repeat(64)}`
           }
         },
         tasks: [
@@ -221,9 +274,15 @@ it.each([
             leasePlan: {
               taskId: 'task',
               predictedResources:
-                lifecycle.startsWith('integration-') && lifecycle !== 'integration-denied'
+                (lifecycle.startsWith('integration-') && lifecycle !== 'integration-denied') ||
+                lifecycle.startsWith('global-')
                   ? [{ type: 'repository' }]
-                  : [{ type: 'project', projectId: 'project' }],
+                  : lifecycle === 'repair-dynamic'
+                    ? [
+                        { type: 'file', projectId: 'project', fileId: 'project:approved.txt' },
+                        { type: 'file', projectId: 'project', fileId: 'project:resumed.txt' }
+                      ]
+                    : [{ type: 'project', projectId: 'project' }],
               source: 'manual'
             },
             workspace: {
@@ -253,19 +312,26 @@ it.each([
       }
       await authority.completeLegacyCutover('Previous writers stopped');
       await authority.activateScope(scopeId);
-      await store.persistAttempt({
-        runId: request.run.id,
-        attempt: {
-          id: 'attempt',
+      if (lifecycle.startsWith('global-')) {
+        await new ForgeRunProgressionService({
+          persistence: store,
+          createAttemptId: () => 'attempt'
+        }).ensureInitialRunStarted(request.run.id);
+      } else {
+        await store.persistAttempt({
           runId: request.run.id,
-          taskId: 'task',
-          agentId: 'agent',
-          workspaceId: 'workspace',
-          leasePlanFingerprint: taskLeasePlanFingerprint(request.taskBindings[0].leasePlan),
-          state: 'PREPARING',
-          revision: 1
-        }
-      });
+          attempt: {
+            id: 'attempt',
+            runId: request.run.id,
+            taskId: 'task',
+            agentId: 'agent',
+            workspaceId: 'workspace',
+            leasePlanFingerprint: taskLeasePlanFingerprint(request.taskBindings[0].leasePlan),
+            state: 'PREPARING',
+            revision: 1
+          }
+        });
+      }
       const workspace = await new GitWorkspaceManager().create(request.taskBindings[0].workspace);
       await store.persistWorkspace({ runId: request.run.id, workspace });
       // Test-only owner seeds the already-finished setup phase; the observer never
@@ -276,6 +342,9 @@ it.each([
           request.run.id,
           'attempt',
           JSON.stringify({
+            ...(lifecycle.startsWith('global-')
+              ? (await store.recoverRun(request.run.id))?.attempts[0]?.attempt
+              : {}),
             id: 'attempt',
             runId: request.run.id,
             taskId: 'task',
@@ -507,11 +576,335 @@ it.each([
         if (executionStore === undefined) {
           throw new Error('Missing PostgreSQL execution persistence');
         }
+        if (lifecycle.startsWith('global-')) {
+          const image = process.env.FORGE_TEST_PI_SDK_IMAGE;
+          const gitImage = process.env.FORGE_TEST_GIT_IMAGE;
+          if (image === undefined || gitImage === undefined) {
+            throw new Error('Global production acceptance requires pinned SDK and Git images');
+          }
+          const graph = {
+            repositoryPath: integration,
+            projects: new Map(),
+            projectDependencies: [],
+            files: new Map(
+              ['approved.txt', 'resumed.txt', 'after-cancel.txt'].map((path) => [
+                path,
+                {
+                  id: path,
+                  projectId: 'project',
+                  path,
+                  isGenerated: false
+                }
+              ])
+            ),
+            symbols: new Map(),
+            fileDependencies: [],
+            symbolReferences: [],
+            diagnostics: []
+          };
+          await executionStore.persistImpact({
+            runId: request.run.id,
+            taskId: 'task',
+            impact: {
+              predicted: {
+                taskId: 'task',
+                projectsRead: new Set(),
+                projectsWritten: new Set(['project']),
+                explicitProjectsWritten: new Set(['project']),
+                filesRead: new Set(),
+                filesWritten: new Set(),
+                explicitFilesWritten: new Set(),
+                globFilesWritten: new Set(),
+                symbolDerivedFilesWritten: new Set(),
+                symbolsRead: new Set(),
+                symbolsWritten: new Set(),
+                sharedResources: new Set(),
+                sharedResourceAccesses: [],
+                downstreamProjects: new Set(),
+                riskSignals: []
+              }
+            }
+          });
+          const baseComposition = await createForgeRuntimeComposition(
+            {
+              persistence: executionStore,
+              repositoryGraph: graph,
+              codeReviewPolicy: createCodeReviewPolicy({ provider: 'test', model: 'test' }),
+              reviewer: {
+                review: async () => ({
+                  recommendation: 'accept',
+                  summary: 'Approved exact output',
+                  findings: []
+                })
+              }
+            },
+            { repositoryPath: integration }
+          );
+          let reviewCount = 0;
+          let global = createPostgresGlobalWorkerComposition({
+            authority,
+            persistence: executionStore,
+            base: baseComposition,
+            graph,
+            codeReviewPolicyFingerprint: request.run.authority.codeReviewPolicyFingerprint,
+            image,
+            gitImage,
+            verifier: { verify: async () => ({ status: 'passed' }) },
+            reviewer: {
+              review: async () => {
+                const needsRepair = lifecycle === 'global-repair' && reviewCount++ === 0;
+                return {
+                  recommendation: needsRepair ? 'repair' : 'accept',
+                  summary: 'Approved exact output',
+                  findings: needsRepair
+                    ? [
+                        {
+                          id: 'repair-output',
+                          severity: 'medium',
+                          fileIds: ['approved.txt'],
+                          symbolIds: [],
+                          description: 'Repair the approved output'
+                        }
+                      ]
+                    : []
+                };
+              }
+            },
+            modelProxy: new ApprovedPiHostModelProxy({
+              model: {
+                api: 'openai-completions',
+                provider: 'openai',
+                id: 'approved',
+                name: 'Approved',
+                baseUrl: 'http://host-only.invalid',
+                reasoning: false,
+                input: ['text'],
+                contextWindow: 32768,
+                maxTokens: 1024,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+              },
+              apiKey: 'host-only',
+              complete: async (model, context) => {
+                if (lifecycle === 'global-cancel') {
+                  await executionStore.requestCancellation(request.run.id);
+                }
+                return {
+                  role: 'assistant',
+                  api: model.api,
+                  provider: model.provider,
+                  model: model.id,
+                  content: context.messages.some((message) => message.role === 'toolResult')
+                    ? [{ type: 'text', text: 'done' }]
+                    : [
+                        {
+                          type: 'toolCall',
+                          id: 'write',
+                          name: 'forge_write',
+                          arguments: { path: 'approved.txt', content: 'global-production' }
+                        }
+                      ],
+                  stopReason: context.messages.some((message) => message.role === 'toolResult')
+                    ? 'stop'
+                    : 'toolUse',
+                  timestamp: Date.now(),
+                  usage: {
+                    input: 1,
+                    output: 1,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                    totalTokens: 2,
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+                  }
+                };
+              }
+            })
+          });
+          if (lifecycle === 'global-factory') {
+            modelServer = createHttpServer((incoming, response) => {
+              expect(incoming.headers.authorization).toBe('Bearer production-host-key');
+              let body = '';
+              incoming.setEncoding('utf8');
+              incoming.on('data', (chunk: string) => {
+                body += chunk;
+              });
+              incoming.on('end', () => {
+                const payload: unknown = JSON.parse(body);
+                if (
+                  typeof payload !== 'object' ||
+                  payload === null ||
+                  !('messages' in payload) ||
+                  !Array.isArray(payload.messages)
+                ) {
+                  throw new Error('Missing production model conversation');
+                }
+                const review = body.includes('Return only a JSON code review');
+                const toolReturned = payload.messages.some(
+                  (message: unknown) =>
+                    typeof message === 'object' &&
+                    message !== null &&
+                    'role' in message &&
+                    message.role === 'tool'
+                );
+                const delta = review
+                  ? {
+                      content: JSON.stringify({
+                        recommendation: 'accept',
+                        summary: 'Reviewed production output',
+                        findings: []
+                      })
+                    }
+                  : toolReturned
+                    ? { content: 'done' }
+                    : {
+                        tool_calls: [
+                          {
+                            index: 0,
+                            id: 'production-write',
+                            type: 'function',
+                            function: {
+                              name: 'forge_write',
+                              arguments: JSON.stringify({
+                                path: 'approved.txt',
+                                content: 'global-production'
+                              })
+                            }
+                          }
+                        ]
+                      };
+                response.writeHead(200, { 'content-type': 'text/event-stream' });
+                response.write(
+                  `data: ${JSON.stringify({ id: 'production-model', object: 'chat.completion.chunk', model: 'approved', choices: [{ index: 0, delta: { role: 'assistant', ...delta }, finish_reason: null }] })}\n\n`
+                );
+                response.write(
+                  `data: ${JSON.stringify({ id: 'production-model', object: 'chat.completion.chunk', model: 'approved', choices: [{ index: 0, delta: {}, finish_reason: review || toolReturned ? 'stop' : 'tool_calls' }] })}\n\n`
+                );
+                response.end('data: [DONE]\n\n');
+              });
+            });
+            modelServer.listen(0, '127.0.0.1');
+            await once(modelServer, 'listening');
+            const address = modelServer.address();
+            if (address === null || typeof address === 'string') {
+              throw new Error('Missing production model port');
+            }
+            productionComposition = await createForgeWorkerComposition({
+              authority: { backend: 'postgres', ...config },
+              repositoryPath: integration,
+              codeReviewPolicy: createCodeReviewPolicy({ provider: 'openai', model: 'approved' }),
+              reviewModel: {
+                api: 'openai-completions',
+                provider: 'openai',
+                id: 'approved',
+                name: 'Approved',
+                baseUrl: `http://127.0.0.1:${address.port}/v1`,
+                reasoning: false,
+                input: ['text'],
+                contextWindow: 32768,
+                maxTokens: 1024,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+              },
+              globalExecution: { image, gitImage, apiKey: 'production-host-key' }
+            });
+            global = productionComposition;
+          }
+          const builderInput = {
+            runId: request.run.id,
+            taskId: 'task',
+            attemptId: 'attempt'
+          };
+          if (lifecycle === 'global-restart') {
+            const current = await authority.recoverExecutionChild(scopeId, 'parent');
+            await authority.startExecutionChild({
+              scopeId,
+              parentClaimId: 'parent',
+              claimId: current.claimId,
+              owner: current.owner,
+              token: current.token,
+              expectedRevision: current.attemptRevision,
+              sessionRef: { backend: 'forge-launch-reservation', value: randomUUID() }
+            });
+            await expect(global.forgeActivities.executeBuilder(builderInput)).rejects.toThrow(
+              'independent session recovery'
+            );
+            expect(await authority.hasUnresolvedRunAuthority(request.run.id)).toBe(true);
+            expect(
+              (await executionStore.recoverRun(request.run.id))?.attempts[0].attempt.state
+            ).toBe('UNKNOWN');
+            return;
+          }
+          if (lifecycle === 'global-cancel') {
+            await expect(global.forgeActivities.executeBuilder(builderInput)).rejects.toThrow();
+            expect(await authority.hasUnresolvedRunAuthority(request.run.id)).toBe(true);
+            expect(await readFile(join(worktree, 'approved.txt'), 'utf8')).toBe('before');
+            expect(
+              await global.forgeActivities.finalizeRunCancellation?.({ runId: request.run.id })
+            ).toEqual({ runId: request.run.id, status: 'pending' });
+            return;
+          }
+          const built = await global.forgeActivities.executeBuilder(builderInput);
+          expect(built.status).toBe('completed');
+          expect(await authority.hasUnresolvedRunAuthority(request.run.id)).toBe(false);
+          let reviewed = await global.forgeActivities.evaluateBuilderOutput({
+            runId: request.run.id,
+            taskId: 'task',
+            workspaceId: 'workspace',
+            builderAttemptId: 'attempt',
+            impactId: 'attempt'
+          });
+          if (lifecycle === 'global-repair') {
+            expect(reviewed.recommendation).toBe('repair');
+            const admitted = await global.forgeActivities.admitRepair({
+              runId: request.run.id,
+              taskId: 'task',
+              reviewId: reviewed.reviewId,
+              subjectRef: reviewed.subjectRef
+            });
+            const repaired = await global.forgeActivities.executeRepair({
+              ...reviewed,
+              workspaceId: 'workspace',
+              builderAttemptId: 'attempt',
+              impactId: 'attempt',
+              repairAttemptId: admitted.repairAttemptId
+            });
+            if (
+              repaired.state !== 'completed' ||
+              repaired.recommendation === undefined ||
+              repaired.subjectRef === undefined ||
+              repaired.reviewId === undefined ||
+              repaired.verificationId === undefined
+            ) {
+              throw new Error('Global repair did not complete');
+            }
+            reviewed = {
+              runId: request.run.id,
+              taskId: 'task',
+              recommendation: repaired.recommendation,
+              subjectRef: repaired.subjectRef,
+              reviewId: repaired.reviewId,
+              verificationId: repaired.verificationId
+            };
+          }
+          expect(reviewed.recommendation).toBe('accept');
+          expect(
+            await global.forgeActivities.integrateAcceptedOutput({
+              runId: request.run.id,
+              taskId: 'task',
+              workspaceId: 'workspace',
+              subjectRef: reviewed.subjectRef
+            })
+          ).toMatchObject({ status: 'integrated' });
+          expect(git('show', 'main:approved.txt')).toBe('global-production');
+          expect(await authority.hasUnresolvedRunAuthority(request.run.id)).toBe(false);
+          return;
+        }
         const attachTools = (connection: PostgresGlobalMutationAuthority) =>
           new PostgresExecutionChildTools({
             authority: connection,
             persistence: executionStore,
-            resolveResource: () => ({ type: 'project' as const, projectId: 'project' }),
+            resolveResource: (path) =>
+              lifecycle === 'repair-dynamic'
+                ? { type: 'file' as const, fileId: `project:${path}`, projectId: 'project' }
+                : { type: 'project' as const, projectId: 'project' },
             resolveFileId: (path) => path
           }).attach(scopeId, 'parent', agentRequest);
         const tools = await attachTools(authority);
@@ -651,7 +1044,10 @@ it.each([
             const toolsFactory = new PostgresExecutionChildTools({
               authority: resumedAuthority,
               persistence: executionStore,
-              resolveResource: () => ({ type: 'project', projectId: 'project' }),
+              resolveResource: (path) =>
+                lifecycle === 'repair-dynamic'
+                  ? { type: 'file', projectId: 'project', fileId: `project:${path}` }
+                  : { type: 'project', projectId: 'project' },
               resolveFileId: (path) => path
             });
             let launches = 0;
@@ -764,11 +1160,17 @@ it.each([
                 });
                 expect(await dockerRunner.run(scopeId, 'parent', agentRequest)).toMatchObject({
                   result: { status: 'completed' },
-                  claimState: 'HELD_UNCERTAIN'
+                  claimState:
+                    process.env.FORGE_TEST_PI_SDK_IMAGE === undefined
+                      ? 'HELD_UNCERTAIN'
+                      : 'RELEASED'
                 });
                 if (process.env.FORGE_TEST_PI_SDK_IMAGE !== undefined) {
-                  const descriptor =
-                    await resumedAuthority.recoverExecutionChildContainer(childIdentity);
+                  const rows = await admin.unsafe(
+                    `select payload from "${schema}".forge_records where run_id=$1 and kind='pi-container' and key=$2`,
+                    [request.run.id, agentRequest.attempt.id]
+                  );
+                  const descriptor = JSON.parse(String(rows[0]?.payload)).container;
                   expect(descriptor).toMatchObject({ image: process.env.FORGE_TEST_PI_SDK_IMAGE });
                   expect(descriptor?.id).toMatch(/^[a-f0-9]{64}$/);
                 } else {
@@ -1300,7 +1702,10 @@ it.each([
                 scopeId,
                 claimId: 'repair-claim',
                 owner: repairOwner,
-                resources: request.taskBindings[0].leasePlan.predictedResources
+                resources:
+                  lifecycle === 'repair-dynamic'
+                    ? [{ type: 'file', fileId: 'project:approved.txt', projectId: 'project' }]
+                    : request.taskBindings[0].leasePlan.predictedResources
               });
               if (grant.status !== 'granted') {
                 throw new Error('Repair did not acquire global ownership');
@@ -1311,6 +1716,107 @@ it.each([
                 owner: repairOwner,
                 token: grant.token
               };
+              if (lifecycle === 'repair-dynamic') {
+                const beforeDenied = await admin.unsafe(
+                  `select next_token from "${schema}".forge_global_scopes where id=$1`,
+                  [scopeId]
+                );
+                await expect(
+                  resumedAuthority.claimExecutionResource({
+                    ...repairIdentity,
+                    resource: {
+                      type: 'file',
+                      fileId: 'project:after-cancel.txt',
+                      projectId: 'project'
+                    }
+                  })
+                ).rejects.toThrow();
+                expect(
+                  await admin.unsafe(
+                    `select next_token from "${schema}".forge_global_scopes where id=$1`,
+                    [scopeId]
+                  )
+                ).toEqual(beforeDenied);
+                expect(
+                  await admin.unsafe(
+                    `select 1 from "${schema}".forge_records where run_id=$1 and kind='global-expansion'`,
+                    [request.run.id]
+                  )
+                ).toHaveLength(0);
+                const newResource = {
+                  type: 'file' as const,
+                  fileId: 'project:resumed.txt',
+                  projectId: 'project'
+                };
+                const expanded = await resumedAuthority.claimExecutionResource({
+                  ...repairIdentity,
+                  resource: newResource
+                });
+                if (expanded.status !== 'granted') {
+                  throw new Error('Approved disjoint expansion was blocked');
+                }
+                expect(expanded.token).toBeGreaterThan(grant.token);
+                expect(expanded.leases).toHaveLength(1);
+                expect(expanded.leases[0].resource).toEqual(newResource);
+                expect(
+                  await authority.claimExecutionResource({
+                    ...repairIdentity,
+                    resource: newResource
+                  })
+                ).toEqual(expanded);
+                await authority.assertCurrentMutationToken({
+                  ...repairIdentity,
+                  resource: grant.leases[0].resource
+                });
+                const expansionIdentity = {
+                  ...repairIdentity,
+                  claimId: expanded.leases[0].claimId,
+                  token: expanded.token
+                };
+                const permit = await authority.beginFencedMutation({
+                  ...expansionIdentity,
+                  resource: newResource
+                });
+                const running = await authority.startRepairExecution({
+                  ...repairIdentity,
+                  expectedRevision: 2,
+                  sessionRef: { backend: 'pi', value: 'dynamic-session' }
+                });
+                await expect(
+                  authority.finishRepairExecution({
+                    ...repairIdentity,
+                    expectedRevision: running.revision,
+                    state: 'COMPLETED',
+                    detail: 'Pending callback must block release',
+                    stopEvidence: 'Independent test callback drain and stop'
+                  })
+                ).rejects.toThrow();
+                expect(
+                  await authority.recoverFencedMutationPermits(scopeId, expansionIdentity.claimId)
+                ).toHaveLength(1);
+                expect(
+                  (await executionStore.recoverRepairAttempts(request.run.id))[0]?.attempt.state
+                ).toBe('RUNNING');
+                await authority.endFencedMutation(permit);
+                const result = await authority.finishRepairExecution({
+                  ...repairIdentity,
+                  expectedRevision: running.revision,
+                  state: 'COMPLETED',
+                  detail: 'Approved writes completed',
+                  stopEvidence: 'Independent test callback drain and stop'
+                });
+                expect(result.claimState).toBe('RELEASED');
+                expect(
+                  await admin.unsafe(
+                    `select state from "${schema}".forge_global_claims where claim_id in ($1,$2)`,
+                    [repairIdentity.claimId, expansionIdentity.claimId]
+                  )
+                ).toEqual([{ state: 'RELEASED' }, { state: 'RELEASED' }]);
+                await expect(
+                  authority.beginFencedMutation({ ...expansionIdentity, resource: newResource })
+                ).rejects.toThrow();
+                return;
+              }
               const admittedRepair = await resumedAuthority.recoverRepairExecution(repairIdentity);
               if (lifecycle === 'repair-success') {
                 const snapshot = async () => ({
@@ -1412,11 +1918,22 @@ it.each([
                 })
               ).rejects.toThrow();
               let repairLaunches = 0;
+              const stoppedRepair = vi.fn(async () => {
+                expect(
+                  await admin.unsafe(
+                    `select state from "${schema}".forge_global_claims where claim_id='repair-claim'`
+                  )
+                ).toMatchObject([{ state: 'HELD_UNCERTAIN' }]);
+                expect(
+                  (await executionStore.recoverRepairAttempts(repair.runId))[0]?.attempt.state
+                ).toBe('UNKNOWN');
+              });
               const repairRunner = new PostgresRepairRunner({
                 authority: resumedAuthority,
                 persistence: executionStore,
                 resolveResource: () => ({ type: 'project', projectId: 'project' }),
                 resolveFileId: (path) => path,
+                stopRecoveredContainer: stoppedRepair,
                 ...(lifecycle === 'repair-unconfirmed'
                   ? {}
                   : { confirmStopped: async () => 'Independent repair supervisor confirmed exit' }),
@@ -1476,10 +1993,55 @@ it.each([
                 }
               });
               if (lifecycle === 'repair-restart') {
+                const reservation = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
                 const runningRepair = await resumedAuthority.startRepairExecution({
                   ...repairIdentity,
                   expectedRevision: 2,
-                  sessionRef: { backend: 'pi', value: 'old-repair-session' }
+                  sessionRef: { backend: 'forge-repair-launch-reservation', value: reservation }
+                });
+                const container = {
+                  id: 'b'.repeat(64),
+                  name: `forge-pi-${reservation}`,
+                  image: `test@sha256:${'a'.repeat(64)}`,
+                  executable: '/entrypoint',
+                  args: []
+                };
+                await expect(
+                  resumedAuthority.persistRepairExecutionContainer({
+                    ...repairIdentity,
+                    launchReservation: 'wrong',
+                    container
+                  })
+                ).rejects.toThrow('launch reservation');
+                await resumedAuthority.persistRepairExecutionContainer({
+                  ...repairIdentity,
+                  launchReservation: reservation,
+                  container
+                });
+                await resumedAuthority.persistRepairExecutionContainer({
+                  ...repairIdentity,
+                  launchReservation: reservation,
+                  container
+                });
+                await expect(
+                  resumedAuthority.persistRepairExecutionContainer({
+                    ...repairIdentity,
+                    launchReservation: reservation,
+                    container: { ...container, id: 'c'.repeat(64) }
+                  })
+                ).rejects.toThrow('cannot be replaced');
+                await expect(
+                  authority.recoverRepairExecutionContainer({
+                    ...repairIdentity,
+                    owner: { ...repairIdentity.owner, workspaceId: 'wrong' }
+                  })
+                ).rejects.toThrow();
+                expect(await authority.recoverRepairExecutionContainer(repairIdentity)).toEqual(
+                  container
+                );
+                const retainedPermit = await resumedAuthority.beginFencedMutation({
+                  ...repairIdentity,
+                  resource: { type: 'project', projectId: 'project' }
                 });
                 await expect(
                   repairRunner.run(repairIdentity, {
@@ -1492,6 +2054,84 @@ it.each([
                   })
                 ).rejects.toThrow('independent session recovery');
                 expect(repairLaunches).toBe(0);
+                expect(stoppedRepair).toHaveBeenCalledExactlyOnceWith(container);
+                expect(
+                  await authority.recoverFencedMutationPermits(scopeId, 'repair-claim')
+                ).toMatchObject([{ id: retainedPermit.id }]);
+                expect(await authority.recoverRepairExecutionContainer(repairIdentity)).toEqual(
+                  container
+                );
+              } else if (lifecycle === 'repair-unconfirmed') {
+                const gatewayStub =
+                  process.env.FORGE_TEST_PI_SDK_IMAGE === undefined
+                    ? vi
+                        .spyOn(DockerPiSessionGateway.prototype, 'start')
+                        .mockImplementation(async (session) => {
+                          await session.onStarted('repair-factory-session');
+                          const result = await session.executeTool({
+                            name: 'forge_write',
+                            path: 'approved.txt',
+                            content: 'repair-factory-output'
+                          });
+                          if (result.isError) {
+                            throw new Error(result.content);
+                          }
+                          return { sessionId: 'repair-factory-session' };
+                        })
+                    : undefined;
+                try {
+                  const isolated = createPostgresDockerRepairRunner({
+                    authority: resumedAuthority,
+                    persistence: executionStore,
+                    resolveResource: () => ({ type: 'project', projectId: 'project' }),
+                    resolveFileId: (path) => path,
+                    image: process.env.FORGE_TEST_PI_SDK_IMAGE ?? `sha256:${'a'.repeat(64)}`,
+                    executable: '/usr/local/bin/node',
+                    args: ['/opt/forge/entrypoint.mjs'],
+                    modelProxy: {
+                      complete: async () => ({
+                        role: 'assistant',
+                        api: 'openai-completions',
+                        provider: 'forge-isolated',
+                        model: 'forge-host-approved',
+                        content: [{ type: 'text', text: 'Done' }],
+                        stopReason: 'stop',
+                        timestamp: Date.now(),
+                        usage: {
+                          input: 1,
+                          output: 1,
+                          cacheRead: 0,
+                          cacheWrite: 0,
+                          totalTokens: 2,
+                          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+                        }
+                      })
+                    }
+                  });
+                  expect(await isolated.run(repairIdentity, repairRequest)).toMatchObject({
+                    result: { status: 'completed' },
+                    claimState:
+                      process.env.FORGE_TEST_PI_SDK_IMAGE === undefined
+                        ? 'HELD_UNCERTAIN'
+                        : 'RELEASED'
+                  });
+                  if (process.env.FORGE_TEST_PI_SDK_IMAGE !== undefined) {
+                    const rows = await admin.unsafe(
+                      `select payload from "${schema}".forge_records where run_id=$1 and kind='pi-container' and key=$2`,
+                      [repair.runId, repair.id]
+                    );
+                    const descriptor = JSON.parse(String(rows[0]?.payload)).container;
+                    expect(descriptor?.id).toMatch(/^[a-f0-9]{64}$/);
+                    expect(descriptor?.image).toBe(process.env.FORGE_TEST_PI_SDK_IMAGE);
+                  } else {
+                    expect(gatewayStub).toHaveBeenCalledOnce();
+                    expect(readFileSync(join(worktree, 'approved.txt'), 'utf8')).toBe(
+                      'repair-factory-output'
+                    );
+                  }
+                } finally {
+                  gatewayStub?.mockRestore();
+                }
               } else if (lifecycle === 'repair-failure') {
                 await expect(repairRunner.run(repairIdentity, repairRequest)).rejects.toThrow(
                   'Repair session lost'
@@ -1524,11 +2164,20 @@ it.each([
                   `select state from "${schema}".forge_global_claims where claim_id='repair-claim'`
                 )
               ).toMatchObject([
-                { state: lifecycle === 'repair-success' ? 'RELEASED' : 'HELD_UNCERTAIN' }
+                {
+                  state:
+                    lifecycle === 'repair-success' ||
+                    (lifecycle === 'repair-unconfirmed' &&
+                      process.env.FORGE_TEST_PI_SDK_IMAGE !== undefined)
+                      ? 'RELEASED'
+                      : 'HELD_UNCERTAIN'
+                }
               ]);
               expect(
                 await resumedAuthority.recoverFencedMutationPermits(scopeId, 'repair-claim')
-              ).toHaveLength(lifecycle === 'repair-inflight' ? 1 : 0);
+              ).toHaveLength(
+                lifecycle === 'repair-inflight' || lifecycle === 'repair-restart' ? 1 : 0
+              );
               await expect(
                 resumedAuthority.recoverRepairExecution(repairIdentity)
               ).rejects.toThrow();
@@ -1559,6 +2208,13 @@ it.each([
         await recovery.close();
       }
     } finally {
+      await productionComposition?.close();
+      if (modelServer !== undefined) {
+        modelServer.closeAllConnections();
+        await new Promise<void>((done, reject) =>
+          modelServer?.close((error) => (error === undefined ? done() : reject(error)))
+        );
+      }
       if (containerId) {
         execFileSync('docker', ['rm', '-f', containerId]);
       }
@@ -1567,6 +2223,5 @@ it.each([
       rmSync(worktree, { recursive: true, force: true });
       rmSync(integration, { recursive: true, force: true });
     }
-  },
-  30_000
+  }
 );

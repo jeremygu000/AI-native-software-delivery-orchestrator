@@ -109,7 +109,7 @@ const assertBuilderTuple = (
   }
 };
 
-const verificationPolicy = {
+export const verificationPolicy = {
   version: 2,
   autonomousRules: ['package-script-required', 'free-form-command-forbidden'] as const,
   packageScriptRunner: 'npm-from-pinned-node-image' as const,

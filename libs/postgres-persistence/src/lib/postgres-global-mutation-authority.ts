@@ -933,6 +933,43 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     return row.scope_id;
   }
 
+  /** The worker resolves only a durable committed handoff, never a checkout path. */
+  async recoverExecutionParent(
+    runId: string,
+    attemptId: string
+  ): Promise<{ scopeId: string; parentClaimId: string }> {
+    const scopeId = await this.recoverGlobalRunScope(runId);
+    return this.#scopedLocked(
+      scopeId,
+      async (tx) => {
+        const rows = await tx.unsafe(
+          `select p.parent_claim_id from ${this.#schema}.forge_global_workspace_phases p join ${this.#schema}.forge_global_claims c on c.scope_id=p.scope_id and c.claim_id=p.parent_claim_id where p.scope_id=$1 and p.phase='HANDOFF_COMMITTED' and c.owner_json::jsonb->>'runId'=$2 and c.owner_json::jsonb->>'attemptId'=$3`,
+          [scopeId, runId, attemptId]
+        );
+        if (rows.length !== 1 || typeof rows[0]?.parent_claim_id !== 'string') {
+          throw new Error('Builder has no unique committed execution handoff');
+        }
+        return { scopeId, parentClaimId: rows[0].parent_claim_id };
+      },
+      runId
+    );
+  }
+
+  async hasUnresolvedRunAuthority(runId: string): Promise<boolean> {
+    const scopeId = await this.recoverGlobalRunScope(runId);
+    return this.#scopedLocked(
+      scopeId,
+      async (tx) => {
+        const rows = await tx.unsafe(
+          `select 1 from ${this.#schema}.forge_global_claims where scope_id=$1 and owner_json::jsonb->>'runId'=$2 and state<>'RELEASED' limit 1`,
+          [scopeId, runId]
+        );
+        return rows.length !== 0;
+      },
+      runId
+    );
+  }
+
   async #inventory(tx: Tx): Promise<LegacyMutationOwner[]> {
     const runs = await tx.unsafe(
       `select id,state,payload from ${this.#schema}.forge_runs order by id`
@@ -1391,6 +1428,168 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
       },
       claim.owner.runId
     );
+  }
+
+  /** Approved-only expansion: never changes the resource set or token of the base claim. */
+  async claimExecutionResource(request: {
+    scopeId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+    resource: WritableResource;
+  }): Promise<GlobalMutationClaimResult> {
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        const base = await this.#claim(tx, request.scopeId, request.claimId);
+        this.#assertOwner(base, request.owner, request.token);
+        if (request.owner.workspaceId === undefined) {
+          throw new Error('Dynamic owner requires an approved workspace');
+        }
+        const baseLeases = await this.#leases(tx, request.scopeId, request.claimId);
+        const first = baseLeases[0];
+        if (first === undefined) {
+          throw new Error('Dynamic base claim has no resources');
+        }
+        await this.#assertCurrent(tx, { ...request, resource: first.resource });
+        const binding = persistedTaskExecutionBindingSchema.parse(
+          json(await this.#record(tx, request.owner.runId, 'binding', request.owner.taskId))
+        );
+        const requestedResource = writableResourceSchema.parse(request.resource);
+        if (
+          !binding.leasePlan.predictedResources.some((allowed) =>
+            isWritableResourceCoveredBy(allowed, requestedResource)
+          )
+        ) {
+          throw new Error('Dynamic resource exceeds the approved execution plan');
+        }
+        await this.#authorizedAttempt(tx, { ...request, resources: [requestedResource] }, true);
+        // The frozen handoff digest remains the root, including when mutable binding and attempt agree.
+        const parentAttempt = await this.#record(
+          tx,
+          request.owner.runId,
+          'repair',
+          request.owner.attemptId
+        );
+        const builderId =
+          parentAttempt === undefined
+            ? request.owner.attemptId
+            : taskRepairAttemptSchema.parse(attemptJson(parentAttempt)).parentReviewSubject
+                .builderAttemptId;
+        const phase = await this.#one(
+          tx,
+          `select p.execution_plan_digest from ${this.#schema}.forge_global_workspace_phases p join ${this.#schema}.forge_global_claims c on c.scope_id=p.scope_id and c.claim_id=p.parent_claim_id where p.scope_id=$1 and c.owner_json::jsonb->>'runId'=$2 and c.owner_json::jsonb->>'attemptId'=$3 and p.workspace_id=$4 and p.phase='HANDOFF_COMMITTED'`,
+          [request.scopeId, request.owner.runId, builderId, request.owner.workspaceId]
+        );
+        if (
+          phase === undefined ||
+          phase.execution_plan_digest !== fingerprintPlanValue(binding.leasePlan).slice(7)
+        ) {
+          throw new Error('Dynamic resource has no approved committed execution plan');
+        }
+        if (
+          baseLeases.some((lease) => isWritableResourceCoveredBy(lease.resource, requestedResource))
+        ) {
+          return { status: 'granted', token: request.token, leases: baseLeases };
+        }
+        const claimId = `expansion-${createHash('sha256')
+          .update(JSON.stringify([request.claimId, requestedResource]))
+          .digest('hex')}`;
+        const saved = await this.#record(tx, request.owner.runId, 'global-expansion', claimId);
+        if (saved !== undefined) {
+          const relation = fields(json(saved));
+          if (
+            relation.baseClaimId !== request.claimId ||
+            relation.baseToken !== request.token ||
+            !same(relation.resource, requestedResource)
+          ) {
+            throw new Error('Dynamic claim replay differs');
+          }
+          const old = await this.#claim(tx, request.scopeId, claimId);
+          if (old.state !== 'ACTIVE' || !same(owner(old.owner_json), request.owner)) {
+            throw new Error('Dynamic claim is no longer active');
+          }
+          return {
+            status: 'granted',
+            token: safeInteger(old.token),
+            leases: await this.#leases(tx, request.scopeId, claimId)
+          };
+        }
+        const blockers = (await this.#leases(tx, request.scopeId)).filter(
+          (lease) =>
+            lease.state !== 'RELEASED' &&
+            areWritableResourcesConflicting(lease.resource, requestedResource)
+        );
+        if (blockers.length !== 0) {
+          return { status: 'blocked', blockers };
+        }
+        const token = await this.#nextToken(tx, request.scopeId);
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_global_claims values ($1,$2,$3,$4,'ACTIVE',1,null)`,
+          [request.scopeId, claimId, JSON.stringify(request.owner), token]
+        );
+        await tx.unsafe(`insert into ${this.#schema}.forge_global_leases values ($1,$2,$3,$4)`, [
+          request.scopeId,
+          claimId,
+          randomUUID(),
+          JSON.stringify(requestedResource)
+        ]);
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_records values ($1,'global-expansion',$2,$3)`,
+          [
+            request.owner.runId,
+            claimId,
+            JSON.stringify({
+              baseClaimId: request.claimId,
+              baseToken: request.token,
+              resource: requestedResource
+            })
+          ]
+        );
+        return {
+          status: 'granted',
+          token,
+          leases: await this.#leases(tx, request.scopeId, claimId)
+        };
+      },
+      request.owner.runId
+    );
+  }
+
+  async #finishExpansions(
+    tx: Query,
+    request: { scopeId: string; claimId: string; owner: GlobalMutationOwner; token: number },
+    state: 'RELEASED' | 'HELD_UNCERTAIN',
+    evidence: string
+  ): Promise<void> {
+    const rows = await tx.unsafe(
+      `select key,payload from ${this.#schema}.forge_records where run_id=$1 and kind='global-expansion'`,
+      [request.owner.runId]
+    );
+    for (const row of rows) {
+      const relation = fields(json(row.payload));
+      if (relation.baseClaimId !== request.claimId || relation.baseToken !== request.token) {
+        continue;
+      }
+      const expansion = await this.#claim(tx, request.scopeId, String(row.key));
+      if (!same(owner(expansion.owner_json), request.owner) || expansion.state === 'RELEASED') {
+        throw new Error('Dynamic terminal identity differs');
+      }
+      if (state === 'RELEASED') {
+        const pending = await this.#one(
+          tx,
+          `select 1 from ${this.#schema}.forge_global_permits where scope_id=$1 and claim_id=$2 limit 1`,
+          [request.scopeId, row.key]
+        );
+        if (pending !== undefined || expansion.state !== 'ACTIVE') {
+          throw new Error('Dynamic resource retains unresolved authority');
+        }
+      }
+      await tx.unsafe(
+        `update ${this.#schema}.forge_global_claims set state=$3,version=version+1,evidence=$4 where scope_id=$1 and claim_id=$2`,
+        [request.scopeId, row.key, state, evidence]
+      );
+    }
   }
 
   async recoverRepositoryMutationAuthority(
@@ -1856,6 +2055,12 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
               })
         });
         const claimState = canRelease ? 'RELEASED' : 'HELD_UNCERTAIN';
+        await this.#finishExpansions(
+          tx,
+          request,
+          claimState,
+          request.stopEvidence ?? request.detail
+        );
         await tx.unsafe(
           `update ${this.#schema}.forge_records set payload=$3 where run_id=$1 and kind='builder' and key=$2`,
           [request.owner.runId, request.owner.attemptId, JSON.stringify(terminal)]
@@ -2542,6 +2747,106 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     );
   }
 
+  /** Register the exact created container before an admitted repair can launch it. */
+  async persistRepairExecutionContainer(request: {
+    scopeId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+    launchReservation: string;
+    container: ExecutionChildContainer;
+  }): Promise<void> {
+    const container = executionContainer(request.container);
+    if (container.name !== `forge-pi-${request.launchReservation}`) {
+      throw new Error('Repair container does not match its launch reservation');
+    }
+    await this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        const attempt = await this.#repairLifecycle(tx, request);
+        const lease = (await this.#leases(tx, request.scopeId, request.claimId))[0];
+        if (lease === undefined) {
+          throw new Error('Repair execution has no resources');
+        }
+        await this.#assertCurrent(tx, { ...request, resource: lease.resource });
+        if (
+          attempt.state !== 'RUNNING' ||
+          !same(attempt.sessionRef, {
+            backend: 'forge-repair-launch-reservation',
+            value: request.launchReservation
+          })
+        ) {
+          throw new Error('Repair container creation has no current launch reservation');
+        }
+        const record = {
+          scopeId: request.scopeId,
+          claimId: request.claimId,
+          owner: request.owner,
+          token: request.token,
+          launchReservation: request.launchReservation,
+          container
+        };
+        const existing = await this.#record(
+          tx,
+          request.owner.runId,
+          'pi-container',
+          request.owner.attemptId
+        );
+        if (existing !== undefined) {
+          if (!same(json(existing), record)) {
+            throw new Error('Repair container identity cannot be replaced');
+          }
+          return;
+        }
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_records(run_id,kind,key,payload) values($1,'pi-container',$2,$3)`,
+          [request.owner.runId, request.owner.attemptId, JSON.stringify(record)]
+        );
+      },
+      request.owner.runId
+    );
+  }
+
+  /** Exact recovery evidence only; does not complete permits or release authority. */
+  async recoverRepairExecutionContainer(request: {
+    scopeId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+  }): Promise<ExecutionChildContainer | undefined> {
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        await this.#repairLifecycle(tx, request);
+        const saved = await this.#record(
+          tx,
+          request.owner.runId,
+          'pi-container',
+          request.owner.attemptId
+        );
+        if (saved === undefined) {
+          return undefined;
+        }
+        const record = fields(json(saved));
+        if (
+          record.scopeId !== request.scopeId ||
+          record.claimId !== request.claimId ||
+          record.token !== request.token ||
+          !same(record.owner, request.owner) ||
+          typeof record.launchReservation !== 'string'
+        ) {
+          throw new Error('Repair container is not bound to its admitted execution');
+        }
+        const container = executionContainer(record.container);
+        if (container.name !== `forge-pi-${record.launchReservation}`) {
+          throw new Error('Repair container reservation differs');
+        }
+        return container;
+      },
+      request.owner.runId
+    );
+  }
+
   async startRepairExecution(request: {
     scopeId: string;
     claimId: string;
@@ -2650,6 +2955,12 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
               })
         });
         const claimState = canRelease ? 'RELEASED' : 'HELD_UNCERTAIN';
+        await this.#finishExpansions(
+          tx,
+          request,
+          claimState,
+          request.stopEvidence ?? request.detail
+        );
         await this.#persistGlobalRepair(tx, attempt, terminal);
         await tx.unsafe(
           `update ${this.#schema}.forge_global_claims set state=$3,version=version+1,evidence=$4 where scope_id=$1 and claim_id=$2`,
@@ -2687,6 +2998,43 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   async #assertCurrent(tx: Query, request: CurrentMutationTokenRequest): Promise<void> {
     await this.#assertOrdinaryClaim(tx, request.scopeId, request.claimId);
+    const expansionRecord = await this.#record(
+      tx,
+      request.owner.runId,
+      'global-expansion',
+      request.claimId
+    );
+    if (expansionRecord !== undefined) {
+      const relation = fields(json(expansionRecord));
+      if (
+        typeof relation.baseClaimId !== 'string' ||
+        typeof relation.baseToken !== 'number' ||
+        relation.baseClaimId === request.claimId ||
+        (await this.#record(tx, request.owner.runId, 'global-expansion', relation.baseClaimId)) !==
+          undefined
+      ) {
+        throw new Error('Dynamic authority has an invalid base');
+      }
+      const baseLeases = await this.#leases(tx, request.scopeId, relation.baseClaimId);
+      const first = baseLeases[0];
+      if (first === undefined) {
+        throw new Error('Dynamic base has no execution resources');
+      }
+      await this.#assertCurrent(tx, {
+        ...request,
+        claimId: relation.baseClaimId,
+        token: relation.baseToken,
+        resource: first.resource
+      });
+      if (
+        !isWritableResourceCoveredBy(
+          writableResourceSchema.parse(relation.resource),
+          request.resource
+        )
+      ) {
+        throw new Error('Dynamic requested resource differs from its claim');
+      }
+    }
     const integrationRecord = await this.#record(
       tx,
       request.owner.runId,
@@ -2957,6 +3305,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
       if (row.state !== 'ACTIVE') {
         throw new Error('Only an active claim can become uncertain');
       }
+      await this.#finishExpansions(tx, request, 'HELD_UNCERTAIN', request.evidence);
       await tx.unsafe(
         `update ${this.#schema}.forge_global_claims set state='HELD_UNCERTAIN',version=version+1,evidence=$3 where scope_id=$1 and claim_id=$2`,
         [request.scopeId, request.claimId, request.evidence]

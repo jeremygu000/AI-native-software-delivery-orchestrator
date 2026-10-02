@@ -25,11 +25,35 @@ async function main(): Promise<void> {
   });
 
   const review = resolveWorkerReviewDeploymentConfig();
+  const globalMode = process.env.FORGE_WORKER_AUTHORITY_MODE;
+  if (globalMode !== undefined && globalMode !== 'legacy' && globalMode !== 'global') {
+    throw new Error('Unsupported FORGE_WORKER_AUTHORITY_MODE');
+  }
+  let globalExecution: { image: string; gitImage: string; apiKey: string } | undefined;
+  if (globalMode === 'global') {
+    const image = process.env.FORGE_PI_IMAGE;
+    const gitImage = process.env.FORGE_GIT_IMAGE;
+    const apiKey = process.env.FORGE_MODEL_API_KEY;
+    if (
+      image === undefined ||
+      gitImage === undefined ||
+      apiKey === undefined ||
+      apiKey.length === 0 ||
+      !/^(?:[^\s]+@)?sha256:[a-f0-9]{64}$/.test(image) ||
+      !/^(?:[^\s]+@)?sha256:[a-f0-9]{64}$/.test(gitImage)
+    ) {
+      throw new Error(
+        'Global worker requires pinned FORGE_PI_IMAGE/FORGE_GIT_IMAGE and host FORGE_MODEL_API_KEY'
+      );
+    }
+    globalExecution = { image, gitImage, apiKey };
+  }
   const composition = await createForgeWorkerComposition({
     authority,
     repositoryPath: process.env.FORGE_WORKER_REPOSITORY_PATH,
     codeReviewPolicy: review.policy,
-    reviewModel: review.model
+    reviewModel: review.model,
+    ...(globalExecution === undefined ? {} : { globalExecution })
   });
   const handle = await createTemporalWorker(config, {
     forgeActivities: composition.forgeActivities

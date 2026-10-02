@@ -27,6 +27,16 @@ export interface PersistedPiContainer {
  * callback may touch the workspace; its caller must supply durable fenced tools.
  */
 export class DockerPiSessionGateway implements PiSessionGateway {
+  #stopEvidence: string | undefined;
+
+  /** Available only after this host has drained every broker callback and the
+   * exact isolated process has exited. Recovery never creates this receipt. */
+  confirmedStopEvidence(): string {
+    if (this.#stopEvidence === undefined) {
+      throw new Error('Isolated Pi container and host broker stop is not confirmed');
+    }
+    return this.#stopEvidence;
+  }
   constructor(
     private readonly configuration: {
       readonly image: string;
@@ -57,6 +67,7 @@ export class DockerPiSessionGateway implements PiSessionGateway {
   async start(
     options: Parameters<PiSessionGateway['start']>[0]
   ): Promise<{ readonly sessionId: string }> {
+    this.#stopEvidence = undefined;
     if (options.cancellationSignal?.aborted) {
       throw new PiSessionCancellationConfirmedError();
     }
@@ -336,6 +347,9 @@ export class DockerPiSessionGateway implements PiSessionGateway {
         options.cancellationSignal?.removeEventListener('abort', cancel);
         await queue;
         await terminate();
+        if (failure === undefined && (completed || cancellationRequested)) {
+          this.#stopEvidence = `Isolated Pi ${name}/${sessionId ?? 'no-session'} exited; this host broker drained every tool/model callback`;
+        }
       }
     } finally {
       if (confirmedStopped) {

@@ -3851,3 +3851,29 @@ Gateway 现在允许 registry digest 或不可变本地 Docker image ID，仍拒
 显式 `createPostgresDockerChildRunner` composition 接起已接受的 SDK gateway、宿主批准模型、强制 fenced tools、builder lifecycle 和启动前持久化回调。普通测试使用真实 PostgreSQL 与受控 gateway；可选镜像测试运行真实容器 SDK 并核对已保存 Docker ID。真实重启测试证明隔离先于 stop callback；独立 Docker 回归证明持久化响应丢失会留下未启动容器，可按 exact identity 恢复。六项真实 Docker gateway 测试和真实 SDK／PG builder 场景通过。全量 `pnpm check` 通过 87 个文件中的 927 项测试，跳过八项可选 Docker 测试；格式、TypeScript、lint 和覆盖率通过，语句、分支、函数和代码行分别为 90.42%、85.39%、93.34% 和 90.33%。编译后 CLI／worker 验收也成功构建包和应用。
 
 本轮是 builder container／session recovery，不是自动恢复会话或外部 quiescence 证明。显式 factory 不提供 independent stop confirmer，因此正常 completed 结果仍保留 HELD_UNCERTAIN 占用。Repair 容器恢复、认证停机确认与最终清算、dynamic global expansion 和 scheduler／worker cutover 仍未完成。普通生产 GLOBAL_READY startup 保持禁用；M4.2 为 OPEN，M4.3 尚未开始。历史 migration 和 ACL 未改；number-token／BIGINT、resource-ID 歧义和 integration actor 命名仍为 P2。
+
+## 恢复精确隔离 repair 容器，不重启原写入者
+
+独立复审接受 `2492284`，冻结 builder container descriptor 边界。Repair 现在有对应的独立 composition，不借用 builder 身份：不可变 Docker descriptor 在进程启动前提交，绑定 exact repair claim、owner、token 和 `forge-repair-launch-reservation`。PostgreSQL 在既有 trust→scope→run 锁序下核对已准入 repair work item 和不可变 review／history provenance，并在接受 descriptor 前检查当前 run／trust eligibility。精确重试保留原记录；不同 container ID 或 owner／reservation 被拒绝。
+
+恢复 repair RUNNING 时，runner 在通过独立连接读取 descriptor 并调用 stop callback 之前，先提交 UNKNOWN 和 HELD_UNCERTAIN。它不会启动替代写入者。容器停机后，已有 callback permit 仍然保留：停止容器不能证明旧宿主上的工具回调已完成，因此不自动清算 lease 或 permit。新的 `createPostgresDockerRepairRunner` 接起真实隔离 SDK、宿主批准 model proxy、强制 fenced tools 和 repair lifecycle 的启动前登记／恢复路径。它不提供 independent stop confirmer，因此正常 completion 也保留 uncertain 占用。
+
+真实 PostgreSQL／linked-Git 测试拒绝错误 repair 身份、接受精确 descriptor 重试、拒绝替换 ID，并证明 durable quarantine 先于 container stop。重启后 in-flight permit 保留，替代启动数为零。真实 SDK 镜像／PG repair 场景也通过，并核对持久化 Docker 身份。全量 `pnpm check` 通过 87 个文件中的 927 项测试，跳过八项可选 Docker 测试；格式、TypeScript、lint 和覆盖率通过，语句、分支、函数和代码行分别为 90.39%、85.38%、93.27% 和 90.29%。编译后 CLI／worker 验收成功构建包和应用。
+
+本轮完成 durable container recovery 的 repair 对应路径，不代表认证外部停机确认、最终 uncertain claim 清算、自动恢复会话或生产 cutover。Dynamic global expansion 和完整 scheduler／worker composition 仍未完成。生产 GLOBAL_READY 保持禁用；M4.2 仍为 OPEN，M4.3 尚未开始。历史 migration、ACL 和冻结的 builder／integration 契约未改；public number-token／BIGINT、诊断 resource-ID 歧义和 integration actor 命名继续作为 P2 延后。
+
+## PostgreSQL 生产执行 composition：M4.2 closure candidate
+
+本批把原先分开的执行边界接入实际 Temporal worker factory。默认启动仍是 legacy，不能越过 global cutover gate。显式 global 启动要求 PostgreSQL、GLOBAL_READY authority store、固定 Pi／Git 镜像、部署批准的 model 和仅保留在宿主的 model credential；acceptance adapter 或注入 persistence 不能绕过生产模式选择。独立批准的 setup／recovery 服务必须先提交 task workspace handoff。Worker 按 durable run／attempt 身份找到 parent，不制造 setup approval、不借用 recovery credential，也不通过旧 builder 重建 workspace。
+
+Global activities 执行隔离 Pi builder，在创建 passed evidence 前真正运行只读 verifier，收集 exact-subject model review，按要求准备并执行隔离 repair，再通过仓库授权 Git permit 集成 accepted output。Verification／review policy fingerprint 必须匹配批准 run。Review inference 没有工具，读取真实 tracked diff 和有大小限制、canonical path 校验的 untracked 文本。所有旧 mutation activity 均被替换；blocked repair／integration continuation 拒绝自动 resume，要求独立恢复。Run completion／cancellation finalization 在与生命周期一致的持久化锁序内检查 unresolved global authority，避免先检查再终结的窗口。
+
+正常 Pi 停机确认现在来自拥有该 invocation 的同一个 broker：只有串行宿主 tool／model callback 已 drain 且 Docker 确认停机后才产生 evidence。Receipt 绑定该 run／attempt，不能被另一个 invocation 借用；既有 provider 门禁也通过时，正常 completed builder／repair 可释放占用。重启停机绝不产生这种 receipt；旧宿主回调、daemon 失败和不明确结果继续保留 permit 与 uncertain claim。Git 命令在经过检查、禁用网络、只读 root 的容器中执行，只有批准 integration／worktree／common-Git 路径可写。Hooks、签名、外部配置与网络协议关闭；镜像 `/git` volume 被有界 tmpfs 替换。启动前检查精确 command、entrypoint、资源限制和 mount。Git release evidence 要求确认 container exit，任何歧义都保留占用。
+
+Dynamic tool 请求使用持久化 PostgreSQL authority，不使用本地 guard。Base claim 已覆盖的资源继续使用原 token。新请求的 disjoint 资源必须仍被不可变批准 execution plan 和 committed handoff digest 覆盖，才得到独立确定性 claim ID 和更高 scope token，原 claim 不变。精确重试恢复同一 grant。每个 expansion permit 也验证原 base owner／token／当前 trust；uncertainty 传播至关联 claim，terminal release 仅在没有关联 in-flight permit 时同事务清算。第三个未批准文件在 token／record 分配前拒绝。这不允许任意扩大范围或事后批准 repository 权限。
+
+真实镜像验收覆盖实际外层 production factory、本地 HTTP／SSE model inference、真实 Pi SDK、真实 PostgreSQL permit 和 linked Git repository。Activity 链验证 builder completion、verification／review、repair、Git integration、write 前取消、RUNNING 重启不重复启动，以及批准内 dynamic expansion 和 in-flight release barrier。配置全部三个验收镜像后，`pnpm check` 通过 88 个文件的全部 943 项测试，无跳过；格式、TypeScript、lint 和覆盖率通过，语句、分支、函数、代码行分别为 90.86%、85.92%、94.27% 和 90.75%。显式 `pnpm build` 也通过。Closure 检查必须启用镜像验收；缺少镜像会跳过生产场景，不能提供等价覆盖率证据。
+
+启用该路径时保留现有 PostgreSQL／Temporal／repository 和批准 review-model 配置，设置 `FORGE_WORKER_AUTHORITY_MODE=global`、不可变 `FORGE_PI_IMAGE`／`FORGE_GIT_IMAGE`，并仅在宿主提供 `FORGE_MODEL_API_KEY`。重现验收时，先将 `FORGE_TEST_PI_SDK_IMAGE`、`FORGE_TEST_GIT_IMAGE` 和 `FORGE_TEST_DOCKER_IMAGE` 设置为对应本地／已发布的不可变验收镜像，再运行 `pnpm check`。Worker 要求受控 Docker-daemon access 与批准 repository 路径；它只持有 runtime PostgreSQL credential，不持有 signer、generation-issuer 或 recovery-role credential。
+
+本轮是待独立复审的 PostgreSQL production closure candidate，不是已接受的 M4.2 closure，也不是自动部署迁移。Unknown writer 和中断宿主回调仍须显式恢复；blocked Git／repair 不会被静默重试。SQLite 独立保护的 trust root 和自动 recovery scheduling 继续延后。部署必须准备批准镜像／model 并完成特权 setup／handoff；验收 provider 为本地服务而非付费生产端点。历史 migration 与 ACL 未改。M4.2 在独立接受前仍为 OPEN，M4.3 尚未开始。Public number-token／BIGINT、诊断 resource-ID 歧义和 integration actor 命名继续作为 P2。

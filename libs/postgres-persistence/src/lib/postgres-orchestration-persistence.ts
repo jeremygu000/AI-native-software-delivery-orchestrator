@@ -231,6 +231,20 @@ export class PostgresOrchestrationPersistence
     }
   }
 
+  async assertGlobalWorkerCompositionAllowed(): Promise<void> {
+    if (!this.#globalGateInstalled || !this.#globalBindingInstalled) {
+      throw new Error(
+        'Global worker requires installed global authority and immutable run bindings'
+      );
+    }
+    const rows = await this.#sql.unsafe(
+      `select state from ${this.#schema}.forge_global_control where id=1`
+    );
+    if (rows.length !== 1 || rows[0]?.state !== 'GLOBAL_READY') {
+      throw new Error('Global worker composition requires completed deployment cutover');
+    }
+  }
+
   async #row(tx: Query, runId: string, kind: RecordKind, key: string): Promise<string | undefined> {
     const rows = await tx.unsafe(
       `select payload from ${this.#schema}.forge_records where run_id = $1 and kind = $2 and key = $3`,
@@ -823,6 +837,51 @@ export class PostgresOrchestrationPersistence
     await this.#locked(runId, async (tx, current) => {
       this.#active(runId, current);
       await this.#setState(tx, runId, state);
+    });
+  }
+
+  /** Global terminalization holds the same scope/run locks as new claims. */
+  async updateGlobalRunState(runId: string, state: OrchestrationRunState): Promise<void> {
+    if (!this.#globalGateInstalled || (state !== 'COMPLETED' && state !== 'FAILED')) {
+      throw new Error(
+        'Global finalization requires an installed authority gate and terminal state'
+      );
+    }
+    await this.#locked(runId, async (tx, current) => {
+      this.#active(runId, current);
+      const unresolved = await tx.unsafe(
+        `select 1 from ${this.#schema}.forge_global_claims where owner_json::jsonb->>'runId'=$1 and state<>'RELEASED' limit 1`,
+        [runId]
+      );
+      if (unresolved.length !== 0) {
+        throw new Error('Run has unresolved global mutation authority');
+      }
+      await this.#setState(tx, runId, state);
+    });
+  }
+
+  async finalizeGlobalCancellation(
+    runId: string
+  ): Promise<
+    | CancellationFinalizationResult
+    | { readonly status: 'pending'; readonly state: 'CANCEL_REQUESTED' }
+  > {
+    if (!this.#globalGateInstalled) {
+      throw new Error('Global cancellation requires an installed authority gate');
+    }
+    return this.#locked(runId, async (tx, state) => {
+      if (state !== 'CANCEL_REQUESTED') {
+        return { status: 'not-requested', state };
+      }
+      const unresolved = await tx.unsafe(
+        `select 1 from ${this.#schema}.forge_global_claims where owner_json::jsonb->>'runId'=$1 and state<>'RELEASED' limit 1`,
+        [runId]
+      );
+      if (unresolved.length !== 0) {
+        return { status: 'pending', state };
+      }
+      await this.#setState(tx, runId, 'CANCELLED');
+      return { status: 'cancelled', state: 'CANCELLED' };
     });
   }
 

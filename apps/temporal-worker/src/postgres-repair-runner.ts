@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { AgentToolRuntime } from '@ai-native-software-delivery-orchestrator/agent-runtime';
+import {
+  AgentToolRuntime,
+  type PersistedPiContainer
+} from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import {
   FencedMutationPort,
   type AgentRunRequest,
@@ -21,7 +24,15 @@ export class PostgresRepairRunner {
       persistence: OrchestrationPersistence;
       resolveResource: (path: string) => WritableResource;
       resolveFileId: (path: string) => string;
-      createRunner: (tools: AgentToolRuntime) => AgentRunner;
+      createRunner: (
+        tools: AgentToolRuntime,
+        launch: {
+          readonly reservation: string;
+          readonly persistCreated: (container: PersistedPiContainer) => Promise<void>;
+        }
+      ) => AgentRunner;
+      /** Daemon control does not prove that a lost host-side callback has drained. */
+      stopRecoveredContainer?: (container: PersistedPiContainer) => Promise<void>;
       confirmStopped?: (request: AgentRunRequest, result: AgentRunResult) => Promise<string>;
     }
   ) {}
@@ -63,6 +74,10 @@ export class PostgresRepairRunner {
         state: 'UNKNOWN',
         detail: 'Recovered RUNNING repair requires independent session recovery'
       });
+      const container = await this.options.authority.recoverRepairExecutionContainer(identity);
+      if (container !== undefined && this.options.stopRecoveredContainer !== undefined) {
+        await this.options.stopRecoveredContainer(container);
+      }
       throw new Error('Recovered RUNNING repair requires independent session recovery');
     }
     const tools = new AgentToolRuntime({
@@ -79,6 +94,20 @@ export class PostgresRepairRunner {
       resolveFileId: this.options.resolveFileId,
       mutation: {
         claim: identity,
+        resolveClaim: async (resource) => {
+          const result = await this.options.authority.claimExecutionResource({
+            ...identity,
+            resource
+          });
+          if (result.status === 'blocked') {
+            throw new Error('Approved dynamic resource is blocked by another owner');
+          }
+          const lease = result.leases[0];
+          if (lease === undefined) {
+            throw new Error('Dynamic resource grant has no lease');
+          }
+          return { ...identity, claimId: lease.claimId, token: result.token };
+        },
         port: new FencedMutationPort(this.options.authority),
         onMutationUncertain: async (error) => {
           await this.options.authority.markMutationUncertain({
@@ -98,23 +127,33 @@ export class PostgresRepairRunner {
     let started = false;
     let result: AgentRunResult;
     try {
-      result = await this.options.createRunner(tools).run({
-        ...request,
-        onStarted: async (session) => {
-          if (session.sessionRef === undefined) {
-            throw new Error('Repair requires a durable external session identity');
+      result = await this.options
+        .createRunner(tools, {
+          reservation: reservation.value,
+          persistCreated: (container) =>
+            this.options.authority.persistRepairExecutionContainer({
+              ...identity,
+              launchReservation: reservation.value,
+              container
+            })
+        })
+        .run({
+          ...request,
+          onStarted: async (session) => {
+            if (session.sessionRef === undefined) {
+              throw new Error('Repair requires a durable external session identity');
+            }
+            const running = await this.options.authority.startRepairExecution({
+              ...identity,
+              expectedRevision: reserved.revision,
+              previousSessionRef: reservation,
+              sessionRef: session.sessionRef
+            });
+            revision = running.revision;
+            started = true;
+            await request.onStarted(session);
           }
-          const running = await this.options.authority.startRepairExecution({
-            ...identity,
-            expectedRevision: reserved.revision,
-            previousSessionRef: reservation,
-            sessionRef: session.sessionRef
-          });
-          revision = running.revision;
-          started = true;
-          await request.onStarted(session);
-        }
-      });
+        });
     } catch (error) {
       await this.options.authority.finishRepairExecution({
         ...identity,

@@ -87,6 +87,20 @@ export class PostgresExecutionChildTools {
       writeGuard: forbiddenLocalGuard,
       mutation: {
         claim,
+        resolveClaim: async (resource) => {
+          const result = await this.options.authority.claimExecutionResource({
+            ...claim,
+            resource
+          });
+          if (result.status === 'blocked') {
+            throw new Error('Approved dynamic resource is blocked by another owner');
+          }
+          const lease = result.leases[0];
+          if (lease === undefined) {
+            throw new Error('Dynamic resource grant has no lease');
+          }
+          return { ...claim, claimId: lease.claimId, token: result.token };
+        },
         port: new FencedMutationPort(this.options.authority),
         onMutationUncertain: async (error) => {
           await this.options.authority.markMutationUncertain({

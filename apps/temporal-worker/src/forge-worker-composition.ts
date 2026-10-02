@@ -1,16 +1,27 @@
 import { Context } from '@temporalio/activity';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
-import { appendFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { appendFile, writeFile, readFile, realpath } from 'node:fs/promises';
+import { join, resolve, relative, isAbsolute, sep } from 'node:path';
 
 import { createForgeRuntimeComposition } from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
 import {
   PiAgentRunner,
+  ApprovedPiHostModelProxy,
   PiCodeReviewModelResolver,
   PiCodingAgentGateway,
   PiTaskCodeReviewer,
   type PiSessionModel
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
+import { analyzeRepository } from '@ai-native-software-delivery-orchestrator/repository-analysis';
+import {
+  PostgresGlobalMutationAuthority,
+  PostgresOrchestrationPersistence
+} from '@ai-native-software-delivery-orchestrator/postgres-persistence';
+import { SandboxedPackageScriptVerifier } from '@ai-native-software-delivery-orchestrator/run-preparation';
+import { verificationPolicy } from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
+import { createPostgresGlobalWorkerComposition } from './postgres-global-worker-composition.js';
 import { resolveM312ExternalSmokeConfig } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 import {
   openAuthorityPersistence,
@@ -18,6 +29,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/persistence';
 import {
   createCodeReviewPolicy,
+  codeReviewPolicyFingerprint,
   type CodeReviewPolicy
 } from '@ai-native-software-delivery-orchestrator/planning';
 import type {
@@ -34,7 +46,7 @@ export type {
 const waitForAcceptanceRelease = async (path: string): Promise<void> => {
   while (existsSync(path)) {
     Context.current().heartbeat();
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((done) => setTimeout(done, 25));
   }
 };
 
@@ -112,6 +124,12 @@ export interface ForgeWorkerCompositionDeployment {
   readonly repositoryPath: string;
   readonly codeReviewPolicy: CodeReviewPolicy;
   readonly reviewModel: PiSessionModel;
+  /** Explicit opt-in. No recovery/signing-service credentials enter this worker. */
+  readonly globalExecution?: {
+    readonly image: string;
+    readonly gitImage: string;
+    readonly apiKey: string;
+  };
 }
 
 const isDeployment = (
@@ -195,28 +213,151 @@ export async function createForgeWorkerComposition(
     overrides.persistence ?? (await openAuthorityPersistence(deployment.authority));
   let composition: ForgeRuntimeComposition;
   try {
-    if (overrides.persistence === undefined) {
+    if (deployment.globalExecution !== undefined) {
       if (
-        !('assertLegacyWorkerCompositionAllowed' in persistence) ||
-        typeof persistence.assertLegacyWorkerCompositionAllowed !== 'function'
+        deployment.authority.backend !== 'postgres' ||
+        !(persistence instanceof PostgresOrchestrationPersistence) ||
+        process.env.FORGE_WORKER_COMPOSITION === 'acceptance' ||
+        Object.keys(overrides).length !== 0 ||
+        deployment.reviewModel === undefined
       ) {
-        throw new Error('Legacy worker composition requires an authority mode check');
+        throw new Error(
+          'Global worker requires PostgreSQL and explicit production-only deployment'
+        );
       }
-      await persistence.assertLegacyWorkerCompositionAllowed();
-    }
-    composition = await createForgeRuntimeComposition(
-      { ...workerOverrides(deployment), ...overrides, persistence },
-      {
-        repositoryPath: deployment.repositoryPath,
-        getActivityExecutionContext: () => {
-          try {
-            return { cancellationSignal: Context.current().cancellationSignal };
-          } catch {
-            return undefined;
+      await persistence.assertGlobalWorkerCompositionAllowed();
+      const graph = (await analyzeRepository(deployment.repositoryPath)).graph;
+      const proxy = new ApprovedPiHostModelProxy({
+        model: deployment.reviewModel,
+        apiKey: deployment.globalExecution.apiKey
+      });
+      const base = await createForgeRuntimeComposition(
+        {
+          persistence,
+          repositoryGraph: graph,
+          codeReviewPolicy: deployment.codeReviewPolicy,
+          reviewer: {
+            review: async () => {
+              throw new Error('Legacy review is disabled in global composition');
+            }
+          }
+        },
+        { repositoryPath: deployment.repositoryPath }
+      );
+      let authority: PostgresGlobalMutationAuthority | undefined;
+      try {
+        authority = await PostgresGlobalMutationAuthority.connect(deployment.authority);
+        composition = createPostgresGlobalWorkerComposition({
+          authority,
+          persistence,
+          base,
+          graph,
+          codeReviewPolicyFingerprint: codeReviewPolicyFingerprint(deployment.codeReviewPolicy),
+          image: deployment.globalExecution.image,
+          gitImage: deployment.globalExecution.gitImage,
+          modelProxy: proxy,
+          verifier: new SandboxedPackageScriptVerifier({ policy: verificationPolicy, graph }),
+          reviewer: {
+            review: async (request) => {
+              // Review inference has no code loader, command executor or write tools.
+              const diff = await promisify(execFile)(
+                'git',
+                [
+                  '-C',
+                  request.workspace.workspacePath,
+                  'diff',
+                  '--no-ext-diff',
+                  '--no-textconv',
+                  'HEAD',
+                  '--'
+                ],
+                { encoding: 'utf8', maxBuffer: 1024 * 1024 }
+              );
+              const untracked = await promisify(execFile)(
+                'git',
+                [
+                  '-C',
+                  request.workspace.workspacePath,
+                  'ls-files',
+                  '--others',
+                  '--exclude-standard',
+                  '-z'
+                ],
+                { encoding: 'utf8', maxBuffer: 1024 * 1024 }
+              );
+              const root = await realpath(request.workspace.workspacePath);
+              const addedFiles: { path: string; content: string }[] = [];
+              let remaining = 1024 * 1024;
+              for (const path of untracked.stdout.split('\0').filter(Boolean)) {
+                const absolute = await realpath(resolve(root, path));
+                const within = relative(root, absolute);
+                if (within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) {
+                  throw new Error('Review file escapes the approved workspace');
+                }
+                const contents = await readFile(absolute);
+                remaining -= contents.byteLength;
+                if (remaining < 0 || contents.includes(0)) {
+                  throw new Error('Untracked review evidence exceeds text limits');
+                }
+                addedFiles.push({ path, content: contents.toString('utf8') });
+              }
+              const response = await proxy.complete(
+                {
+                  tools: [],
+                  messages: [
+                    {
+                      role: 'user',
+                      timestamp: Date.now(),
+                      content: `Return only a JSON code review with recommendation accept|repair|reject, summary and findings (id,severity,fileIds,symbolIds,description,requirementReference).\n${JSON.stringify({ task: request.task, subject: request.subject, diff: diff.stdout, addedFiles, files: [...request.repository.files.values()] })}`
+                    }
+                  ]
+                },
+                [],
+                new AbortController().signal
+              );
+              return response.content
+                .filter((item) => item.type === 'text')
+                .map((item) => item.text)
+                .join('');
+            }
+          },
+          cancellationSignal: () => {
+            try {
+              return Context.current().cancellationSignal;
+            } catch {
+              return undefined;
+            }
+          }
+        });
+      } catch (error) {
+        await authority?.close();
+        await base.close();
+        throw error;
+      }
+    } else {
+      if (overrides.persistence === undefined) {
+        if (
+          !('assertLegacyWorkerCompositionAllowed' in persistence) ||
+          typeof persistence.assertLegacyWorkerCompositionAllowed !== 'function'
+        ) {
+          throw new Error('Legacy worker composition requires an authority mode check');
+        }
+        await persistence.assertLegacyWorkerCompositionAllowed();
+      }
+      composition = await createForgeRuntimeComposition(
+        { ...workerOverrides(deployment), ...overrides, persistence },
+        {
+          repositoryPath: deployment.repositoryPath,
+          getActivityExecutionContext: () => {
+            try {
+              return { cancellationSignal: Context.current().cancellationSignal };
+            } catch {
+              return undefined;
+            }
           }
         }
-      }
-    );
+      );
+    }
   } catch (error) {
     if (overrides.persistence === undefined) {
       await persistence.close?.();

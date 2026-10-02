@@ -1,5 +1,6 @@
 export {
   createForgeRuntimeComposition,
+  verificationPolicy,
   verificationPolicyFingerprint
 } from './forge-runtime-composition.js';
 export type {

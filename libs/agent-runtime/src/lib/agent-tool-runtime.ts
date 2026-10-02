@@ -37,6 +37,10 @@ export interface AgentToolRuntimeContext {
   readonly mutation?: {
     readonly port: FencedMutationPort;
     readonly claim: Omit<CurrentMutationTokenRequest, 'resource'>;
+    /** A durable provider may select a separately granted expansion claim. */
+    readonly resolveClaim?: (
+      resource: WritableResource
+    ) => Promise<Omit<CurrentMutationTokenRequest, 'resource'>>;
     /** Required in the global path: retain ownership after a callback may have mutated externally. */
     readonly onMutationUncertain: (error: unknown) => Promise<void>;
   };
@@ -222,8 +226,10 @@ export class AgentToolRuntime {
       return sideEffect();
     }
     let callbackStarted = false;
+    const claim =
+      mutation.resolveClaim === undefined ? mutation.claim : await mutation.resolveClaim(resource);
     try {
-      return await mutation.port.execute({ ...mutation.claim, resource }, async () => {
+      return await mutation.port.execute({ ...claim, resource }, async () => {
         callbackStarted = true;
         try {
           return await sideEffect();
