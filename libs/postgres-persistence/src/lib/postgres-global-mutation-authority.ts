@@ -197,6 +197,40 @@ const attemptJson = (value: unknown): unknown =>
   );
 const verifier = (secret: string): Buffer => createHash('sha256').update(secret).digest();
 
+export interface ExecutionChildContainer {
+  readonly id: string;
+  readonly name: string;
+  readonly image: string;
+  readonly executable: string;
+  readonly args: readonly string[];
+}
+
+const executionContainer = (value: unknown): ExecutionChildContainer => {
+  const item = fields(value);
+  if (
+    typeof item.id !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(item.id) ||
+    typeof item.name !== 'string' ||
+    !/^forge-pi-[a-f0-9-]{36}$/.test(item.name) ||
+    typeof item.image !== 'string' ||
+    !/^(?:.+@)?sha256:[a-f0-9]{64}$/.test(item.image) ||
+    typeof item.executable !== 'string' ||
+    !item.executable.startsWith('/') ||
+    !Array.isArray(item.args) ||
+    !item.args.every((arg: unknown) => typeof arg === 'string')
+  ) {
+    throw new Error('Invalid persisted execution container');
+  }
+  const args: string[] = [];
+  for (const arg of item.args) {
+    if (typeof arg !== 'string') {
+      throw new Error('Invalid persisted execution container');
+    }
+    args.push(arg);
+  }
+  return { id: item.id, name: item.name, image: item.image, executable: item.executable, args };
+};
+
 /** Inspection evidence only. It is not a claim, permit, or reusable authorization. */
 export type WorkspaceSetupTrustInspection = {
   readonly registryRevision: number;
@@ -1595,6 +1629,111 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
       throw new Error('Builder lifecycle is not bound to the execution child');
     }
     return attempt;
+  }
+
+  /** The created (not yet started) Docker identity is committed under the exact
+   * durable launch reservation. Retrying cannot replace the external process. */
+  async persistExecutionChildContainer(request: {
+    scopeId: string;
+    parentClaimId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+    launchReservation: string;
+    container: ExecutionChildContainer;
+  }): Promise<void> {
+    const container = executionContainer(request.container);
+    if (container.name !== `forge-pi-${request.launchReservation}`) {
+      throw new Error('Container does not match its launch reservation');
+    }
+    await this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        const attempt = await this.#executionAttempt(tx, request);
+        const lease = (await this.#leases(tx, request.scopeId, request.claimId))[0];
+        if (lease === undefined) {
+          throw new Error('Execution child has no execution resources');
+        }
+        await this.#assertCurrent(tx, { ...request, resource: lease.resource });
+        if (
+          attempt.state !== 'RUNNING' ||
+          !same(attempt.sessionRef, {
+            backend: 'forge-launch-reservation',
+            value: request.launchReservation
+          })
+        ) {
+          throw new Error('Container creation has no current launch reservation');
+        }
+        const record = {
+          scopeId: request.scopeId,
+          parentClaimId: request.parentClaimId,
+          claimId: request.claimId,
+          owner: request.owner,
+          token: request.token,
+          launchReservation: request.launchReservation,
+          container
+        };
+        const existing = await this.#record(
+          tx,
+          request.owner.runId,
+          'pi-container',
+          request.owner.attemptId
+        );
+        if (existing !== undefined) {
+          if (!same(json(existing), record)) {
+            throw new Error('Execution container identity cannot be replaced');
+          }
+          return;
+        }
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_records(run_id,kind,key,payload) values($1,'pi-container',$2,$3)`,
+          [request.owner.runId, request.owner.attemptId, JSON.stringify(record)]
+        );
+      },
+      request.owner.runId
+    );
+  }
+
+  /** Recovery evidence only. Does not release the claim or retire any permit. */
+  async recoverExecutionChildContainer(request: {
+    scopeId: string;
+    parentClaimId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    token: number;
+  }): Promise<ExecutionChildContainer | undefined> {
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        await this.#executionAttempt(tx, request);
+        const saved = await this.#record(
+          tx,
+          request.owner.runId,
+          'pi-container',
+          request.owner.attemptId
+        );
+        if (saved === undefined) {
+          return undefined;
+        }
+        const record = fields(json(saved));
+        if (
+          record.scopeId !== request.scopeId ||
+          record.parentClaimId !== request.parentClaimId ||
+          record.claimId !== request.claimId ||
+          record.token !== request.token ||
+          !same(record.owner, request.owner) ||
+          typeof record.launchReservation !== 'string'
+        ) {
+          throw new Error('Execution container is not bound to the child');
+        }
+        const container = executionContainer(record.container);
+        if (container.name !== `forge-pi-${record.launchReservation}`) {
+          throw new Error('Execution container reservation differs');
+        }
+        return container;
+      },
+      request.owner.runId
+    );
   }
 
   /** A session is durable before the runner is allowed to dispatch tools. */

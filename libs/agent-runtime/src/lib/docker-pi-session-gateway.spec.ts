@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { DockerPiSessionGateway } from './docker-pi-session-gateway.js';
+import { DockerPiSessionGateway, type PersistedPiContainer } from './docker-pi-session-gateway.js';
 import { PiSessionCancellationConfirmedError } from './pi-gateway.js';
 import { ApprovedPiHostModelProxy, isolatedPiModel } from './pi-model-proxy.js';
 
@@ -28,6 +29,50 @@ const fixture = (body: string) =>
   });
 
 describe('Docker Pi host broker', () => {
+  it.skipIf(image === undefined)(
+    'recovers the exact created container without ever starting its process',
+    async () => {
+      let saved: PersistedPiContainer | undefined;
+      const gateway = new DockerPiSessionGateway({
+        image: image!,
+        executable: '/usr/local/bin/node',
+        args: ['-e', 'process.exit(99)'],
+        launchReservation: randomUUID(),
+        persistCreated: async (container) => {
+          saved = container;
+          throw new Error('lost database response');
+        }
+      });
+      try {
+        await expect(
+          gateway.start({
+            cwd: '/unmounted',
+            prompt: 'x',
+            tools: [],
+            onStarted: async () => {
+              throw new Error('Must not start');
+            },
+            executeTool: async () => {
+              throw new Error('Must not execute');
+            }
+          })
+        ).rejects.toThrow('lost database response');
+        if (saved === undefined) {
+          throw new Error('Missing exact container identity');
+        }
+        const before = JSON.parse((await execute('docker', ['inspect', saved.id])).stdout)[0];
+        expect(before.State.Status).toBe('created');
+        await gateway.stopPersistedContainer(saved);
+        await expect(execute('docker', ['inspect', saved.id])).rejects.toThrow();
+      } finally {
+        if (saved !== undefined) {
+          await execute('docker', ['rm', '-f', saved.id]).catch(() => {});
+        }
+      }
+    },
+    30_000
+  );
+
   it.skipIf(image === undefined)(
     'proxies model inference on the host without disclosing endpoint or credentials',
     async () => {

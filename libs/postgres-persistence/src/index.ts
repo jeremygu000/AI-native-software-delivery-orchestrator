@@ -9,6 +9,7 @@ export { PostgresGlobalMutationAuthority } from './lib/postgres-global-mutation-
 export type {
   GlobalIntegrationExecution,
   RecoveredExecutionChild,
+  ExecutionChildContainer,
   WorkspaceSetupRecoverySnapshot
 } from './lib/postgres-global-mutation-authority.js';
 export { PostgresWorkspaceSetupAdmission } from './lib/postgres-workspace-setup-admission.js';

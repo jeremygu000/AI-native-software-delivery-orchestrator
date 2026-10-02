@@ -93,6 +93,71 @@ it('rejects unsafe inspected configuration without starting any process', async 
   expect(mocks.execFile.mock.calls.some((call) => call[1][0] === 'rm')).toBe(false);
 });
 
+const reservation = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const persisted = {
+  id: 'b'.repeat(64),
+  name: `forge-pi-${reservation}`,
+  image,
+  executable: '/entrypoint',
+  args: []
+};
+const persistedInspection = () => ({
+  Id: persisted.id,
+  Name: `/${persisted.name}`,
+  Config: {
+    Image: image,
+    User: '65532:65532',
+    WorkingDir: '/tmp',
+    Entrypoint: [persisted.executable],
+    Cmd: []
+  }
+});
+
+it('persists an inspected container before start and retains it on persistence failure', async () => {
+  inspectOverride = persistedInspection();
+  const persistCreated = vi.fn(async () => {
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    throw new Error('database unavailable');
+  });
+  await expect(
+    new DockerPiSessionGateway({
+      image,
+      executable: '/entrypoint',
+      launchReservation: reservation,
+      persistCreated
+    }).start(request())
+  ).rejects.toThrow('database unavailable');
+  expect(persistCreated).toHaveBeenCalledExactlyOnceWith(persisted);
+  expect(mocks.spawn).not.toHaveBeenCalled();
+  expect(mocks.execFile.mock.calls.some((call) => call[1][0] === 'rm')).toBe(false);
+});
+
+it('stops only the persisted immutable container without launching a replacement', async () => {
+  inspectOverride = persistedInspection();
+  await gateway().stopPersistedContainer(persisted);
+  expect(mocks.spawn).not.toHaveBeenCalled();
+  expect(mocks.execFile.mock.calls.every((call) => call[1][0] !== 'create')).toBe(true);
+  inspectOverride = { ...persistedInspection(), Id: 'c'.repeat(64) };
+  await expect(gateway().stopPersistedContainer(persisted)).rejects.toThrow('identity');
+});
+
+it('removes a never-started reservation and refuses unconfirmed daemon shutdown', async () => {
+  inspectOverride = {
+    ...persistedInspection(),
+    State: { Running: false, Restarting: false, Status: 'created' }
+  };
+  await gateway().stopPersistedContainer(persisted);
+  expect(mocks.execFile.mock.calls.some((call) => call[1][0] === 'rm')).toBe(true);
+  mocks.execFile.mockClear();
+  running = true;
+  inspectOverride = persistedInspection();
+  shutdownFailure = true;
+  await expect(gateway().stopPersistedContainer(persisted)).rejects.toThrow(
+    'daemon stop unavailable'
+  );
+  expect(mocks.execFile.mock.calls.some((call) => call[1][0] === 'rm')).toBe(false);
+});
+
 it('acknowledges durable start, validates tool replies and requires matching completion', async () => {
   const options = request();
   child.stdin.on('data', (data) => {

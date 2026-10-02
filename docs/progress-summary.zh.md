@@ -3841,3 +3841,13 @@ Gateway 现在允许 registry digest 或不可变本地 Docker image ID，仍拒
 四项选中的真实 SDK／container 与 PostgreSQL／Git 测试通过。全量 `pnpm check` 通过 87 个 test files 中的 924 项测试，跳过七项可选 Docker 测试；格式、TypeScript、lint 和覆盖率通过，语句、分支、函数和代码行分别为 90.55%、85.42%、93.45% 和 90.45%。`pnpm build` 与编译后 CLI／worker 验收通过。一轮全量运行曾触发现有 Temporal 五秒超时；该测试单独重跑和随后全量检查均通过。
 
 本轮提供可执行镜像及端到端 SDK／model／tool composition，不代表生产 GLOBAL_READY 已启用。部署镜像发布及批准的远程模型配置、durable container／session recovery、认证停机确认、dynamic global expansion 和完整 scheduler／worker cutover 仍未完成。生产 GLOBAL_READY 保持禁用，M4.2 为 OPEN，M4.3 尚未开始。PostgreSQL migration、ACL 和冻结的 builder／repair／integration authority 未改；public number-token／BIGINT、诊断资源 ID 和 integration actor 命名仍作为 P2 延后。
+
+## 在外部进程启动前持久化 builder 容器
+
+独立复审接受 `9319528` 的真实隔离 SDK 镜像边界。下一条具体重启缺口是：durable Pi session ID 本身不能定位宿主丢失后留下的 Docker 容器。现在 builder 在 Docker 启动进程前，将不可变 container ID、由 reservation 派生的 name、固定镜像和精确 entrypoint／arguments 写入 PostgreSQL。记录在既有 trust→scope→run 事务下绑定 exact execution child、owner、token 和 durable RUNNING launch reservation；重试保持原记录，替换身份被拒绝。使用现有 authority record store，不新增 migration 或扩大权限。
+
+恢复 RUNNING 时，builder 先保存 UNKNOWN 和 HELD_UNCERTAIN，再由独立连接读取已登记 descriptor，gateway 停止精确对应的容器。尚未启动的容器被移除以阻止延迟启动；运行中的容器必须 kill、wait 并重新检查为 exited。身份／配置不匹配或 daemon 失败都会拒绝恢复，不启动替代会话。容器停机不证明旧宿主工具回调已经 drain，因此未完成 permit 保留，恢复操作绝不释放占用。
+
+显式 `createPostgresDockerChildRunner` composition 接起已接受的 SDK gateway、宿主批准模型、强制 fenced tools、builder lifecycle 和启动前持久化回调。普通测试使用真实 PostgreSQL 与受控 gateway；可选镜像测试运行真实容器 SDK 并核对已保存 Docker ID。真实重启测试证明隔离先于 stop callback；独立 Docker 回归证明持久化响应丢失会留下未启动容器，可按 exact identity 恢复。六项真实 Docker gateway 测试和真实 SDK／PG builder 场景通过。全量 `pnpm check` 通过 87 个文件中的 927 项测试，跳过八项可选 Docker 测试；格式、TypeScript、lint 和覆盖率通过，语句、分支、函数和代码行分别为 90.42%、85.39%、93.34% 和 90.33%。编译后 CLI／worker 验收也成功构建包和应用。
+
+本轮是 builder container／session recovery，不是自动恢复会话或外部 quiescence 证明。显式 factory 不提供 independent stop confirmer，因此正常 completed 结果仍保留 HELD_UNCERTAIN 占用。Repair 容器恢复、认证停机确认与最终清算、dynamic global expansion 和 scheduler／worker cutover 仍未完成。普通生产 GLOBAL_READY startup 保持禁用；M4.2 为 OPEN，M4.3 尚未开始。历史 migration 和 ACL 未改；number-token／BIGINT、resource-ID 歧义和 integration actor 命名仍为 P2。

@@ -12,6 +12,7 @@ export type {
 } from './lib/pi-gateway.js';
 export { PiCodingAgentGateway, createReadOnlyPiTools } from './lib/pi-gateway.js';
 export { DockerPiSessionGateway } from './lib/docker-pi-session-gateway.js';
+export type { PersistedPiContainer } from './lib/docker-pi-session-gateway.js';
 export { runIsolatedPiSession } from './lib/isolated-pi-session.js';
 export { ApprovedPiHostModelProxy } from './lib/pi-model-proxy.js';
 export type { PiHostModelProxy } from './lib/pi-model-proxy.js';

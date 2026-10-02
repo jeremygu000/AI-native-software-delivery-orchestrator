@@ -13,6 +13,15 @@ import {
 
 const execute = promisify(execFile);
 
+/** Immutable daemon identity saved by the host before an isolated process starts. */
+export interface PersistedPiContainer {
+  readonly id: string;
+  readonly name: string;
+  readonly image: string;
+  readonly executable: string;
+  readonly args: readonly string[];
+}
+
 /** A deployment-owned image speaks the Forge stdio protocol. The container has
  * no repository mount, Docker socket or database credential. Only the host tool
  * callback may touch the workspace; its caller must supply durable fenced tools.
@@ -26,6 +35,9 @@ export class DockerPiSessionGateway implements PiSessionGateway {
       readonly dockerExecutable?: string;
       readonly timeoutMs?: number;
       readonly modelProxy?: PiHostModelProxy;
+      /** Deployment-owned launch reservation, never a task/model-selected name. */
+      readonly launchReservation?: string;
+      readonly persistCreated?: (container: PersistedPiContainer) => Promise<void>;
     }
   ) {
     if (
@@ -33,6 +45,12 @@ export class DockerPiSessionGateway implements PiSessionGateway {
       !configuration.executable.startsWith('/')
     ) {
       throw new Error('Isolated Pi requires a pinned image and absolute image entrypoint');
+    }
+    if (
+      configuration.launchReservation !== undefined &&
+      !/^[a-f0-9-]{36}$/.test(configuration.launchReservation)
+    ) {
+      throw new Error('Isolated Pi launch reservation must be a UUID');
     }
   }
 
@@ -43,7 +61,7 @@ export class DockerPiSessionGateway implements PiSessionGateway {
       throw new PiSessionCancellationConfirmedError();
     }
     const docker = this.configuration.dockerExecutable ?? 'docker';
-    const name = `forge-pi-${randomUUID()}`;
+    const name = `forge-pi-${this.configuration.launchReservation ?? randomUUID()}`;
     const command = async (...args: string[]) =>
       execute(docker, args, { timeout: 30_000, maxBuffer: piSessionFrameLimit });
     const inspect = async () => {
@@ -110,6 +128,19 @@ export class DockerPiSessionGateway implements PiSessionGateway {
       }
       // Docker does not inherit the host environment. Image ENV belongs to the
       // trusted pinned deployment image, never to the task repository.
+      if (this.configuration.persistCreated !== undefined) {
+        const id = protocolText(container.Id);
+        if (!/^[a-f0-9]{64}$/.test(id) || container.Name !== `/${name}`) {
+          throw new Error('Isolated Pi immutable container identity differs');
+        }
+        await this.configuration.persistCreated({
+          id,
+          name,
+          image: this.configuration.image,
+          executable: this.configuration.executable,
+          args: [...(this.configuration.args ?? [])]
+        });
+      }
       const child = spawn(docker, ['start', '--attach', '--interactive', name], {
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe']
@@ -313,5 +344,58 @@ export class DockerPiSessionGateway implements PiSessionGateway {
       // An unconfirmed container is retained for operator recovery, never
       // converted into a falsely confirmed stop or force-removed here.
     }
+  }
+
+  /** Recovery only observes/stops the exact registered container. It does not
+   * prove that callbacks in a lost host have drained or authorize claim release.
+   */
+  async stopPersistedContainer(container: PersistedPiContainer): Promise<void> {
+    if (
+      !/^[a-f0-9]{64}$/.test(container.id) ||
+      !/^forge-pi-[a-f0-9-]{36}$/.test(container.name) ||
+      container.image !== this.configuration.image ||
+      container.executable !== this.configuration.executable ||
+      JSON.stringify(container.args) !== JSON.stringify(this.configuration.args ?? [])
+    ) {
+      throw new Error('Persisted Pi container does not match deployment configuration');
+    }
+    const command = async (...args: string[]) =>
+      execute(this.configuration.dockerExecutable ?? 'docker', args, {
+        timeout: 30_000,
+        maxBuffer: piSessionFrameLimit
+      });
+    const inspect = async () => {
+      const value: unknown = JSON.parse((await command('inspect', container.id)).stdout);
+      if (!Array.isArray(value) || value.length !== 1) {
+        throw new Error('Persisted Pi container cannot be inspected');
+      }
+      const record = protocolObject(value[0]);
+      const config = protocolObject(record.Config);
+      if (
+        record.Id !== container.id ||
+        record.Name !== `/${container.name}` ||
+        config.Image !== container.image ||
+        JSON.stringify(config.Entrypoint) !== JSON.stringify([container.executable]) ||
+        JSON.stringify(config.Cmd ?? []) !== JSON.stringify(container.args)
+      ) {
+        throw new Error('Persisted Pi daemon identity differs');
+      }
+      return protocolObject(record.State);
+    };
+    const state = await inspect();
+    if (state.Running === true) {
+      await command('kill', container.id);
+    }
+    if (state.Status === 'created' && state.Running === false && state.Restarting === false) {
+      // No process ever started. Remove it to prevent a delayed Docker start.
+      await command('rm', container.id);
+      return;
+    }
+    await command('wait', container.id);
+    const stopped = await inspect();
+    if (stopped.Running !== false || stopped.Restarting !== false || stopped.Status !== 'exited') {
+      throw new Error('Persisted Pi container stop is unconfirmed');
+    }
+    // Retain the stopped identity for independent recovery; never replace it.
   }
 }

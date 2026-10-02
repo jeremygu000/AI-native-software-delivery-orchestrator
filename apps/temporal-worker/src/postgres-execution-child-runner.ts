@@ -5,7 +5,10 @@ import type {
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { randomUUID } from 'node:crypto';
 import type { AgentToolRuntime } from '@ai-native-software-delivery-orchestrator/agent-runtime';
-import { PostgresGlobalMutationAuthority } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
+import {
+  PostgresGlobalMutationAuthority,
+  type ExecutionChildContainer
+} from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 
 import { PostgresExecutionChildTools } from './postgres-execution-child.js';
 
@@ -18,7 +21,15 @@ export class PostgresExecutionChildRunner {
     private readonly options: {
       readonly authority: PostgresGlobalMutationAuthority;
       readonly tools: PostgresExecutionChildTools;
-      readonly createRunner: (tools: AgentToolRuntime) => AgentRunner;
+      readonly createRunner: (
+        tools: AgentToolRuntime,
+        launch: {
+          readonly reservation: string;
+          readonly persistCreated: (container: ExecutionChildContainer) => Promise<void>;
+        }
+      ) => AgentRunner;
+      /** Independent daemon control only; never implies lost host callbacks drained. */
+      readonly stopRecoveredContainer?: (container: ExecutionChildContainer) => Promise<void>;
       readonly confirmStopped?: (
         request: AgentRunRequest,
         result: AgentRunResult
@@ -53,6 +64,12 @@ export class PostgresExecutionChildRunner {
         state: 'UNKNOWN',
         detail: 'Worker recovered a RUNNING session without independent session recovery'
       });
+      // Quarantine precedes daemon control. A stopped container cannot prove the
+      // previous host's tool callback completed, so ownership stays uncertain.
+      const container = await this.options.authority.recoverExecutionChildContainer(identity);
+      if (container !== undefined && this.options.stopRecoveredContainer !== undefined) {
+        await this.options.stopRecoveredContainer(container);
+      }
       throw new Error('Recovered RUNNING child requires independent session recovery');
     }
     const launchReservation = { backend: 'forge-launch-reservation', value: randomUUID() };
@@ -65,23 +82,33 @@ export class PostgresExecutionChildRunner {
     let started = false;
     let result: AgentRunResult;
     try {
-      result = await this.options.createRunner(tools).run({
-        ...request,
-        onStarted: async (startedSession) => {
-          if (startedSession.sessionRef === undefined) {
-            throw new Error('Global builder requires a durable external session identity');
+      result = await this.options
+        .createRunner(tools, {
+          reservation: launchReservation.value,
+          persistCreated: (container) =>
+            this.options.authority.persistExecutionChildContainer({
+              ...identity,
+              launchReservation: launchReservation.value,
+              container
+            })
+        })
+        .run({
+          ...request,
+          onStarted: async (startedSession) => {
+            if (startedSession.sessionRef === undefined) {
+              throw new Error('Global builder requires a durable external session identity');
+            }
+            const running = await this.options.authority.startExecutionChild({
+              ...identity,
+              expectedRevision: reserved.revision,
+              previousSessionRef: launchReservation,
+              sessionRef: startedSession.sessionRef
+            });
+            revision = running.revision;
+            started = true;
+            await request.onStarted(startedSession);
           }
-          const running = await this.options.authority.startExecutionChild({
-            ...identity,
-            expectedRevision: reserved.revision,
-            previousSessionRef: launchReservation,
-            sessionRef: startedSession.sessionRef
-          });
-          revision = running.revision;
-          started = true;
-          await request.onStarted(startedSession);
-        }
-      });
+        });
     } catch (error) {
       await this.options.authority.finishExecutionChild({
         ...identity,

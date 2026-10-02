@@ -36,6 +36,7 @@ import { PostgresWorkspaceRecoveryObserver } from './postgres-workspace-recovery
 import { PostgresWorkspaceHandoff } from './postgres-workspace-handoff.js';
 import { PostgresExecutionChildTools } from './postgres-execution-child.js';
 import { PostgresExecutionChildRunner } from './postgres-execution-child-runner.js';
+import { createPostgresDockerChildRunner } from './postgres-docker-child-runner.js';
 import { PostgresRepairRunner } from './postgres-repair-runner.js';
 import { PostgresIntegrationRunner } from './postgres-integration-runner.js';
 import {
@@ -654,9 +655,18 @@ it.each([
               resolveFileId: (path) => path
             });
             let launches = 0;
+            const stoppedRecovered = vi.fn(async () => {
+              expect(
+                await admin.unsafe(
+                  `select state from "${schema}".forge_global_claims where claim_id=$1`,
+                  [child.claimId]
+                )
+              ).toMatchObject([{ state: 'HELD_UNCERTAIN' }]);
+            });
             const lifecycleRunner = new PostgresExecutionChildRunner({
               authority: resumedAuthority,
               tools: toolsFactory,
+              stopRecoveredContainer: stoppedRecovered,
               ...(lifecycle === 'unconfirmed' ? {} : { confirmStopped: stopConfirmation }),
               createRunner: (fencedTools) => {
                 launches += 1;
@@ -707,16 +717,110 @@ it.each([
                 };
               }
             });
+            if (lifecycle === 'unconfirmed') {
+              const gatewayStub =
+                process.env.FORGE_TEST_PI_SDK_IMAGE === undefined
+                  ? vi
+                      .spyOn(DockerPiSessionGateway.prototype, 'start')
+                      .mockImplementation(async (session) => {
+                        await session.onStarted('factory-controlled-session');
+                        const result = await session.executeTool({
+                          name: 'forge_write',
+                          path: 'approved.txt',
+                          content: 'factory-output'
+                        });
+                        if (result.isError) {
+                          throw new Error(result.content);
+                        }
+                        return { sessionId: 'factory-controlled-session' };
+                      })
+                  : undefined;
+              try {
+                const dockerRunner = createPostgresDockerChildRunner({
+                  authority: resumedAuthority,
+                  tools: toolsFactory,
+                  image: process.env.FORGE_TEST_PI_SDK_IMAGE ?? `sha256:${'a'.repeat(64)}`,
+                  executable: '/usr/local/bin/node',
+                  args: ['/opt/forge/entrypoint.mjs'],
+                  modelProxy: {
+                    complete: async () => ({
+                      role: 'assistant',
+                      api: 'openai-completions',
+                      provider: 'forge-isolated',
+                      model: 'forge-host-approved',
+                      content: [{ type: 'text', text: 'Done' }],
+                      stopReason: 'stop',
+                      timestamp: Date.now(),
+                      usage: {
+                        input: 1,
+                        output: 1,
+                        cacheRead: 0,
+                        cacheWrite: 0,
+                        totalTokens: 2,
+                        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+                      }
+                    })
+                  }
+                });
+                expect(await dockerRunner.run(scopeId, 'parent', agentRequest)).toMatchObject({
+                  result: { status: 'completed' },
+                  claimState: 'HELD_UNCERTAIN'
+                });
+                if (process.env.FORGE_TEST_PI_SDK_IMAGE !== undefined) {
+                  const descriptor =
+                    await resumedAuthority.recoverExecutionChildContainer(childIdentity);
+                  expect(descriptor).toMatchObject({ image: process.env.FORGE_TEST_PI_SDK_IMAGE });
+                  expect(descriptor?.id).toMatch(/^[a-f0-9]{64}$/);
+                } else {
+                  expect(gatewayStub).toHaveBeenCalledOnce();
+                  expect(readFileSync(join(worktree, 'approved.txt'), 'utf8')).toBe(
+                    'factory-output'
+                  );
+                }
+              } finally {
+                gatewayStub?.mockRestore();
+              }
+              return;
+            }
             if (lifecycle === 'restart') {
+              const reservation = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
               const running = await resumedAuthority.startExecutionChild({
                 ...childIdentity,
                 expectedRevision: 2,
-                sessionRef: { backend: 'pi', value: 'previous-worker-session' }
+                sessionRef: { backend: 'forge-launch-reservation', value: reservation }
               });
+              const container = {
+                id: 'a'.repeat(64),
+                name: `forge-pi-${reservation}`,
+                image: 'test@sha256:' + 'b'.repeat(64),
+                executable: '/entrypoint',
+                args: []
+              };
+              await resumedAuthority.persistExecutionChildContainer({
+                ...childIdentity,
+                launchReservation: reservation,
+                container
+              });
+              await resumedAuthority.persistExecutionChildContainer({
+                ...childIdentity,
+                launchReservation: reservation,
+                container
+              });
+              await expect(
+                resumedAuthority.persistExecutionChildContainer({
+                  ...childIdentity,
+                  launchReservation: reservation,
+                  container: { ...container, id: 'c'.repeat(64) }
+                })
+              ).rejects.toThrow('cannot be replaced');
+              expect(await authority.recoverExecutionChildContainer(childIdentity)).toEqual(
+                container
+              );
               await expect(
                 lifecycleRunner.run(scopeId, 'parent', { ...agentRequest, attempt: running })
               ).rejects.toThrow('independent session recovery');
               expect(stopConfirmation).not.toHaveBeenCalled();
+              expect(stoppedRecovered).toHaveBeenCalledExactlyOnceWith(container);
             } else if (lifecycle === 'failure') {
               await expect(lifecycleRunner.run(scopeId, 'parent', agentRequest)).rejects.toThrow(
                 'External session lost'
