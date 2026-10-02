@@ -3799,3 +3799,13 @@ ADMITTED 记录、仓库级 claim 和 lease 同事务提交。执行 Git 前先�
 这只是窄范围 provenance 修复，不是新的批准协议或 integration recovery 功能。历史 migration、ACL 和冻结的 builder／repair 生命周期行为均未改。Integration actor 命名仍是 P2 审计／composition 问题，不新增 actor registry。M4.2 保持 OPEN，生产 GLOBAL_READY 保持禁用，本次修复等待独立复审。
 
 全量 `pnpm check` 通过：格式、TypeScript project references、lint，以及 82 个文件中的 890 项测试；跳过一项可选 Docker 测试。语句、分支、函数和代码行覆盖率为 90.51%、85.34%、93.48% 和 90.41%，全部达到配置门槛。编译后 CLI／worker 验收也成功构建包和应用。
+
+## 阻止 Pi 自动资源发现绕过 Forge 工具
+
+独立复审接受 `c0f7f36`，关闭 integration plan-anchoring P1；builder、repair 和 integration 生命周期边界现已冻结。检查剩余真实 Pi 执行入口时发现另一条具体缺口：禁用内置工具并不会禁用 SDK 自动加载工作区／用户扩展模块。这些模块在发现阶段就会执行 JavaScript，早于受控 Forge 工具回调检查 mutation permit。
+
+Coding gateway 现在显式提供真实 SDK resource loader，关闭 extensions、skills、prompt templates、themes 和 context-file 自动发现。内存 settings 阻止工作区／用户配置加入资源包，显式 orchestrator system prompt 阻止自动发现的提示文件替换指令。内存 session storage 避免自动把 session 文件写入 task workspace。批准的 model 选择、Forge 工具白名单、durable session-start 顺序和取消行为保留；model credentials 仍使用原有 SDK authentication 配置。
+
+真实 resource-loader 回归创建一个导入时写入 marker 的工作区扩展。默认 SDK discovery 会执行它，证明夹具确实覆盖绕过路径；coding gateway 不执行它，也不消费工作区 settings、AGENTS.md 或 SYSTEM.md。定向 gateway／runner 测试通过 28 项。全量 `pnpm check` 通过 82 个文件中的 891 项测试，跳过一项可选 Docker 测试；格式、TypeScript、lint、覆盖率和编译后 CLI／worker 构建验收通过。语句、分支、函数和代码行覆盖率分别为 90.52%、85.34%、93.48% 和 90.42%。
+
+本轮关闭现有 coding-session 入口的自动发现，不代表 Pi 的操作系统隔离或认证外部 agent 停机确认已完成。真实隔离 Pi process 与 fenced broker、dynamic global resource expansion 和完整生产 cutover 仍未完成。没有修改 PostgreSQL authority、migration、权限或冻结的生命周期契约。生产 GLOBAL_READY 保持禁用；M4.2 仍为 OPEN，M4.3 尚未开始。Public number-token／BIGINT、诊断资源 ID 歧义和 integration actor 命名继续作为 P2 延后。

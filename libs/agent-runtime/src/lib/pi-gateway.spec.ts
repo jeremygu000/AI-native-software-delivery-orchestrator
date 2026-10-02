@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { DefaultResourceLoader, SettingsManager } from '@mariozechner/pi-coding-agent';
 
 import {
   createControlledPiTools,
@@ -23,6 +27,66 @@ const executePiToolDefinition = <T>(
 ) => tool.execute(id, params, undefined, undefined, undefined!);
 
 describe('PiCodingAgentGateway', () => {
+  it('does not execute discovered workspace extensions or consume workspace settings', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-pi-discovery-'));
+    const marker = join(cwd, 'extension-executed.txt');
+    try {
+      await mkdir(join(cwd, '.pi', 'extensions'), { recursive: true });
+      await writeFile(
+        join(cwd, '.pi', 'extensions', 'side-effect.ts'),
+        `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'executed');\nexport default function () {}\n`
+      );
+      await writeFile(
+        join(cwd, '.pi', 'settings.json'),
+        JSON.stringify({ defaultThinkingLevel: 'high' })
+      );
+      await writeFile(join(cwd, 'AGENTS.md'), 'Unapproved workspace instructions');
+      await writeFile(join(cwd, '.pi', 'SYSTEM.md'), 'Unapproved system prompt');
+      const discovered = new DefaultResourceLoader({
+        cwd,
+        agentDir: join(cwd, 'agent-config'),
+        settingsManager: SettingsManager.inMemory()
+      });
+      await discovered.reload();
+      expect(discovered.getExtensions().errors).toEqual([]);
+      expect(await readFile(marker, 'utf8')).toBe('executed');
+      await rm(marker);
+      const gateway = new PiCodingAgentGateway(async (options) => {
+        const loader = options.resourceLoader;
+        if (loader === undefined || options.settingsManager === undefined) {
+          throw new Error('Controlled Pi session must supply isolated resources');
+        }
+        expect(loader.getExtensions().extensions).toEqual([]);
+        expect(loader.getExtensions().errors).toEqual([]);
+        expect(loader.getAgentsFiles().agentsFiles).toEqual([]);
+        expect(loader.getSkills().skills).toEqual([]);
+        expect(loader.getPrompts().prompts).toEqual([]);
+        expect(loader.getAppendSystemPrompt()).toEqual([]);
+        expect(loader.getSystemPrompt()).not.toContain('Unapproved');
+        expect(options.settingsManager.getDefaultThinkingLevel()).not.toBe('high');
+        expect(options.sessionManager?.getSessionFile()).toBeUndefined();
+        return {
+          session: {
+            sessionId: 'isolated-session',
+            setActiveToolsByName: () => {},
+            prompt: async () => {},
+            abort: async () => {}
+          }
+        };
+      });
+      await gateway.start({
+        cwd,
+        prompt: 'Approved instructions',
+        tools: ['forge_read'],
+        executeTool: async () => ({ content: 'unused' }),
+        onStarted: async () => {}
+      });
+      await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('maps each controlled Pi tool to the provider-neutral tool call', async () => {
     const executeTool = vi.fn(async (call) => ({ content: JSON.stringify(call) }));
     const [read, list, find, edit, write, command] = createControlledPiTools(executeTool);

@@ -1,4 +1,10 @@
-import { createAgentSession, defineTool } from '@mariozechner/pi-coding-agent';
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  defineTool,
+  SessionManager,
+  SettingsManager
+} from '@mariozechner/pi-coding-agent';
 import type { CancellationSignal } from '@ai-native-software-delivery-orchestrator/domain';
 import { Type } from 'typebox';
 
@@ -153,8 +159,27 @@ export class PiCodingAgentGateway implements PiSessionGateway {
     readonly onStarted: (sessionId: string) => Promise<void>;
     readonly cancellationSignal?: CancellationSignal;
   }): Promise<{ readonly sessionId: string }> {
+    // Tool allowlists do not constrain extension module side effects. Never load
+    // workspace/user extensions or settings into an orchestrator-owned session.
+    const settingsManager = SettingsManager.inMemory();
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: options.cwd,
+      agentDir: options.cwd,
+      settingsManager,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      systemPrompt: 'Use only the supplied Forge tools and orchestrator instructions.',
+      appendSystemPrompt: []
+    });
+    await resourceLoader.reload();
     const { session } = await this.#createSession({
       cwd: options.cwd,
+      settingsManager,
+      resourceLoader,
+      sessionManager: SessionManager.inMemory(options.cwd),
       noTools: 'builtin',
       tools: [...options.tools],
       customTools: createControlledPiTools(options.executeTool),
