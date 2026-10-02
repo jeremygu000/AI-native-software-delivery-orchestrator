@@ -11,6 +11,8 @@ export type {
   PiToolResult
 } from './lib/pi-gateway.js';
 export { PiCodingAgentGateway, createReadOnlyPiTools } from './lib/pi-gateway.js';
+export { DockerPiSessionGateway } from './lib/docker-pi-session-gateway.js';
+export { runIsolatedPiSession } from './lib/isolated-pi-session.js';
 export {
   createPlanningFactTools,
   PiPlanningAgent,

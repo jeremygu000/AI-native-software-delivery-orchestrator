@@ -3809,3 +3809,15 @@ Coding gateway 现在显式提供真实 SDK resource loader，关闭 extensions�
 真实 resource-loader 回归创建一个导入时写入 marker 的工作区扩展。默认 SDK discovery 会执行它，证明夹具确实覆盖绕过路径；coding gateway 不执行它，也不消费工作区 settings、AGENTS.md 或 SYSTEM.md。定向 gateway／runner 测试通过 28 项。全量 `pnpm check` 通过 82 个文件中的 891 项测试，跳过一项可选 Docker 测试；格式、TypeScript、lint、覆盖率和编译后 CLI／worker 构建验收通过。语句、分支、函数和代码行覆盖率分别为 90.52%、85.34%、93.48% 和 90.42%。
 
 本轮关闭现有 coding-session 入口的自动发现，不代表 Pi 的操作系统隔离或认证外部 agent 停机确认已完成。真实隔离 Pi process 与 fenced broker、dynamic global resource expansion 和完整生产 cutover 仍未完成。没有修改 PostgreSQL authority、migration、权限或冻结的生命周期契约。生产 GLOBAL_READY 保持禁用；M4.2 仍为 OPEN，M4.3 尚未开始。Public number-token／BIGINT、诊断资源 ID 歧义和 integration actor 命名继续作为 P2 延后。
+
+## 将隔离 session process 接到宿主 fenced tools
+
+独立复审接受 `23f0507` 的自动资源发现加固。下一增量把 session 协议移到真实进程边界：`DockerPiSessionGateway` 启动 digest-pinned、部署方拥有的镜像，不挂载仓库、不转发宿主凭据、无网络，使用只读 root filesystem、非特权用户和移除的 capabilities。只有容器临时存储可写。宿主启动进程前检查配置；镜像 entrypoint 由部署显式配置，不由 task 提供。
+
+镜像 adapter `runIsolatedPiSession` 可将显式配置的 Pi gateway 接到有大小限制的 JSON-lines broker。容器只收到批准 prompt 和 Forge 工具名，没有数据库凭据或可写 checkout。Session-start 消息必须先经宿主持久化确认，工具才能执行。Tool 请求按封闭的 Forge call union 解析，检查白名单，串行处理并拒绝重复请求 ID。宿主回调仍负责 durable authority：真实 PostgreSQL／linked-Git takeover 测试现把实际隔离容器的 `forge_write` 经 `PiAgentRunner`、恢复的 execution-child tools 和 `FencedMutationPort` 路由后，才由宿主修改批准文件。
+
+取消会终止容器及后代，等待 Docker 确认退出，再等待已开始的宿主 tool callback 结束，才报告 confirmed cancellation。协议错误、超大输出、重复请求、durable session establishment 失败和 daemon 停机无法确认均失效关闭。无法确认停止的容器保留给 operator recovery。真实 Docker 回归验证进程不能写 root filesystem、看不到 workspace／Docker socket，并证明取消不会丢弃正在执行的宿主回调。单元测试无需 Docker 即可覆盖畸形协议和 daemon-stop 失败。
+
+全量 `pnpm check` 通过 85 个文件中的 912 项测试，跳过四项可选 Docker 测试；格式、TypeScript、lint 和覆盖率门槛通过，语句、分支、函数和代码行分别为 90.62%、85.44%、93.53% 和 90.52%。编译后 CLI／worker 验收成功构建包和应用。另一次 pinned-image 运行通过全部六项选中的真实 Docker 与 PostgreSQL／Git takeover 测试。容器运行的是协议夹具，不是真实 model-backed Pi session：批准的 Pi image／entrypoint、model connectivity 和部署配置仍待完成；无网络容器不能直接访问 LLM endpoint，adapter 本身不提供这些设施。
+
+本轮建立隔离进程到 fenced 宿主工具的传输，不是 production cutover。Durable container recovery mapping、认证生产停机确认、dynamic resource expansion 和完整 global worker composition 仍未完成。生产 GLOBAL_READY 保持禁用；M4.2 为 OPEN，M4.3 尚未开始。没有修改 PostgreSQL migration、权限或冻结的生命周期契约，也没有降低覆盖率门槛。

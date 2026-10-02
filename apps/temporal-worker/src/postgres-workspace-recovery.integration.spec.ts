@@ -6,7 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import postgres from 'postgres';
-import { PiAgentRunner } from '@ai-native-software-delivery-orchestrator/agent-runtime';
+import {
+  DockerPiSessionGateway,
+  PiAgentRunner
+} from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import type { CreatePersistedRunRequest } from '@ai-native-software-delivery-orchestrator/domain';
 import {
   taskLeasePlanFingerprint,
@@ -524,20 +527,46 @@ it.each([
           const resumed = await attachTools(resumedAuthority);
           expect(await resumed.write('resumed.txt', 'second')).toMatchObject({ status: 'written' });
           const runner = new PiAgentRunner({
-            gateway: {
-              start: async (session) => {
-                await session.onStarted('controlled-session');
-                const outcome = await session.executeTool({
-                  name: 'forge_write',
-                  path: 'approved.txt',
-                  content: 'through-pi'
-                });
-                if (outcome.isError) {
-                  throw new Error(outcome.content);
-                }
-                return { sessionId: 'controlled-session' };
-              }
-            },
+            gateway:
+              process.env.FORGE_TEST_DOCKER_IMAGE !== undefined && lifecycle === 'takeover'
+                ? new DockerPiSessionGateway({
+                    image: process.env.FORGE_TEST_DOCKER_IMAGE,
+                    executable: '/usr/local/bin/node',
+                    args: [
+                      '-e',
+                      `
+                    const fs = require('node:fs');
+                    const send = (value) => process.stdout.write(JSON.stringify(value)+'\\n');
+                    require('node:readline').createInterface({input:process.stdin}).on('line', (line) => {
+                      const message = JSON.parse(line);
+                      if(message.type === 'start') {
+                        if(fs.existsSync('/workspace') || process.env.PGDATABASE) throw new Error('host access');
+                        send({type:'started',sessionId:'container-session'});
+                      } else if(message.type === 'started-ack') {
+                        send({type:'tool',id:'1',call:{name:'forge_write',path:'approved.txt',content:'through-pi'}});
+                      } else if(message.type === 'tool-result') {
+                        if(message.result.isError) throw new Error(message.result.content);
+                        send({type:'completed',sessionId:'container-session'});
+                        process.exit(0);
+                      }
+                    });
+                  `
+                    ]
+                  })
+                : {
+                    start: async (session) => {
+                      await session.onStarted('controlled-session');
+                      const outcome = await session.executeTool({
+                        name: 'forge_write',
+                        path: 'approved.txt',
+                        content: 'through-pi'
+                      });
+                      if (outcome.isError) {
+                        throw new Error(outcome.content);
+                      }
+                      return { sessionId: 'controlled-session' };
+                    }
+                  },
             createTools: () => resumed
           });
           expect((await runner.run(agentRequest)).status).toBe('completed');
