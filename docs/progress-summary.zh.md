@@ -3821,3 +3821,13 @@ Coding gateway 现在显式提供真实 SDK resource loader，关闭 extensions�
 全量 `pnpm check` 通过 85 个文件中的 912 项测试，跳过四项可选 Docker 测试；格式、TypeScript、lint 和覆盖率门槛通过，语句、分支、函数和代码行分别为 90.62%、85.44%、93.53% 和 90.52%。编译后 CLI／worker 验收成功构建包和应用。另一次 pinned-image 运行通过全部六项选中的真实 Docker 与 PostgreSQL／Git takeover 测试。容器运行的是协议夹具，不是真实 model-backed Pi session：批准的 Pi image／entrypoint、model connectivity 和部署配置仍待完成；无网络容器不能直接访问 LLM endpoint，adapter 本身不提供这些设施。
 
 本轮建立隔离进程到 fenced 宿主工具的传输，不是 production cutover。Durable container recovery mapping、认证生产停机确认、dynamic resource expansion 和完整 global worker composition 仍未完成。生产 GLOBAL_READY 保持禁用；M4.2 为 OPEN，M4.3 尚未开始。没有修改 PostgreSQL migration、权限或冻结的生命周期契约，也没有降低覆盖率门槛。
+
+## 通过批准的宿主模型为隔离 Pi 提供推理
+
+独立复审接受并冻结 `12c3f14` 的隔离 session 到宿主工具传输。选定的下一段 model boundary 保持容器无网络、无 provider credentials：只有宿主选择批准 model、endpoint、API key 和 inference budget。`ApprovedPiHostModelProxy` 解析 conversation messages，拒绝选择 provider options 的请求，重新构建且仅提供启用的 Forge tool schemas，再使用宿主固定配置调用真实 `pi-ai` SDK。回复规范化为公开 proxy identity，移除 provider diagnostics 和 metadata；容器不收到真实 endpoint 或 authentication 配置。
+
+隔离镜像 adapter 现在可创建真实 Pi SDK session，使用内存 authentication／model 配置并关闭自动资源发现。公开、非秘密的 routing marker 满足 SDK model selection；session inference function 把 model 请求经与 tool 请求相同的串行 broker 发给宿主。宿主仅在 durable session establishment 后接受 inference，沿用 request-ID／output 限制，在取消或超时时终止活跃 model inference，再等待回调结束并确认容器停机。Tool 副作用仍只在宿主 fenced callback 内执行。
+
+测试使用真实 Pi session loop，接收 model tool call、请求 Forge write，再继续获取最终 model 回复。另一个真实 `pi-ai` HTTP／SSE 测试确认仅宿主向本地 provider endpoint 发送配置的 credential，规范化回复不含该 credential 或 endpoint。真实 Docker 测试覆盖 model channel、没有转发 credential／endpoint 和取消；容器仍使用协议夹具镜像，不是已打包的 Pi SDK 镜像。没有调用付费远程模型。新增直接 `pi-ai` 依赖与现有 coding-agent SDK 同样固定为 0.73.1，避免混用生态版本。
+
+全量 `pnpm check` 通过 86 个文件中的 924 项测试，跳过五项可选 Docker 测试；格式、TypeScript、lint 和覆盖率通过，语句、分支、函数和代码行分别为 90.55%、85.42%、93.45% 和 90.45%。单独执行的 pinned-image Docker suite 通过五项测试。`pnpm build` 与编译后 CLI／worker 验收通过。部署方拥有的 Pi image／entrypoint，以及完整容器化 SDK／model／PG execution composition 仍待完成；分别验证组件不能证明该部署。Dynamic global resource expansion、durable container recovery mapping 和完整 worker cutover 仍未完成。生产 GLOBAL_READY 保持禁用；M4.2 为 OPEN，M4.3 尚未开始；PostgreSQL migration、ACL 和冻结的生命周期契约未改。

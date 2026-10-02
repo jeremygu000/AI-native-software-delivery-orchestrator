@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { StringDecoder } from 'node:string_decoder';
 import { PiSessionCancellationConfirmedError, type PiSessionGateway } from './pi-gateway.js';
+import type { PiHostModelProxy } from './pi-model-proxy.js';
 import {
   parsePiToolCall,
   piSessionFrameLimit,
@@ -24,6 +25,7 @@ export class DockerPiSessionGateway implements PiSessionGateway {
       readonly args?: readonly string[];
       readonly dockerExecutable?: string;
       readonly timeoutMs?: number;
+      readonly modelProxy?: PiHostModelProxy;
     }
   ) {
     if (
@@ -122,6 +124,7 @@ export class DockerPiSessionGateway implements PiSessionGateway {
       let queue = Promise.resolve();
       const seen = new Set<string>();
       let termination: Promise<void> | undefined;
+      const modelCancellation = new AbortController();
       const terminate = () => {
         termination ??= (async () => {
           const state = protocolObject((await inspect()).State);
@@ -143,6 +146,7 @@ export class DockerPiSessionGateway implements PiSessionGateway {
       };
       const fail = (error: unknown) => {
         failure ??= error;
+        modelCancellation.abort();
         void terminate().catch((stopError: unknown) => {
           failure = stopError;
           child.kill('SIGKILL');
@@ -190,6 +194,37 @@ export class DockerPiSessionGateway implements PiSessionGateway {
             }
             return;
           }
+          case 'model': {
+            if (
+              sessionId === undefined ||
+              completed ||
+              this.configuration.modelProxy === undefined
+            ) {
+              throw new Error('Isolated model request has no approved host proxy');
+            }
+            const id = protocolText(message.id);
+            if (seen.has(id) || seen.size >= 10_000) {
+              throw new Error('Duplicate or excessive isolated model requests');
+            }
+            seen.add(id);
+            try {
+              const response = await this.configuration.modelProxy.complete(
+                message.context,
+                options.tools,
+                modelCancellation.signal
+              );
+              if (!cancellationRequested && failure === undefined) {
+                send({ type: 'model-result', id, message: response });
+              }
+            } catch {
+              if (cancellationRequested) {
+                return;
+              }
+              // Provider exceptions may include URLs, headers or credentials.
+              throw new Error('Approved host model request failed');
+            }
+            return;
+          }
           case 'completed':
             if (sessionId === undefined || completed || message.sessionId !== sessionId) {
               throw new Error('Invalid isolated Pi completion');
@@ -203,6 +238,7 @@ export class DockerPiSessionGateway implements PiSessionGateway {
       };
       const cancel = () => {
         cancellationRequested = true;
+        modelCancellation.abort();
         void terminate().catch(fail);
       };
       options.cancellationSignal?.addEventListener('abort', cancel, { once: true });

@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { DockerPiSessionGateway } from './docker-pi-session-gateway.js';
 import { PiSessionCancellationConfirmedError } from './pi-gateway.js';
+import { ApprovedPiHostModelProxy, isolatedPiModel } from './pi-model-proxy.js';
 
 const image = process.env.FORGE_TEST_DOCKER_IMAGE;
 const execute = promisify(execFile);
@@ -27,6 +28,67 @@ const fixture = (body: string) =>
   });
 
 describe('Docker Pi host broker', () => {
+  it.skipIf(image === undefined)(
+    'proxies model inference on the host without disclosing endpoint or credentials',
+    async () => {
+      const secret = 'host-only-provider-secret';
+      let calls = 0;
+      const proxy = new ApprovedPiHostModelProxy({
+        model: { ...isolatedPiModel, provider: 'openai', baseUrl: 'https://host-only.example/v1' },
+        apiKey: secret,
+        complete: async (_model, _context, options) => {
+          expect(options?.apiKey).toBe(secret);
+          calls++;
+          return {
+            role: 'assistant',
+            api: isolatedPiModel.api,
+            provider: 'openai',
+            model: 'approved',
+            content: [{ type: 'text', text: 'approved-host-answer' }],
+            stopReason: 'stop',
+            timestamp: Date.now(),
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+            }
+          };
+        }
+      });
+      // The deployment config, not a container frame, installs the model proxy.
+      const gateway = new DockerPiSessionGateway({
+        image: image!,
+        executable: '/usr/local/bin/node',
+        args: [
+          '-e',
+          `const readline=require('node:readline'),fs=require('node:fs'); const send=v=>process.stdout.write(JSON.stringify(v)+'\\n'); readline.createInterface({input:process.stdin}).on('line',line=>{ const message=JSON.parse(line);
+        if(message.type==='start') send({type:'started',sessionId:'model-session'});
+        else if(message.type==='started-ack') send({type:'model',id:'model-1',context:{messages:[{role:'user',content:'Approved prompt',timestamp:1}],tools:[]}});
+        else if(message.type==='model-result') { if(JSON.stringify(message).includes('host-only') || process.env.OPENAI_API_KEY || fs.existsSync('/workspace')) throw new Error('credential leak'); if(message.message.content[0].text!=='approved-host-answer') throw new Error('bad inference'); send({type:'completed',sessionId:'model-session'}); process.exit(0); }
+      });`
+        ],
+        modelProxy: proxy,
+        timeoutMs: 15000
+      });
+      await expect(
+        gateway.start({
+          cwd: '/unmounted',
+          prompt: 'x',
+          tools: [],
+          onStarted: async () => {},
+          executeTool: async () => {
+            throw new Error('No tool');
+          }
+        })
+      ).resolves.toEqual({ sessionId: 'model-session' });
+      expect(calls).toBe(1);
+    },
+    30_000
+  );
+
   it('requires immutable image identity and an image-owned absolute entrypoint', () => {
     expect(() => new DockerPiSessionGateway({ image: 'node:latest', executable: '/node' })).toThrow(
       'pinned image'

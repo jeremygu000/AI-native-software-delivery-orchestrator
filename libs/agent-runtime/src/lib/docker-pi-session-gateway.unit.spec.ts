@@ -164,6 +164,54 @@ it('rejects cancellation before any Docker create operation', async () => {
   expect(mocks.execFile).not.toHaveBeenCalled();
 });
 
+it('aborts a host model request before confirming container cancellation', async () => {
+  const controller = new AbortController();
+  let modelAborted = false;
+  const proxy = {
+    complete: vi.fn(async (_context, _tools, signal: AbortSignal) => {
+      controller.abort();
+      if (!signal.aborted) {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener('abort', () => resolve(), { once: true })
+        );
+      }
+      modelAborted = true;
+      throw new Error('provider failure containing host-secret');
+    })
+  };
+  child.stdin.on('data', (data) => {
+    const message = JSON.parse(data.toString());
+    if (message.type === 'start') {
+      frame({ type: 'started', sessionId: 's' });
+    }
+    if (message.type === 'started-ack') {
+      frame({ type: 'model', id: '1', context: { messages: [] } });
+    }
+  });
+  await expect(
+    new DockerPiSessionGateway({ image, executable: '/entrypoint', modelProxy: proxy }).start({
+      ...request(),
+      cancellationSignal: controller.signal
+    })
+  ).rejects.toBeInstanceOf(PiSessionCancellationConfirmedError);
+  expect(modelAborted).toBe(true);
+  expect(proxy.complete).toHaveBeenCalledOnce();
+  expect(mocks.execFile.mock.calls.some((call) => call[1][0] === 'rm')).toBe(true);
+});
+
+it('refuses model requests without an approved deployment proxy', async () => {
+  child.stdin.on('data', (data) => {
+    const message = JSON.parse(data.toString());
+    if (message.type === 'start') {
+      frame({ type: 'started', sessionId: 's' });
+    }
+    if (message.type === 'started-ack') {
+      frame({ type: 'model', id: '1', context: { messages: [] } });
+    }
+  });
+  await expect(gateway().start(request())).rejects.toThrow('approved host proxy');
+});
+
 it.each(['truncated', 'stdout', 'stderr', 'mismatch', 'disabled', 'duplicate'])(
   'rejects %s protocol evidence',
   async (scenario) => {

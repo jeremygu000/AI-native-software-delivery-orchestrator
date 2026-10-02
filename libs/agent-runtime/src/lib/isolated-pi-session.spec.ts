@@ -3,8 +3,79 @@ import { createInterface } from 'node:readline';
 import { describe, expect, it } from 'vitest';
 import { runIsolatedPiSession } from './isolated-pi-session.js';
 import { parsePiToolCall } from './pi-session-protocol.js';
+import type { AssistantMessage } from '@mariozechner/pi-ai';
+
+const modelReply = (tool: boolean): AssistantMessage => ({
+  role: 'assistant',
+  api: 'openai-completions',
+  provider: 'forge-host-proxy',
+  model: 'approved-host-model',
+  content: tool
+    ? [
+        {
+          type: 'toolCall',
+          id: 'call-1',
+          name: 'forge_write',
+          arguments: { path: 'value.txt', content: 'model edit' }
+        }
+      ]
+    : [{ type: 'text', text: 'Done' }],
+  usage: {
+    input: 1,
+    output: 1,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 2,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+  },
+  stopReason: tool ? 'toolUse' : 'stop',
+  timestamp: Date.now()
+});
 
 describe('isolated Pi image adapter', () => {
+  it('runs a real Pi SDK session using host model replies and brokered writes', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const broker = createInterface({ input: output });
+    const events: string[] = [];
+    let models = 0;
+    broker.on('line', (line) => {
+      const message = JSON.parse(line);
+      events.push(message.type);
+      if (message.type === 'started') {
+        input.write('{"type":"started-ack"}\n');
+      }
+      if (message.type === 'model') {
+        models++;
+        expect(message.context.tools.map((tool: { name: string }) => tool.name)).toEqual([
+          'forge_write'
+        ]);
+        expect(JSON.stringify(message)).not.toContain('apiKey');
+        input.write(
+          `${JSON.stringify({ type: 'model-result', id: message.id, message: modelReply(models === 1) })}\n`
+        );
+      }
+      if (message.type === 'tool') {
+        expect(message.call).toEqual({
+          name: 'forge_write',
+          path: 'value.txt',
+          content: 'model edit'
+        });
+        input.write(
+          `${JSON.stringify({ type: 'tool-result', id: message.id, result: { content: 'Written' } })}\n`
+        );
+      }
+    });
+    input.write('{"type":"start","prompt":"Edit through Forge","tools":["forge_write"]}\n');
+    try {
+      await runIsolatedPiSession(undefined, { input, output });
+      expect(events).toEqual(['started', 'model', 'tool', 'model', 'completed']);
+    } finally {
+      broker.close();
+      input.destroy();
+      output.destroy();
+    }
+  });
   it('waits for durable acknowledgement and serializes concurrent tool exchanges', async () => {
     const input = new PassThrough();
     const output = new PassThrough();

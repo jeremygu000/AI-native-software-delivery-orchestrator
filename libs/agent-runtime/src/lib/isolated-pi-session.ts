@@ -1,7 +1,10 @@
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { stdin, stdout } from 'node:process';
-import type { PiSessionGateway, PiToolResult } from './pi-gateway.js';
+import { PiCodingAgentGateway, type PiSessionGateway, type PiToolResult } from './pi-gateway.js';
+import { AuthStorage, ModelRegistry, createAgentSession } from '@mariozechner/pi-coding-agent';
+import { createAssistantMessageEventStream, type Context } from '@mariozechner/pi-ai';
+import { isolatedPiModel, parseIsolatedAssistant } from './pi-model-proxy.js';
 import {
   parsePiToolCall,
   piSessionFrameLimit,
@@ -14,7 +17,7 @@ import {
  * Protocol stdout must not be shared with provider diagnostics (use stderr).
  */
 export const runIsolatedPiSession = async (
-  gateway: PiSessionGateway,
+  gateway: PiSessionGateway | undefined,
   streams: { readonly input: Readable; readonly output: Writable } = {
     input: stdin,
     output: stdout
@@ -38,6 +41,98 @@ export const runIsolatedPiSession = async (
   };
   let requestId = 0;
   let exchange = Promise.resolve();
+  const request = async (type: 'tool' | 'model', value: unknown) => {
+    let response: Record<string, unknown> | undefined;
+    const pending = exchange.then(async () => {
+      const id = String(++requestId);
+      send({ type, id, ...(type === 'tool' ? { call: value } : { context: value }) });
+      const result = await receive();
+      if (result.type !== `${type}-result` || result.id !== id) {
+        throw new Error('Isolated Pi response identity differs');
+      }
+      response = result;
+    });
+    exchange = pending;
+    await pending;
+    if (response === undefined) {
+      throw new Error('Missing isolated Pi response');
+    }
+    return response;
+  };
+  const modelGateway = () =>
+    new PiCodingAgentGateway(
+      async (options) => {
+        const authStorage = AuthStorage.inMemory();
+        // Public local routing marker, not a provider credential. No file/env auth lookup.
+        authStorage.setRuntimeApiKey(isolatedPiModel.provider, 'forge-broker-routing-marker');
+        options.settingsManager?.setCompactionEnabled(false);
+        options.settingsManager?.setRetryEnabled(false);
+        const { session } = await createAgentSession({
+          ...options,
+          model: isolatedPiModel,
+          authStorage,
+          modelRegistry: ModelRegistry.inMemory(authStorage)
+        });
+        session.agent.streamFn = (_model, context: Context) => {
+          const stream = createAssistantMessageEventStream();
+          void request('model', context)
+            .then((response) => {
+              const message = parseIsolatedAssistant(response.message);
+              stream.push({ type: 'start', partial: message });
+              if (
+                message.stopReason !== 'stop' &&
+                message.stopReason !== 'length' &&
+                message.stopReason !== 'toolUse'
+              ) {
+                throw new Error('Invalid host model result');
+              }
+              stream.push({ type: 'done', reason: message.stopReason, message });
+              stream.end(message);
+            })
+            .catch(() => {
+              const message = {
+                role: 'assistant' as const,
+                api: isolatedPiModel.api,
+                provider: isolatedPiModel.provider,
+                model: isolatedPiModel.id,
+                content: [],
+                usage: {
+                  input: 0,
+                  output: 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  totalTokens: 0,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+                },
+                stopReason: 'error' as const,
+                errorMessage: 'Host model broker failed',
+                timestamp: Date.now()
+              };
+              stream.push({ type: 'error', reason: 'error', error: message });
+              stream.end(message);
+            });
+          return stream;
+        };
+        return {
+          session: {
+            sessionId: session.sessionId,
+            setActiveToolsByName: (names) => session.setActiveToolsByName(names),
+            prompt: async (prompt) => {
+              await session.prompt(prompt);
+              const last = session.agent.state.messages.at(-1);
+              if (
+                last?.role === 'assistant' &&
+                (last.stopReason === 'error' || last.stopReason === 'aborted')
+              ) {
+                throw new Error('Host-proxied Pi inference did not complete');
+              }
+            },
+            abort: () => session.abort()
+          }
+        };
+      },
+      { model: isolatedPiModel }
+    );
   try {
     const start = await receive();
     if (start.type !== 'start' || !Array.isArray(start.tools)) {
@@ -57,7 +152,7 @@ export const runIsolatedPiSession = async (
           throw new Error('Unknown isolated Pi tool');
       }
     });
-    const session = await gateway.start({
+    const session = await (gateway ?? modelGateway()).start({
       cwd: '/tmp',
       prompt: protocolText(start.prompt),
       tools,
@@ -70,13 +165,8 @@ export const runIsolatedPiSession = async (
       executeTool: async (call): Promise<PiToolResult> => {
         // SDK tool parallelism is serialized over the single broker channel.
         let result: PiToolResult | undefined;
-        const pending = exchange.then(async () => {
-          const id = String(++requestId);
-          send({ type: 'tool', id, call: parsePiToolCall(call) });
-          const response = await receive();
-          if (response.type !== 'tool-result' || response.id !== id) {
-            throw new Error('Isolated Pi tool response identity differs');
-          }
+        {
+          const response = await request('tool', parsePiToolCall(call));
           const value = protocolObject(response.result);
           if (
             typeof value.content !== 'string' ||
@@ -88,9 +178,7 @@ export const runIsolatedPiSession = async (
             content: value.content,
             ...(value.isError === undefined ? {} : { isError: value.isError })
           };
-        });
-        exchange = pending;
-        await pending;
+        }
         if (result === undefined) {
           throw new Error('Missing isolated Pi tool result');
         }
