@@ -8,7 +8,10 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { PiAgentRunner } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import type { CreatePersistedRunRequest } from '@ai-native-software-delivery-orchestrator/domain';
-import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
+import {
+  taskLeasePlanFingerprint,
+  taskVerificationEvidenceFingerprint
+} from '@ai-native-software-delivery-orchestrator/domain';
 import { fingerprintPlanValue } from '@ai-native-software-delivery-orchestrator/planning';
 import {
   migratePostgresAuthoritySchema,
@@ -20,6 +23,7 @@ import {
 import {
   DockerWorkspaceGenerationSupervisor,
   GitWorkspaceManager,
+  GitRepositorySnapshotProvider,
   GitWorkspaceStateInspector
 } from '@ai-native-software-delivery-orchestrator/workspace-git';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
@@ -29,6 +33,7 @@ import { PostgresWorkspaceHandoff } from './postgres-workspace-handoff.js';
 import { PostgresExecutionChildTools } from './postgres-execution-child.js';
 import { PostgresExecutionChildRunner } from './postgres-execution-child-runner.js';
 import { PostgresRepairRunner } from './postgres-repair-runner.js';
+import { PostgresIntegrationRunner } from './postgres-integration-runner.js';
 import {
   WorkspaceRecoveryAttestor,
   verifyWorkspaceRecoveryAttestation
@@ -115,6 +120,16 @@ it.each([
   ['completed', 'repair-inflight'],
   ['completed', 'repair-unconfirmed'],
   ['completed', 'repair-trust'],
+  ['completed', 'integration-success'],
+  ['completed', 'integration-denied'],
+  ['completed', 'integration-failure'],
+  ['completed', 'integration-cancel'],
+  ['completed', 'integration-restart'],
+  ['completed', 'integration-unconfirmed'],
+  ['completed', 'integration-persist-failure'],
+  ['completed', 'integration-inflight'],
+  ['completed', 'integration-trust'],
+  ['completed', 'integration-blocked'],
   ['completed', 'unconfirmed']
 ] as const)(
   'hands off a %s Git permit and executes the %s child lifecycle',
@@ -200,7 +215,10 @@ it.each([
             agentId: 'agent',
             leasePlan: {
               taskId: 'task',
-              predictedResources: [{ type: 'project', projectId: 'project' }],
+              predictedResources:
+                lifecycle.startsWith('integration-') && lifecycle !== 'integration-denied'
+                  ? [{ type: 'repository' }]
+                  : [{ type: 'project', projectId: 'project' }],
               source: 'manual'
             },
             workspace: {
@@ -492,7 +510,13 @@ it.each([
             resolveFileId: (path) => path
           }).attach(scopeId, 'parent', agentRequest);
         const tools = await attachTools(authority);
-        await expect(tools.executeRepositoryMutation(async () => 'unapproved')).rejects.toThrow();
+        if (lifecycle.startsWith('integration-') && lifecycle !== 'integration-denied') {
+          expect(
+            await tools.executeRepositoryMutation(async () => 'approved repository execution')
+          ).toBe('approved repository execution');
+        } else {
+          await expect(tools.executeRepositoryMutation(async () => 'unapproved')).rejects.toThrow();
+        }
         expect(await tools.write('approved.txt', 'first')).toMatchObject({ status: 'written' });
         expect(readFileSync(join(worktree, 'approved.txt'), 'utf8')).toBe('first');
         const resumedAuthority = await PostgresGlobalMutationAuthority.connect(config);
@@ -621,7 +645,8 @@ it.each([
               expect(outcome.claimState).toBe(
                 lifecycle === 'success' ||
                   lifecycle === 'concurrent' ||
-                  lifecycle.startsWith('repair-')
+                  lifecycle.startsWith('repair-') ||
+                  lifecycle.startsWith('integration-')
                   ? 'RELEASED'
                   : 'HELD_UNCERTAIN'
               );
@@ -643,7 +668,8 @@ it.each([
             expect(finalClaim[0]?.state).toBe(
               lifecycle === 'success' ||
                 lifecycle === 'concurrent' ||
-                lifecycle.startsWith('repair-')
+                lifecycle.startsWith('repair-') ||
+                lifecycle.startsWith('integration-')
                 ? 'RELEASED'
                 : 'HELD_UNCERTAIN'
             );
@@ -652,6 +678,221 @@ it.each([
             expect(
               await resumedAuthority.recoverFencedMutationPermits(scopeId, child.claimId)
             ).toHaveLength(lifecycle === 'inflight' ? 1 : 0);
+            if (lifecycle.startsWith('integration-')) {
+              const snapshots = new GitRepositorySnapshotProvider();
+              const snapshot = await snapshots.capture({ repositoryPath: worktree });
+              const evidencePayload = {
+                id: 'integration-verification',
+                runId: request.run.id,
+                taskId: 'task',
+                attemptId: agentRequest.attempt.id,
+                workspaceId: workspace.id,
+                workspaceRevision: workspace.revision,
+                workspaceChangeFingerprint: snapshot.workingTreeFingerprint,
+                verificationPolicyFingerprint: request.run.authority.verificationPolicyFingerprint,
+                status: 'passed' as const,
+                verifiedAt: new Date().toISOString()
+              };
+              const evidence = {
+                ...evidencePayload,
+                fingerprint: taskVerificationEvidenceFingerprint(evidencePayload)
+              };
+              await executionStore.persistVerificationEvidence(evidence);
+              const subject = {
+                builderAttemptId: agentRequest.attempt.id,
+                outputAttemptId: agentRequest.attempt.id,
+                workspaceId: workspace.id,
+                workspaceRevision: workspace.revision,
+                workspaceChangeFingerprint: snapshot.workingTreeFingerprint,
+                impactFingerprint: `sha256:${'a'.repeat(64)}`,
+                verificationFingerprint: evidence.fingerprint
+              };
+              await executionStore.persistReview({
+                runId: request.run.id,
+                taskId: 'task',
+                iteration: 1,
+                subject,
+                review: {
+                  recommendation: 'accept',
+                  summary: 'Accepted exact integration output',
+                  findings: []
+                }
+              });
+              const integrationRequest = {
+                scopeId,
+                claimId: 'integration-global',
+                owner: { ...parentOwner, attemptId: 'integration-execution' },
+                reviewIteration: 1,
+                subject
+              };
+              const counterBefore = await admin.unsafe(
+                `select next_token from "${schema}".forge_global_scopes where id=$1`,
+                [scopeId]
+              );
+              if (lifecycle === 'integration-denied') {
+                await expect(
+                  resumedAuthority.admitIntegrationExecution(integrationRequest)
+                ).rejects.toThrow('repository execution authority');
+                expect(
+                  await admin.unsafe(
+                    `select next_token from "${schema}".forge_global_scopes where id=$1`,
+                    [scopeId]
+                  )
+                ).toEqual(counterBefore);
+                expect(git('rev-parse', 'HEAD')).toBe(base);
+                return;
+              }
+              const admitted = await resumedAuthority.admitIntegrationExecution(integrationRequest);
+              if (admitted.status !== 'granted') {
+                throw new Error('Expected integration grant');
+              }
+              expect(await resumedAuthority.admitIntegrationExecution(integrationRequest)).toEqual(
+                admitted
+              );
+              let gitCalls = 0;
+              const manager = new GitWorkspaceManager();
+              const integrationRunner = new PostgresIntegrationRunner({
+                authority:
+                  lifecycle === 'integration-persist-failure'
+                    ? new Proxy(resumedAuthority, {
+                        get(target, property) {
+                          if (property === 'finishIntegrationExecution') {
+                            return async () => {
+                              throw new Error('Integration persistence unavailable');
+                            };
+                          }
+                          const value = Reflect.get(target, property);
+                          return typeof value === 'function' ? value.bind(target) : value;
+                        }
+                      })
+                    : resumedAuthority,
+                snapshots,
+                ...(lifecycle === 'integration-unconfirmed'
+                  ? {}
+                  : { confirmStopped: async () => 'Independent Git supervisor confirmed exit' }),
+                workspaceManager: {
+                  commit: async (commitRequest) => {
+                    gitCalls += 1;
+                    await expect(integrationRunner.run(admitted.execution)).rejects.toThrow(
+                      'already running'
+                    );
+                    if (lifecycle === 'integration-failure') {
+                      throw new Error('Git process response lost');
+                    }
+                    if (lifecycle === 'integration-cancel') {
+                      await executionStore.requestCancellation(request.run.id);
+                    }
+                    if (lifecycle === 'integration-trust') {
+                      await admin.unsafe(
+                        `update "${schema}".forge_global_trust_keys set state='REVOKED' where key_id='key'`
+                      );
+                    }
+                    if (lifecycle === 'integration-inflight') {
+                      await resumedAuthority.beginFencedMutation({
+                        ...admitted.execution,
+                        resource: { type: 'repository' }
+                      });
+                    }
+                    return manager.commit(commitRequest);
+                  },
+                  integrate: async (target) => {
+                    if (lifecycle === 'integration-blocked') {
+                      writeFileSync(
+                        join(integration, 'approved.txt'),
+                        'Independent integration conflict'
+                      );
+                    }
+                    return manager.integrate(target);
+                  }
+                }
+              });
+              if (lifecycle === 'integration-restart') {
+                await resumedAuthority.startIntegrationExecution(
+                  admitted.execution,
+                  'previous-git-launch'
+                );
+                await expect(integrationRunner.run(admitted.execution)).rejects.toThrow(
+                  'already running'
+                );
+                expect(gitCalls).toBe(0);
+                const recoveredIntegration = await resumedAuthority.recoverIntegrationExecution(
+                  scopeId,
+                  request.run.id,
+                  'task'
+                );
+                await expect(integrationRunner.run(recoveredIntegration)).rejects.toThrow(
+                  'independent recovery'
+                );
+                expect(gitCalls).toBe(0);
+                expect(
+                  await admin.unsafe(
+                    `select state from "${schema}".forge_global_claims where claim_id='integration-global'`
+                  )
+                ).toMatchObject([{ state: 'HELD_UNCERTAIN' }]);
+                return;
+              }
+              if (lifecycle === 'integration-failure') {
+                await expect(integrationRunner.run(admitted.execution)).rejects.toThrow(
+                  'response lost'
+                );
+              } else if (lifecycle === 'integration-persist-failure') {
+                await expect(integrationRunner.run(admitted.execution)).rejects.toThrow(
+                  'persistence unavailable'
+                );
+                expect(
+                  await resumedAuthority.recoverFencedMutationPermits(
+                    scopeId,
+                    admitted.execution.claimId
+                  )
+                ).toHaveLength(1);
+                const held = (
+                  await resumedAuthority.recoverRepositoryMutationAuthority(scopeId)
+                ).find((lease) => lease.claimId === admitted.execution.claimId);
+                if (held === undefined) {
+                  throw new Error('Missing in-flight integration lease');
+                }
+                await expect(
+                  resumedAuthority.releaseGlobalMutation({
+                    ...admitted.execution,
+                    expectedVersion: held.version,
+                    stopEvidence: 'Cannot release an unresolved Git callback'
+                  })
+                ).rejects.toThrow();
+                expect(
+                  await admin.unsafe(
+                    `select state from "${schema}".forge_global_claims where claim_id='integration-global'`
+                  )
+                ).toMatchObject([{ state: 'ACTIVE' }]);
+                return;
+              } else {
+                expect(await integrationRunner.run(admitted.execution)).toBe(
+                  lifecycle === 'integration-success' ? 'RELEASED' : 'HELD_UNCERTAIN'
+                );
+              }
+              expect(gitCalls).toBe(1);
+              expect(
+                await resumedAuthority.recoverFencedMutationPermits(
+                  scopeId,
+                  admitted.execution.claimId
+                )
+              ).toHaveLength(lifecycle === 'integration-inflight' ? 1 : 0);
+              expect(
+                await admin.unsafe(
+                  `select state from "${schema}".forge_global_claims where claim_id='integration-global'`
+                )
+              ).toMatchObject([
+                { state: lifecycle === 'integration-success' ? 'RELEASED' : 'HELD_UNCERTAIN' }
+              ]);
+              if (lifecycle === 'integration-success') {
+                expect(readFileSync(join(integration, 'approved.txt'), 'utf8')).toBe(
+                  'lifecycle-output'
+                );
+                expect(
+                  (await executionStore.recoverRun(request.run.id))?.workspaces[0]?.workspace.phase
+                ).toBe('INTEGRATED');
+              }
+              return;
+            }
             if (lifecycle.startsWith('repair-')) {
               const digest = `sha256:${'a'.repeat(64)}`;
               const repair = {

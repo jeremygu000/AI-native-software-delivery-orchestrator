@@ -22,6 +22,9 @@ import {
   taskRepairAttemptSchema,
   taskRepairWorkItemSchema,
   taskCodeReviewSubjectSchema,
+  taskCodeReviewSchema,
+  taskVerificationEvidenceSchema,
+  assertTaskVerificationEvidenceIntegrity,
   writableResourceIdentity,
   writableResourceSchema,
   type AgentExecutionAttempt,
@@ -36,6 +39,7 @@ import {
   type LegacyMutationOwner,
   type PersistedFencedMutationPermit,
   type TaskRepairAttempt,
+  type TaskCodeReviewSubject,
   type TaskWorkspace,
   type WritableResource
 } from '@ai-native-software-delivery-orchestrator/domain';
@@ -50,6 +54,53 @@ type Sql = ReturnType<typeof postgres>;
 type Tx = postgres.TransactionSql;
 type Query = Sql | Tx;
 type Row = postgres.Row;
+
+export interface GlobalIntegrationExecution {
+  readonly scopeId: string;
+  readonly claimId: string;
+  readonly owner: GlobalMutationOwner;
+  readonly token: number;
+  readonly reviewIteration: number;
+  readonly subject: TaskCodeReviewSubject;
+  readonly workspace: TaskWorkspace;
+  readonly revision: number;
+  readonly state: 'ADMITTED' | 'RUNNING' | 'INTEGRATED' | 'BLOCKED' | 'UNKNOWN';
+  readonly reservation?: string;
+}
+
+const integrationExecution = (value: unknown): GlobalIntegrationExecution => {
+  const item = fields(json(value));
+  if (
+    typeof item.scopeId !== 'string' ||
+    typeof item.claimId !== 'string' ||
+    typeof item.reviewIteration !== 'number' ||
+    typeof item.revision !== 'number' ||
+    !Number.isInteger(item.reviewIteration) ||
+    item.reviewIteration < 1 ||
+    !Number.isInteger(item.revision) ||
+    item.revision < 1 ||
+    (item.reservation !== undefined && typeof item.reservation !== 'string') ||
+    (item.state !== 'ADMITTED' &&
+      item.state !== 'RUNNING' &&
+      item.state !== 'INTEGRATED' &&
+      item.state !== 'BLOCKED' &&
+      item.state !== 'UNKNOWN')
+  ) {
+    throw new Error('Invalid global integration execution');
+  }
+  return {
+    scopeId: item.scopeId,
+    claimId: item.claimId,
+    owner: owner(JSON.stringify(item.owner)),
+    token: safeInteger(item.token),
+    reviewIteration: item.reviewIteration,
+    subject: taskCodeReviewSubjectSchema.parse(item.subject),
+    workspace: taskWorkspaceSchema.parse(item.workspace),
+    revision: item.revision,
+    state: item.state,
+    ...(item.reservation === undefined ? {} : { reservation: item.reservation })
+  };
+};
 
 const required = (value: string, name: string): string => {
   if (!value.trim()) {
@@ -1685,6 +1736,457 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     );
   }
 
+  async #assertIntegrationApproval(
+    tx: Query,
+    execution: GlobalIntegrationExecution
+  ): Promise<void> {
+    const { runId, taskId, workspaceId } = execution.owner;
+    const run = await this.#one(
+      tx,
+      `select state,payload from ${this.#schema}.forge_runs where id=$1`,
+      [runId]
+    );
+    const bindingRecord = await this.#record(tx, runId, 'binding', taskId);
+    const workspaceRecord = await this.#record(tx, runId, 'workspace', execution.workspace.id);
+    const bound = await this.#one(
+      tx,
+      `select b.scope_id,b.repository_id,a.scope_id as alias_scope from ${this.#schema}.forge_global_run_bindings b join ${this.#schema}.forge_global_aliases a on a.repository_id=b.repository_id where b.run_id=$1`,
+      [runId]
+    );
+    if (
+      run?.state !== 'ACTIVE' ||
+      bindingRecord === undefined ||
+      workspaceRecord === undefined ||
+      bound?.scope_id !== execution.scopeId ||
+      bound.alias_scope !== execution.scopeId ||
+      bound.repository_id !== runIdentity(run.payload).repositoryId
+    ) {
+      throw new Error('Integration run is not active in its approved scope');
+    }
+    const binding = persistedTaskExecutionBindingSchema.parse(json(bindingRecord));
+    const workspace = taskWorkspaceSchema.parse(json(workspaceRecord));
+    const authority = fields(fields(json(run.payload)).run).authority;
+    if (
+      binding.runId !== runId ||
+      binding.taskId !== taskId ||
+      !binding.leasePlan.predictedResources.some((entry) => entry.type === 'repository') ||
+      workspaceId !== workspace.id ||
+      workspace.runId !== runId ||
+      workspace.taskId !== taskId ||
+      workspace.phase !== 'READY_TO_INTEGRATE' ||
+      !same(workspace, execution.workspace) ||
+      workspace.id !== binding.workspace.id ||
+      workspace.workspacePath !== binding.workspace.workspacePath ||
+      workspace.integrationRepositoryPath !== binding.workspace.integrationRepositoryPath ||
+      workspace.branchName !== binding.workspace.branchName ||
+      workspace.baseRef !== binding.workspace.baseRef ||
+      workspace.integrationRef !== binding.workspace.integrationRef ||
+      workspace.integrationRepositoryPath !== fields(authority).repositoryRoot ||
+      execution.subject.workspaceId !== workspace.id ||
+      execution.subject.workspaceRevision !== workspace.revision
+    ) {
+      throw new Error(
+        'Integration needs independently approved repository execution authority and exact workspace'
+      );
+    }
+    const reviewRecord = await this.#record(
+      tx,
+      runId,
+      'review',
+      `${taskId}:${String(execution.reviewIteration).padStart(8, '0')}`
+    );
+    if (reviewRecord === undefined) {
+      throw new Error('Integration has no durable accepted review');
+    }
+    const review = fields(json(reviewRecord));
+    if (
+      review.runId !== runId ||
+      review.taskId !== taskId ||
+      review.iteration !== execution.reviewIteration ||
+      taskCodeReviewSchema.parse(review.review).recommendation !== 'accept' ||
+      !same(taskCodeReviewSubjectSchema.parse(review.subject), execution.subject)
+    ) {
+      throw new Error('Integration review differs from its immutable accepted subject');
+    }
+    const outputBuilder = await this.#record(
+      tx,
+      runId,
+      'builder',
+      execution.subject.outputAttemptId
+    );
+    const outputRepair = await this.#record(tx, runId, 'repair', execution.subject.outputAttemptId);
+    if ((outputBuilder === undefined) === (outputRepair === undefined)) {
+      throw new Error('Integration output has no unambiguous completed attempt');
+    }
+    const output =
+      outputBuilder !== undefined
+        ? agentExecutionAttemptSchema.parse(attemptJson(outputBuilder))
+        : taskRepairAttemptSchema.parse(attemptJson(outputRepair));
+    if (
+      output.state !== 'COMPLETED' ||
+      output.runId !== runId ||
+      output.taskId !== taskId ||
+      output.workspaceId !== workspace.id
+    ) {
+      throw new Error('Integration output attempt is not completed in the approved workspace');
+    }
+    if (outputRepair !== undefined) {
+      const repair = taskRepairAttemptSchema.parse(output);
+      await this.#assertRepairProvenance(tx, repair);
+      if (repair.parentReviewSubject.builderAttemptId !== execution.subject.builderAttemptId) {
+        throw new Error('Integration repair output has a different builder lineage');
+      }
+    } else if (execution.subject.builderAttemptId !== output.id) {
+      throw new Error('Integration builder output lineage differs');
+    }
+    const verificationRows = await tx.unsafe(
+      `select payload from ${this.#schema}.forge_records where run_id=$1 and kind='verification'`,
+      [runId]
+    );
+    const verified = verificationRows.some((row) => {
+      const evidence = taskVerificationEvidenceSchema.parse(json(row.payload));
+      assertTaskVerificationEvidenceIntegrity(evidence);
+      return (
+        evidence.runId === runId &&
+        evidence.taskId === taskId &&
+        evidence.attemptId === output.id &&
+        evidence.workspaceId === workspace.id &&
+        evidence.workspaceRevision === workspace.revision &&
+        evidence.workspaceChangeFingerprint === execution.subject.workspaceChangeFingerprint &&
+        evidence.fingerprint === execution.subject.verificationFingerprint &&
+        evidence.verificationPolicyFingerprint === fields(authority).verificationPolicyFingerprint
+      );
+    });
+    if (!verified) {
+      throw new Error('Integration has no matching approved verification evidence');
+    }
+    const handoff = await this.#one(
+      tx,
+      `select p.phase,p.signing_key,p.setup_plan_digest,p.authorization_digest,p.execution_generation from ${this.#schema}.forge_global_workspace_phases p join ${this.#schema}.forge_global_claims c on c.scope_id=p.scope_id and c.claim_id=p.parent_claim_id where p.scope_id=$1 and c.owner_json::jsonb->>'runId'=$2 and c.owner_json::jsonb->>'attemptId'=$3 and p.workspace_id=$4`,
+      [execution.scopeId, runId, execution.subject.builderAttemptId, workspace.id]
+    );
+    if (handoff?.phase !== 'HANDOFF_COMMITTED') {
+      throw new Error('Integration has no committed builder workspace handoff');
+    }
+    const registry = await this.#one(
+      tx,
+      `select policy_version from ${this.#schema}.forge_global_trust_registry where id=1`
+    );
+    const key = await this.#one(
+      tx,
+      `select state from ${this.#schema}.forge_global_trust_keys where key_id=$1`,
+      [handoff.signing_key]
+    );
+    const generation = await this.#one(
+      tx,
+      `select state from ${this.#schema}.forge_global_generations where id=$1`,
+      [handoff.execution_generation]
+    );
+    const revoked = await tx.unsafe(
+      `select kind from ${this.#schema}.forge_global_trust_revocations where (kind='DECISION' and digest=$1) or (kind='AUTHORIZATION' and digest=$2)`,
+      [handoff.setup_plan_digest, handoff.authorization_digest]
+    );
+    if (
+      registry?.policy_version !== workspaceSetupPolicy ||
+      key?.state !== 'ACTIVE' ||
+      generation?.state !== 'REVOKED' ||
+      revoked.length !== 0
+    ) {
+      throw new Error('Integration trust is no longer current');
+    }
+  }
+
+  async admitIntegrationExecution(request: {
+    scopeId: string;
+    claimId: string;
+    owner: GlobalMutationOwner;
+    reviewIteration: number;
+    subject: TaskCodeReviewSubject;
+  }): Promise<
+    | { status: 'granted'; execution: GlobalIntegrationExecution }
+    | { status: 'blocked'; blockers: readonly GlobalMutationLease[] }
+  > {
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        if ((await this.#scope(tx, request.scopeId)) !== 'ACTIVE_FOR_GLOBAL_CLAIMS') {
+          throw new Error('Integration scope is not active');
+        }
+        required(request.claimId, 'Integration claim ID');
+        required(request.owner.attemptId, 'Integration execution ID');
+        required(request.owner.agentId, 'Integration executor');
+        const record = await this.#record(
+          tx,
+          request.owner.runId,
+          'integration-claim',
+          request.owner.taskId
+        );
+        if (record !== undefined) {
+          const existing = integrationExecution(record);
+          if (
+            existing.scopeId !== request.scopeId ||
+            existing.claimId !== request.claimId ||
+            !same(existing.owner, request.owner) ||
+            existing.reviewIteration !== request.reviewIteration ||
+            !same(existing.subject, taskCodeReviewSubjectSchema.parse(request.subject)) ||
+            existing.state !== 'ADMITTED'
+          ) {
+            throw new Error('Integration replay differs or is already executing');
+          }
+          await this.#assertIntegrationApproval(tx, existing);
+          await this.#assertCurrent(tx, { ...existing, resource: { type: 'repository' } });
+          return { status: 'granted' as const, execution: existing };
+        }
+        const workspaceRecord = await this.#record(
+          tx,
+          request.owner.runId,
+          'workspace',
+          request.subject.workspaceId
+        );
+        if (workspaceRecord === undefined) {
+          throw new Error('Integration workspace is not persisted');
+        }
+        const execution: GlobalIntegrationExecution = {
+          ...request,
+          subject: taskCodeReviewSubjectSchema.parse(request.subject),
+          workspace: taskWorkspaceSchema.parse(json(workspaceRecord)),
+          token: 0,
+          revision: 1,
+          state: 'ADMITTED'
+        };
+        await this.#assertIntegrationApproval(tx, execution);
+        if (
+          await this.#one(
+            tx,
+            `select 1 from ${this.#schema}.forge_global_claims where scope_id=$1 and claim_id=$2`,
+            [request.scopeId, request.claimId]
+          )
+        ) {
+          throw new Error('Integration claim ID is already used');
+        }
+        const blockers = (await this.#leases(tx, request.scopeId)).filter(
+          (lease) => lease.state !== 'RELEASED'
+        );
+        if (blockers.length !== 0) {
+          return { status: 'blocked' as const, blockers };
+        }
+        const token = await this.#nextToken(tx, request.scopeId);
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_global_claims values ($1,$2,$3,$4,'ACTIVE',1,null)`,
+          [request.scopeId, request.claimId, JSON.stringify(request.owner), token]
+        );
+        await tx.unsafe(`insert into ${this.#schema}.forge_global_leases values ($1,$2,$3,$4)`, [
+          request.scopeId,
+          request.claimId,
+          randomUUID(),
+          JSON.stringify({ type: 'repository' })
+        ]);
+        const admitted = integrationExecution(JSON.stringify({ ...execution, token }));
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_records values ($1,'integration-claim',$2,$3)`,
+          [request.owner.runId, request.owner.taskId, JSON.stringify(admitted)]
+        );
+        return { status: 'granted' as const, execution: admitted };
+      },
+      request.owner.runId
+    );
+  }
+
+  async startIntegrationExecution(
+    execution: GlobalIntegrationExecution,
+    reservation: string
+  ): Promise<GlobalIntegrationExecution> {
+    required(reservation, 'Git launch reservation');
+    return this.#scopedLocked(
+      execution.scopeId,
+      async (tx) => {
+        const record = await this.#record(
+          tx,
+          execution.owner.runId,
+          'integration-claim',
+          execution.owner.taskId
+        );
+        if (
+          record === undefined ||
+          !same(integrationExecution(record), execution) ||
+          execution.state !== 'ADMITTED'
+        ) {
+          throw new Error('Integration launch is stale or already running');
+        }
+        await this.#assertCurrent(tx, { ...execution, resource: { type: 'repository' } });
+        const running: GlobalIntegrationExecution = {
+          ...execution,
+          revision: execution.revision + 1,
+          state: 'RUNNING',
+          reservation
+        };
+        await tx.unsafe(
+          `update ${this.#schema}.forge_records set payload=$3 where run_id=$1 and kind='integration-claim' and key=$2`,
+          [execution.owner.runId, execution.owner.taskId, JSON.stringify(running)]
+        );
+        return running;
+      },
+      execution.owner.runId
+    );
+  }
+
+  /** A recovered RUNNING reservation is not permission to repeat Git commands. */
+  async recoverIntegrationExecution(
+    scopeId: string,
+    runId: string,
+    taskId: string
+  ): Promise<GlobalIntegrationExecution> {
+    return this.#scopedLocked(
+      scopeId,
+      async (tx) => {
+        const record = await this.#record(tx, runId, 'integration-claim', taskId);
+        if (record === undefined) {
+          throw new Error('Integration execution is not persisted');
+        }
+        const execution = integrationExecution(record);
+        if (
+          execution.scopeId !== scopeId ||
+          execution.owner.runId !== runId ||
+          execution.owner.taskId !== taskId
+        ) {
+          throw new Error('Integration recovery identity disagrees');
+        }
+        const claim = await this.#claim(tx, scopeId, execution.claimId);
+        this.#assertOwner(claim, execution.owner, execution.token);
+        return execution;
+      },
+      runId
+    );
+  }
+
+  async finishIntegrationExecution(
+    execution: GlobalIntegrationExecution,
+    outcome: {
+      state: 'INTEGRATED' | 'BLOCKED' | 'UNKNOWN';
+      detail: string;
+      workspace?: TaskWorkspace;
+      stopEvidence?: string;
+      permit?: FencedMutationExecutionPermit;
+    }
+  ): Promise<'RELEASED' | 'HELD_UNCERTAIN'> {
+    required(outcome.detail, 'Integration outcome');
+    return this.#scopedLocked(
+      execution.scopeId,
+      async (tx) => {
+        const record = await this.#record(
+          tx,
+          execution.owner.runId,
+          'integration-claim',
+          execution.owner.taskId
+        );
+        if (
+          record === undefined ||
+          !same(integrationExecution(record), execution) ||
+          execution.state !== 'RUNNING'
+        ) {
+          throw new Error('Integration terminal outcome is stale');
+        }
+        const claim = await this.#claim(tx, execution.scopeId, execution.claimId);
+        this.#assertOwner(claim, execution.owner, execution.token);
+        if (claim.state !== 'ACTIVE' && claim.state !== 'HELD_UNCERTAIN') {
+          throw new Error('Integration has no unresolved ownership');
+        }
+        if (outcome.permit !== undefined) {
+          const permit = await this.#one(
+            tx,
+            `select * from ${this.#schema}.forge_global_permits where id=$1`,
+            [outcome.permit.id]
+          );
+          const actual =
+            permit === undefined ? Buffer.alloc(0) : Buffer.from(String(permit.verifier), 'hex');
+          const supplied = verifier(outcome.permit.completionSecret);
+          if (
+            permit?.scope_id !== execution.scopeId ||
+            permit.claim_id !== execution.claimId ||
+            !same(owner(permit.owner_json), execution.owner) ||
+            safeInteger(permit.token) !== execution.token ||
+            !same(resource(permit.resource_json), { type: 'repository' }) ||
+            actual.length !== supplied.length ||
+            !timingSafeEqual(actual, supplied)
+          ) {
+            throw new Error('Integration completion has no exact permit capability');
+          }
+          await tx.unsafe(`delete from ${this.#schema}.forge_global_permits where id=$1`, [
+            outcome.permit.id
+          ]);
+        }
+        const pending = await this.#one(
+          tx,
+          `select 1 from ${this.#schema}.forge_global_permits where scope_id=$1 and claim_id=$2 limit 1`,
+          [execution.scopeId, execution.claimId]
+        );
+        const release =
+          outcome.state === 'INTEGRATED' &&
+          outcome.permit !== undefined &&
+          outcome.stopEvidence !== undefined &&
+          outcome.stopEvidence.trim().length > 0 &&
+          claim.state === 'ACTIVE' &&
+          pending === undefined;
+        if (release) {
+          await this.#assertCurrent(tx, { ...execution, resource: { type: 'repository' } });
+        }
+        if (outcome.workspace !== undefined) {
+          const workspace = taskWorkspaceSchema.parse(outcome.workspace);
+          const { revision: _revision, phase: _phase, ...identity } = execution.workspace;
+          if (
+            Object.entries(identity).some(([key, value]) => fields(workspace)[key] !== value) ||
+            workspace.revision !== execution.workspace.revision + 1 ||
+            (outcome.state === 'INTEGRATED'
+              ? workspace.phase !== 'INTEGRATED'
+              : outcome.state === 'BLOCKED'
+                ? workspace.phase !== 'INTEGRATION_BLOCKED'
+                : true)
+          ) {
+            throw new Error('Integration Git result differs from its approved workspace');
+          }
+          await tx.unsafe(
+            `update ${this.#schema}.forge_records set payload=$3 where run_id=$1 and kind='workspace' and key=$2`,
+            [execution.owner.runId, workspace.id, JSON.stringify(workspace)]
+          );
+          await tx.unsafe(
+            `insert into ${this.#schema}.forge_records values ($1,'integration','current',$2) on conflict (run_id,kind,key) do update set payload=excluded.payload`,
+            [
+              execution.owner.runId,
+              JSON.stringify({
+                status: outcome.state === 'INTEGRATED' ? 'integrated' : 'blocked',
+                ...(outcome.state === 'INTEGRATED'
+                  ? { outputAttemptId: execution.subject.outputAttemptId }
+                  : {})
+              })
+            ]
+          );
+        } else if (outcome.state !== 'UNKNOWN') {
+          throw new Error('Integration terminal outcome needs its persisted Git result');
+        }
+        const claimState = release ? 'RELEASED' : 'HELD_UNCERTAIN';
+        await tx.unsafe(
+          `update ${this.#schema}.forge_records set payload=$3 where run_id=$1 and kind='integration-claim' and key=$2`,
+          [
+            execution.owner.runId,
+            execution.owner.taskId,
+            JSON.stringify({ ...execution, state: outcome.state, revision: execution.revision + 1 })
+          ]
+        );
+        await tx.unsafe(
+          `update ${this.#schema}.forge_global_claims set state=$3,version=version+1,evidence=$4 where scope_id=$1 and claim_id=$2`,
+          [
+            execution.scopeId,
+            execution.claimId,
+            claimState,
+            release ? (outcome.stopEvidence ?? outcome.detail) : outcome.detail
+          ]
+        );
+        return claimState;
+      },
+      execution.owner.runId
+    );
+  }
+
   /** Attach to an admitted repair without minting another claim or widening scope. */
   async recoverRepairExecution(request: {
     scopeId: string;
@@ -2038,6 +2540,27 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   async #assertCurrent(tx: Query, request: CurrentMutationTokenRequest): Promise<void> {
     await this.#assertOrdinaryClaim(tx, request.scopeId, request.claimId);
+    const integrationRecord = await this.#record(
+      tx,
+      request.owner.runId,
+      'integration-claim',
+      request.owner.taskId
+    );
+    if (
+      integrationRecord !== undefined &&
+      fields(json(integrationRecord)).claimId === request.claimId
+    ) {
+      const execution = integrationExecution(integrationRecord);
+      if (
+        !same(execution.owner, request.owner) ||
+        execution.token !== request.token ||
+        execution.scopeId !== request.scopeId ||
+        (execution.state !== 'ADMITTED' && execution.state !== 'RUNNING')
+      ) {
+        throw new Error('Integration execution is stale');
+      }
+      await this.#assertIntegrationApproval(tx, execution);
+    }
     let phaseByChild = await this.#one(
       tx,
       `select phase,signing_key,setup_plan_digest,authorization_digest,execution_generation from ${this.#schema}.forge_global_workspace_phases

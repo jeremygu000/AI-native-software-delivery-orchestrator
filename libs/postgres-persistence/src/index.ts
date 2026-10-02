@@ -7,6 +7,7 @@ export {
 export { PostgresOrchestrationPersistence } from './lib/postgres-orchestration-persistence.js';
 export { PostgresGlobalMutationAuthority } from './lib/postgres-global-mutation-authority.js';
 export type {
+  GlobalIntegrationExecution,
   RecoveredExecutionChild,
   WorkspaceSetupRecoverySnapshot
 } from './lib/postgres-global-mutation-authority.js';
