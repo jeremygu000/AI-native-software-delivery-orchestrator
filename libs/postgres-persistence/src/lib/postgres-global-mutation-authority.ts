@@ -177,6 +177,19 @@ export interface WorkspaceSetupRecoverySnapshot {
   };
 }
 
+/** An execution child recovered from the committed handoff, not a new claim. */
+export interface RecoveredExecutionChild {
+  readonly scopeId: string;
+  readonly claimId: string;
+  readonly owner: GlobalMutationOwner;
+  readonly token: number;
+  readonly leases: readonly GlobalMutationLease[];
+  readonly workspace: ReturnType<typeof taskWorkspaceSchema.parse>;
+  readonly attemptRevision: number;
+  readonly attemptState: 'STARTING' | 'RUNNING';
+  readonly leasePlanFingerprint: string;
+}
+
 const workspaceSetupPolicy = 'git-workspace-setup-v1';
 
 /** Runtime-only v4 authority; deployment transitions use gate -> scope -> run,
@@ -1312,6 +1325,201 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     return this.#leases(this.#sql, scopeId);
   }
 
+  /**
+   * Attach to a child minted by the restricted handoff, without requesting a
+   * second admission or inheriting its parent's repository-wide Git lease.
+   * Recheck trust, run eligibility and the exact approved execution resources
+   * under the same lock order used for permits and cancellation.
+   */
+  async recoverExecutionChild(
+    scopeId: string,
+    parentClaimId: string
+  ): Promise<RecoveredExecutionChild> {
+    const initial = await this.#one(
+      this.#sql,
+      `select owner_json from ${this.#schema}.forge_global_claims where scope_id=$1 and claim_id=$2`,
+      [scopeId, parentClaimId]
+    );
+    if (initial === undefined) {
+      throw new Error('Unknown execution handoff parent');
+    }
+    const runId = owner(initial.owner_json).runId;
+    return this.#scopedLocked(
+      scopeId,
+      async (tx) => {
+        const parent = await this.#claim(tx, scopeId, parentClaimId);
+        const childOwner = owner(parent.owner_json);
+        const phase = await this.#one(
+          tx,
+          `select * from ${this.#schema}.forge_global_workspace_phases where scope_id=$1 and parent_claim_id=$2`,
+          [scopeId, parentClaimId]
+        );
+        const childId = phase?.child_claim_id;
+        if (
+          childOwner.runId !== runId ||
+          childOwner.workspaceId === undefined ||
+          parent.state !== 'RELEASED' ||
+          phase?.phase !== 'HANDOFF_COMMITTED' ||
+          typeof childId !== 'string' ||
+          typeof phase.handoff_attestation_id !== 'string' ||
+          typeof phase.handoff_attestation_digest !== 'string' ||
+          phase.workspace_id !== childOwner.workspaceId ||
+          typeof phase.execution_generation !== 'string'
+        ) {
+          throw new Error('Execution handoff is not committed for this parent');
+        }
+        const registry = await this.#one(
+          tx,
+          `select policy_version from ${this.#schema}.forge_global_trust_registry where id=1`
+        );
+        const signingKey = await this.#one(
+          tx,
+          `select state from ${this.#schema}.forge_global_trust_keys where key_id=$1`,
+          [phase.signing_key]
+        );
+        const revocations = await tx.unsafe(
+          `select kind from ${this.#schema}.forge_global_trust_revocations
+         where (kind='DECISION' and digest=$1) or (kind='AUTHORIZATION' and digest=$2)`,
+          [phase.setup_plan_digest, phase.authorization_digest]
+        );
+        if (
+          registry?.policy_version !== workspaceSetupPolicy ||
+          signingKey?.state !== 'ACTIVE' ||
+          revocations.length !== 0
+        ) {
+          throw new Error('Execution handoff trust is no longer current');
+        }
+        const run = await this.#one(
+          tx,
+          `select state,payload from ${this.#schema}.forge_runs where id=$1`,
+          [runId]
+        );
+        const bindingRow = await this.#one(
+          tx,
+          `select repository_id,scope_id from ${this.#schema}.forge_global_run_bindings where run_id=$1`,
+          [runId]
+        );
+        const identity = runIdentity(run?.payload);
+        const alias = await this.#one(
+          tx,
+          `select scope_id from ${this.#schema}.forge_global_aliases where repository_id=$1`,
+          [identity.repositoryId]
+        );
+        const storedBinding = await this.#record(tx, runId, 'binding', childOwner.taskId);
+        const storedAttempt = await this.#record(tx, runId, 'builder', childOwner.attemptId);
+        const storedWorkspace = await this.#record(tx, runId, 'workspace', childOwner.workspaceId);
+        const approvedTasks = fields(json(run?.payload)).tasks;
+        const generation = await this.#one(
+          tx,
+          `select * from ${this.#schema}.forge_global_generations where id=$1`,
+          [phase.execution_generation]
+        );
+        const lineage = await this.#one(
+          tx,
+          `select * from ${this.#schema}.forge_global_workspace_permit_lineages where scope_id=$1 and parent_claim_id=$2`,
+          [scopeId, parentClaimId]
+        );
+        if (
+          storedBinding === undefined ||
+          storedAttempt === undefined ||
+          storedWorkspace === undefined
+        ) {
+          throw new Error('Execution child is missing approved persisted records');
+        }
+        const binding = persistedTaskExecutionBindingSchema.parse(json(storedBinding));
+        const attempt = agentExecutionAttemptSchema.parse(attemptJson(storedAttempt));
+        const workspace = taskWorkspaceSchema.parse(json(storedWorkspace));
+        const approvedRun = fields(fields(json(run?.payload)).run);
+        const approval = fields(approvedRun.authority);
+        if (
+          run?.state !== 'ACTIVE' ||
+          identity.id !== runId ||
+          !Array.isArray(approvedTasks) ||
+          !approvedTasks.some((task: unknown) => fields(task).id === childOwner.taskId) ||
+          approvedRun.repositoryId !== identity.repositoryId ||
+          approval.repositoryRoot !== binding.workspace.integrationRepositoryPath ||
+          typeof approval.baseCommit !== 'string' ||
+          bindingRow?.repository_id !== identity.repositoryId ||
+          bindingRow.scope_id !== scopeId ||
+          alias?.scope_id !== scopeId ||
+          binding.runId !== runId ||
+          binding.taskId !== childOwner.taskId ||
+          binding.agentId !== childOwner.agentId ||
+          binding.workspace.id !== childOwner.workspaceId ||
+          binding.workspace.workspacePath !== workspace.workspacePath ||
+          binding.workspace.integrationRepositoryPath !== workspace.integrationRepositoryPath ||
+          binding.workspace.branchName !== workspace.branchName ||
+          binding.workspace.baseRef !== workspace.baseRef ||
+          binding.workspace.integrationRef !== workspace.integrationRef ||
+          workspace.runId !== runId ||
+          workspace.taskId !== childOwner.taskId ||
+          workspace.revision !== 1 ||
+          workspace.phase !== 'READY_TO_INTEGRATE' ||
+          attempt.runId !== runId ||
+          attempt.taskId !== childOwner.taskId ||
+          attempt.id !== childOwner.attemptId ||
+          attempt.agentId !== childOwner.agentId ||
+          attempt.workspaceId !== childOwner.workspaceId ||
+          (attempt.state !== 'STARTING' && attempt.state !== 'RUNNING') ||
+          attempt.leasePlanFingerprint !== taskLeasePlanFingerprint(binding.leasePlan) ||
+          phase.execution_plan_digest !== fingerprintPlanValue(binding.leasePlan).slice(7) ||
+          generation?.state !== 'REVOKED' ||
+          generation.scope_id !== scopeId ||
+          generation.parent_claim_id !== parentClaimId ||
+          generation.run_id !== runId ||
+          generation.task_id !== childOwner.taskId ||
+          generation.attempt_id !== childOwner.attemptId ||
+          generation.workspace_id !== childOwner.workspaceId ||
+          generation.execution_plan_digest !== phase.execution_plan_digest ||
+          generation.setup_plan_digest !== phase.setup_plan_digest ||
+          lineage?.completed !== true ||
+          lineage.generation_id !== generation.id ||
+          lineage.workspace_id !== childOwner.workspaceId ||
+          lineage.token !== parent.token ||
+          lineage.settlement_id !== phase.handoff_attestation_id ||
+          lineage.settlement_digest !== phase.handoff_attestation_digest ||
+          !same(owner(lineage.owner_json), childOwner)
+        ) {
+          throw new Error('Execution child no longer matches its approved run and workspace');
+        }
+        const child = await this.#claim(tx, scopeId, childId);
+        const leases = await this.#leases(tx, scopeId, childId);
+        const approved = canonicalTaskLeaseResources(binding.leasePlan.predictedResources);
+        if (
+          child.state !== 'ACTIVE' ||
+          !same(owner(child.owner_json), childOwner) ||
+          safeInteger(child.token) <= safeInteger(parent.token) ||
+          leases.some(
+            (lease) =>
+              lease.token !== safeInteger(child.token) ||
+              lease.claimId !== childId ||
+              !same(lease.owner, childOwner)
+          ) ||
+          leases.length !== approved.length ||
+          !same(
+            leases.map((lease) => resourceKey(lease.resource)).toSorted(),
+            approved.map(resourceKey).toSorted()
+          ) ||
+          leases.some((lease) => lease.state !== 'ACTIVE')
+        ) {
+          throw new Error('Execution child is not the active approved handoff claim');
+        }
+        return {
+          scopeId,
+          claimId: childId,
+          owner: childOwner,
+          token: safeInteger(child.token),
+          leases,
+          workspace,
+          attemptRevision: attempt.revision,
+          attemptState: attempt.state,
+          leasePlanFingerprint: attempt.leasePlanFingerprint
+        };
+      },
+      runId
+    );
+  }
+
   async recoverFencedMutationPermits(
     scopeId: string,
     claimId?: string
@@ -1333,8 +1541,54 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   async #assertCurrent(tx: Query, request: CurrentMutationTokenRequest): Promise<void> {
     await this.#assertOrdinaryClaim(tx, request.scopeId, request.claimId);
+    const phaseByChild = await this.#one(
+      tx,
+      `select phase,signing_key,setup_plan_digest,authorization_digest,execution_generation from ${this.#schema}.forge_global_workspace_phases
+       where scope_id=$1 and child_claim_id=$2`,
+      [request.scopeId, request.claimId]
+    );
+    if (phaseByChild !== undefined && phaseByChild.phase !== 'HANDOFF_COMMITTED') {
+      throw new Error('Execution child has no committed handoff');
+    }
+    // Child permits must consult current setup trust, not a cached attachment:
+    // an administrator can revoke the signing key or either exact decision
+    // between a worker restart and the next filesystem mutation.
+    const handoff = phaseByChild;
+    if (handoff !== undefined) {
+      const registry = await this.#one(
+        tx,
+        `select policy_version from ${this.#schema}.forge_global_trust_registry where id=1`
+      );
+      const key = await this.#one(
+        tx,
+        `select state from ${this.#schema}.forge_global_trust_keys where key_id=$1`,
+        [handoff.signing_key]
+      );
+      const generation = await this.#one(
+        tx,
+        `select state from ${this.#schema}.forge_global_generations where id=$1`,
+        [handoff.execution_generation]
+      );
+      const revoked = await tx.unsafe(
+        `select kind from ${this.#schema}.forge_global_trust_revocations
+         where (kind='DECISION' and digest=$1) or (kind='AUTHORIZATION' and digest=$2)`,
+        [handoff.setup_plan_digest, handoff.authorization_digest]
+      );
+      if (
+        registry?.policy_version !== workspaceSetupPolicy ||
+        key?.state !== 'ACTIVE' ||
+        generation?.state !== 'REVOKED' ||
+        revoked.length !== 0
+      ) {
+        throw new Error('Execution child mutation trust is no longer current');
+      }
+    }
     const claim = await this.#claim(tx, request.scopeId, request.claimId);
+    const run = await this.#one(tx, `select state from ${this.#schema}.forge_runs where id=$1`, [
+      request.owner.runId
+    ]);
     if (
+      run?.state !== 'ACTIVE' ||
       claim.state !== 'ACTIVE' ||
       safeInteger(claim.token) !== request.token ||
       !same(owner(claim.owner_json), request.owner) ||
@@ -1347,32 +1601,40 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
   }
 
   async assertCurrentMutationToken(request: CurrentMutationTokenRequest): Promise<void> {
-    await this.#scopedLocked(request.scopeId, async (tx) => this.#assertCurrent(tx, request));
+    await this.#scopedLocked(
+      request.scopeId,
+      async (tx) => this.#assertCurrent(tx, request),
+      request.owner.runId
+    );
   }
 
   async beginFencedMutation(
     request: CurrentMutationTokenRequest
   ): Promise<FencedMutationExecutionPermit> {
-    return this.#scopedLocked(request.scopeId, async (tx) => {
-      await this.#assertCurrent(tx, request);
-      const permit = {
-        id: randomUUID(),
-        completionSecret: randomBytes(32).toString('hex')
-      };
-      await tx.unsafe(
-        `insert into ${this.#schema}.forge_global_permits values ($1,$2,$3,$4,$5,$6,$7)`,
-        [
-          permit.id,
-          request.scopeId,
-          request.claimId,
-          JSON.stringify(request.owner),
-          request.token,
-          JSON.stringify(writableResourceSchema.parse(request.resource)),
-          verifier(permit.completionSecret).toString('hex')
-        ]
-      );
-      return permit;
-    });
+    return this.#scopedLocked(
+      request.scopeId,
+      async (tx) => {
+        await this.#assertCurrent(tx, request);
+        const permit = {
+          id: randomUUID(),
+          completionSecret: randomBytes(32).toString('hex')
+        };
+        await tx.unsafe(
+          `insert into ${this.#schema}.forge_global_permits values ($1,$2,$3,$4,$5,$6,$7)`,
+          [
+            permit.id,
+            request.scopeId,
+            request.claimId,
+            JSON.stringify(request.owner),
+            request.token,
+            JSON.stringify(writableResourceSchema.parse(request.resource)),
+            verifier(permit.completionSecret).toString('hex')
+          ]
+        );
+        return permit;
+      },
+      request.owner.runId
+    );
   }
 
   async #permitScope(id: string): Promise<string> {

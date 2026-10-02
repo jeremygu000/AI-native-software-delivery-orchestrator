@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import postgres from 'postgres';
+import { PiAgentRunner } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import type { CreatePersistedRunRequest } from '@ai-native-software-delivery-orchestrator/domain';
 import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
 import { fingerprintPlanValue } from '@ai-native-software-delivery-orchestrator/planning';
@@ -25,6 +26,7 @@ import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 
 import { PostgresWorkspaceRecoveryObserver } from './postgres-workspace-recovery.js';
 import { PostgresWorkspaceHandoff } from './postgres-workspace-handoff.js';
+import { PostgresExecutionChildTools } from './postgres-execution-child.js';
 import {
   WorkspaceRecoveryAttestor,
   verifyWorkspaceRecoveryAttestation
@@ -111,7 +113,11 @@ it.each(['completed', 'orphaned'] as const)(
       git('init', '--initial-branch=main');
       git('config', 'user.name', 'Recovery Test');
       git('config', 'user.email', 'recovery@example.test');
-      git('commit', '--allow-empty', '-m', 'base');
+      writeFileSync(join(integration, 'approved.txt'), 'before');
+      writeFileSync(join(integration, 'resumed.txt'), 'before');
+      writeFileSync(join(integration, 'after-cancel.txt'), 'before');
+      git('add', 'approved.txt', 'resumed.txt', 'after-cancel.txt');
+      git('commit', '-m', 'base');
       const base = git('rev-parse', 'HEAD');
       const config = { connectionString: runtime, role: roles.runtime, schema };
       await migratePostgresAuthoritySchema(
@@ -419,6 +425,9 @@ it.each(['completed', 'orphaned'] as const)(
           claimId: expect.stringMatching(/^execution-[0-9a-f]{64}$/),
           token: 2
         });
+        if ('blocked' in child) {
+          throw new Error('The approved execution child was blocked');
+        }
         expect(
           await recovery.handoff(
             generation,
@@ -433,6 +442,94 @@ it.each(['completed', 'orphaned'] as const)(
           { claim_id: 'parent', state: 'RELEASED', token: '1' },
           { claim_id: expect.stringMatching(/^execution-/), state: 'ACTIVE', token: '2' }
         ]);
+        const agentRequest = {
+          runId: request.run.id,
+          taskId: 'task',
+          task: request.tasks[0],
+          attempt: {
+            id: 'attempt',
+            runId: request.run.id,
+            taskId: 'task',
+            agentId: 'agent',
+            workspaceId: 'workspace',
+            leasePlanFingerprint: taskLeasePlanFingerprint(request.taskBindings[0].leasePlan),
+            state: 'STARTING' as const,
+            revision: 2,
+            startedAt: new Date('2026-09-01T00:00:01.000Z')
+          },
+          workspace,
+          instructions: 'Write the approved project output.',
+          onStarted: async () => {}
+        };
+        const executionStore = store;
+        if (executionStore === undefined) {
+          throw new Error('Missing PostgreSQL execution persistence');
+        }
+        const attachTools = (connection: PostgresGlobalMutationAuthority) =>
+          new PostgresExecutionChildTools({
+            authority: connection,
+            persistence: executionStore,
+            resolveResource: () => ({ type: 'project' as const, projectId: 'project' }),
+            resolveFileId: (path) => path
+          }).attach(scopeId, 'parent', agentRequest);
+        const tools = await attachTools(authority);
+        await expect(tools.executeRepositoryMutation(async () => 'unapproved')).rejects.toThrow();
+        expect(await tools.write('approved.txt', 'first')).toMatchObject({ status: 'written' });
+        expect(readFileSync(join(worktree, 'approved.txt'), 'utf8')).toBe('first');
+        const resumedAuthority = await PostgresGlobalMutationAuthority.connect(config);
+        try {
+          const resumed = await attachTools(resumedAuthority);
+          expect(await resumed.write('resumed.txt', 'second')).toMatchObject({ status: 'written' });
+          const runner = new PiAgentRunner({
+            gateway: {
+              start: async (session) => {
+                await session.onStarted('controlled-session');
+                const outcome = await session.executeTool({
+                  name: 'forge_write',
+                  path: 'approved.txt',
+                  content: 'through-pi'
+                });
+                if (outcome.isError) {
+                  throw new Error(outcome.content);
+                }
+                return { sessionId: 'controlled-session' };
+              }
+            },
+            createTools: () => resumed
+          });
+          expect((await runner.run(agentRequest)).status).toBe('completed');
+          expect(readFileSync(join(worktree, 'approved.txt'), 'utf8')).toBe('through-pi');
+          expect((await store.recoverRun(request.run.id))?.impacts).toHaveLength(1);
+          await admin.unsafe(
+            `update "${schema}".forge_global_trust_keys set state='REVOKED' where key_id='key'`
+          );
+          await expect(resumed.write('after-cancel.txt', 'forbidden')).rejects.toThrow(
+            'trust is no longer current'
+          );
+          expect(readFileSync(join(worktree, 'after-cancel.txt'), 'utf8')).toBe('before');
+          await expect(attachTools(resumedAuthority)).rejects.toThrow('trust is no longer current');
+          await admin.unsafe(
+            `update "${schema}".forge_global_trust_keys set state='ACTIVE' where key_id='key'`
+          );
+          await store.requestCancellation(request.run.id);
+          await expect(resumed.write('after-cancel.txt', 'forbidden')).rejects.toThrow();
+          expect(readFileSync(join(worktree, 'after-cancel.txt'), 'utf8')).toBe('before');
+          await expect(attachTools(resumedAuthority)).rejects.toThrow();
+          expect((await store.recoverRun(request.run.id))?.run.state).toBe('CANCEL_REQUESTED');
+          await admin.unsafe(`update "${schema}".forge_runs set state='ACTIVE' where id=$1`, [
+            request.run.id
+          ]);
+          await admin.unsafe(
+            `update "${schema}".forge_global_claims set state='HELD_UNCERTAIN',version=version+1 where claim_id=$1`,
+            [child.claimId]
+          );
+          await expect(resumed.write('after-cancel.txt', 'forbidden')).rejects.toThrow();
+          await expect(attachTools(resumedAuthority)).rejects.toThrow(
+            'Execution child is not the active approved handoff claim'
+          );
+        } finally {
+          await resumedAuthority.close();
+        }
       } finally {
         await recovery.close();
       }

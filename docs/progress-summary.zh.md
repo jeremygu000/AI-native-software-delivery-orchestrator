@@ -3739,3 +3739,13 @@ PostgreSQL 第 12 版迁移仅追加清算、交接记录和两个受限的安�
 隔离的真实 PostgreSQL 测试核对 child 仅拥有执行资源、父 claim 的普通 permit 继续被拒、child 的 permit 只能用于已批准资源、冲突和取消不留残余、伪造指纹和错误证明摘要被拒、精确重放，以及 `pg_blocking_pids` 证明取消与交接在真实锁上等待。隔离的 PostgreSQL 加真实 linked Git 测试让已完成和孤儿 Git lineage 都经过签名恢复服务及其受限账号，并验证重放；固定镜像的真实 Docker 测试为可选，另外的 Docker 测试此前已验证后代进程停机。`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 和 82 个文件中的 866 项测试通过（跳过 1 项可选 Docker 测试）；语句、分支、函数和代码行覆盖率为 90.76%、85.44%、93.60%、90.66%，高于 90/85/90/90 门槛。`pnpm build` 也通过。
 
 这里建立的是 authority 交接与恢复服务边界，**并非生产执行已经接通**。恢复公钥配置在独立服务中，而不是登记在 PostgreSQL；恢复角色凭据和 Docker daemon 控制权属于部署信任边界，如果交接事务期间不能隔离这些凭据，daemon 管理员仍能使停机观察失效。PostgreSQL 会在每次事务内重新检查当前信任和持久化身份，但不能自行验证签名或外部容器／Git 的事实。Agent 启动及完成、repair、动态资源扩张、Git 集成、最终安全释放，以及 SQLite 的独立信任根仍未接线。legacy 生产 worker 继续拒绝 `GLOBAL_READY`，M4.2 仍为 OPEN，M4.3 尚未开始；公开 number-token／BIGINT 和诊断资源 ID 歧义仍为 P2。
+
+## 从已交接的执行 child 恢复受控的 agent 工具权限
+
+独立复审接受了 `e0b6341` 的恢复与原子交接，但交接成功还不等于可以安全运行 agent。setup 父 claim 已经交出仅用于 Git 创建的仓库级权限；新 child 只拥有单独批准的执行资源。旧生产 builder 仍会取得本地 lease、再次创建 Git worktree 并尝试传统的 attempt 启动，因此不能拿它直接运行新 child。
+
+PostgreSQL 现在提供**只读的执行 child 接管接口**。它持有既有的当前信任共享锁、scope 锁和已绑定 run 锁，核对已释放的 parent、已提交的交接与准确的 ACTIVE child；当前 ACTIVE 签名密钥及未撤销的 setup 决策和授权；ACTIVE 且已登记的 run、批准的任务、STARTING 或 RUNNING builder attempt、保存的初始工作区与已撤销的 setup 代际；已完成的 Git lineage；以及严格等于批准执行计划的 child lease。它既不创建第二个 claim，也不会继承父 claim 的仓库权限。签发每次普通 fenced 写入 permit 前，PostgreSQL 还会锁定并检查 ACTIVE run 与 child 的当前信任。run 取消、setup 信任被撤销或 child 转为不确定时，下一次写入会被拒绝。
+
+worker 侧另增 `PostgresExecutionChildTools` 边界，把 agent 请求绑定到准确的持久化 child，并向 `AgentToolRuntime` 强制提供 `FencedMutationPort` 上下文；本地 write guard 会拒绝降级取得 lease。隔离的真实 PostgreSQL 加 linked-Git 测试先接管并写入获批文件，再使用独立 authority 连接恢复并写入，随后通过受控 Pi `forge_write` 工具回调验证 permit。child 只有 project 权限，因此仓库级命令被拒；撤销签名密钥、请求 run 取消或将 child 标记为不确定后，后续写入及重新接管都会在改动目标文件之前被阻止。`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 和 82 个文件中的 866 项测试全部通过（跳过 1 项可选 Docker 测试）；语句、分支、函数和代码行覆盖率为 90.71%、85.63%、93.37% 和 90.61%，高于 90/85/90/90 门槛。
+
+这只是**受控工具接管接缝**，不是已经启用的生产 builder。Pi 测试采用受控的进程内 gateway，不能证明真正的 Pi 会话无法绕过工具 broker 直接写工作区；当前隔离 Docker 镜像也无法通过网络访问 PostgreSQL permit broker。传统 builder／repair 的 attempt 转移、动态资源扩张、Git 集成、完成处理及最终安全释放仍没有完整的全局路径。因此现有生产 worker 继续拒绝 `GLOBAL_READY`；M4.2 保持 OPEN，M4.3 尚未开始，SQLite 也仍缺少独立且受保护的信任根。公开 number-token／BIGINT 边界和诊断资源 ID 歧义仍为 P2。

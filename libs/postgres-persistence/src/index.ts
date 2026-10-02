@@ -6,7 +6,10 @@ export {
 } from './lib/postgres-evidence-store.js';
 export { PostgresOrchestrationPersistence } from './lib/postgres-orchestration-persistence.js';
 export { PostgresGlobalMutationAuthority } from './lib/postgres-global-mutation-authority.js';
-export type { WorkspaceSetupRecoverySnapshot } from './lib/postgres-global-mutation-authority.js';
+export type {
+  RecoveredExecutionChild,
+  WorkspaceSetupRecoverySnapshot
+} from './lib/postgres-global-mutation-authority.js';
 export { PostgresWorkspaceSetupAdmission } from './lib/postgres-workspace-setup-admission.js';
 export {
   PostgresTrustRegistryAdmin,
