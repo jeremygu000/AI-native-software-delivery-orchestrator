@@ -5,6 +5,12 @@
 > This document explains what was done and why, in plain language. It does not cover code-level
 > implementation details.
 
+## Current accepted status
+
+M3 Runtime V2/Temporal, M4.1 PostgreSQL authority and **M4.2 PostgreSQL global production authority are PASS / CLOSED / FROZEN**. M4.2 was independently accepted at `91a5ca9f5b6563619a9f221811beaa7052376da7`. The dated stages below preserve the development history; their earlier OPEN or unimplemented statements describe those earlier increments, not the current accepted release. M4.3 concurrent-run/worker-fleet acceptance has not started.
+
+The accepted production path connects independent setup/handoff, a runtime-only PostgreSQL worker, isolated Pi builder/repair, host-approved inference, approved-only fenced resource claims, real verification and exact review, confined Docker Git, claim release and atomic run finalization. Deployment still provisions approved images/model credentials and completes privileged cutover/setup; acceptance is not an automatic production rollout. Ambiguous writers retain blocking authority and require independent/manual recovery. Automated recovery scheduling and SQLite's protected trust root are deferred rather than M4.2 blockers.
+
 ## What problem is this project solving
 
 Imagine many coding tasks (e.g. "add a method to this class," "change the return type of this
@@ -4721,3 +4727,11 @@ Real-image acceptance covers the actual outer production factory, local HTTP/SSE
 To select this path, keep the existing PostgreSQL/Temporal/repository and approved review-model configuration, set `FORGE_WORKER_AUTHORITY_MODE=global`, `FORGE_PI_IMAGE` and `FORGE_GIT_IMAGE` to immutable image references, and provide `FORGE_MODEL_API_KEY` only to the host. For reproducible validation, set `FORGE_TEST_PI_SDK_IMAGE`, `FORGE_TEST_GIT_IMAGE` and `FORGE_TEST_DOCKER_IMAGE` to the corresponding local/published immutable acceptance images before `pnpm check`. The worker needs controlled Docker-daemon access and approved repository paths; it receives only the runtime PostgreSQL credential, not signer, generation-issuer or recovery-role credentials.
 
 This is a PostgreSQL production closure candidate pending independent review, not an already accepted M4.2 closure or an automatic deployment migration. Unknown writers and interrupted host callbacks still require explicit recovery; blocked Git/repair is not silently retried. SQLite's independently protected trust root and automated recovery scheduling remain deferred. Deployment must provision the approved images/model and complete privileged setup/handoff; the acceptance provider is local rather than a paid production endpoint. Historical migrations and ACLs are unchanged. M4.2 remains OPEN until this batch is independently accepted; M4.3 has not started. Public number-token/BIGINT, diagnostic resource-ID ambiguity and integration actor naming remain P2.
+
+## Independent acceptance: M4.2 CLOSED / FROZEN
+
+Independent review of the exact remote SHA `91a5ca9f5b6563619a9f221811beaa7052376da7` found no P0/P1 blocker and accepted the production closure batch. **M4.2 is PASS / CLOSED / FROZEN at that SHA.** This supersedes the candidate status above without rewriting the historical implementation record. Builder, repair, integration, container recovery, isolated Pi/model/image, approved dynamic expansion, global production composition and atomic finalization are accepted and frozen; M3 and M4.1 remain frozen too.
+
+The review independently inspected the production factory, credential separation, legacy/global startup gates, invocation-bound stop receipts, restart quarantine, dynamic-plan roots and terminal barriers, Docker Git confinement, verification/review and finalization locks. Execution evidence remains the recorded image-enabled `pnpm check` with 943/943 tests and no skips, coverage 90.86%/85.92%/94.27%/90.75%, and successful `pnpm build`. This status update changes documentation only and does not claim another test run or deployment.
+
+Normal completion can release only after the owning broker's callbacks drain, exact containers stop and current authority checks pass. Restart, callback loss, ambiguous Docker and in-flight permits retain UNKNOWN/HELD_UNCERTAIN authority, forbid automatic replay/release/finalization and require independent recovery. Manual recovery is acceptable for this closure; blocked/UNKNOWN automation, recovery scheduling and SQLite's independently protected trust root remain deferred. Public number-token/BIGINT, diagnostic resource-ID ambiguity and integration actor naming remain P2. M4.3 is NOT STARTED and is the next stage for complete concurrent-run/worker-fleet acceptance. Do not extend frozen M4.2 authority/recovery infrastructure without a concrete regression.

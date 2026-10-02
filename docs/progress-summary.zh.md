@@ -3,6 +3,12 @@
 > 面向对象:没有相关工作经验、需要快速了解"目前做完了什么"的读者。
 > 本文只讲"做了什么、为什么这么做、现在能做到什么",不涉及具体代码写法。
 
+## 当前独立接受状态
+
+M3 Runtime V2／Temporal、M4.1 PostgreSQL authority 和 **M4.2 PostgreSQL 全局生产 authority 均为 PASS／CLOSED／FROZEN**。M4.2 在 `91a5ca9f5b6563619a9f221811beaa7052376da7` 上获得独立接受。下方阶段内容保留开发历史；较早的 OPEN 或“尚未实现”描述对应当时增量，不代表当前已接受版本。M4.3 多 run／worker-fleet 验收尚未开始。
+
+已接受的生产路径接起独立 setup／handoff、仅持有 runtime PostgreSQL 凭据的 worker、隔离 Pi builder／repair、宿主批准 inference、批准范围内 fenced resource claim、真实 verification 与 exact review、受限 Docker Git、claim release 和原子 run finalization。部署仍须准备批准镜像／model 凭据并完成特权 cutover／setup；接受不等于自动上线。不明确写入者保留阻塞 authority，要求独立／手工恢复。自动 recovery scheduling 和 SQLite 受保护 trust root 是延后项，不是 M4.2 blocker。
+
 ## 这个项目要解决什么问题
 
 设想有很多个"编码任务"(比如"给某个类加个方法"、"改一个接口的返回值"),需要交给多个
@@ -3877,3 +3883,11 @@ Dynamic tool 请求使用持久化 PostgreSQL authority，不使用本地 guard�
 启用该路径时保留现有 PostgreSQL／Temporal／repository 和批准 review-model 配置，设置 `FORGE_WORKER_AUTHORITY_MODE=global`、不可变 `FORGE_PI_IMAGE`／`FORGE_GIT_IMAGE`，并仅在宿主提供 `FORGE_MODEL_API_KEY`。重现验收时，先将 `FORGE_TEST_PI_SDK_IMAGE`、`FORGE_TEST_GIT_IMAGE` 和 `FORGE_TEST_DOCKER_IMAGE` 设置为对应本地／已发布的不可变验收镜像，再运行 `pnpm check`。Worker 要求受控 Docker-daemon access 与批准 repository 路径；它只持有 runtime PostgreSQL credential，不持有 signer、generation-issuer 或 recovery-role credential。
 
 本轮是待独立复审的 PostgreSQL production closure candidate，不是已接受的 M4.2 closure，也不是自动部署迁移。Unknown writer 和中断宿主回调仍须显式恢复；blocked Git／repair 不会被静默重试。SQLite 独立保护的 trust root 和自动 recovery scheduling 继续延后。部署必须准备批准镜像／model 并完成特权 setup／handoff；验收 provider 为本地服务而非付费生产端点。历史 migration 与 ACL 未改。M4.2 在独立接受前仍为 OPEN，M4.3 尚未开始。Public number-token／BIGINT、诊断 resource-ID 歧义和 integration actor 命名继续作为 P2。
+
+## 独立接受：M4.2 CLOSED／FROZEN
+
+对精确远端 SHA `91a5ca9f5b6563619a9f221811beaa7052376da7` 的独立复审未发现 P0／P1 blocker，接受 production closure 批次。**M4.2 在该 SHA 上为 PASS／CLOSED／FROZEN。** 这取代上方 candidate 状态，但不改写历史实施记录。Builder、repair、integration、container recovery、隔离 Pi／model／image、批准内 dynamic expansion、global production composition 和原子 finalization 均已接受并冻结；M3 与 M4.1 继续冻结。
+
+复审独立检查了 production factory、凭据隔离、legacy／global 启动门禁、invocation-bound stop receipt、restart quarantine、dynamic-plan root 与 terminal barrier、Docker Git 隔离、verification／review 及 finalization 锁序。执行证据仍是已记录的全镜像 `pnpm check`：943／943 项测试，无跳过，覆盖率 90.86%／85.92%／94.27%／90.75%，以及成功的 `pnpm build`。本次只更新文档，不声称重新运行测试或部署上线。
+
+正常完成只有在所属 broker 回调 drain、精确容器停机且当前 authority 检查通过后才可 release。Restart、callback loss、Docker 歧义和 in-flight permit 保留 UNKNOWN／HELD_UNCERTAIN authority，禁止自动 replay／release／finalization，并要求独立恢复。本阶段接受手工恢复；blocked／UNKNOWN 自动化、recovery scheduling 和 SQLite 独立保护的 trust root 继续延后。Public number-token／BIGINT、诊断 resource-ID 歧义和 integration actor 命名仍为 P2。M4.3 为 NOT STARTED，是下一阶段完整多 run／worker-fleet 验收范围。除非出现具体 regression，不再扩充已冻结的 M4.2 authority／recovery infrastructure。

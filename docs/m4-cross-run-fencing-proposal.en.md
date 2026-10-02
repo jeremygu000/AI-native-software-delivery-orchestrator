@@ -1,6 +1,6 @@
 # M4.2 proposal: cross-run repository mutation authority
 
-**Status: DESIGN PASS / APPROVED FOR IMPLEMENTATION; IMPLEMENTATION NOT CLOSED.** Independent review of remote SHA `84adcedb06b4295a88f562b83b8a52a573cfa271` approved the five design rulings, including the store-wide unknown-alias cutover barrier. M3 and M4.1 are PASS / CLOSED / FROZEN. This document is the implementation contract for durable cross-run fencing; M4.3 owns complete concurrent-run Temporal/worker acceptance.
+**Status: M4.2 PASS / CLOSED / FROZEN at `91a5ca9f5b6563619a9f221811beaa7052376da7`.** Independent review accepted the PostgreSQL global production closure with no P0/P1 blocker. The original design approval at `84adcedb06b4295a88f562b83b8a52a573cfa271` and acceptance criteria below remain the frozen development contract; their implementation-pending statements are historical. M3 and M4.1 remain PASS / CLOSED / FROZEN. M4.3 owns complete concurrent-run Temporal/worker-fleet acceptance and has not started. Manual fail-closed recovery and deferred SQLite protected-trust-root work do not block the accepted PostgreSQL closure.
 
 ## Evidence and identity gate
 
