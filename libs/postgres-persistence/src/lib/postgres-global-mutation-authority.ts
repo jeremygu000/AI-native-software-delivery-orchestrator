@@ -1838,6 +1838,11 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
       }
     } else if (execution.subject.builderAttemptId !== output.id) {
       throw new Error('Integration builder output lineage differs');
+    } else if (
+      agentExecutionAttemptSchema.parse(output).leasePlanFingerprint !==
+      taskLeasePlanFingerprint(binding.leasePlan)
+    ) {
+      throw new Error('Integration builder execution plan differs from the approved binding');
     }
     const verificationRows = await tx.unsafe(
       `select payload from ${this.#schema}.forge_records where run_id=$1 and kind='verification'`,
@@ -1862,11 +1867,14 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     }
     const handoff = await this.#one(
       tx,
-      `select p.phase,p.signing_key,p.setup_plan_digest,p.authorization_digest,p.execution_generation from ${this.#schema}.forge_global_workspace_phases p join ${this.#schema}.forge_global_claims c on c.scope_id=p.scope_id and c.claim_id=p.parent_claim_id where p.scope_id=$1 and c.owner_json::jsonb->>'runId'=$2 and c.owner_json::jsonb->>'attemptId'=$3 and p.workspace_id=$4`,
+      `select p.phase,p.signing_key,p.setup_plan_digest,p.authorization_digest,p.execution_generation,p.execution_plan_digest from ${this.#schema}.forge_global_workspace_phases p join ${this.#schema}.forge_global_claims c on c.scope_id=p.scope_id and c.claim_id=p.parent_claim_id where p.scope_id=$1 and c.owner_json::jsonb->>'runId'=$2 and c.owner_json::jsonb->>'attemptId'=$3 and p.workspace_id=$4`,
       [execution.scopeId, runId, execution.subject.builderAttemptId, workspace.id]
     );
     if (handoff?.phase !== 'HANDOFF_COMMITTED') {
       throw new Error('Integration has no committed builder workspace handoff');
+    }
+    if (handoff.execution_plan_digest !== fingerprintPlanValue(binding.leasePlan).slice(7)) {
+      throw new Error('Integration binding differs from its approved committed execution plan');
     }
     const registry = await this.#one(
       tx,

@@ -3789,3 +3789,13 @@ ADMITTED 记录、仓库级 claim 和 lease 同事务提交。执行 Git 前先�
 十项真实 PostgreSQL／linked-Git 场景覆盖成功集成、仓库批准不足、Git 失败、取消、重启、缺少停机确认、持久化失败、额外 in-flight permit、信任撤销和集成仓库 blocked。测试通过独立连接核对占用及 permit，并拒绝重复 Git 启动。两组定向 PostgreSQL 测试通过 170 项；全量 `pnpm check` 通过 82 个文件中的 890 项测试，跳过一项可选 Docker 测试。格式、TypeScript、lint 和覆盖率门槛均通过：语句 90.51%、分支 85.33%、函数 93.48%、代码行 90.41%。编译后 CLI／worker 验收也成功构建包和应用。
 
 该 runner 仍是可单独消费的全局执行边界，不是已启用的 GLOBAL_READY 生产 worker。独立停机确认是注入的主管契约；测试使用受控确认，并未部署认证 Git-process supervisor。完整 verification／review 编排、动态资源扩张、隔离 Pi 执行和全局 worker cutover 仍未完成。M4.2 保持 OPEN，M4.3 尚未开始。本轮未改 migration、角色权限或冻结的 builder／repair 生命周期契约；number-token／BIGINT 与诊断资源 ID 歧义仍为 P2。
+
+## 将 integration 权限固定到原批准的 execution plan
+
+对 `f5e1972` 的独立复审发现 P1 扩权缺口：integration 检查当前 task binding 是否含 repository 资源，却没有证明这条可变记录仍是 handoff 时批准的 execution plan。现在，builder 和 repair 两种 output 的 integration approval 都把完整 binding lease-plan digest 与已提交 workspace phase 的 `execution_plan_digest` 比对。Completed builder 还必须保留该 binding 的精确 `taskLeasePlanFingerprint`；repair output 继续使用已有不可变 work-item／history provenance 校验。这些共享检查覆盖准入／重放、启动、mutation permit 和成功释放，repository 权限不能来自后来变宽的 binding。
+
+真实 PostgreSQL／linked-Git 回归先完成 builder 并保存 accepted review 和匹配的 verification evidence，再通过测试专用 migration-owner 给 project-only binding 加入 repository 权限，或改变原本已批准 repository 的计划。测试也同步改写可变 completed builder fingerprint，使它匹配伪造计划，以证明 committed handoff digest 可以独立拒绝。单独改变 builder fingerprint 也会被拒绝。独立 SQL 读取确认 scope token 没有增长，也没有 integration claim、lease 或 integration execution 记录；恢复批准记录后，已有成功流程继续通过。新增回归在旧实现上失败，在修复后通过。
+
+这只是窄范围 provenance 修复，不是新的批准协议或 integration recovery 功能。历史 migration、ACL 和冻结的 builder／repair 生命周期行为均未改。Integration actor 命名仍是 P2 审计／composition 问题，不新增 actor registry。M4.2 保持 OPEN，生产 GLOBAL_READY 保持禁用，本次修复等待独立复审。
+
+全量 `pnpm check` 通过：格式、TypeScript project references、lint，以及 82 个文件中的 890 项测试；跳过一项可选 Docker 测试。语句、分支、函数和代码行覆盖率为 90.51%、85.34%、93.48% 和 90.41%，全部达到配置门槛。编译后 CLI／worker 验收也成功构建包和应用。

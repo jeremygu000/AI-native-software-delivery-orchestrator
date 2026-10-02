@@ -729,6 +729,110 @@ it.each([
                 `select next_token from "${schema}".forge_global_scopes where id=$1`,
                 [scopeId]
               );
+              if (lifecycle === 'integration-denied' || lifecycle === 'integration-success') {
+                const approvedBinding = request.taskBindings[0];
+                const completedBuilder = (await executionStore.recoverRun(request.run.id))
+                  ?.attempts[0]?.attempt;
+                if (completedBuilder === undefined) {
+                  throw new Error('Missing completed builder anchor');
+                }
+                const driftedPlan =
+                  lifecycle === 'integration-denied'
+                    ? {
+                        ...approvedBinding.leasePlan,
+                        predictedResources: [
+                          ...approvedBinding.leasePlan.predictedResources,
+                          { type: 'repository' as const }
+                        ]
+                      }
+                    : { ...approvedBinding.leasePlan, source: 'runtime-derived' as const };
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='binding' and key=$2`,
+                  [
+                    request.run.id,
+                    'task',
+                    JSON.stringify({ ...approvedBinding, leasePlan: driftedPlan })
+                  ]
+                );
+                // Also change the mutable builder record: only the committed handoff
+                // digest can establish that this wider/different plan was never approved.
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='builder' and key=$2`,
+                  [
+                    request.run.id,
+                    completedBuilder.id,
+                    JSON.stringify({
+                      ...completedBuilder,
+                      leasePlanFingerprint: taskLeasePlanFingerprint(driftedPlan)
+                    })
+                  ]
+                );
+                await expect(
+                  resumedAuthority.admitIntegrationExecution(integrationRequest)
+                ).rejects.toThrow('committed execution plan');
+                expect(
+                  await admin.unsafe(
+                    `select next_token from "${schema}".forge_global_scopes where id=$1`,
+                    [scopeId]
+                  )
+                ).toEqual(counterBefore);
+                expect(
+                  await admin.unsafe(
+                    `select 1 from "${schema}".forge_global_claims where claim_id='integration-global'`
+                  )
+                ).toHaveLength(0);
+                expect(
+                  await admin.unsafe(
+                    `select 1 from "${schema}".forge_records where run_id=$1 and kind='integration-claim'`,
+                    [request.run.id]
+                  )
+                ).toHaveLength(0);
+                expect(
+                  await admin.unsafe(
+                    `select 1 from "${schema}".forge_global_leases where claim_id='integration-global'`
+                  )
+                ).toHaveLength(0);
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='binding' and key=$2`,
+                  [request.run.id, 'task', JSON.stringify(approvedBinding)]
+                );
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='builder' and key=$2`,
+                  [request.run.id, completedBuilder.id, JSON.stringify(completedBuilder)]
+                );
+                if (lifecycle === 'integration-success') {
+                  await admin.unsafe(
+                    `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='builder' and key=$2`,
+                    [
+                      request.run.id,
+                      completedBuilder.id,
+                      JSON.stringify({
+                        ...completedBuilder,
+                        leasePlanFingerprint: taskLeasePlanFingerprint(driftedPlan)
+                      })
+                    ]
+                  );
+                  await expect(
+                    resumedAuthority.admitIntegrationExecution(integrationRequest)
+                  ).rejects.toThrow('builder execution plan');
+                  expect(
+                    await admin.unsafe(
+                      `select next_token from "${schema}".forge_global_scopes where id=$1`,
+                      [scopeId]
+                    )
+                  ).toEqual(counterBefore);
+                  expect(
+                    await admin.unsafe(
+                      `select 1 from "${schema}".forge_records where run_id=$1 and kind='integration-claim'`,
+                      [request.run.id]
+                    )
+                  ).toHaveLength(0);
+                  await admin.unsafe(
+                    `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='builder' and key=$2`,
+                    [request.run.id, completedBuilder.id, JSON.stringify(completedBuilder)]
+                  );
+                }
+              }
               if (lifecycle === 'integration-denied') {
                 await expect(
                   resumedAuthority.admitIntegrationExecution(integrationRequest)
