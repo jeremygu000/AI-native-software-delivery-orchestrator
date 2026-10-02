@@ -60,6 +60,80 @@ export class PostgresWorkspaceRecoveryObserver {
   ) {}
 
   async observe(generation: SupervisedWorkspaceGeneration): Promise<WorkspaceRecoveryObservation> {
+    return this.#observe(generation, false);
+  }
+
+  /** Inspect a lost Git completion response without clearing its one-shot lineage. */
+  async observePendingPermit(
+    generation: SupervisedWorkspaceGeneration
+  ): Promise<WorkspaceRecoveryObservation> {
+    return this.#observe(generation, true);
+  }
+
+  /** Recheck stopped containment and real Git after a committed handoff, without reopening its parent. */
+  async verifyCommittedGit(
+    generation: SupervisedWorkspaceGeneration,
+    signed: WorkspaceRecoveryObservation
+  ): Promise<void> {
+    const { authority, git } = signed;
+    if (
+      authority.scopeId !== generation.scopeId ||
+      authority.parentClaimId !== generation.parentClaimId ||
+      authority.workspaceId !== generation.workspaceId ||
+      authority.generation?.id !== generation.generationId ||
+      authority.generation.supervisorId !== generation.supervisorId ||
+      authority.generation.state !== 'REVOKED' ||
+      authority.workspace?.revision !== 1 ||
+      (await realpath(resolve(authority.workspace.workspacePath))) !== generation.workspacePath
+    ) {
+      throw new Error('Committed recovery does not match the supervised generation');
+    }
+    const run = await this.dependencies.persistence.recoverRun(authority.owner.runId);
+    const workspace = run?.workspaces.find(
+      (row) => row.workspace.id === generation.workspaceId
+    )?.workspace;
+    const binding = run?.taskBindings.find((row) => row.taskId === authority.owner.taskId);
+    if (
+      run?.run.state !== 'ACTIVE' ||
+      workspace === undefined ||
+      workspace.revision !== 1 ||
+      workspace.workspacePath !== authority.workspace.workspacePath ||
+      workspace.branchName !== authority.workspace.branchName ||
+      workspace.integrationRepositoryPath !== run.run.authority.repositoryRoot ||
+      binding?.agentId !== authority.owner.agentId ||
+      binding.workspace.id !== workspace.id ||
+      binding.workspace.workspacePath !== workspace.workspacePath
+    ) {
+      throw new Error('Committed recovery workspace no longer matches its approved run');
+    }
+    await this.dependencies.supervisor.assertStopped(generation);
+    const currentGit = await this.dependencies.supervisor.inspectStoppedWorkspace(generation, {
+      workspace,
+      approvedRepositoryRoot: run.run.authority.repositoryRoot,
+      approvedBaseCommit: run.run.authority.baseCommit
+    });
+    await this.dependencies.supervisor.assertStopped(generation);
+    const checked = await this.dependencies.persistence.recoverRun(authority.owner.runId);
+    const checkedWorkspace = checked?.workspaces.find(
+      (row) => row.workspace.id === generation.workspaceId
+    )?.workspace;
+    if (
+      JSON.stringify(currentGit) !== JSON.stringify(git) ||
+      checked?.run.state !== 'ACTIVE' ||
+      checked.run.authority.repositoryRoot !== run.run.authority.repositoryRoot ||
+      checked.run.authority.baseCommit !== run.run.authority.baseCommit ||
+      checkedWorkspace?.revision !== workspace.revision ||
+      checkedWorkspace.workspacePath !== workspace.workspacePath ||
+      checkedWorkspace.branchName !== workspace.branchName
+    ) {
+      throw new Error('Committed recovery Git identity changed');
+    }
+  }
+
+  async #observe(
+    generation: SupervisedWorkspaceGeneration,
+    pendingPermit: boolean
+  ): Promise<WorkspaceRecoveryObservation> {
     const initial = await this.dependencies.authority.recoverWorkspaceSetupEvidence(
       generation.scopeId,
       generation.parentClaimId
@@ -93,9 +167,9 @@ export class PostgresWorkspaceRecoveryObserver {
       current.generation.state !== 'REVOKED' ||
       current.generation.supervisorId !== generation.supervisorId ||
       current.workspaceId !== generation.workspaceId ||
-      current.parentState !== 'HELD_UNCERTAIN' ||
-      current.phase !== 'WORKSPACE_UNCERTAIN' ||
-      current.permit?.completed !== true ||
+      current.parentState !== (pendingPermit ? 'ACTIVE' : 'HELD_UNCERTAIN') ||
+      current.phase !== (pendingPermit ? 'WORKSPACE_ARMED' : 'WORKSPACE_UNCERTAIN') ||
+      current.permit?.completed !== !pendingPermit ||
       current.workspace?.revision !== 1 ||
       approvedWorkspacePath !== generation.workspacePath ||
       current.runState !== 'ACTIVE' ||
@@ -107,7 +181,8 @@ export class PostgresWorkspaceRecoveryObserver {
       current.authorizationDigest !== initial.authorizationDigest ||
       current.parentClaimId !== initial.parentClaimId ||
       current.token !== initial.token ||
-      current.version !== initial.version + (initial.parentState === 'ACTIVE' ? 1 : 0) ||
+      current.version !==
+        initial.version + (!initial.permit?.completed && !pendingPermit ? 1 : 0) ||
       current.owner.runId !== initial.owner.runId ||
       current.owner.attemptId !== initial.owner.attemptId ||
       current.setupPlanDigest !== initial.setupPlanDigest ||
@@ -174,11 +249,11 @@ export class PostgresWorkspaceRecoveryObserver {
       final.generation?.state !== 'REVOKED' ||
       final.generation.id !== generation.generationId ||
       final.generation.supervisorId !== generation.supervisorId ||
-      final.parentState !== 'HELD_UNCERTAIN' ||
-      final.phase !== 'WORKSPACE_UNCERTAIN' ||
+      final.parentState !== (pendingPermit ? 'ACTIVE' : 'HELD_UNCERTAIN') ||
+      final.phase !== (pendingPermit ? 'WORKSPACE_ARMED' : 'WORKSPACE_UNCERTAIN') ||
       final.runState !== 'ACTIVE' ||
       final.permit?.id !== current.permit.id ||
-      !final.permit.completed ||
+      final.permit.completed !== !pendingPermit ||
       final.workspace?.revision !== current.workspace.revision ||
       final.workspace.branchName !== current.workspace.branchName ||
       finalWorkspacePath !== git.worktreePath ||

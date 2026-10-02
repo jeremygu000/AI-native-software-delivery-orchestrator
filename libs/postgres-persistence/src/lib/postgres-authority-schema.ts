@@ -712,11 +712,335 @@ const migrations = [
         end $$`,
       `revoke all on function {schema}.forge_workspace_permit_finish(text,text,text) from public`
     ]
+  },
+  {
+    version: 12,
+    statements: [
+      `alter table {schema}.forge_global_workspace_permit_lineages
+        add column settlement_id text`,
+      `alter table {schema}.forge_global_workspace_permit_lineages
+        add column settlement_digest text`,
+      `alter table {schema}.forge_global_workspace_phases
+        add column child_claim_id text`,
+      `alter table {schema}.forge_global_workspace_phases
+        add column handoff_attestation_id text`,
+      `alter table {schema}.forge_global_workspace_phases
+        add column handoff_attestation_digest text`,
+      `create function {schema}.forge_workspace_recovery_settle(
+          target_scope text, parent_id text, permit_identity text,
+          run_identity text, generation_identity text, expected_token text,
+          attestation_identity text, attestation_digest text,
+          signing_identity text, setup_digest text, authorization_identity text,
+          workspace_identity text)
+        returns text language plpgsql security definer set search_path = pg_catalog as $$
+        declare parent_row record; phase_row record; lineage_row record;
+          generation_row record; run_row record;
+        begin
+          if attestation_identity is null or attestation_identity = ''
+            or attestation_digest !~ '^sha256:[0-9a-f]{64}$' then
+            raise exception 'Recovery requires an exact signed attestation identity';
+          end if;
+          perform pg_advisory_xact_lock_shared(hashtext('forge-trust:{schema}'));
+          if not exists (select 1 from {schema}.forge_global_trust_registry
+              where id=1 and policy_version='git-workspace-setup-v1')
+            or not exists (select 1 from {schema}.forge_global_trust_keys
+              where key_id=signing_identity and state='ACTIVE')
+            or exists (select 1 from {schema}.forge_global_trust_revocations
+              where (kind='DECISION' and digest=setup_digest)
+                or (kind='AUTHORIZATION' and digest=authorization_identity))
+            or not exists (select 1 from {schema}.forge_global_control
+              where id=1 and state='GLOBAL_READY') then
+            raise exception 'Recovery trust is not current';
+          end if;
+          perform 1 from {schema}.forge_global_scopes
+            where id=target_scope and state='ACTIVE_FOR_GLOBAL_CLAIMS' for update;
+          if not found then raise exception 'Recovery scope is not active'; end if;
+          select state,payload into run_row from {schema}.forge_runs
+            where id=run_identity for update;
+          if not found or run_row.state <> 'ACTIVE'
+            or run_row.payload::jsonb->'run'->>'id' is distinct from run_identity
+            or not exists (select 1 from {schema}.forge_global_run_bindings b
+              join {schema}.forge_global_aliases a on a.repository_id=b.repository_id
+              where b.run_id=run_identity and b.scope_id=target_scope
+                and a.scope_id=target_scope and b.repository_id=
+                  run_row.payload::jsonb->'run'->>'repositoryId') then
+            raise exception 'Recovery run is not active and bound';
+          end if;
+          select * into parent_row from {schema}.forge_global_claims
+            where scope_id=target_scope and claim_id=parent_id;
+          select * into phase_row from {schema}.forge_global_workspace_phases
+            where scope_id=target_scope and parent_claim_id=parent_id;
+          select * into lineage_row from {schema}.forge_global_workspace_permit_lineages
+            where scope_id=target_scope and parent_claim_id=parent_id;
+          select * into generation_row from {schema}.forge_global_generations
+            where id=generation_identity;
+          if parent_row.token::text is distinct from expected_token
+            or parent_row.owner_json::jsonb->>'runId' is distinct from run_identity
+            or parent_row.owner_json::jsonb->>'workspaceId' is distinct from workspace_identity
+            or phase_row.workspace_id is distinct from workspace_identity
+            or phase_row.execution_generation is distinct from generation_identity
+            or phase_row.setup_plan_digest is distinct from setup_digest
+            or phase_row.signing_key is distinct from signing_identity
+            or phase_row.authorization_digest is distinct from authorization_identity
+            or lineage_row.permit_id is distinct from permit_identity
+            or lineage_row.workspace_id is distinct from workspace_identity
+            or lineage_row.generation_id is distinct from generation_identity
+            or lineage_row.token is distinct from parent_row.token
+            or lineage_row.owner_json::jsonb is distinct from parent_row.owner_json::jsonb
+            or generation_row.state is distinct from 'REVOKED'
+            or generation_row.scope_id is distinct from target_scope
+            or generation_row.parent_claim_id is distinct from parent_id
+            or generation_row.run_id is distinct from run_identity
+            or generation_row.workspace_id is distinct from workspace_identity
+            or generation_row.setup_plan_digest is distinct from setup_digest
+            or generation_row.execution_plan_digest is distinct from phase_row.execution_plan_digest
+            or exists (select 1 from {schema}.forge_global_permits
+              where scope_id=target_scope and claim_id=parent_id) then
+            raise exception 'Recovery parent, lineage, or generation is incompatible';
+          end if;
+          if lineage_row.settlement_id is not null then
+            if lineage_row.settlement_id <> attestation_identity
+              or lineage_row.settlement_digest <> attestation_digest
+              or not lineage_row.completed
+              or phase_row.phase <> 'WORKSPACE_UNCERTAIN'
+              or parent_row.state <> 'HELD_UNCERTAIN' then
+              raise exception 'Recovery permit settlement identity cannot change';
+            end if;
+            return 'SETTLED';
+          end if;
+          if lineage_row.completed then
+            if phase_row.phase <> 'WORKSPACE_UNCERTAIN'
+              or parent_row.state <> 'HELD_UNCERTAIN' then
+              raise exception 'Completed permit has inconsistent authority';
+            end if;
+          else
+            if phase_row.phase <> 'WORKSPACE_ARMED'
+              or parent_row.state <> 'ACTIVE' then
+              raise exception 'Pending permit is not armed';
+            end if;
+            update {schema}.forge_global_claims
+              set state='HELD_UNCERTAIN',version=version+1,
+                evidence='Independent Git permit settlement ' || attestation_identity
+              where scope_id=target_scope and claim_id=parent_id;
+            update {schema}.forge_global_workspace_phases
+              set phase='WORKSPACE_UNCERTAIN'
+              where scope_id=target_scope and parent_claim_id=parent_id;
+          end if;
+          update {schema}.forge_global_workspace_permit_lineages
+            set completed=true,settlement_id=attestation_identity,
+              settlement_digest=attestation_digest
+            where scope_id=target_scope and parent_claim_id=parent_id;
+          return 'SETTLED';
+        end $$`,
+      `revoke all on function {schema}.forge_workspace_recovery_settle(${Array(12).fill('text').join(',')}) from public`,
+      `create function {schema}.forge_workspace_recovery_handoff(
+          target_scope text, parent_id text, run_identity text, generation_identity text,
+          expected_token text, attestation_identity text, attestation_digest text,
+          signing_identity text, setup_digest text, authorization_identity text,
+          workspace_identity text, workspace_revision text, inspected_path text,
+           inspected_branch text, inspected_base text, attempt_fingerprint text)
+        returns text language plpgsql security definer set search_path = pg_catalog as $$
+        declare parent_row record; phase_row record; lineage_row record;
+          generation_row record; run_row record; binding_row record;
+          attempt_row record; workspace_row record; child_row record;
+          child_id text; resources jsonb; candidate jsonb; existing jsonb;
+          allocated_token bigint;
+        begin
+          if attestation_identity is null or attestation_identity = ''
+            or attestation_digest !~ '^sha256:[0-9a-f]{64}$'
+            or workspace_revision <> '1' then
+            raise exception 'Handoff requires a fresh exact attestation and initial workspace';
+          end if;
+          perform pg_advisory_xact_lock_shared(hashtext('forge-trust:{schema}'));
+          if not exists (select 1 from {schema}.forge_global_trust_registry
+              where id=1 and policy_version='git-workspace-setup-v1')
+            or not exists (select 1 from {schema}.forge_global_trust_keys
+              where key_id=signing_identity and state='ACTIVE')
+            or exists (select 1 from {schema}.forge_global_trust_revocations
+              where (kind='DECISION' and digest=setup_digest)
+                or (kind='AUTHORIZATION' and digest=authorization_identity))
+            or not exists (select 1 from {schema}.forge_global_control
+              where id=1 and state='GLOBAL_READY') then
+            raise exception 'Handoff trust is not current';
+          end if;
+          perform 1 from {schema}.forge_global_scopes
+            where id=target_scope and state='ACTIVE_FOR_GLOBAL_CLAIMS' for update;
+          if not found then raise exception 'Handoff scope is not active'; end if;
+          select state,payload into run_row from {schema}.forge_runs
+            where id=run_identity for update;
+          if not found or run_row.state <> 'ACTIVE'
+            or run_row.payload::jsonb->'run'->>'id' is distinct from run_identity
+            or run_row.payload::jsonb->'run'->'authority'->>'repositoryRoot'
+              is distinct from (select b.payload::jsonb->'workspace'->>'integrationRepositoryPath'
+                from {schema}.forge_records b where b.run_id=run_identity and b.kind='binding'
+                  and b.key=(select c.owner_json::jsonb->>'taskId' from {schema}.forge_global_claims c
+                    where c.scope_id=target_scope and c.claim_id=parent_id))
+            or run_row.payload::jsonb->'run'->'authority'->>'baseCommit' is distinct from inspected_base
+            or not exists (select 1 from {schema}.forge_global_run_bindings b
+              join {schema}.forge_global_aliases a on a.repository_id=b.repository_id
+              where b.run_id=run_identity and b.scope_id=target_scope
+                and a.scope_id=target_scope and b.repository_id=
+                  run_row.payload::jsonb->'run'->>'repositoryId') then
+            raise exception 'Handoff run is not active and approved';
+          end if;
+          select * into parent_row from {schema}.forge_global_claims
+            where scope_id=target_scope and claim_id=parent_id;
+          select * into phase_row from {schema}.forge_global_workspace_phases
+            where scope_id=target_scope and parent_claim_id=parent_id;
+          select * into lineage_row from {schema}.forge_global_workspace_permit_lineages
+            where scope_id=target_scope and parent_claim_id=parent_id;
+          select * into generation_row from {schema}.forge_global_generations
+            where id=generation_identity;
+          if parent_row.token::text is distinct from expected_token
+            or parent_row.owner_json::jsonb->>'runId' is distinct from run_identity
+            or parent_row.owner_json::jsonb->>'workspaceId' is distinct from workspace_identity
+            or phase_row.workspace_id is distinct from workspace_identity
+            or phase_row.execution_generation is distinct from generation_identity
+            or phase_row.setup_plan_digest is distinct from setup_digest
+            or phase_row.signing_key is distinct from signing_identity
+            or phase_row.authorization_digest is distinct from authorization_identity
+            or lineage_row.workspace_id is distinct from workspace_identity
+            or lineage_row.generation_id is distinct from generation_identity
+            or lineage_row.token is distinct from parent_row.token
+            or lineage_row.owner_json::jsonb is distinct from parent_row.owner_json::jsonb
+            or not lineage_row.completed
+            or lineage_row.settlement_id is distinct from attestation_identity
+            or lineage_row.settlement_digest is distinct from attestation_digest
+            or generation_row.state is distinct from 'REVOKED'
+            or generation_row.scope_id is distinct from target_scope
+            or generation_row.parent_claim_id is distinct from parent_id
+            or generation_row.run_id is distinct from run_identity
+            or generation_row.task_id is distinct from parent_row.owner_json::jsonb->>'taskId'
+            or generation_row.attempt_id is distinct from parent_row.owner_json::jsonb->>'attemptId'
+            or generation_row.workspace_id is distinct from workspace_identity
+            or generation_row.setup_plan_digest is distinct from setup_digest
+            or generation_row.execution_plan_digest is distinct from phase_row.execution_plan_digest
+            or exists (select 1 from {schema}.forge_global_permits
+              where scope_id=target_scope and claim_id=parent_id) then
+            raise exception 'Handoff parent, permit or generation is incompatible';
+          end if;
+          select payload into binding_row from {schema}.forge_records
+            where run_id=run_identity and kind='binding'
+              and key=parent_row.owner_json::jsonb->>'taskId';
+          select payload into attempt_row from {schema}.forge_records
+            where run_id=run_identity and kind='builder'
+              and key=parent_row.owner_json::jsonb->>'attemptId';
+          select payload into workspace_row from {schema}.forge_records
+            where run_id=run_identity and kind='workspace' and key=workspace_identity;
+          resources := binding_row.payload::jsonb->'leasePlan'->'predictedResources';
+          if binding_row.payload::jsonb->>'agentId' is distinct from parent_row.owner_json::jsonb->>'agentId'
+            or binding_row.payload::jsonb->'workspace'->>'id' is distinct from workspace_identity
+            or binding_row.payload::jsonb->'leasePlan'->>'taskId' is distinct from parent_row.owner_json::jsonb->>'taskId'
+            or jsonb_typeof(resources) is distinct from 'array'
+            or jsonb_array_length(resources)=0
+             or attempt_row.payload::jsonb->>'state' is distinct from 'STARTING'
+            or attempt_row.payload::jsonb->>'runId' is distinct from run_identity
+            or attempt_row.payload::jsonb->>'taskId' is distinct from parent_row.owner_json::jsonb->>'taskId'
+            or attempt_row.payload::jsonb->>'agentId' is distinct from parent_row.owner_json::jsonb->>'agentId'
+            or attempt_row.payload::jsonb->>'workspaceId' is distinct from workspace_identity
+             or attempt_row.payload::jsonb->>'leasePlanFingerprint' is distinct from attempt_fingerprint
+            or workspace_row.payload::jsonb->>'revision' is distinct from workspace_revision
+            or workspace_row.payload::jsonb->>'phase' is distinct from 'READY_TO_INTEGRATE'
+            or workspace_row.payload::jsonb->>'id' is distinct from workspace_identity
+            or workspace_row.payload::jsonb->>'runId' is distinct from run_identity
+            or workspace_row.payload::jsonb->>'taskId' is distinct from parent_row.owner_json::jsonb->>'taskId'
+            or workspace_row.payload::jsonb->>'workspacePath' is distinct from inspected_path
+            or workspace_row.payload::jsonb->>'branchName' is distinct from inspected_branch
+            or workspace_row.payload::jsonb->>'integrationRepositoryPath' is distinct from
+              run_row.payload::jsonb->'run'->'authority'->>'repositoryRoot'
+            or workspace_row.payload::jsonb->>'baseRef' is distinct from
+              binding_row.payload::jsonb->'workspace'->>'baseRef'
+            or workspace_row.payload::jsonb->>'integrationRef' is distinct from
+              binding_row.payload::jsonb->'workspace'->>'integrationRef'
+            or phase_row.execution_plan_digest is null then
+            raise exception 'Handoff execution plan, attempt or Git workspace is incompatible';
+          end if;
+          child_id := 'execution-' || encode(sha256(convert_to(
+             'forge-workspace-child-v1:' || parent_id || ':' || run_identity || ':' ||
+               (parent_row.owner_json::jsonb->>'attemptId'),'UTF8')),'hex');
+          if phase_row.phase='HANDOFF_COMMITTED' then
+            select * into child_row from {schema}.forge_global_claims
+              where scope_id=target_scope and claim_id=child_id;
+            select coalesce(jsonb_agg(resource_json::jsonb order by resource_json::jsonb), '[]'::jsonb)
+              into existing from {schema}.forge_global_leases
+              where scope_id=target_scope and claim_id=child_id;
+            select coalesce(jsonb_agg(value order by value), '[]'::jsonb)
+              into candidate from jsonb_array_elements(resources) value;
+            if phase_row.child_claim_id is distinct from child_id
+              or phase_row.handoff_attestation_id is distinct from attestation_identity
+              or phase_row.handoff_attestation_digest is distinct from attestation_digest
+              or parent_row.state is distinct from 'RELEASED'
+              or child_row.state is distinct from 'ACTIVE'
+              or child_row.owner_json::jsonb is distinct from parent_row.owner_json::jsonb
+              or existing is distinct from candidate then
+              raise exception 'Handoff replay is not the original active child';
+            end if;
+            return 'GRANTED:' || child_id || ':' || child_row.token::text;
+          end if;
+          if phase_row.phase is distinct from 'WORKSPACE_UNCERTAIN'
+            or parent_row.state is distinct from 'HELD_UNCERTAIN'
+            or parent_row.version < 2
+            or phase_row.child_claim_id is not null
+            or phase_row.handoff_attestation_id is not null
+            or phase_row.handoff_attestation_digest is not null then
+            raise exception 'Handoff parent is not uncertain';
+          end if;
+           if exists (select 1 from {schema}.forge_global_claims c
+             where c.scope_id=target_scope and c.claim_id<>parent_id
+               and c.state<>'RELEASED'
+               and (not exists (select 1 from {schema}.forge_global_leases l
+                    where l.scope_id=c.scope_id and l.claim_id=c.claim_id)
+                 or exists (select 1 from {schema}.forge_global_leases l
+                    cross join lateral jsonb_array_elements(resources) proposed(value)
+                    where l.scope_id=c.scope_id and l.claim_id=c.claim_id
+                      and (l.resource_json::jsonb->>'type'='repository'
+                        or proposed.value->>'type'='repository'
+                        or (l.resource_json::jsonb->>'type'='shared-resource'
+                          and proposed.value->>'type'='shared-resource'
+                          and l.resource_json::jsonb->>'resourceId'=proposed.value->>'resourceId')
+                        or (l.resource_json::jsonb->>'type'<>'shared-resource'
+                          and proposed.value->>'type'<>'shared-resource'
+                          and l.resource_json::jsonb->>'projectId'=proposed.value->>'projectId'
+                          and (l.resource_json::jsonb->>'type'='project'
+                            or proposed.value->>'type'='project'
+                            or (l.resource_json::jsonb->>'fileId'=proposed.value->>'fileId'
+                              and (l.resource_json::jsonb->>'type'='file'
+                                or proposed.value->>'type'='file'
+                                or l.resource_json::jsonb->>'symbolId'=proposed.value->>'symbolId'
+                                or coalesce(l.resource_json::jsonb->'ancestorSymbolIds','[]'::jsonb)
+                                  ? (proposed.value->>'symbolId')
+                                or coalesce(proposed.value->'ancestorSymbolIds','[]'::jsonb)
+                                  ? (l.resource_json::jsonb->>'symbolId'))))))))) then
+            return 'BLOCKED';
+          end if;
+          select next_token into allocated_token from {schema}.forge_global_scopes where id=target_scope;
+          if allocated_token >= 9007199254740991 or allocated_token < parent_row.token then
+            raise exception 'Handoff token exhausted or stale';
+          end if;
+          allocated_token := allocated_token+1;
+          update {schema}.forge_global_scopes set next_token=allocated_token where id=target_scope;
+          update {schema}.forge_global_claims set state='RELEASED',version=version+1,
+            evidence='Signed handoff ' || attestation_identity
+            where scope_id=target_scope and claim_id=parent_id;
+          insert into {schema}.forge_global_claims
+            values (target_scope,child_id,parent_row.owner_json,allocated_token,'ACTIVE',1,null);
+          insert into {schema}.forge_global_leases(scope_id,claim_id,lease_id,resource_json)
+            select target_scope,child_id,gen_random_uuid()::text,value::text
+            from jsonb_array_elements(resources) value;
+          update {schema}.forge_global_workspace_phases set
+            phase='HANDOFF_COMMITTED',child_claim_id=child_id,
+            handoff_attestation_id=attestation_identity,
+            handoff_attestation_digest=attestation_digest
+            where scope_id=target_scope and parent_claim_id=parent_id;
+          return 'GRANTED:' || child_id || ':' || allocated_token::text;
+        end $$`,
+      `revoke all on function {schema}.forge_workspace_recovery_handoff(${Array(16).fill('text').join(',')}) from public`
+    ]
   }
 ] as const;
 
 export const POSTGRES_AUTHORITY_SCHEMA_VERSION = 2;
-export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 11;
+export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 12;
 export type PostgresAuthoritySchemaVersion =
   | 1
   | typeof POSTGRES_AUTHORITY_SCHEMA_VERSION
@@ -728,12 +1052,14 @@ export type PostgresAuthoritySchemaVersion =
   | 8
   | 9
   | 10
+  | 11
   | typeof POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION;
 
 export type PostgresAuthorityWriterRoles = {
   trustAdminRole: string;
   generationIssuerRole: string;
   setupAdmissionRole?: string;
+  recoveryRole?: string;
 };
 
 const checksum = (statements: readonly string[]): string =>
@@ -879,7 +1205,10 @@ const globalColumns = {
     ['execution_generation', 'text', false],
     ['workspace_id', 'text', false],
     ['signing_key', 'text', false],
-    ['authorization_digest', 'text', false]
+    ['authorization_digest', 'text', false],
+    ['child_claim_id', 'text', false],
+    ['handoff_attestation_id', 'text', false],
+    ['handoff_attestation_digest', 'text', false]
   ],
   forge_global_trust_registry: [
     ['id', 'integer', true],
@@ -918,7 +1247,9 @@ const globalColumns = {
     ['generation_id', 'text', true],
     ['workspace_id', 'text', true],
     ['verifier', 'text', true],
-    ['completed', 'boolean', true]
+    ['completed', 'boolean', true],
+    ['settlement_id', 'text', false],
+    ['settlement_digest', 'text', false]
   ]
 } as const;
 
@@ -988,6 +1319,17 @@ const assertGlobalAuthorityShape = async (
               !(
                 table === 'forge_global_workspace_phases' &&
                 ['signing_key', 'authorization_digest'].includes(name)
+              )) &&
+            (version >= 12 ||
+              !(
+                (table === 'forge_global_workspace_phases' &&
+                  [
+                    'child_claim_id',
+                    'handoff_attestation_id',
+                    'handoff_attestation_digest'
+                  ].includes(name)) ||
+                (table === 'forge_global_workspace_permit_lineages' &&
+                  ['settlement_id', 'settlement_digest'].includes(name))
               ))
         )
         .map(([name, type, notNull]) => [table, name, type, notNull]);
@@ -1309,6 +1651,12 @@ const assertRestrictedWriterFunctions = async (
           ['forge_workspace_permit_begin', Array(26).fill('text').join(', ')],
           ['forge_workspace_permit_finish', 'text, text, text']
         ]
+      : []),
+    ...(version >= 12
+      ? [
+          ['forge_workspace_recovery_handoff', Array(16).fill('text').join(', ')],
+          ['forge_workspace_recovery_settle', Array(12).fill('text').join(', ')]
+        ]
       : [])
   ];
   const owner =
@@ -1326,6 +1674,22 @@ const assertRestrictedWriterFunctions = async (
     version >= 11
       ? functions.find((fn) => fn.name === 'forge_workspace_permit_finish')?.writer_roles
       : null;
+  const recoveryBinding =
+    version >= 12
+      ? functions.find((fn) => fn.name === 'forge_workspace_recovery_settle')?.writer_roles
+      : null;
+  const handoffBinding =
+    version >= 12
+      ? functions.find((fn) => fn.name === 'forge_workspace_recovery_handoff')?.writer_roles
+      : null;
+  let recoveryRole: string | undefined;
+  if (recoveryBinding !== null && recoveryBinding !== undefined) {
+    const value = String(recoveryBinding);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+      throw new Error('PostgreSQL recovery role binding is incompatible');
+    }
+    recoveryRole = value;
+  }
   let setupRole: string | undefined;
   if (setupBinding !== null && setupBinding !== undefined) {
     const value = String(setupBinding);
@@ -1362,6 +1726,7 @@ const assertRestrictedWriterFunctions = async (
   }
   if (
     (version >= 10 && armBinding !== setupBinding) ||
+    (version >= 12 && handoffBinding !== recoveryBinding) ||
     (version >= 11 && permitBinding !== setupBinding) ||
     (version >= 11 && finishBinding !== setupBinding) ||
     functions.length !== expected.length ||
@@ -1378,9 +1743,12 @@ const assertRestrictedWriterFunctions = async (
           fn.name === 'forge_workspace_permit_begin' ||
           fn.name === 'forge_workspace_permit_finish'
             ? (setupRole ?? null)
-            : writers === undefined
-              ? null
-              : JSON.stringify(writers)) ||
+            : fn.name === 'forge_workspace_recovery_settle' ||
+                fn.name === 'forge_workspace_recovery_handoff'
+              ? (recoveryRole ?? null)
+              : writers === undefined
+                ? null
+                : JSON.stringify(writers)) ||
         JSON.stringify(fn.grants) !==
           JSON.stringify(
             fn.name === 'forge_setup_admit' ||
@@ -1390,24 +1758,65 @@ const assertRestrictedWriterFunctions = async (
               ? setupRole === undefined
                 ? []
                 : [{ grantee: setupRole, privilege: 'EXECUTE', grantable: false }]
-              : writers === undefined
-                ? []
-                : [
-                    {
-                      grantee:
-                        fn.name === 'forge_trust_write'
-                          ? writers.trustAdminRole
-                          : writers.generationIssuerRole,
-                      privilege: 'EXECUTE',
-                      grantable: false
-                    }
-                  ]
+              : fn.name === 'forge_workspace_recovery_settle' ||
+                  fn.name === 'forge_workspace_recovery_handoff'
+                ? recoveryRole === undefined
+                  ? []
+                  : [{ grantee: recoveryRole, privilege: 'EXECUTE', grantable: false }]
+                : writers === undefined
+                  ? []
+                  : [
+                      {
+                        grantee:
+                          fn.name === 'forge_trust_write'
+                            ? writers.trustAdminRole
+                            : writers.generationIssuerRole,
+                        privilege: 'EXECUTE',
+                        grantable: false
+                      }
+                    ]
           ) ||
         fn.runtime_execute !== false ||
         fn.public_execute !== false
     )
   ) {
     throw new Error('PostgreSQL restricted authority writer functions are incompatible');
+  }
+  if (recoveryRole !== undefined) {
+    const role = await sql`select rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,
+       has_database_privilege(oid,current_database(),'CREATE') as create_database,
+       has_database_privilege(oid,current_database(),'TEMP') as create_temp,
+       exists (select 1 from pg_auth_members m where m.member=r.oid or m.roleid=r.oid) as membership
+       from pg_roles r where rolname=${recoveryRole}`;
+    const row = role[0];
+    if (
+      role.length !== 1 ||
+      row?.rolcanlogin !== true ||
+      row.rolsuper !== false ||
+      row.rolcreatedb !== false ||
+      row.rolcreaterole !== false ||
+      row.create_database !== false ||
+      row.create_temp !== false ||
+      row.membership !== false
+    ) {
+      throw new Error('PostgreSQL recovery role is not restricted');
+    }
+    const tables = await sql`select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace
+      where n.nspname=${schema} and c.relkind in ('r','p') and (
+        has_table_privilege(${recoveryRole},c.oid,'INSERT') or
+        has_table_privilege(${recoveryRole},c.oid,'UPDATE') or
+        has_table_privilege(${recoveryRole},c.oid,'DELETE') or
+        has_table_privilege(${recoveryRole},c.oid,'TRUNCATE') or
+        has_table_privilege(${recoveryRole},c.oid,'REFERENCES') or
+        has_table_privilege(${recoveryRole},c.oid,'TRIGGER') or
+        has_any_column_privilege(${recoveryRole},c.oid,'INSERT') or
+        has_any_column_privilege(${recoveryRole},c.oid,'UPDATE') or
+        has_any_column_privilege(${recoveryRole},c.oid,'REFERENCES')) limit 1`;
+    const schemas = await sql`select 1 from pg_namespace n
+       where has_schema_privilege(${recoveryRole},n.oid,'CREATE') limit 1`;
+    if (tables.length > 0 || schemas.length > 0) {
+      throw new Error('PostgreSQL recovery role has direct authority mutations');
+    }
   }
   if (setupRole !== undefined) {
     const membership = await sql`select 1 from pg_auth_members
@@ -1491,18 +1900,21 @@ export const migratePostgresAuthoritySchema = async (
     writerRoles !== undefined &&
     (targetVersion < 8 ||
       targetVersion >= 9 !== (writerRoles.setupAdmissionRole !== undefined) ||
+      targetVersion >= 12 !== (writerRoles.recoveryRole !== undefined) ||
       ![
         writerRoles.trustAdminRole,
         writerRoles.generationIssuerRole,
-        ...(writerRoles.setupAdmissionRole === undefined ? [] : [writerRoles.setupAdmissionRole])
+        ...(writerRoles.setupAdmissionRole === undefined ? [] : [writerRoles.setupAdmissionRole]),
+        ...(writerRoles.recoveryRole === undefined ? [] : [writerRoles.recoveryRole])
       ].every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) ||
       new Set([
         configuration.role,
         runtimeRole,
         writerRoles.trustAdminRole,
         writerRoles.generationIssuerRole,
-        ...(writerRoles.setupAdmissionRole === undefined ? [] : [writerRoles.setupAdmissionRole])
-      ]).size !== (targetVersion >= 9 ? 5 : 4))
+        ...(writerRoles.setupAdmissionRole === undefined ? [] : [writerRoles.setupAdmissionRole]),
+        ...(writerRoles.recoveryRole === undefined ? [] : [writerRoles.recoveryRole])
+      ]).size !== (targetVersion >= 12 ? 6 : targetVersion >= 9 ? 5 : 4))
   ) {
     throw new Error('PostgreSQL authority writer roles must be distinct, valid logins on v8');
   }
@@ -1616,6 +2028,12 @@ export const migratePostgresAuthoritySchema = async (
                 `forge_workspace_permit_begin(${Array(26).fill('text').join(',')})`,
                 'forge_workspace_permit_finish(text,text,text)'
               ]
+            : []),
+          ...(targetVersion >= 12
+            ? [
+                `forge_workspace_recovery_settle(${Array(12).fill('text').join(',')})`,
+                `forge_workspace_recovery_handoff(${Array(16).fill('text').join(',')})`
+              ]
             : [])
         ]) {
           await tx.unsafe(`revoke all on function ${schema}.${signature} from public`);
@@ -1691,6 +2109,50 @@ export const migratePostgresAuthoritySchema = async (
           for (const functionName of setupFunctions) {
             await tx.unsafe(`grant execute on function ${schema}.${functionName} to ${roleName}`);
             await tx.unsafe(`comment on function ${schema}.${functionName} is '${setupRole}'`);
+          }
+        }
+        if (targetVersion >= 12 && writerRoles?.recoveryRole !== undefined) {
+          const recoveryRole = writerRoles.recoveryRole;
+          const recoveryBindings = await tx`select obj_description(p.oid,'pg_proc') as binding
+            from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+             where n.nspname=${configuration.schema} and p.proname in
+               ('forge_workspace_recovery_settle','forge_workspace_recovery_handoff')`;
+          if (
+            recoveryBindings.length !== 2 ||
+            recoveryBindings.some((row) => row.binding !== null && row.binding !== recoveryRole)
+          ) {
+            throw new Error('PostgreSQL recovery role binding cannot be changed');
+          }
+          const signatures = [
+            `forge_workspace_recovery_settle(${Array(12).fill('text').join(',')})`,
+            `forge_workspace_recovery_handoff(${Array(16).fill('text').join(',')})`
+          ];
+          const writer = quote(recoveryRole);
+          for (const signature of signatures) {
+            await tx.unsafe(`revoke all on function ${schema}.${signature} from ${writer}`);
+          }
+          await tx.unsafe(`revoke all on schema ${schema} from ${writer}`);
+          await tx.unsafe(`grant usage on schema ${schema} to ${writer}`);
+          for (const table of [
+            'forge_schema_migrations',
+            'forge_runs',
+            'forge_records',
+            ...installedGlobalTables(targetVersion)
+          ]) {
+            await tx.unsafe(`revoke all on ${schema}.${table} from ${writer}`);
+          }
+          const columnDrift = await tx`select 1 from pg_class c
+             join pg_namespace n on n.oid=c.relnamespace
+             join pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
+             cross join lateral aclexplode(a.attacl) acl
+             where n.nspname=${configuration.schema} and c.relkind in ('r','p')
+               and acl.grantee=${recoveryRole}::regrole::oid limit 1`;
+          if (columnDrift.length > 0) {
+            throw new Error('PostgreSQL recovery role column grants require owner repair');
+          }
+          for (const signature of signatures) {
+            await tx.unsafe(`grant execute on function ${schema}.${signature} to ${writer}`);
+            await tx.unsafe(`comment on function ${schema}.${signature} is '${recoveryRole}'`);
           }
         }
         if (writerRoles === undefined) {
@@ -1820,7 +2282,7 @@ const grantRuntimePrivileges = async (
 export const assertPostgresAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration,
-  requiredVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = POSTGRES_AUTHORITY_SCHEMA_VERSION
+  requiredVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = POSTGRES_AUTHORITY_SCHEMA_VERSION
 ): Promise<void> => {
   assertPostgresAuthorityLogin(configuration);
   if (sql.options.user !== configuration.role) {

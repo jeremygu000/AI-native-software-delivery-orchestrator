@@ -15,6 +15,7 @@ export {
 } from './lib/postgres-trust-writers.js';
 export {
   migratePostgresAuthoritySchema,
+  assertPostgresAuthorityLogin,
   POSTGRES_AUTHORITY_SCHEMA_VERSION,
   POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
 } from './lib/postgres-authority-schema.js';

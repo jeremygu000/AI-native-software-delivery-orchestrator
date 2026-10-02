@@ -3727,3 +3727,15 @@ begin 操作在返回密钥之前，先持有当前信任的读取锁，再锁�
 新增 worker 单元测试覆盖撤销顺序、签发者失败、待完成 permit、持久身份不匹配和 Git 检查期间发生变化的情况。另一项测试启动隔离的真实 PostgreSQL 服务，建立真实 Git 仓库和 linked worktree，仅由 migration-owner **测试夹具**布置一个已经完成的 setup 状态，再验证受限代际签发者写入 `REVOKED`、父 claim 维持 `HELD_UNCERTAIN`，并且没有 child claim。这项测试中的 Docker 主管接口是模拟的；此前的可选真实 Docker 测试独立验证了后代进程终止和工作区隔离。`pnpm check` 的格式、严格 TypeScript 项目引用、lint 和 81 个文件中的 861 项测试全部通过（跳过 1 项可选 Docker 测试）；语句、分支、函数、代码行覆盖率分别为 90.90%、85.29%、93.56%、90.80%，超过 90/85/90/90 门槛。增加 PostgreSQL workspace 依赖和 TypeScript 项目引用后，`pnpm build` 也通过。
 
 这个恢复观察器**不产生签名或独立认证的静默证明**，不清算遗失完成密钥的 Git permit，不释放不确定的 setup 父 claim，不准入执行 child，也不运行 builder、repair 或 integration activity。数据库中持久撤销代际和 Docker 停机是两个独立操作，观察结果并未处于统一的跨系统锁下。实际生产 `GLOBAL_READY` worker 仍被禁止；独立恢复部署必须把签发者和 Docker 凭据与写入者隔离。SQLite 仍缺少受保护信任根。M4.2 保持 OPEN、M4.3 尚未开始；公开 number-token／BIGINT 边界和诊断资源 ID 歧义仍为 P2。
+
+## 签名恢复、孤儿 Git permit 与 PostgreSQL 原子交接
+
+独立复审接受了 `6f807ac` 的只读恢复观察流程。观察结果不能直接授权新的写入者：丢失 Git 完成响应可能留下唯一的待处理 permit，即使 permit 已完成，拥有仓库权限的 setup 父 claim 仍处于不确定占用。冻结的继续执行设计要求独立认证的恢复主体撤销旧执行代际、停止受监管容器及其后代、检查真实 Git worktree，并在交接期间维持不可恢复执行；不能把旧父 claim 的仓库权限悄悄转给 builder。
+
+独立恢复进程现在根据 PostgreSQL、已停止容器及真实 Git 的观察结果生成有短期有效期、独立用途域的 Ed25519 签名证明。证明固定父 claim、owner、token、工作区 revision、代际和主管、准确的 Git permit lineage、分别批准的 setup 与执行计划，以及 Git 的规范化路径、HEAD、分支和基础提交。验证器会拒绝签名被修改、密钥不受信任或证明过期。这份签名只是独立持有的恢复密钥提供的证据，**自身不是授权**。恢复角色和 Docker daemon 凭据必须与 worker、setup 签名服务隔离；PostgreSQL 函数本身无法验证 Ed25519，所以只能允许受限恢复服务先独立验证并实时复查后调用。
+
+PostgreSQL 第 12 版迁移仅追加清算、交接记录和两个受限的安全定义函数；第 1 至 11 版迁移保持不变。运行时对 setup 阶段和 Git permit lineage 仍只有读取权限；独立恢复角色只取得经过审计的函数执行权限，没有直接修改 authority 表的权限。两个操作均先串行化当前信任，再锁定 scope 和已绑定 run。清算检查准确且已撤销的代际、父 claim、permit 与当前批准：独立恢复后可以关闭唯一的待处理 Git lineage，也可为已完成的 lineage 记录证明，绝不签发第二个 permit。交接要求已清算且处于不确定状态的父 claim、批准内容不变且 ACTIVE 的 run 和 STARTING attempt、保存的初始工作区、生效的信任以及没有未结束的 permit；在 scope 锁下检查其他 lease 的方向性冲突。没有阻塞时，同一个数据库事务释放只有仓库权限的父 claim、增加 scope token、建立仅含**单独批准的执行资源**的 ACTIVE child，并用准确的证明 ID 和摘要记录 `HANDOFF_COMMITTED`。被阻塞或已取消时不留下 child 或 token；响应丢失后，仍生效的同一个 child 可以用同一证明精确恢复，不同摘要被拒绝。
+
+隔离的真实 PostgreSQL 测试核对 child 仅拥有执行资源、父 claim 的普通 permit 继续被拒、child 的 permit 只能用于已批准资源、冲突和取消不留残余、伪造指纹和错误证明摘要被拒、精确重放，以及 `pg_blocking_pids` 证明取消与交接在真实锁上等待。隔离的 PostgreSQL 加真实 linked Git 测试让已完成和孤儿 Git lineage 都经过签名恢复服务及其受限账号，并验证重放；固定镜像的真实 Docker 测试为可选，另外的 Docker 测试此前已验证后代进程停机。`pnpm check` 的格式、TypeScript 项目引用、类型感知 lint 和 82 个文件中的 866 项测试通过（跳过 1 项可选 Docker 测试）；语句、分支、函数和代码行覆盖率为 90.76%、85.44%、93.60%、90.66%，高于 90/85/90/90 门槛。`pnpm build` 也通过。
+
+这里建立的是 authority 交接与恢复服务边界，**并非生产执行已经接通**。恢复公钥配置在独立服务中，而不是登记在 PostgreSQL；恢复角色凭据和 Docker daemon 控制权属于部署信任边界，如果交接事务期间不能隔离这些凭据，daemon 管理员仍能使停机观察失效。PostgreSQL 会在每次事务内重新检查当前信任和持久化身份，但不能自行验证签名或外部容器／Git 的事实。Agent 启动及完成、repair、动态资源扩张、Git 集成、最终安全释放，以及 SQLite 的独立信任根仍未接线。legacy 生产 worker 继续拒绝 `GLOBAL_READY`，M4.2 仍为 OPEN，M4.3 尚未开始；公开 number-token／BIGINT 和诊断资源 ID 歧义仍为 P2。

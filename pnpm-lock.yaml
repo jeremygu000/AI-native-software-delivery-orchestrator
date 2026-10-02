@@ -138,6 +138,9 @@ importers:
       '@temporalio/activity':
         specifier: ^1.24.0
         version: 1.24.0
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
     devDependencies:
       '@temporalio/client':
         specifier: ^1.24.0
@@ -148,9 +151,6 @@ importers:
       '@temporalio/worker':
         specifier: ^1.24.0
         version: 1.24.0(@swc/helpers@0.5.23)(esbuild@0.28.2)
-      postgres:
-        specifier: ^3.4.9
-        version: 3.4.9
 
   libs/agent-runtime:
     dependencies:

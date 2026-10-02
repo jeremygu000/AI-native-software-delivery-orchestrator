@@ -61,9 +61,11 @@ let ownerConnectionString: string;
 let trustAdminRole: string;
 let generationIssuerRole: string;
 let setupAdmissionRole: string;
+let recoveryRole: string;
 let trustAdminConnectionString: string;
 let generationIssuerConnectionString: string;
 let setupAdmissionConnectionString: string;
+let recoveryConnectionString: string;
 const port = async (): Promise<number> =>
   new Promise((resolve, reject) => {
     const server = createServer();
@@ -108,11 +110,13 @@ beforeAll(async () => {
     trustAdminRole = `forge_trust_admin_${process.pid}`;
     generationIssuerRole = `forge_generation_issuer_${process.pid}`;
     setupAdmissionRole = `forge_setup_admission_${process.pid}`;
+    recoveryRole = `forge_recovery_${process.pid}`;
     await admin.unsafe(`create role "${role}" login`);
     await admin.unsafe(`create role "${runtimeRole}" login`);
     await admin.unsafe(`create role "${trustAdminRole}" login`);
     await admin.unsafe(`create role "${generationIssuerRole}" login`);
     await admin.unsafe(`create role "${setupAdmissionRole}" login`);
+    await admin.unsafe(`create role "${recoveryRole}" login`);
     await admin`revoke create on database postgres from public`;
     await admin`revoke temporary on database postgres from public`;
     await admin`revoke create on schema public from public`;
@@ -122,6 +126,7 @@ beforeAll(async () => {
     trustAdminConnectionString = `postgresql://${trustAdminRole}@127.0.0.1:${assignedPort}/postgres`;
     generationIssuerConnectionString = `postgresql://${generationIssuerRole}@127.0.0.1:${assignedPort}/postgres`;
     setupAdmissionConnectionString = `postgresql://${setupAdmissionRole}@127.0.0.1:${assignedPort}/postgres`;
+    recoveryConnectionString = `postgresql://${recoveryRole}@127.0.0.1:${assignedPort}/postgres`;
     if (adminRole === role || adminRole === runtimeRole) {
       throw new Error('Fixture migration and runtime roles must not be superusers');
     }
@@ -214,7 +219,7 @@ const createGlobalPermitFixture = async (): Promise<
       migration,
       runtimeRole,
       POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-      { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+      { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
     );
     store = await PostgresOrchestrationPersistence.connect(runtime);
     authority = await PostgresGlobalMutationAuthority.connect(runtime);
@@ -418,6 +423,300 @@ const createTrustedSetupFixture = async () => {
     }
   };
 };
+
+it('atomically hands off an uncertain setup parent to its separately approved execution resources', async () => {
+  const fixture = await createTrustedSetupFixture();
+  const admission = await PostgresWorkspaceSetupAdmission.connect({
+    connectionString: setupAdmissionConnectionString,
+    schema: fixture.schema,
+    role: setupAdmissionRole
+  });
+  const issuer = await PostgresExecutionGenerationIssuer.connect({
+    connectionString: generationIssuerConnectionString,
+    schema: fixture.schema,
+    role: generationIssuerRole
+  });
+  const recovery = postgres(recoveryConnectionString, {
+    onnotice: () => undefined,
+    connection: { application_name: 'forge-workspace-recovery' }
+  });
+  const request = {
+    ...fixture.request,
+    parentClaimId: 'handoff-parent',
+    attemptId: 'approved-setup-attempt',
+    generationId: 'handoff-generation',
+    supervisorId: 'handoff-supervisor',
+    binding: fixture.approvedBinding
+  };
+  try {
+    await fixture.authority.releaseGlobalMutation({
+      ...fixture.originalClaim,
+      token: fixture.originalGrant.token,
+      expectedVersion: fixture.originalGrant.leases[0]?.version ?? 1,
+      stopEvidence: 'The previous writer has stopped.'
+    });
+    const parent = await admission.admit(request);
+    if (parent.status !== 'granted') {
+      throw new Error('Expected repository setup authority');
+    }
+    await issuer.issue({
+      generationId: request.generationId,
+      scopeId: request.scopeId,
+      parentClaimId: request.parentClaimId,
+      runId: request.runId,
+      taskId: request.setupApproval.taskId,
+      attemptId: request.attemptId,
+      workspaceId: request.workspaceId,
+      supervisorId: request.supervisorId,
+      setupPlanDigest: request.setupApproval.setupApprovalFingerprint.slice(7),
+      executionPlanDigest: fingerprintPlanValue(request.binding.leasePlan).slice(7)
+    });
+    await admission.arm(request);
+    const permit = await admission.beginWorkspaceCreationPermit({
+      ...request,
+      token: parent.token,
+      version: 1
+    });
+    await admission.finishWorkspaceCreationPermit(permit, 'The Git callback requires recovery.');
+    await issuer.revoke(request.generationId, request.scopeId);
+    await fixture.admin.unsafe(
+      `insert into "${fixture.schema}".forge_records (run_id,kind,key,payload) values ($1,'workspace',$2,$3)`,
+      [
+        request.runId,
+        request.workspaceId,
+        JSON.stringify({ ...request.binding.workspace, revision: 1, phase: 'READY_TO_INTEGRATE' })
+      ]
+    );
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const args = [
+      request.scopeId,
+      request.parentClaimId,
+      permit.id,
+      request.runId,
+      request.generationId,
+      String(parent.token),
+      'handoff-attestation',
+      digest,
+      request.authorization.keyId,
+      request.setupApproval.setupApprovalFingerprint.slice(7),
+      fingerprintPlanValue(request.authorization).slice(7),
+      request.workspaceId
+    ];
+    const settled = await recovery.unsafe(
+      `select "${fixture.schema}".forge_workspace_recovery_settle(${args.map((_, i) => `$${i + 1}`).join(',')}) as outcome`,
+      args
+    );
+    expect(settled[0]?.outcome).toBe('SETTLED');
+    const approvedResources = request.binding.leasePlan.predictedResources;
+    const competingResource = approvedResources[0];
+    if (competingResource === undefined) {
+      throw new Error('Expected an approved execution lease');
+    }
+    const handoffArgs = [
+      request.scopeId,
+      request.parentClaimId,
+      request.runId,
+      request.generationId,
+      String(parent.token),
+      'handoff-attestation',
+      digest,
+      request.authorization.keyId,
+      request.setupApproval.setupApprovalFingerprint.slice(7),
+      fingerprintPlanValue(request.authorization).slice(7),
+      request.workspaceId,
+      '1',
+      request.binding.workspace.workspacePath,
+      request.binding.workspace.branchName,
+      request.artifact.repository.baseCommit,
+      taskLeasePlanFingerprint(request.binding.leasePlan)
+    ];
+    await fixture.admin.unsafe(
+      `insert into "${fixture.schema}".forge_global_claims (scope_id,claim_id,owner_json,token,state,version) values ($1,'competing-child',$2,$3,'ACTIVE',1)`,
+      [
+        request.scopeId,
+        JSON.stringify({
+          runId: request.runId,
+          taskId: 'other-task',
+          attemptId: 'other-attempt',
+          agentId: 'other-agent',
+          workspaceId: 'other-workspace'
+        }),
+        parent.token
+      ]
+    );
+    await fixture.admin.unsafe(
+      `insert into "${fixture.schema}".forge_global_leases (scope_id,claim_id,lease_id,resource_json) values ($1,'competing-child','competing-lease',$2)`,
+      [request.scopeId, JSON.stringify(competingResource)]
+    );
+    const blocked = await recovery.unsafe(
+      `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')}) as outcome`,
+      handoffArgs
+    );
+    expect(blocked[0]?.outcome).toBe('BLOCKED');
+    expect(
+      await fixture.admin.unsafe(
+        `select state from "${fixture.schema}".forge_global_claims where claim_id=$1`,
+        [request.parentClaimId]
+      )
+    ).toMatchObject([{ state: 'HELD_UNCERTAIN' }]);
+    expect(
+      await fixture.admin.unsafe(
+        `select next_token from "${fixture.schema}".forge_global_scopes where id=$1`,
+        [request.scopeId]
+      )
+    ).toMatchObject([{ next_token: String(parent.token) }]);
+    expect(
+      await fixture.admin.unsafe(
+        `select count(*)::integer as count from "${fixture.schema}".forge_global_workspace_phases where child_claim_id is not null`
+      )
+    ).toMatchObject([{ count: 0 }]);
+    await fixture.admin.unsafe(
+      `update "${fixture.schema}".forge_global_claims set state='RELEASED' where claim_id='competing-child'`
+    );
+    let unlockScope: (() => void) | undefined;
+    let scopeLocked: ((pid: number) => void) | undefined;
+    const locked = new Promise<number>((resolve) => {
+      scopeLocked = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      unlockScope = resolve;
+    });
+    const cancellation = fixture.admin.begin(async (tx) => {
+      const row = await tx.unsafe(
+        `select pg_backend_pid() as pid from "${fixture.schema}".forge_global_scopes where id=$1 for update`,
+        [request.scopeId]
+      );
+      scopeLocked?.(Number(row[0]?.pid));
+      await release;
+      await tx.unsafe(
+        `update "${fixture.schema}".forge_runs set state='CANCEL_REQUESTED' where id=$1`,
+        [request.runId]
+      );
+    });
+    const cancellationPid = await locked;
+    const waitingHandoff = recovery
+      .unsafe(
+        `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
+        handoffArgs
+      )
+      .then(() => {
+        throw new Error('Cancelled run unexpectedly handed off');
+      });
+    try {
+      const waiting = await blockedBackend(
+        fixture.admin,
+        fixture.schema,
+        'forge-workspace-recovery',
+        'forge_global_scopes'
+      );
+      expect(waiting.blockers).toContain(cancellationPid);
+    } finally {
+      unlockScope?.();
+      await cancellation;
+    }
+    await expect(waitingHandoff).rejects.toThrow('not active');
+    await expect(
+      recovery.unsafe(
+        `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
+        handoffArgs
+      )
+    ).rejects.toThrow('not active');
+    await fixture.admin.unsafe(
+      `update "${fixture.schema}".forge_runs set state='ACTIVE' where id=$1`,
+      [request.runId]
+    );
+    await expect(
+      recovery.unsafe(
+        `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
+        handoffArgs.map((entry, index) => (index === 15 ? 'forged-attempt-fingerprint' : entry))
+      )
+    ).rejects.toThrow('incompatible');
+    const result = await recovery.unsafe(
+      `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')}) as outcome`,
+      handoffArgs
+    );
+    expect(result[0]?.outcome).toMatch(/^GRANTED:execution-[0-9a-f]{64}:\d+$/);
+    const childClaimId = String(result[0]?.outcome).split(':')[1];
+    const childToken = Number(String(result[0]?.outcome).split(':')[2]);
+    if (childClaimId === undefined || !Number.isSafeInteger(childToken)) {
+      throw new Error('Missing approved execution child');
+    }
+    await expect(
+      fixture.peer.beginFencedMutation({
+        scopeId: request.scopeId,
+        claimId: request.parentClaimId,
+        owner: {
+          runId: request.runId,
+          taskId: request.setupApproval.taskId,
+          attemptId: request.attemptId,
+          agentId: request.binding.agentId,
+          workspaceId: request.workspaceId
+        },
+        token: parent.token,
+        resource: { type: 'repository' }
+      })
+    ).rejects.toThrow('Workspace setup parent forbids ordinary mutation authority');
+    const childOwner = {
+      runId: request.runId,
+      taskId: request.setupApproval.taskId,
+      attemptId: request.attemptId,
+      agentId: request.binding.agentId,
+      workspaceId: request.workspaceId
+    };
+    await expect(
+      fixture.peer.beginFencedMutation({
+        scopeId: request.scopeId,
+        claimId: childClaimId,
+        owner: childOwner,
+        token: childToken,
+        resource: { type: 'repository' }
+      })
+    ).rejects.toThrow();
+    const childPermit = await fixture.peer.beginFencedMutation({
+      scopeId: request.scopeId,
+      claimId: childClaimId,
+      owner: childOwner,
+      token: childToken,
+      resource: competingResource
+    });
+    await fixture.peer.endFencedMutation(childPermit);
+    expect(
+      (
+        await recovery.unsafe(
+          `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')}) as outcome`,
+          handoffArgs
+        )
+      )[0]?.outcome
+    ).toBe(result[0]?.outcome);
+    await expect(
+      recovery.unsafe(
+        `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
+        handoffArgs.map((entry, index) => (index === 7 ? `sha256:${'b'.repeat(64)}` : entry))
+      )
+    ).rejects.toThrow();
+    const rows = await fixture.admin.unsafe(
+      `select c.claim_id,c.state,c.token,l.resource_json from "${fixture.schema}".forge_global_claims c left join "${fixture.schema}".forge_global_leases l on l.scope_id=c.scope_id and l.claim_id=c.claim_id where c.scope_id=$1 order by c.token`,
+      [request.scopeId]
+    );
+    expect(
+      rows.map((row) => ({
+        claim_id: row.claim_id,
+        state: row.state,
+        resource: row.resource_json === null ? null : JSON.parse(String(row.resource_json))
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ claim_id: request.parentClaimId, state: 'RELEASED' }),
+        expect.objectContaining({ state: 'ACTIVE', resource: approvedResources[0] })
+      ])
+    );
+  } finally {
+    await recovery.end();
+    await issuer.close();
+    await admission.close();
+    await fixture.close();
+  }
+});
 
 it('atomically admits a signed repository-only setup parent and INITIAL_ADMITTED marker', async () => {
   const fixture = await createTrustedSetupFixture();
@@ -1733,7 +2032,7 @@ it('preserves owner-seeded generation rows across migration reruns without runti
       migration,
       runtimeRole,
       POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-      { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+      { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
     );
     expect(
       await fixture.admin.unsafe(
@@ -1965,7 +2264,7 @@ it('restricts trust writes to the administrator function and preserves key ident
       { connectionString: ownerConnectionString, schema: fixture.schema, role },
       runtimeRole,
       POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-      { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+      { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
     );
     await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
     expect(await admin.registerKey('key-1', publicKey)).toBe(1);
@@ -2044,7 +2343,8 @@ it('rejects direct writer grants on base authority tables and repairs them on mi
         {
           trustAdminRole,
           generationIssuerRole,
-          setupAdmissionRole
+          setupAdmissionRole,
+          recoveryRole
         }
       );
       const issuer = await PostgresExecutionGenerationIssuer.connect(issuerConfig);
@@ -2068,7 +2368,8 @@ it('rejects direct writer grants on base authority tables and repairs them on mi
       {
         trustAdminRole,
         generationIssuerRole,
-        setupAdmissionRole
+        setupAdmissionRole,
+        recoveryRole
       }
     );
     const column = await direct.unsafe(
@@ -2119,7 +2420,7 @@ it.each([
         migration,
         runtimeRole,
         POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-        { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+        { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
       );
       const repaired = await setup.unsafe(
         `select has_table_privilege(current_user,'"${fixture.schema}".${table}',$1) as allowed`,
@@ -2178,7 +2479,7 @@ it('rejects setup admission column REFERENCES even after table-level migration r
       migration,
       runtimeRole,
       POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-      { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+      { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
     );
     const after = await setup.unsafe(
       `select has_column_privilege(current_user,'"${fixture.schema}".forge_global_aliases','scope_id','REFERENCES') as allowed`
@@ -2191,7 +2492,7 @@ it('rejects setup admission column REFERENCES even after table-level migration r
       migration,
       runtimeRole,
       POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-      { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+      { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
     );
     await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
   } finally {
@@ -2233,7 +2534,7 @@ it('rejects setup admission schema CREATE and removes the drift on migration rer
       migration,
       runtimeRole,
       POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-      { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+      { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
     );
     const repaired = await setup.unsafe(
       `select has_schema_privilege(current_user,$1,'CREATE') as allowed`,
@@ -2273,7 +2574,7 @@ it('rejects setup admission CREATE on another accessible schema without silently
         { connectionString: ownerConnectionString, schema: fixture.schema, role },
         runtimeRole,
         POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-        { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+        { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
       )
     ).rejects.toThrow('schema CREATE privileges');
     await fixture.admin.unsafe(`revoke create on schema "${other}" from "${setupAdmissionRole}"`);
@@ -2315,7 +2616,7 @@ it('rejects setup admission CREATE on pg_catalog until the database administrato
         { connectionString: ownerConnectionString, schema: fixture.schema, role },
         runtimeRole,
         POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-        { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+        { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
       )
     ).rejects.toThrow('schema CREATE privileges');
     await fixture.admin.unsafe(`revoke create on schema pg_catalog from "${setupAdmissionRole}"`);
@@ -2367,7 +2668,7 @@ it.each([
         { connectionString: ownerConnectionString, schema: fixture.schema, role },
         runtimeRole,
         POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-        { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+        { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
       )
     ).rejects.toThrow('restricted authority writer functions are incompatible');
     await fixture.admin.unsafe(
@@ -2407,7 +2708,7 @@ it('rejects outsider EXECUTE on security-definer functions at startup and migrat
         { connectionString: ownerConnectionString, schema: fixture.schema, role },
         runtimeRole,
         POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
-        { trustAdminRole, generationIssuerRole, setupAdmissionRole }
+        { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
       )
     ).rejects.toThrow('restricted authority writer functions are incompatible');
     await fixture.admin.unsafe(
@@ -2445,7 +2746,7 @@ it.each([
       role: runtimeRole
     };
     const migration = { connectionString: ownerConnectionString, schema: fixture.schema, role };
-    const roles = { trustAdminRole, generationIssuerRole, setupAdmissionRole };
+    const roles = { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole };
     try {
       await fixture.admin.unsafe(`create role "${outsider}" login`);
       await fixture.admin.unsafe(`grant "${writer}" to "${outsider}"`);
@@ -3204,6 +3505,7 @@ const blockedBackend = async (
     | 'forge-global-authority'
     | 'forge-generation-issuer'
     | 'forge-setup-admission'
+    | 'forge-workspace-recovery'
     | 'forge-trust-admin',
   table:
     | 'forge_runs'
@@ -3219,6 +3521,7 @@ const blockedBackend = async (
           (${application}='forge-generation-issuer' and query like '%forge_generation_write%') or
           (${application}='forge-setup-admission' and
             (query like '%forge_setup_admit%' or query like '%forge_workspace_permit_begin%')) or
+          (${application}='forge-workspace-recovery' and query like '%forge_workspace_recovery_handoff%') or
          (${application}='forge-trust-admin' and query like '%forge_trust_write%'))`;
     const row = rows[0];
     if (row !== undefined) {
@@ -4071,7 +4374,7 @@ it('installs M4.2 global authority tables through migration owner and gates runt
     const versions = await admin.unsafe(
       `select version from "${schema}".forge_schema_migrations order by version`
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     expect(
       await runtimeSql.unsafe(
         `select revision,policy_version from "${schema}".forge_global_trust_registry`
@@ -4118,7 +4421,10 @@ it('installs M4.2 global authority tables through migration owner and gates runt
       'execution_generation',
       'workspace_id',
       'signing_key',
-      'authorization_digest'
+      'authorization_digest',
+      'child_claim_id',
+      'handoff_attestation_id',
+      'handoff_attestation_digest'
     ]);
     await expect(
       runtimeSql.unsafe(
@@ -4543,7 +4849,7 @@ it('closes PostgreSQL legacy writer creation after the deployment cutover barrie
   }
 });
 
-it.each([0, 12, Number.NaN])(
+it.each([0, 13, Number.NaN])(
   'rejects unsupported runtime migration target %s before creating schema objects',
   async (target) => {
     const schema = `forge_bad_target_${++fixtureOrdinal}`;
