@@ -5,7 +5,7 @@
 
 ## 当前独立接受状态
 
-M3 Runtime V2／Temporal、M4.1 PostgreSQL authority 和 **M4.2 PostgreSQL 全局生产 authority 均为 PASS／CLOSED／FROZEN**。M4.2 在 `91a5ca9f5b6563619a9f221811beaa7052376da7` 上获得独立接受。下方阶段内容保留开发历史；较早的 OPEN 或“尚未实现”描述对应当时增量，不代表当前已接受版本。M4.3 多 run／worker-fleet 验收尚未开始。
+M3 Runtime V2／Temporal、M4.1 PostgreSQL authority 和 **M4.2 PostgreSQL 全局生产 authority 均为 PASS／CLOSED／FROZEN**。M4.2 在 `91a5ca9f5b6563619a9f221811beaa7052376da7` 上获得独立接受。下方阶段内容保留开发历史；较早的 OPEN 或“尚未实现”描述对应当时增量，不代表当前已接受版本。**M4.3 多 run／worker-fleet 验收为 IN PROGRESS**，首批真实 fleet 场景已实现，等待独立复审。
 
 已接受的生产路径接起独立 setup／handoff、仅持有 runtime PostgreSQL 凭据的 worker、隔离 Pi builder／repair、宿主批准 inference、批准范围内 fenced resource claim、真实 verification 与 exact review、受限 Docker Git、claim release 和原子 run finalization。部署仍须准备批准镜像／model 凭据并完成特权 cutover／setup；接受不等于自动上线。不明确写入者保留阻塞 authority，要求独立／手工恢复。自动 recovery scheduling 和 SQLite 受保护 trust root 是延后项，不是 M4.2 blocker。
 
@@ -3891,3 +3891,13 @@ Dynamic tool 请求使用持久化 PostgreSQL authority，不使用本地 guard�
 复审独立检查了 production factory、凭据隔离、legacy／global 启动门禁、invocation-bound stop receipt、restart quarantine、dynamic-plan root 与 terminal barrier、Docker Git 隔离、verification／review 及 finalization 锁序。执行证据仍是已记录的全镜像 `pnpm check`：943／943 项测试，无跳过，覆盖率 90.86%／85.92%／94.27%／90.75%，以及成功的 `pnpm build`。本次只更新文档，不声称重新运行测试或部署上线。
 
 正常完成只有在所属 broker 回调 drain、精确容器停机且当前 authority 检查通过后才可 release。Restart、callback loss、Docker 歧义和 in-flight permit 保留 UNKNOWN／HELD_UNCERTAIN authority，禁止自动 replay／release／finalization，并要求独立恢复。本阶段接受手工恢复；blocked／UNKNOWN 自动化、recovery scheduling 和 SQLite 独立保护的 trust root 继续延后。Public number-token／BIGINT、诊断 resource-ID 歧义和 integration actor 命名仍为 P2。M4.3 为 NOT STARTED，是下一阶段完整多 run／worker-fleet 验收范围。除非出现具体 regression，不再扩充已冻结的 M4.2 authority／recovery infrastructure。
+
+## M4.3 首批 fleet 验收：竞争、并行与 worker 替换
+
+M4.3 现在通过真实 Temporal workflow 和多个实际 worker 调用已接受的生产 activity，复用既有隔离 PostgreSQL、Pi SDK 镜像与 linked Git 夹具。每个 worker 都有独立 native Temporal connection 和明确 identity。测试在宿主 model inference 暂停 run A，同时保留其活动 repository authority。同 scope 场景中，run B 的独立 PostgreSQL 连接收到 BLOCKED，不创建 claim，也不改 integration repository。独立 scope 场景中，B 使用另一个显式登记的仓库，取得自己的 authority，并在 A 获准继续之前完成真实隔离 SDK 的 fenced 文件写入；因此 A 的暂停不会串行化无关 scope。
+
+A 的 builder 完成且所属 broker 清算后，原 worker 优雅 drain，由 replacement 接续 review 和隔离 Git integration。Temporal history 证明 builder 仅由 original identity 完成一次，integration 仅由 replacement identity 完成一次。验收 worker 关闭 sticky workflow cache，避免刻意退役的 worker 占住下一条 workflow task；生产 worker 设置及冻结 M4.2 代码不变。独立 SQL 读取与真实 Git 内容证明持久化结果，不仅依赖 workflow 内存断言。
+
+同 scope 的 A 全部清算后，一个新的 ACTIVE successor run 可以取得更高 scope token；测试绝不复活原来 FAILED 的 competitor。使用旧 child token 的 callback 在调用前被拒绝；精确 successor permit 可从另一连接观察，随后正常完成、释放，并不改变 Git。这一集中批次覆盖竞争、独立进展、优雅 worker 替换、stale writer 拒绝和安全后续准入。B 的独立 scope workflow 在受控 SDK 写入／释放后刻意使用夹具 review rejection 并终结为 FAILED，不声称完成第二条完整 production review／integration 链。
+
+两项 fleet 场景在真实镜像下通过。全镜像 `pnpm check` 通过 88 个文件中的全部 945 项测试，无跳过，覆盖格式、TypeScript、lint、覆盖率及编译后 CLI／worker 构建验收。语句、分支、函数、代码行覆盖率为 90.96%、86.02%、94.43% 和 90.85%，全部高于配置门槛。M4.3 保持 IN PROGRESS，不是 CLOSED：活动 callback 期间进程突然丢失和其余 fleet failure matrix 仍需验收证据。本批只修改测试与状态／入门文档，不新增 scheduler、authority 机制、migration 或权限，保留 M4.2 已接受冻结状态。

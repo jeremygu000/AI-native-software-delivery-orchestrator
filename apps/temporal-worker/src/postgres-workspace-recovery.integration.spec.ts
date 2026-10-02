@@ -1,12 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { TestWorkflowEnvironment } from '@temporalio/testing';
+import { NativeConnection, Worker } from '@temporalio/worker';
 
 import postgres from 'postgres';
 import {
@@ -17,7 +19,8 @@ import {
 import type { CreatePersistedRunRequest } from '@ai-native-software-delivery-orchestrator/domain';
 import {
   taskLeasePlanFingerprint,
-  taskVerificationEvidenceFingerprint
+  taskVerificationEvidenceFingerprint,
+  FencedMutationPort
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
   fingerprintPlanValue,
@@ -74,7 +77,7 @@ const roles = {
 };
 
 const availablePort = (): Promise<number> =>
-  new Promise((resolve, reject) => {
+  new Promise((done, reject) => {
     const server = createServer();
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
@@ -83,7 +86,7 @@ const availablePort = (): Promise<number> =>
         server.close();
         reject(new Error('Missing recovery PostgreSQL fixture port'));
       } else {
-        server.close(() => resolve(address.port));
+        server.close(() => done(address.port));
       }
     });
   });
@@ -156,7 +159,9 @@ it.for([
   ['completed', 'global-factory'],
   ['completed', 'global-cancel'],
   ['completed', 'global-restart'],
-  ['completed', 'global-repair']
+  ['completed', 'global-repair'],
+  ['completed', 'global-fleet'],
+  ['completed', 'global-fleet-independent']
 ] as const)(
   'hands off a %s Git permit and executes the %s child lifecycle',
   { timeout: 60_000 },
@@ -641,6 +646,14 @@ it.for([
             { repositoryPath: integration }
           );
           let reviewCount = 0;
+          let releaseFleetModel: (() => void) | undefined;
+          let enteredFleetModel: (() => void) | undefined;
+          const fleetModelEntered = new Promise<void>((done) => {
+            enteredFleetModel = done;
+          });
+          const fleetModelGate = new Promise<void>((done) => {
+            releaseFleetModel = done;
+          });
           let global = createPostgresGlobalWorkerComposition({
             authority,
             persistence: executionStore,
@@ -685,6 +698,13 @@ it.for([
               },
               apiKey: 'host-only',
               complete: async (model, context) => {
+                if (
+                  lifecycle.startsWith('global-fleet') &&
+                  !context.messages.some((message) => message.role === 'toolResult')
+                ) {
+                  enteredFleetModel?.();
+                  await fleetModelGate;
+                }
                 if (lifecycle === 'global-cancel') {
                   await executionStore.requestCancellation(request.run.id);
                 }
@@ -812,6 +832,531 @@ it.for([
             taskId: 'task',
             attemptId: 'attempt'
           };
+          if (lifecycle.startsWith('global-fleet')) {
+            const environment = await TestWorkflowEnvironment.createTimeSkipping();
+            const peerAuthority = await PostgresGlobalMutationAuthority.connect(config);
+            const peerStore = await PostgresOrchestrationPersistence.connect(config);
+            const competitorRunId = `${request.run.id}-competitor`;
+            const independent = lifecycle === 'global-fleet-independent';
+            const competitorRepository = `${integration}-independent-repository`;
+            const competitorWorktree = `${integration}-independent-worktree`;
+            if (independent) {
+              mkdirSync(competitorRepository);
+              execFileSync('git', ['init', '-b', 'main', competitorRepository]);
+              execFileSync('git', ['config', 'user.name', 'Fleet fixture'], {
+                cwd: competitorRepository
+              });
+              execFileSync('git', ['config', 'user.email', 'fleet@example.test'], {
+                cwd: competitorRepository
+              });
+              writeFileSync(join(competitorRepository, 'approved.txt'), 'independent-before');
+              execFileSync('git', ['add', '.'], { cwd: competitorRepository });
+              execFileSync('git', ['commit', '-m', 'Independent base'], {
+                cwd: competitorRepository
+              });
+            }
+            const competitorBinding = {
+              ...request.taskBindings[0],
+              runId: competitorRunId,
+              workspace: {
+                ...request.taskBindings[0].workspace,
+                runId: competitorRunId,
+                ...(independent
+                  ? {
+                      integrationRepositoryPath: competitorRepository,
+                      workspacePath: competitorWorktree,
+                      branchName: 'forge/independent/task'
+                    }
+                  : {})
+              }
+            };
+            await peerStore.createRun({
+              ...request,
+              run: {
+                ...request.run,
+                id: competitorRunId,
+                ...(independent
+                  ? {
+                      repositoryId: 'independent-repo',
+                      authority: {
+                        ...request.run.authority,
+                        repositoryRoot: competitorRepository,
+                        baseCommit: execFileSync('git', ['rev-parse', 'HEAD'], {
+                          cwd: competitorRepository,
+                          encoding: 'utf8'
+                        }).trim()
+                      }
+                    }
+                  : {})
+              },
+              taskBindings: [competitorBinding]
+            });
+            const competitorScope = independent
+              ? await peerAuthority.registerScope('independent-repo')
+              : scopeId;
+            await peerAuthority.bindRun(competitorRunId, independent ? 'independent-repo' : 'repo');
+            if (independent) {
+              await peerAuthority.activateScope(competitorScope);
+              const independentWorkspace = await new GitWorkspaceManager().create(
+                competitorBinding.workspace
+              );
+              await peerStore.persistWorkspace({
+                runId: competitorRunId,
+                workspace: independentWorkspace
+              });
+            }
+            await peerStore.persistAttempt({
+              runId: competitorRunId,
+              attempt: {
+                ...agentRequest.attempt,
+                id: 'competitor-attempt',
+                runId: competitorRunId,
+                state: 'PREPARING',
+                revision: 1,
+                startedAt: undefined
+              }
+            });
+            let builderFinished = false;
+            let notifyBuilderFinished: (() => void) | undefined;
+            let returnBuilder: (() => void) | undefined;
+            const builderFinishedGate = new Promise<void>((done) => {
+              notifyBuilderFinished = done;
+            });
+            const returnBuilderGate = new Promise<void>((done) => {
+              returnBuilder = done;
+            });
+            const delivered: string[] = [];
+            let competitorAttempted = false;
+            const activities = {
+              ...global.forgeActivities,
+              reevaluateRun: async ({ runId }: { runId: string }) => ({
+                runId,
+                authorizedTasks:
+                  runId === competitorRunId
+                    ? competitorAttempted
+                      ? []
+                      : [{ taskId: 'task', attemptId: 'competitor-attempt' }]
+                    : builderFinished
+                      ? []
+                      : [{ taskId: 'task', attemptId: 'attempt' }]
+              }),
+              executeBuilder: async (input: typeof builderInput) => {
+                if (input.runId === competitorRunId) {
+                  const loser = await peerAuthority.claimGlobalMutation({
+                    scopeId: competitorScope,
+                    claimId: 'fleet-competitor',
+                    owner: {
+                      runId: competitorRunId,
+                      taskId: 'task',
+                      attemptId: 'competitor-attempt',
+                      agentId: 'agent',
+                      workspaceId: 'workspace'
+                    },
+                    resources: [{ type: 'repository' }]
+                  });
+                  competitorAttempted = true;
+                  if (independent) {
+                    if (loser.status !== 'granted') {
+                      throw new Error('Independent scope was incorrectly blocked');
+                    }
+                    const independentGateway = new DockerPiSessionGateway({
+                      image,
+                      executable: '/usr/local/bin/node',
+                      args: ['/opt/forge/entrypoint.mjs'],
+                      modelProxy: new ApprovedPiHostModelProxy({
+                        model: {
+                          api: 'openai-completions',
+                          provider: 'openai',
+                          id: 'independent',
+                          name: 'Independent',
+                          baseUrl: 'https://unused.example.test',
+                          reasoning: false,
+                          input: ['text'],
+                          contextWindow: 32768,
+                          maxTokens: 1024,
+                          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+                        },
+                        apiKey: 'independent-host-only',
+                        complete: async (_model, context) => ({
+                          role: 'assistant',
+                          api: 'openai-completions',
+                          provider: 'openai',
+                          model: 'independent',
+                          content: context.messages.some((message) => message.role === 'toolResult')
+                            ? [{ type: 'text', text: 'Done' }]
+                            : [
+                                {
+                                  type: 'toolCall',
+                                  id: 'independent-write',
+                                  name: 'forge_write',
+                                  arguments: { path: 'approved.txt', content: 'independent-after' }
+                                }
+                              ],
+                          stopReason: context.messages.some(
+                            (message) => message.role === 'toolResult'
+                          )
+                            ? 'stop'
+                            : 'toolUse',
+                          usage: {
+                            input: 0,
+                            output: 0,
+                            cacheRead: 0,
+                            cacheWrite: 0,
+                            totalTokens: 0,
+                            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+                          },
+                          timestamp: Date.now()
+                        })
+                      })
+                    });
+                    const independentWorkspace = (await peerStore.recoverRun(competitorRunId))
+                      ?.workspaces[0]?.workspace;
+                    if (independentWorkspace === undefined) {
+                      throw new Error('Missing independent worktree');
+                    }
+                    const { AgentToolRuntime } =
+                      await import('@ai-native-software-delivery-orchestrator/agent-runtime');
+                    const tools = new AgentToolRuntime({
+                      runId: competitorRunId,
+                      taskId: 'task',
+                      attemptId: 'competitor-attempt',
+                      agentId: 'agent',
+                      workspaceId: 'workspace',
+                      workspacePath: competitorWorktree,
+                      resolveResource: () => ({ type: 'repository' }),
+                      resolveFileId: (path) => `independent:${path}`,
+                      persistence: peerStore,
+                      writeGuard: {
+                        acquire: async () => {
+                          throw new Error('No local fallback');
+                        },
+                        heartbeat: async () => {
+                          throw new Error('No local fallback');
+                        },
+                        markStale: async () => {
+                          throw new Error('No local fallback');
+                        },
+                        release: async () => {
+                          throw new Error('No local fallback');
+                        }
+                      },
+                      mutation: {
+                        port: new FencedMutationPort(peerAuthority),
+                        claim: {
+                          scopeId: competitorScope,
+                          claimId: 'fleet-competitor',
+                          owner: loser.leases[0].owner,
+                          token: loser.token
+                        },
+                        onMutationUncertain: async () => {
+                          throw new Error('Unexpected independent mutation failure');
+                        }
+                      }
+                    });
+                    expect(
+                      (
+                        await new PiAgentRunner({
+                          gateway: independentGateway,
+                          createTools: () => tools
+                        }).run({
+                          ...agentRequest,
+                          runId: competitorRunId,
+                          attempt: {
+                            ...agentRequest.attempt,
+                            runId: competitorRunId,
+                            id: 'competitor-attempt'
+                          },
+                          workspace: independentWorkspace,
+                          onStarted: async () => {}
+                        })
+                      ).status
+                    ).toBe('completed');
+                    await peerAuthority.releaseGlobalMutation({
+                      scopeId: competitorScope,
+                      claimId: 'fleet-competitor',
+                      owner: loser.leases[0].owner,
+                      token: loser.token,
+                      expectedVersion: loser.leases[0].version,
+                      stopEvidence: independentGateway.confirmedStopEvidence()
+                    });
+                    expect(await readFile(join(competitorWorktree, 'approved.txt'), 'utf8')).toBe(
+                      'independent-after'
+                    );
+                    return {
+                      ...input,
+                      status: 'completed' as const,
+                      workspaceId: 'workspace',
+                      impactId: 'task'
+                    };
+                  }
+                  expect(loser.status).toBe('blocked');
+                  if (loser.status !== 'blocked' || loser.blockers[0] === undefined) {
+                    throw new Error('Missing fleet blocker');
+                  }
+                  return {
+                    ...input,
+                    status: 'blocked' as const,
+                    blockerLeaseId: loser.blockers[0].leaseId
+                  };
+                }
+                delivered.push('builder');
+                const result = await global.forgeActivities.executeBuilder(input);
+                builderFinished = true;
+                notifyBuilderFinished?.();
+                await returnBuilderGate;
+                return result;
+              },
+              evaluateBuilderOutput: async (
+                input: Parameters<typeof global.forgeActivities.evaluateBuilderOutput>[0]
+              ) => {
+                if (input.runId === competitorRunId) {
+                  return {
+                    ...input,
+                    recommendation: 'reject' as const,
+                    verificationId: 'independent-verification',
+                    reviewId: 'task:1',
+                    subjectRef: {
+                      builderAttemptId: 'competitor-attempt',
+                      outputAttemptId: 'competitor-attempt',
+                      workspaceId: 'workspace'
+                    }
+                  };
+                }
+                delivered.push('review');
+                return global.forgeActivities.evaluateBuilderOutput(input);
+              },
+              integrateAcceptedOutput: async (
+                input: Parameters<typeof global.forgeActivities.integrateAcceptedOutput>[0]
+              ) => {
+                delivered.push('integration');
+                return global.forgeActivities.integrateAcceptedOutput(input);
+              },
+              finalizeRunState: async ({ runId }: { runId: string }) => {
+                if (runId === competitorRunId) {
+                  await peerStore.updateGlobalRunState(runId, 'FAILED');
+                  return { runId, status: 'failed' as const };
+                }
+                return global.forgeActivities.finalizeRunState({ runId });
+              }
+            };
+            const taskQueue = `global-fleet-${randomUUID()}`;
+            const workerOptions = {
+              connection: environment.nativeConnection,
+              maxCachedWorkflows: 0,
+              taskQueue,
+              workflowsPath: resolve('libs/temporal-runtime/dist/lib/workflows/forge-run.js'),
+              activities
+            };
+            const workers: Worker[] = [];
+            const connections: NativeConnection[] = [];
+            const running: Promise<void>[] = [];
+            const startWorker = async (identity: string) => {
+              const connection = await NativeConnection.connect({
+                address: environment.connection.options.address
+              });
+              connections.push(connection);
+              const worker = await Worker.create({ ...workerOptions, connection, identity });
+              workers.push(worker);
+              running.push(worker.run());
+              return worker;
+            };
+            try {
+              const first = await startWorker('global-fleet-original');
+              const winner = await environment.client.workflow.start('forgeRunWorkflow', {
+                taskQueue,
+                workflowId: `fleet-${request.run.id}`,
+                args: [{ runId: request.run.id }]
+              });
+              await fleetModelEntered;
+              const second = await startWorker('global-fleet-contender');
+              const loser = await environment.client.workflow.start('forgeRunWorkflow', {
+                taskQueue,
+                workflowId: `fleet-${competitorRunId}`,
+                args: [{ runId: competitorRunId }]
+              });
+              expect(await loser.result()).toMatchObject({ status: 'failed' });
+              expect(
+                await admin.unsafe(
+                  `select 1 from "${schema}".forge_global_claims where claim_id='fleet-competitor'`
+                )
+              ).toHaveLength(independent ? 1 : 0);
+              expect(await readFile(join(integration, 'approved.txt'), 'utf8')).toBe('before');
+              second.shutdown();
+              await running[1];
+              releaseFleetModel?.();
+              await builderFinishedGate;
+              first.shutdown();
+              returnBuilder?.();
+              await running[0];
+              await startWorker('global-fleet-replacement');
+              const outcome = winner.result();
+              let deadline: ReturnType<typeof setTimeout> | undefined;
+              try {
+                expect(
+                  await Promise.race([
+                    outcome,
+                    new Promise<never>((_done, reject) => {
+                      deadline = setTimeout(() => {
+                        void winner
+                          .fetchHistory()
+                          .then(
+                            (history) =>
+                              reject(
+                                new Error(JSON.stringify({ delivered, events: history.events }))
+                              ),
+                            reject
+                          );
+                      }, 15000);
+                    })
+                  ])
+                ).toMatchObject({ status: 'completed' });
+              } finally {
+                clearTimeout(deadline);
+              }
+              expect(delivered).toEqual(['builder', 'review', 'integration']);
+              expect(delivered.filter((entry) => entry === 'builder')).toHaveLength(1);
+              expect(delivered.filter((entry) => entry === 'integration')).toHaveLength(1);
+              expect(git('show', 'main:approved.txt')).toBe('global-production');
+              expect(await authority.hasUnresolvedRunAuthority(request.run.id)).toBe(false);
+              const history = await winner.fetchHistory();
+              const scheduled = new Map<string, string>();
+              for (const event of history.events ?? []) {
+                const activity = event.activityTaskScheduledEventAttributes;
+                if (typeof activity?.activityType?.name === 'string') {
+                  scheduled.set(String(event.eventId), activity.activityType.name);
+                }
+              }
+              const completions = (history.events ?? []).flatMap((event) => {
+                const completed = event.activityTaskCompletedEventAttributes;
+                return completed === undefined || completed === null
+                  ? []
+                  : [
+                      {
+                        activity: scheduled.get(String(completed.scheduledEventId)),
+                        identity: completed.identity
+                      }
+                    ];
+              });
+              expect(completions.filter((event) => event.activity === 'executeBuilder')).toEqual([
+                { activity: 'executeBuilder', identity: 'global-fleet-original' }
+              ]);
+              expect(
+                completions.filter((event) => event.activity === 'integrateAcceptedOutput')
+              ).toEqual([
+                { activity: 'integrateAcceptedOutput', identity: 'global-fleet-replacement' }
+              ]);
+              expect(
+                await admin.unsafe(`select state from "${schema}".forge_runs where id=$1`, [
+                  competitorRunId
+                ])
+              ).toMatchObject([{ state: 'FAILED' }]);
+              if (!independent) {
+                // A terminal loser is never revived. A distinct ACTIVE run may
+                // acquire the scope only after the original callbacks/Git settle.
+                const successorRunId = `${request.run.id}-successor`;
+                await peerStore.createRun({
+                  ...request,
+                  run: { ...request.run, id: successorRunId },
+                  taskBindings: request.taskBindings.map((binding) => ({
+                    ...binding,
+                    runId: successorRunId,
+                    workspace: { ...binding.workspace, runId: successorRunId }
+                  }))
+                });
+                await peerAuthority.bindRun(successorRunId, 'repo');
+                await peerStore.persistAttempt({
+                  runId: successorRunId,
+                  attempt: {
+                    ...agentRequest.attempt,
+                    id: 'successor-attempt',
+                    runId: successorRunId,
+                    state: 'PREPARING',
+                    revision: 1,
+                    startedAt: undefined
+                  }
+                });
+                const successor = await peerAuthority.claimGlobalMutation({
+                  scopeId,
+                  claimId: 'fleet-successor',
+                  owner: {
+                    runId: successorRunId,
+                    taskId: 'task',
+                    attemptId: 'successor-attempt',
+                    agentId: 'agent',
+                    workspaceId: 'workspace'
+                  },
+                  resources: [{ type: 'repository' }]
+                });
+                if (successor.status !== 'granted') {
+                  throw new Error('Settled fleet scope did not admit the new owner');
+                }
+                const previous = await admin.unsafe(
+                  `select token from "${schema}".forge_global_claims where owner_json::jsonb->>'runId'=$1`,
+                  [request.run.id]
+                );
+                expect(previous.every((claim) => Number(claim.token) < successor.token)).toBe(true);
+                let staleCallback = false;
+                await expect(
+                  new FencedMutationPort(peerAuthority).execute(
+                    {
+                      scopeId,
+                      claimId: child.claimId,
+                      owner: {
+                        runId: request.run.id,
+                        taskId: 'task',
+                        attemptId: 'attempt',
+                        agentId: 'agent',
+                        workspaceId: 'workspace'
+                      },
+                      token: child.token,
+                      resource: { type: 'repository' }
+                    },
+                    async () => {
+                      staleCallback = true;
+                    }
+                  )
+                ).rejects.toThrow();
+                expect(staleCallback).toBe(false);
+                const permit = await peerAuthority.beginFencedMutation({
+                  scopeId,
+                  claimId: 'fleet-successor',
+                  owner: successor.leases[0].owner,
+                  token: successor.token,
+                  resource: { type: 'repository' }
+                });
+                expect(
+                  await authority.recoverFencedMutationPermits(scopeId, 'fleet-successor')
+                ).toHaveLength(1);
+                await peerAuthority.endFencedMutation(permit);
+                await peerAuthority.releaseGlobalMutation({
+                  scopeId,
+                  claimId: 'fleet-successor',
+                  owner: successor.leases[0].owner,
+                  token: successor.token,
+                  expectedVersion: successor.leases[0].version,
+                  stopEvidence: 'Acceptance callback settled; successor launched no external writer'
+                });
+                expect(await authority.hasUnresolvedRunAuthority(successorRunId)).toBe(false);
+                expect(git('show', 'main:approved.txt')).toBe('global-production');
+              }
+            } finally {
+              releaseFleetModel?.();
+              returnBuilder?.();
+              for (const worker of workers) {
+                if (worker.getState() === 'RUNNING') {
+                  worker.shutdown();
+                }
+              }
+              await Promise.allSettled(running);
+              await Promise.all(connections.map((connection) => connection.close()));
+              await peerAuthority.close();
+              await peerStore.close();
+              await environment.teardown();
+              rmSync(competitorWorktree, { recursive: true, force: true });
+              rmSync(competitorRepository, { recursive: true, force: true });
+            }
+            return;
+          }
           if (lifecycle === 'global-restart') {
             const current = await authority.recoverExecutionChild(scopeId, 'parent');
             await authority.startExecutionChild({
