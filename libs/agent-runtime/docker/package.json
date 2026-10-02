@@ -1,0 +1,10 @@
+{
+  "name": "forge-isolated-pi-image",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mariozechner/pi-ai": "0.73.1",
+    "@mariozechner/pi-coding-agent": "0.73.1",
+    "typebox": "1.3.34"
+  }
+}

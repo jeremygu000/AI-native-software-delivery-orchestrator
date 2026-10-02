@@ -7,6 +7,7 @@ import { join } from 'node:path';
 
 import postgres from 'postgres';
 import {
+  ApprovedPiHostModelProxy,
   DockerPiSessionGateway,
   PiAgentRunner
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
@@ -528,13 +529,65 @@ it.each([
           expect(await resumed.write('resumed.txt', 'second')).toMatchObject({ status: 'written' });
           const runner = new PiAgentRunner({
             gateway:
-              process.env.FORGE_TEST_DOCKER_IMAGE !== undefined && lifecycle === 'takeover'
+              process.env.FORGE_TEST_PI_SDK_IMAGE !== undefined && lifecycle === 'takeover'
                 ? new DockerPiSessionGateway({
-                    image: process.env.FORGE_TEST_DOCKER_IMAGE,
+                    image: process.env.FORGE_TEST_PI_SDK_IMAGE,
                     executable: '/usr/local/bin/node',
-                    args: [
-                      '-e',
-                      `
+                    args: ['/opt/forge/entrypoint.mjs'],
+                    modelProxy: new ApprovedPiHostModelProxy({
+                      model: {
+                        api: 'openai-completions',
+                        provider: 'openai',
+                        id: 'approved',
+                        name: 'Approved test model',
+                        baseUrl: 'http://host-only.invalid',
+                        reasoning: false,
+                        input: ['text'],
+                        contextWindow: 32768,
+                        maxTokens: 1024,
+                        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+                      },
+                      apiKey: 'host-only-test-key',
+                      complete: async (model, context) => {
+                        const wrote = context.messages.some(
+                          (message) => message.role === 'toolResult'
+                        );
+                        return {
+                          role: 'assistant',
+                          api: model.api,
+                          provider: model.provider,
+                          model: model.id,
+                          content: wrote
+                            ? [{ type: 'text', text: 'Done' }]
+                            : [
+                                {
+                                  type: 'toolCall',
+                                  id: 'write-1',
+                                  name: 'forge_write',
+                                  arguments: { path: 'approved.txt', content: 'through-pi' }
+                                }
+                              ],
+                          stopReason: wrote ? 'stop' : 'toolUse',
+                          timestamp: Date.now(),
+                          usage: {
+                            input: 1,
+                            output: 1,
+                            cacheRead: 0,
+                            cacheWrite: 0,
+                            totalTokens: 2,
+                            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+                          }
+                        };
+                      }
+                    })
+                  })
+                : process.env.FORGE_TEST_DOCKER_IMAGE !== undefined && lifecycle === 'takeover'
+                  ? new DockerPiSessionGateway({
+                      image: process.env.FORGE_TEST_DOCKER_IMAGE,
+                      executable: '/usr/local/bin/node',
+                      args: [
+                        '-e',
+                        `
                     const fs = require('node:fs');
                     const send = (value) => process.stdout.write(JSON.stringify(value)+'\\n');
                     require('node:readline').createInterface({input:process.stdin}).on('line', (line) => {
@@ -551,22 +604,22 @@ it.each([
                       }
                     });
                   `
-                    ]
-                  })
-                : {
-                    start: async (session) => {
-                      await session.onStarted('controlled-session');
-                      const outcome = await session.executeTool({
-                        name: 'forge_write',
-                        path: 'approved.txt',
-                        content: 'through-pi'
-                      });
-                      if (outcome.isError) {
-                        throw new Error(outcome.content);
+                      ]
+                    })
+                  : {
+                      start: async (session) => {
+                        await session.onStarted('controlled-session');
+                        const outcome = await session.executeTool({
+                          name: 'forge_write',
+                          path: 'approved.txt',
+                          content: 'through-pi'
+                        });
+                        if (outcome.isError) {
+                          throw new Error(outcome.content);
+                        }
+                        return { sessionId: 'controlled-session' };
                       }
-                      return { sessionId: 'controlled-session' };
-                    }
-                  },
+                    },
             createTools: () => resumed
           });
           expect((await runner.run(agentRequest)).status).toBe('completed');

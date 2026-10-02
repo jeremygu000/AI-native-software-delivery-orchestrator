@@ -3831,3 +3831,13 @@ Coding gateway 现在显式提供真实 SDK resource loader，关闭 extensions�
 测试使用真实 Pi session loop，接收 model tool call、请求 Forge write，再继续获取最终 model 回复。另一个真实 `pi-ai` HTTP／SSE 测试确认仅宿主向本地 provider endpoint 发送配置的 credential，规范化回复不含该 credential 或 endpoint。真实 Docker 测试覆盖 model channel、没有转发 credential／endpoint 和取消；容器仍使用协议夹具镜像，不是已打包的 Pi SDK 镜像。没有调用付费远程模型。新增直接 `pi-ai` 依赖与现有 coding-agent SDK 同样固定为 0.73.1，避免混用生态版本。
 
 全量 `pnpm check` 通过 86 个文件中的 924 项测试，跳过五项可选 Docker 测试；格式、TypeScript、lint 和覆盖率通过，语句、分支、函数和代码行分别为 90.55%、85.42%、93.45% 和 90.45%。单独执行的 pinned-image Docker suite 通过五项测试。`pnpm build` 与编译后 CLI／worker 验收通过。部署方拥有的 Pi image／entrypoint，以及完整容器化 SDK／model／PG execution composition 仍待完成；分别验证组件不能证明该部署。Dynamic global resource expansion、durable container recovery mapping 和完整 worker cutover 仍未完成。生产 GLOBAL_READY 保持禁用；M4.2 为 OPEN，M4.3 尚未开始；PostgreSQL migration、ACL 和冻结的生命周期契约未改。
+
+## 在隔离镜像内运行真实 Pi SDK
+
+独立复审接受并冻结 `62c055d` 的宿主批准 model boundary。本轮把真实 Pi SDK 与已有 isolated adapter 打包为部署方拥有的 Linux 镜像。构建脚本仅将本地 adapter 代码 bundle 到临时 Docker context，复制显式 entrypoint、package manifest 和 lockfile，不复制仓库、宿主 node_modules 或凭据。Digest-pinned Node base、精确 SDK 版本和 `npm ci --omit=dev --ignore-scripts` 独立安装 Linux runtime。这个仅用于镜像的 npm lock 不改变项目的 pnpm workspace。Entrypoint 启动真实 SDK session，沿用内存配置和宿主代理推理。
+
+Gateway 现在允许 registry digest 或不可变本地 Docker image ID，仍拒绝可变 tag。实际构建的镜像在无网络、无 workspace mount、无 provider／database credentials 下运行。真实宿主 HTTP／SSE provider 驱动容器内 SDK 经 model tool call、宿主 Forge callback 和最终回复；另一个测试取消活跃 inference，验证宿主回调结束及容器停机。真实 PostgreSQL／linked-Git takeover 测试也运行该 SDK 镜像，经 `PiAgentRunner`、execution-child attachment 和 `FencedMutationPort` 后才修改批准的宿主文件。这些是真实 SDK-container 测试，不再是之前的协议夹具；model 回复由受控本地 provider 提供，没有调用付费远程模型。
+
+四项选中的真实 SDK／container 与 PostgreSQL／Git 测试通过。全量 `pnpm check` 通过 87 个 test files 中的 924 项测试，跳过七项可选 Docker 测试；格式、TypeScript、lint 和覆盖率通过，语句、分支、函数和代码行分别为 90.55%、85.42%、93.45% 和 90.45%。`pnpm build` 与编译后 CLI／worker 验收通过。一轮全量运行曾触发现有 Temporal 五秒超时；该测试单独重跑和随后全量检查均通过。
+
+本轮提供可执行镜像及端到端 SDK／model／tool composition，不代表生产 GLOBAL_READY 已启用。部署镜像发布及批准的远程模型配置、durable container／session recovery、认证停机确认、dynamic global expansion 和完整 scheduler／worker cutover 仍未完成。生产 GLOBAL_READY 保持禁用，M4.2 为 OPEN，M4.3 尚未开始。PostgreSQL migration、ACL 和冻结的 builder／repair／integration authority 未改；public number-token／BIGINT、诊断资源 ID 和 integration actor 命名仍作为 P2 延后。

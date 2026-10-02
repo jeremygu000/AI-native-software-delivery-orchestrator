@@ -29,7 +29,7 @@ export class DockerPiSessionGateway implements PiSessionGateway {
     }
   ) {
     if (
-      !/^.+@sha256:[a-f0-9]{64}$/.test(configuration.image) ||
+      !/^(?:.+@)?sha256:[a-f0-9]{64}$/.test(configuration.image) ||
       !configuration.executable.startsWith('/')
     ) {
       throw new Error('Isolated Pi requires a pinned image and absolute image entrypoint');

@@ -97,6 +97,9 @@ describe('Docker Pi host broker', () => {
       () =>
         new DockerPiSessionGateway({ image: 'node@sha256:' + 'a'.repeat(64), executable: 'node' })
     ).toThrow('absolute');
+    expect(
+      () => new DockerPiSessionGateway({ image: 'sha256:' + 'a'.repeat(64), executable: '/node' })
+    ).not.toThrow();
   });
 
   it.skipIf(image === undefined)(
