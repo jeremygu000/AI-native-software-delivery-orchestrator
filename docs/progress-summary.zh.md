@@ -3771,3 +3771,11 @@ runner 在调用 agent 前持久化唯一的 RUNNING launch reservation，然后
 新增七项真实 PostgreSQL／linked-Git 场景，覆盖 repair 成功、取消、重启、会话失败、未结束 permit、缺少停机确认及信任撤销，并断言重复启动被拒、review lineage 和 history 不被改写。全量 `pnpm check` 通过 82 个文件中的 880 项测试，跳过一项可选 Docker 测试；格式、TypeScript 引用、lint 和覆盖率门槛全部通过。语句、分支、函数和代码行覆盖率为 90.64%、85.39%、93.40% 和 90.54%；编译后 CLI／worker 验收也成功执行包和应用构建。
 
 这只是受控 repair 执行生命周期，还不是完整的 review／verification 产品闭环或已部署的隔离 Pi gateway。验证命令、integration Git 操作、动态扩张和认证停机主管仍需要全局生产接线。生产 GLOBAL_READY 保持禁用；M4.2 保持 OPEN，M4.3 尚未开始。历史 migration 和权限未改；number-token／BIGINT 与诊断资源 ID 歧义仍为 P2。
+
+## 在整个执行过程中固定 repair 的 review provenance
+
+对 `2ee82aa` 的独立复审发现一项 P1：准入后 repair 记录可以改变父 review subject，而不可变 work item 保持原值。全局 authority 现在在准入／重放、恢复、会话启动、终态提交和 mutation permit 中共用同一 provenance 校验。它把 work item 的 impact fingerprint、workspace、builder 身份、review iteration 和批准的 lease-plan fingerprint 与 repair 精确对应。准入后还必须存在保存的 PREPARING history 快照，并把完整 parent review subject 和不可变 repair lineage 与每条 history revision 核对。已有父 review 记录时，其完整 subject 也必须相同。因此，即使 work item 没有重复保存 output attempt、workspace-change 和 verification fingerprint，这些字段也不能在同一 admitted repair 内无感漂移。
+
+真实 PostgreSQL 测试通过测试专用 migration-owner 连接，在准入后分别篡改当前 repair 的 impact、output attempt、workspace-change 和 verification fingerprint。恢复、启动、终态更新、permit 获取和 claim replay 全部拒绝；独立读取验证 claim、scope token counter、history 和 permit 未改变，终态操作也没有覆盖被篡改的记录。恢复原记录后正常生命周期继续通过。另有准入前用例拒绝 work-item impact 不一致及持久化 review subject 不一致。两组定向 PostgreSQL 测试通过 160 项；全量 `pnpm check` 通过 82 个文件中的 880 项测试，跳过一项可选 Docker 测试，格式、TypeScript、lint 和覆盖率门槛均通过。语句、分支、函数和代码行覆盖率为 90.67%、85.46%、93.40% 和 90.57%；编译后 CLI／worker 验收也成功构建包和应用。
+
+这固定的是现有持久证据，并不证明 review 或 verification 结果的语义正确性。不会补造缺失的父 review：准入前，work item 没有保存的 subject 字段只能与已有 review 核对；准入后由 admission history 固定。完整 verification／review 生产闭环仍属后续工作。本轮未改 migration、权限、资源子集契约或 builder 生命周期。M4.2 保持 OPEN，生产 GLOBAL_READY 保持禁用；本次 P1 修复等待独立复审。

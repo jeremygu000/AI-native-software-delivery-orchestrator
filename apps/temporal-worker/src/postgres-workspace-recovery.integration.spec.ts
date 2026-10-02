@@ -695,6 +695,76 @@ it.each([
                 agentId: repair.agentId,
                 workspaceId: repair.workspaceId
               };
+              if (lifecycle === 'repair-success') {
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='repair' and key=$2`,
+                  [
+                    repair.runId,
+                    repair.id,
+                    JSON.stringify({
+                      ...repair,
+                      parentReviewSubject: {
+                        ...repair.parentReviewSubject,
+                        impactFingerprint: `sha256:${'b'.repeat(64)}`
+                      }
+                    })
+                  ]
+                );
+                await expect(
+                  resumedAuthority.claimGlobalMutation({
+                    scopeId,
+                    claimId: 'repair-claim',
+                    owner: repairOwner,
+                    resources: request.taskBindings[0].leasePlan.predictedResources
+                  })
+                ).rejects.toThrow('provenance');
+                expect(
+                  await admin.unsafe(
+                    `select 1 from "${schema}".forge_global_claims where claim_id='repair-claim'`
+                  )
+                ).toHaveLength(0);
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='repair' and key=$2`,
+                  [repair.runId, repair.id, JSON.stringify(repair)]
+                );
+                await executionStore.persistReview({
+                  runId: repair.runId,
+                  taskId: repair.taskId,
+                  iteration: repair.parentReviewIteration,
+                  subject: repair.parentReviewSubject,
+                  review: {
+                    recommendation: 'accept',
+                    summary: 'Persisted subject fixture',
+                    findings: []
+                  }
+                });
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='repair' and key=$2`,
+                  [
+                    repair.runId,
+                    repair.id,
+                    JSON.stringify({
+                      ...repair,
+                      parentReviewSubject: {
+                        ...repair.parentReviewSubject,
+                        outputAttemptId: 'wrong-review-output'
+                      }
+                    })
+                  ]
+                );
+                await expect(
+                  resumedAuthority.claimGlobalMutation({
+                    scopeId,
+                    claimId: 'repair-claim',
+                    owner: repairOwner,
+                    resources: request.taskBindings[0].leasePlan.predictedResources
+                  })
+                ).rejects.toThrow('persisted parent review');
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='repair' and key=$2`,
+                  [repair.runId, repair.id, JSON.stringify(repair)]
+                );
+              }
               const grant = await resumedAuthority.claimGlobalMutation({
                 scopeId,
                 claimId: 'repair-claim',
@@ -711,6 +781,85 @@ it.each([
                 token: grant.token
               };
               const admittedRepair = await resumedAuthority.recoverRepairExecution(repairIdentity);
+              if (lifecycle === 'repair-success') {
+                const snapshot = async () => ({
+                  claims: await admin.unsafe(
+                    `select * from "${schema}".forge_global_claims where claim_id='repair-claim'`
+                  ),
+                  counter: await admin.unsafe(
+                    `select next_token from "${schema}".forge_global_scopes where id=$1`,
+                    [scopeId]
+                  ),
+                  history: await admin.unsafe(
+                    `select key,payload from "${schema}".forge_records where run_id=$1 and kind='repair-history' order by key`,
+                    [repair.runId]
+                  ),
+                  permits: await resumedAuthority.recoverFencedMutationPermits(
+                    scopeId,
+                    'repair-claim'
+                  )
+                });
+                const beforeTamper = await snapshot();
+                for (const drift of [
+                  { impactFingerprint: `sha256:${'b'.repeat(64)}` },
+                  { outputAttemptId: 'different-output' },
+                  { workspaceChangeFingerprint: `sha256:${'b'.repeat(64)}` },
+                  { verificationFingerprint: `sha256:${'b'.repeat(64)}` }
+                ]) {
+                  const tampered = {
+                    ...admittedRepair.attempt,
+                    parentReviewSubject: { ...admittedRepair.attempt.parentReviewSubject, ...drift }
+                  };
+                  await admin.unsafe(
+                    `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='repair' and key=$2`,
+                    [repair.runId, repair.id, JSON.stringify(tampered)]
+                  );
+                  await expect(
+                    resumedAuthority.recoverRepairExecution(repairIdentity)
+                  ).rejects.toThrow('provenance');
+                  await expect(
+                    resumedAuthority.startRepairExecution({
+                      ...repairIdentity,
+                      expectedRevision: 2,
+                      sessionRef: { backend: 'pi', value: 'tampered-session' }
+                    })
+                  ).rejects.toThrow('provenance');
+                  await expect(
+                    resumedAuthority.finishRepairExecution({
+                      ...repairIdentity,
+                      expectedRevision: 2,
+                      state: 'UNKNOWN',
+                      detail: 'Tampered outcome must not commit'
+                    })
+                  ).rejects.toThrow('provenance');
+                  await expect(
+                    resumedAuthority.beginFencedMutation({
+                      ...repairIdentity,
+                      resource: request.taskBindings[0].leasePlan.predictedResources[0]
+                    })
+                  ).rejects.toThrow('provenance');
+                  await expect(
+                    resumedAuthority.claimGlobalMutation({
+                      ...repairIdentity,
+                      resources: request.taskBindings[0].leasePlan.predictedResources
+                    })
+                  ).rejects.toThrow('provenance');
+                  expect(await snapshot()).toEqual(beforeTamper);
+                  expect(
+                    await admin.unsafe(
+                      `select payload from "${schema}".forge_records where run_id=$1 and kind='repair' and key=$2`,
+                      [repair.runId, repair.id]
+                    )
+                  ).toMatchObject([{ payload: JSON.stringify(tampered) }]);
+                }
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='repair' and key=$2`,
+                  [repair.runId, repair.id, JSON.stringify(admittedRepair.attempt)]
+                );
+                expect(await resumedAuthority.recoverRepairExecution(repairIdentity)).toEqual(
+                  admittedRepair
+                );
+              }
               const repairRequest = {
                 ...agentRequest,
                 attempt: {

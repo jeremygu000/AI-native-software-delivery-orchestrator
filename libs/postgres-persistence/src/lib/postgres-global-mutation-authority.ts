@@ -21,6 +21,7 @@ import {
   taskLeasePlanFingerprint,
   taskRepairAttemptSchema,
   taskRepairWorkItemSchema,
+  taskCodeReviewSubjectSchema,
   writableResourceIdentity,
   writableResourceSchema,
   type AgentExecutionAttempt,
@@ -1194,22 +1195,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
       }
     } else {
       const repairAttempt = taskRepairAttemptSchema.parse(attempt);
-      const item = await this.#record(tx, runId, 'repair-item', attemptId);
-      if (item === undefined) {
-        throw new Error('Repair attempt has no admitted work item');
-      }
-      const work = taskRepairWorkItemSchema.parse(json(item));
-      if (
-        work.runId !== runId ||
-        work.taskId !== taskId ||
-        work.repairAttemptId !== attemptId ||
-        work.workspaceId !== attempt.workspaceId ||
-        work.parentReviewIteration !== repairAttempt.parentReviewIteration ||
-        work.builderAttemptId !== repairAttempt.parentReviewSubject.builderAttemptId ||
-        work.leasePlanFingerprint !== taskLeasePlanFingerprint(taskBinding.leasePlan)
-      ) {
-        throw new Error('Repair attempt does not match its admitted work item');
-      }
+      await this.#assertRepairProvenance(tx, repairAttempt);
     }
     if (
       claim.resources.some(
@@ -1795,6 +1781,76 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
     );
   }
 
+  async #assertRepairProvenance(tx: Query, attempt: TaskRepairAttempt): Promise<void> {
+    const item = await this.#record(tx, attempt.runId, 'repair-item', attempt.id);
+    const bindingRecord = await this.#record(tx, attempt.runId, 'binding', attempt.taskId);
+    if (item === undefined || bindingRecord === undefined) {
+      throw new Error('Repair provenance has no admitted work item or binding');
+    }
+    const work = taskRepairWorkItemSchema.parse(json(item));
+    const binding = persistedTaskExecutionBindingSchema.parse(json(bindingRecord));
+    if (
+      work.runId !== attempt.runId ||
+      work.taskId !== attempt.taskId ||
+      work.repairAttemptId !== attempt.id ||
+      work.workspaceId !== attempt.workspaceId ||
+      work.parentReviewIteration !== attempt.parentReviewIteration ||
+      work.builderAttemptId !== attempt.parentReviewSubject.builderAttemptId ||
+      work.workspaceId !== attempt.parentReviewSubject.workspaceId ||
+      work.impactFingerprint !== attempt.parentReviewSubject.impactFingerprint ||
+      binding.runId !== attempt.runId ||
+      binding.taskId !== attempt.taskId ||
+      work.leasePlanFingerprint !== taskLeasePlanFingerprint(binding.leasePlan)
+    ) {
+      throw new Error('Repair provenance differs from its immutable work item');
+    }
+    const history = await tx.unsafe(
+      `select payload from ${this.#schema}.forge_records where run_id=$1 and kind='repair-history' and left(key,length($2))=$2`,
+      [attempt.runId, `${attempt.id}:`]
+    );
+    // Admission preserves revision one before advancing PREPARING to STARTING.
+    // The snapshot pins subject fields that are not duplicated in the work item.
+    let admissionRecorded = attempt.state === 'PREPARING';
+    for (const row of history) {
+      const previous = taskRepairAttemptSchema.parse(attemptJson(row.payload));
+      if (
+        previous.id !== attempt.id ||
+        previous.runId !== attempt.runId ||
+        previous.taskId !== attempt.taskId ||
+        previous.agentId !== attempt.agentId ||
+        previous.workspaceId !== attempt.workspaceId ||
+        previous.parentReviewIteration !== attempt.parentReviewIteration ||
+        previous.repairIteration !== attempt.repairIteration ||
+        !same(previous.parentReviewSubject, attempt.parentReviewSubject)
+      ) {
+        throw new Error('Repair provenance differs from its admitted history');
+      }
+      if (previous.state === 'PREPARING') {
+        admissionRecorded = true;
+      }
+    }
+    if (!admissionRecorded) {
+      throw new Error('Repair provenance has no preserved admission snapshot');
+    }
+    const reviewRecord = await this.#record(
+      tx,
+      attempt.runId,
+      'review',
+      `${attempt.taskId}:${String(attempt.parentReviewIteration).padStart(8, '0')}`
+    );
+    if (reviewRecord !== undefined) {
+      const review = fields(json(reviewRecord));
+      if (
+        review.runId !== attempt.runId ||
+        review.taskId !== attempt.taskId ||
+        review.iteration !== attempt.parentReviewIteration ||
+        !same(taskCodeReviewSubjectSchema.parse(review.subject), attempt.parentReviewSubject)
+      ) {
+        throw new Error('Repair provenance differs from its persisted parent review');
+      }
+    }
+  }
+
   async #repairLifecycle(
     tx: Query,
     request: { scopeId: string; claimId: string; owner: GlobalMutationOwner; token: number }
@@ -1806,27 +1862,12 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
       throw new Error('Repair lifecycle has no unresolved claim');
     }
     const attempt = taskRepairAttemptSchema.parse(attemptJson(record));
-    const item = await this.#record(
-      tx,
-      request.owner.runId,
-      'repair-item',
-      request.owner.attemptId
-    );
-    if (item === undefined) {
-      throw new Error('Repair lifecycle has no admitted work item');
-    }
-    const work = taskRepairWorkItemSchema.parse(json(item));
+    await this.#assertRepairProvenance(tx, attempt);
     if (
       attempt.runId !== request.owner.runId ||
       attempt.taskId !== request.owner.taskId ||
       attempt.agentId !== request.owner.agentId ||
-      attempt.workspaceId !== request.owner.workspaceId ||
-      work.runId !== attempt.runId ||
-      work.taskId !== attempt.taskId ||
-      work.repairAttemptId !== attempt.id ||
-      work.workspaceId !== attempt.workspaceId ||
-      work.parentReviewIteration !== attempt.parentReviewIteration ||
-      work.builderAttemptId !== attempt.parentReviewSubject.builderAttemptId
+      attempt.workspaceId !== request.owner.workspaceId
     ) {
       throw new Error('Repair lifecycle owner differs from the admitted attempt');
     }
