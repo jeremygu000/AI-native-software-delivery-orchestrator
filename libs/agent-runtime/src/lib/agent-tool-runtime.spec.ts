@@ -80,6 +80,41 @@ afterEach(() => {
 });
 
 describe('AgentToolRuntime', () => {
+  it('settles side-effect-free edit preconditions without quarantining subsequent writes', async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
+    directories.push(workspacePath);
+    writeFileSync(join(workspacePath, 'value.txt'), 'same same');
+    const uncertain = vi.fn(async () => {});
+    const end = vi.fn(async () => {});
+    const persistence = new LeasePersistence();
+    const tools = createTools(workspacePath, new InMemoryWriteGuard(), persistence, {
+      onMutationUncertain: uncertain,
+      port: new MutationPort({
+        beginFencedMutation: async () => ({ id: 'permit', completionSecret: 'secret' }),
+        endFencedMutation: end
+      }),
+      claim: {
+        scopeId: 'scope',
+        claimId: 'claim',
+        token: 1,
+        owner: { runId: 'run-1', taskId: 'task-1', attemptId: 'attempt-1', agentId: 'agent-1' }
+      }
+    });
+    await expect(tools.edit('value.txt', 'missing', 'after')).rejects.toThrow('not found');
+    await expect(tools.edit('value.txt', 'same', 'after')).rejects.toThrow('ambiguous');
+    expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('same same');
+    expect(persistence.impacts).toHaveLength(0);
+    expect(uncertain).not.toHaveBeenCalled();
+    expect(end).toHaveBeenCalledTimes(2);
+    await tools.edit('value.txt', 'same same', 'after');
+    expect(readFileSync(join(workspacePath, 'value.txt'), 'utf8')).toBe('after');
+    end.mockRejectedValueOnce(new Error('Completion response lost'));
+    await expect(tools.edit('value.txt', 'missing', 'unused')).rejects.toThrow(
+      'Completion response lost'
+    );
+    expect(uncertain).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects a durable claim for a different attempt before creating tools', () => {
     const workspacePath = mkdtempSync(join(tmpdir(), 'agent-tools-'));
     directories.push(workspacePath);

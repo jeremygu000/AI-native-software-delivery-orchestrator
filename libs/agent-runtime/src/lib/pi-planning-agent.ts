@@ -5,6 +5,10 @@ import type {
 import {
   createExtensionRuntime,
   createAgentSession,
+  AuthStorage,
+  ModelRegistry,
+  SessionManager,
+  SettingsManager,
   defineTool,
   type ResourceLoader
 } from '@mariozechner/pi-coding-agent';
@@ -196,6 +200,7 @@ export const createPlanningFactTools = (
 export class PiPlanningGatewayAdapter implements PiPlanningGateway {
   readonly #createSession: PiPlanningSessionFactory;
   readonly #model?: PiSessionModel;
+  readonly #apiKey?: string;
 
   constructor(
     createSession: PiPlanningSessionFactory = async (options) => {
@@ -225,10 +230,11 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
         }
       };
     },
-    options: { readonly model?: PiSessionModel } = {}
+    options: { readonly model?: PiSessionModel; readonly apiKey?: string } = {}
   ) {
     this.#createSession = createSession;
     this.#model = options.model;
+    this.#apiKey = options.apiKey;
   }
 
   async generate(options: {
@@ -237,11 +243,22 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
     readonly executeTool: (call: PiPlanningToolCall) => Promise<PiPlanningToolResult>;
   }): Promise<{ readonly sessionId: string; readonly output: string }> {
     const toolNames = ['forge_projects', 'forge_files', 'forge_symbols', 'forge_relationships'];
+    const authStorage = AuthStorage.inMemory();
+    if (this.#model !== undefined && this.#apiKey !== undefined) {
+      authStorage.setRuntimeApiKey(this.#model.provider, this.#apiKey);
+    }
     const { session } = await this.#createSession({
       cwd: options.cwd,
       noTools: 'builtin',
       tools: toolNames,
       customTools: createPlanningFactTools(options.executeTool),
+      authStorage,
+      modelRegistry: ModelRegistry.inMemory(authStorage),
+      sessionManager: SessionManager.inMemory(),
+      settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
+      ...(this.#model?.provider === 'deepseek' && this.#model.reasoning
+        ? { thinkingLevel: 'high' as const }
+        : {}),
       ...(this.#model === undefined ? {} : { model: this.#model })
     });
     let generated: { readonly sessionId: string; readonly output: string } | undefined;

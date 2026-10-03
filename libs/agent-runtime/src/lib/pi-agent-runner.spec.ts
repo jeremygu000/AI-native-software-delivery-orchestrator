@@ -1,7 +1,7 @@
 import type { AgentRunRequest } from '@ai-native-software-delivery-orchestrator/domain';
 import { FencedMutationPort as MutationPort } from '@ai-native-software-delivery-orchestrator/domain';
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,6 +12,69 @@ import type { PiSessionGateway, PiToolCall, PiToolResult } from './pi-gateway.js
 import { PiAgentRunner } from './pi-agent-runner.js';
 
 const directories: string[] = [];
+
+it('returns missing read-only paths as tool errors without terminating the established session', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'pi-missing-read-'));
+  directories.push(directory);
+  mkdirSync(join(directory, 'folder'));
+  const runner = new PiAgentRunner({
+    gateway: {
+      async start(options) {
+        await options.onStarted('missing-read-session');
+        const calls: PiToolCall[] = [
+          { name: 'forge_read', path: 'absent/file' },
+          { name: 'forge_list', path: 'absent/file' },
+          { name: 'forge_find', path: 'absent/file', text: 'value' }
+        ];
+        for (const call of calls) {
+          expect(await options.executeTool(call)).toEqual({
+            content: 'Requested read-only path does not exist',
+            isError: true
+          });
+        }
+        expect(await options.executeTool({ name: 'forge_read', path: 'folder' })).toEqual({
+          isError: true,
+          content: 'Requested read-only path is a directory; use forge_list'
+        });
+        return { sessionId: 'missing-read-session' };
+      }
+    },
+    createTools: () =>
+      new AgentToolRuntime({
+        runId: 'run-1',
+        taskId: 'task-1',
+        attemptId: 'attempt-1',
+        agentId: 'agent-1',
+        workspacePath: directory,
+        writeGuard: new InMemoryWriteGuard(),
+        persistence: {
+          createRun: async () => {},
+          persistReevaluation: async () => {},
+          persistDispatch: async () => {},
+          persistImpact: async () => {},
+          persistConflict: async () => {},
+          persistLease: async () => {},
+          persistWorkspace: async () => {},
+          persistAttempt: async () => {},
+          updateRunState: async () => {},
+          recoverRun: async () => undefined,
+          recoverTaskBindings: async () => [],
+          recoverTaskBinding: async () => undefined,
+          replayRun: async () => [],
+          recoverDispatches: async () => [],
+          recoverAttempts: async () => [],
+          recoverLeases: async () => [],
+          persistIntegration: async () => {},
+          recoverIntegration: async () => undefined,
+          persistRepairResumeDispatch: async () => {},
+          recoverRepairResumeDispatches: async () => []
+        },
+        resolveResource: (fileId) => ({ type: 'file', projectId: 'project-1', fileId }),
+        resolveFileId: (path) => path
+      })
+  });
+  expect((await runner.run(request(directory, async () => {}))).status).toBe('completed');
+});
 
 const request = (
   workspacePath: string,

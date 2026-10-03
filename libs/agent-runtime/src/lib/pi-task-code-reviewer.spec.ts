@@ -29,6 +29,18 @@ const policy = {
 };
 const modelResolver = { resolve: vi.fn(() => undefined) };
 
+it('resolves the current DeepSeek Flash name without changing the approved model identity', () => {
+  const model = new PiCodeReviewModelResolver().resolve({
+    provider: 'deepseek',
+    id: 'deepseek-flash'
+  });
+  expect(model).toMatchObject({ provider: 'deepseek', id: 'deepseek-flash', reasoning: true });
+  expect(model?.compat).toMatchObject({
+    thinkingFormat: 'deepseek',
+    requiresReasoningContentOnAssistantMessages: true
+  });
+});
+
 const request: TaskCodeReviewRequest = {
   runId: 'run-1',
   task: {

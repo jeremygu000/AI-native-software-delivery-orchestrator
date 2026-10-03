@@ -161,6 +161,20 @@ export class PiAgentRunner implements AgentRunner {
       if (error instanceof AgentToolDeniedError) {
         return { content: error.message, isError: true };
       }
+      if (
+        ['forge_read', 'forge_list', 'forge_find'].includes(call.name) &&
+        error instanceof Error &&
+        'code' in error &&
+        (error.code === 'ENOENT' || error.code === 'ENOTDIR' || error.code === 'EISDIR')
+      ) {
+        return {
+          content:
+            error.code === 'EISDIR'
+              ? 'Requested read-only path is a directory; use forge_list'
+              : 'Requested read-only path does not exist',
+          isError: true
+        };
+      }
       throw error;
     }
   }

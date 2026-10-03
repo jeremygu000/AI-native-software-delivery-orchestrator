@@ -128,10 +128,10 @@ export class AgentToolRuntime {
       const content = await readFile(target.absolutePath, 'utf8');
       const index = content.indexOf(expected);
       if (index === -1) {
-        throw new AgentToolDeniedError(`Expected edit text was not found: ${path}`);
+        throw new EditPreconditionError(`Expected edit text was not found: ${path}`);
       }
       if (content.indexOf(expected, index + expected.length) !== -1) {
-        throw new AgentToolDeniedError(`Expected edit text is ambiguous: ${path}`);
+        throw new EditPreconditionError(`Expected edit text is ambiguous: ${path}`);
       }
       return this.#writePrepared(
         target,
@@ -226,6 +226,7 @@ export class AgentToolRuntime {
       return sideEffect();
     }
     let callbackStarted = false;
+    let preconditionRejected = false;
     const claim =
       mutation.resolveClaim === undefined ? mutation.claim : await mutation.resolveClaim(resource);
     try {
@@ -234,6 +235,13 @@ export class AgentToolRuntime {
         try {
           return await sideEffect();
         } catch (error) {
+          if (error instanceof EditPreconditionError) {
+            // Both checks precede writeFile and impact persistence. The exact
+            // permit still ends, but there is no uncertain side effect to hold.
+            callbackStarted = false;
+            preconditionRejected = true;
+            throw error;
+          }
           // Keep the permit in flight until uncertainty is persisted. A failed
           // write or command can have changed files before throwing.
           await mutation.onMutationUncertain(error);
@@ -242,7 +250,7 @@ export class AgentToolRuntime {
         }
       });
     } catch (error) {
-      if (callbackStarted) {
+      if (callbackStarted || (preconditionRejected && !(error instanceof EditPreconditionError))) {
         // Also cover a lost permit completion after the callback succeeded.
         await mutation.onMutationUncertain(error);
       }
@@ -328,3 +336,5 @@ export class AgentToolRuntime {
     return workspaceRelativePath.split(sep).join('/');
   }
 }
+
+class EditPreconditionError extends AgentToolDeniedError {}

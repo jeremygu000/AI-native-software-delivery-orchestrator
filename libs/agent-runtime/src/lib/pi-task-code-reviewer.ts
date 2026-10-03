@@ -30,7 +30,10 @@ export interface PiTaskCodeReviewGateway {
 
 interface TaskCodeReviewAssistantMessage {
   readonly role: 'assistant';
-  readonly content: readonly { readonly type: string; readonly text?: string }[];
+  readonly content: readonly {
+    readonly type: string;
+    readonly text?: string;
+  }[];
   readonly stopReason: string;
   readonly errorMessage?: string;
 }
@@ -59,6 +62,14 @@ export class PiCodeReviewModelResolver implements CodeReviewModelResolver {
   }
 
   resolve(model: CodeReviewPolicy['reviewer']['model']): PiSdkSessionOptions['model'] {
+    // DeepSeek renamed the Flash API identity after the pinned SDK catalogue.
+    // Keep the deployment-approved identity, using the same provider compatibility.
+    if (model.provider === 'deepseek' && model.id === 'deepseek-flash') {
+      const flash = this.#registry.find('deepseek', 'deepseek-v4-flash');
+      if (flash !== undefined) {
+        return { ...flash, id: model.id, name: 'DeepSeek Flash' };
+      }
+    }
     const resolved = this.#registry.find(model.provider, model.id);
     if (resolved === undefined) {
       throw new Error(`Approved code review model is unavailable: ${model.provider}/${model.id}`);

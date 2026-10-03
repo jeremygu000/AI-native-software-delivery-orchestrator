@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import type { AssistantMessage } from '@mariozechner/pi-ai';
+import { PiCodeReviewModelResolver } from './pi-task-code-reviewer.js';
 import {
   ApprovedPiHostModelProxy,
   isolatedPiModel,
@@ -36,6 +37,145 @@ export const modelReply = (tool = false): AssistantMessage => ({
 });
 
 describe('approved host model proxy', () => {
+  it('sends enabled/high DeepSeek thinking and preserves tool continuation through the real SDK', async () => {
+    const bodies: unknown[] = [];
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      request.on('end', () => {
+        bodies.push(JSON.parse(body));
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write(
+          `data: ${JSON.stringify({ id: 'deepseek-local', choices: [{ index: 0, delta: { role: 'assistant', content: 'Done' }, finish_reason: null }] })}\n\n`
+        );
+        response.write(
+          `data: ${JSON.stringify({ id: 'deepseek-local', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`
+        );
+        response.end('data: [DONE]\n\n');
+      });
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    try {
+      const address = server.address();
+      if (address === null || typeof address === 'string') {
+        throw new Error('Missing provider port');
+      }
+      const model = new PiCodeReviewModelResolver().resolve({
+        provider: 'deepseek',
+        id: 'deepseek-flash'
+      });
+      if (model === undefined) {
+        throw new Error('Missing approved DeepSeek model');
+      }
+      const proxy = new ApprovedPiHostModelProxy({
+        model: { ...model, baseUrl: `http://127.0.0.1:${address.port}` },
+        apiKey: 'local-test-only',
+        reasoning: 'high'
+      });
+      await proxy.complete(
+        {
+          messages: [
+            { role: 'user', content: 'Edit', timestamp: 1 },
+            {
+              ...modelReply(true),
+              content: [
+                {
+                  type: 'thinking',
+                  thinking: 'ephemeral continuation',
+                  thinkingSignature: 'reasoning_content'
+                },
+                {
+                  type: 'toolCall',
+                  id: 'call-1',
+                  name: 'forge_write',
+                  arguments: { path: 'value.txt', content: 'edit' }
+                }
+              ]
+            },
+            {
+              role: 'toolResult',
+              toolCallId: 'call-1',
+              toolName: 'forge_write',
+              content: [{ type: 'text', text: 'saved' }],
+              isError: false,
+              timestamp: 2
+            }
+          ],
+          tools: [{ name: 'forge_write' }]
+        },
+        ['forge_write'],
+        new AbortController().signal
+      );
+      expect(bodies).toEqual([
+        expect.objectContaining({
+          model: 'deepseek-flash',
+          thinking: { type: 'enabled' },
+          reasoning_effort: 'high',
+          messages: expect.arrayContaining([
+            expect.objectContaining({
+              role: 'assistant',
+              reasoning_content: 'ephemeral continuation'
+            })
+          ])
+        })
+      ]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((done, reject) =>
+        server.close((error) => (error === undefined ? done() : reject(error)))
+      );
+    }
+  });
+  it('preserves only the DeepSeek continuation marker and sends host-approved high reasoning', async () => {
+    const complete = vi.fn(async () => modelReply());
+    const proxy = new ApprovedPiHostModelProxy({
+      model: isolatedPiModel,
+      apiKey: 'host-only',
+      reasoning: 'high',
+      complete
+    });
+    const prior = parseIsolatedAssistant({
+      ...modelReply(true),
+      content: [
+        {
+          type: 'thinking',
+          thinking: 'ephemeral continuation',
+          thinkingSignature: 'reasoning_content'
+        },
+        {
+          type: 'toolCall',
+          id: 'call-1',
+          name: 'forge_write',
+          arguments: { path: 'value.txt', content: 'edit' }
+        }
+      ]
+    });
+    await proxy.complete(
+      { messages: [prior], tools: [{ name: 'forge_write' }] },
+      ['forge_write'],
+      new AbortController().signal
+    );
+    expect(complete).toHaveBeenCalledWith(
+      isolatedPiModel,
+      expect.objectContaining({ messages: [expect.objectContaining({ content: prior.content })] }),
+      expect.objectContaining({ reasoning: 'high' })
+    );
+    expect(
+      parseIsolatedAssistant({
+        ...modelReply(),
+        content: [
+          {
+            type: 'thinking',
+            thinking: 'ephemeral',
+            thinkingSignature: 'arbitrary-private-metadata'
+          }
+        ]
+      }).content
+    ).toEqual([{ type: 'thinking', thinking: 'ephemeral' }]);
+  });
   it('uses the real provider SDK against a host-only HTTP endpoint', async () => {
     let requests = 0;
     const server = createServer((request, response) => {

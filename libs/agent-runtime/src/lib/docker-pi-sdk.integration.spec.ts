@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { DockerPiSessionGateway } from './docker-pi-session-gateway.js';
 import { ApprovedPiHostModelProxy, isolatedPiModel } from './pi-model-proxy.js';
 import { PiSessionCancellationConfirmedError } from './pi-gateway.js';
+import { PiCodeReviewModelResolver } from './pi-task-code-reviewer.js';
 
 const image = process.env.FORGE_TEST_PI_SDK_IMAGE;
 
@@ -102,6 +103,97 @@ describe('actual containerized Pi SDK', () => {
       } finally {
         server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+    60_000
+  );
+
+  it.skipIf(image === undefined)(
+    'preserves DeepSeek reasoning continuation through the actual SDK container',
+    async () => {
+      let requests = 0;
+      const server = createServer((request, response) => {
+        let body = '';
+        request.on('data', (chunk) => {
+          body += chunk.toString();
+        });
+        request.on('end', () => {
+          requests++;
+          expect(request.headers.authorization).toBe('Bearer host-only-secret');
+          expect(body).toContain('"model":"deepseek-flash"');
+          expect(body).toContain('"thinking":{"type":"enabled"}');
+          expect(body).toContain('"reasoning_effort":"high"');
+          if (requests === 2) {
+            expect(body).toContain('"reasoning_content":"transient-reasoning-marker"');
+            expect(body).toContain('host-read-result');
+          }
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          const delta =
+            requests === 1
+              ? {
+                  role: 'assistant',
+                  reasoning_content: 'transient-reasoning-marker',
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'read-1',
+                      type: 'function',
+                      function: {
+                        name: 'forge_read',
+                        arguments: JSON.stringify({ path: 'approved.txt' })
+                      }
+                    }
+                  ]
+                }
+              : { role: 'assistant', content: 'Done' };
+          response.write(
+            `data: ${JSON.stringify({ id: 'reply', object: 'chat.completion.chunk', model: 'deepseek-flash', choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`
+          );
+          response.write(
+            `data: ${JSON.stringify({ id: 'reply', object: 'chat.completion.chunk', model: 'deepseek-flash', choices: [{ index: 0, delta: {}, finish_reason: requests === 1 ? 'tool_calls' : 'stop' }] })}\n\n`
+          );
+          response.end('data: [DONE]\n\n');
+        });
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      try {
+        const address = server.address();
+        if (address === null || typeof address === 'string') {
+          throw new Error('Missing provider');
+        }
+        const approved = new PiCodeReviewModelResolver().resolve({
+          provider: 'deepseek',
+          id: 'deepseek-flash'
+        });
+        if (approved === undefined) {
+          throw new Error('Missing approved DeepSeek model');
+        }
+        const gateway = new DockerPiSessionGateway({
+          image: image!,
+          executable: '/usr/local/bin/node',
+          args: ['/opt/forge/entrypoint.mjs'],
+          timeoutMs: 30_000,
+          modelProxy: new ApprovedPiHostModelProxy({
+            model: { ...approved, baseUrl: `http://127.0.0.1:${address.port}/v1` },
+            apiKey: 'host-only-secret',
+            reasoning: 'high'
+          })
+        });
+        await gateway.start({
+          cwd: '/unmounted',
+          prompt: 'Read approved.txt then finish.',
+          tools: ['forge_read'],
+          onStarted: async () => {},
+          executeTool: async (call) => {
+            expect(call.name).toBe('forge_read');
+            return { content: 'host-read-result' };
+          }
+        });
+        expect(requests).toBe(2);
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((done) => server.close(() => done()));
       }
     },
     60_000

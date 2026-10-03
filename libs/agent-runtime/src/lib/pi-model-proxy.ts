@@ -74,7 +74,14 @@ export const parseIsolatedAssistant = (value: unknown): AssistantMessage => {
         };
       }
       if (content.type === 'thinking' && typeof content.thinking === 'string') {
-        return { type: 'thinking' as const, thinking: content.thinking };
+        return {
+          type: 'thinking' as const,
+          thinking: content.thinking,
+          // Only the known provider routing marker; never forward arbitrary metadata.
+          ...(content.thinkingSignature === 'reasoning_content'
+            ? { thinkingSignature: 'reasoning_content' }
+            : {})
+        };
       }
       return textContent(content);
     }),
@@ -137,6 +144,7 @@ export class ApprovedPiHostModelProxy implements PiHostModelProxy {
       readonly model: Model<Api>;
       readonly apiKey: string;
       readonly maxTokens?: number;
+      readonly reasoning?: 'high';
       readonly complete?: typeof completeSimple;
     }
   ) {
@@ -191,6 +199,9 @@ export class ApprovedPiHostModelProxy implements PiHostModelProxy {
         apiKey: this.configuration.apiKey,
         signal,
         maxTokens: this.configuration.maxTokens ?? 4096,
+        ...(this.configuration.reasoning === undefined
+          ? {}
+          : { reasoning: this.configuration.reasoning }),
         maxRetries: 0,
         timeoutMs: 60_000
       }
