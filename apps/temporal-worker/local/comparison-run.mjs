@@ -14,6 +14,27 @@ const profile = profiles[candidate];
 if (!profile || !['cli', 'worker', 'preflight', 'register'].includes(command)) {
   throw new Error('Usage: comparison-run deepseek|copilot|codex cli|worker|preflight|register');
 }
+if (command === 'cli') {
+  for (const [option, expected] of [
+    ['--review-provider', profile.provider],
+    ['--review-model', profile.model]
+  ]) {
+    let occurrences = 0;
+    for (let index = 0; index < args.length; index += 1) {
+      const argument = args[index];
+      if (argument === option || argument.startsWith(`${option}=`)) {
+        occurrences += 1;
+        const value = argument === option ? args[index + 1] : argument.slice(option.length + 1);
+        if (occurrences > 1 || value !== expected || args.slice(0, index).includes('--')) {
+          throw new Error(`Comparison CLI requires one canonical ${option} for the candidate`);
+        }
+      }
+    }
+    if (['plan', 'run'].includes(args[0]) && occurrences !== 1) {
+      throw new Error(`Comparison CLI requires explicit ${option} for the candidate`);
+    }
+  }
+}
 const env = { ...process.env, ...parseEnv(await readFile('.env.local', 'utf8')) };
 env.FORGE_WORKER_REPOSITORY_PATH = resolve(`.local/comparison-${candidate}`);
 env.FORGE_WORKER_REVIEW_PROVIDER = profile.provider;

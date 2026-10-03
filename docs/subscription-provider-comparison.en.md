@@ -32,6 +32,8 @@ Copilot's first builder returned an empty diff. Baseline verification passed, bu
 
 The local helpers are `fresh-comparison-authority.mjs`, `comparison-run.mjs` and `experiment-evidence.mjs` under `apps/temporal-worker/local/`. Fresh bootstrap refuses an existing comparison database and saves the previous private environment before switching. The wrapper fixes provider/model/effort and a separate queue per candidate, removes API-key configuration for subscription runs, and strips privileged local credentials from worker/CLI processes. Credentials remain in the explicit private host store, never the checkouts or container.
 
+For CLI `plan` and `run`, exactly one explicit `--review-provider` and `--review-model` matching the selected candidate is required. Both separate-value and `--option=value` forms are accepted. Mismatches, missing values, duplicate overrides and profile options after `--` are rejected before reading the private environment or spawning the CLI. Other CLI commands do not require model options, but any supplied model options must still match. Worker queue and reasoning effort remain candidate-fixed.
+
 ```bash
 node apps/temporal-worker/local/experiment-evidence.mjs \
   comparison-deepseek comparison-copilot comparison-codex

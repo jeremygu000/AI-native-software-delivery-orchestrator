@@ -3970,6 +3970,12 @@ Planning 使用真实 SDK 与批准 execution adapter；global builder、repair�
 
 最终 commit、证据边界、耗时及复现命令见 `docs/subscription-provider-comparison.en.md`。本地 helper 仅在数据库不存在时创建新 authority，选择明确 provider queue／profile，并输出不含凭据或 transcript 的 durable evidence。格式、TypeScript、lint 通过。全镜像测试使用独立 ignored coverage 目录避开另一进程的 coverage lock：96 个文件 988/988 项通过，无跳过，覆盖率 90.95／85.94／94.91／90.84，编译构建验收通过。本验证批次没有修改 provider、workflow、migration 或 mutation 契约，冻结阶段保持冻结。
 
+### 增量复审：固定 comparison CLI profile
+
+独立复审接受三条真实 execution record 及质量／usage 披露，但指出 helper 的窄缺陷：固定 worker 环境并不能阻止 CLI planning／run 显式传入另一模型。Wrapper 现在要求 `plan`／`run` 各提供恰好一个与 candidate 完全一致的 provider 和 model，支持分离值与 equals 两种形式；不一致、缺失、重复或 `--` 后的 profile 参数在读取环境和启动 child 前拒绝。其他 CLI 命令不强制模型参数，但传入时必须一致。Candidate reasoning／queue 与凭据过滤不变。
+
+十一项 subprocess 回归证明三家 canonical profile、两种参数形式、没有环境或 CLI 时的提前拒绝、固定 reasoning／queue，以及 privileged／API-key 隔离。TypeScript 通过，本次文件 lint 和格式通过。全项目 lint 当前被另一份并行修改的 telemetry workflow 括号规则错误阻塞，已保留该批改动。没有重跑真实 provider 比较，本次修复不修改 provider adapter、workflow、authority、fencing 或 recovery 实现。窄修复等待增量复审。
+
 ## 本地 OpenTelemetry 最小验证
 
 这个小型运维阶段增加了独立的 `pnpm local:otel-check` 命令。它使用工作区根目录的 OpenTelemetry SDK 和 trace exporter，在 Node.js 中创建一条 `forge.startup` span，等待 OTLP／HTTP 导出完成后退出。endpoint 和 `Authorization=Basic` header 只放在被忽略且权限为 600 的 `.env.local` 或操作者的 shell，不写入受版本控制的文件。操作者可以先拿到 trace ID 去 Grafana 查询，再决定如何给 worker 和副作用加埋点。该命令不打开 Forge authority，也不改动 worker、workflow、mutation 或 recovery 路径。
