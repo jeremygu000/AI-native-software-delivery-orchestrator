@@ -1062,13 +1062,9 @@ const migrations = [
   {
     version: 14,
     statements: [
-      `update {schema}.forge_records r set payload=jsonb_set(r.payload::jsonb,'{startedAt}',to_jsonb(clock_timestamp()))::text
-        where r.kind='builder' and r.payload::jsonb->>'state'='STARTING'
-          and r.payload::jsonb->>'startedAt' is null and r.payload::jsonb->>'sessionRef' is null
-          and exists (select 1 from {schema}.forge_global_claims c
-            join {schema}.forge_global_workspace_phases p on p.scope_id=c.scope_id and p.parent_claim_id=c.claim_id
-            where c.owner_json::jsonb->>'runId'=r.run_id and c.owner_json::jsonb->>'attemptId'=r.key
-              and p.phase in ('INITIAL_ADMITTED','WORKSPACE_ARMED','WORKSPACE_UNCERTAIN'))`
+      // Unknown historical start times remain unknown. Recovery's attempt parser
+      // rejects malformed STARTING evidence; migration time is not execution time.
+      `select 1`
     ]
   },
   {

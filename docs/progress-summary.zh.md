@@ -3932,8 +3932,14 @@ Heartbeat 到期后，独立连接的 replacement 收到 Temporal attempt 2。�
 
 第三项计划真实批准两个不重叠任务、同一个 guarded-parallel wave 和 `maxConcurrency=2`；但为 integration 显式批准的 repository-wide resource 使实际 writer 时间区间串行。它证明任务拆分与安全 blocked-work 进展，不证明同仓库双 writer 同时写入。此前准备 run 由模型修复可复现 IPv6 literal／DNS 基线失败并集成 `e13326ac`；后续计划基于真实干净新 HEAD，没有手工 rebase 或改写不可变批准。
 
-真实使用暴露夹具准备掩盖的 regression：CLI 仍走 legacy cutover gate；初始 setup STARTING attempt 缺少时间戳；Set 序列化及 task collection 顺序破坏 launch identity；handoff 后 attempt 未获重新执行授权；evaluate retry 尝试覆盖不可变 evidence；失败 verification 无法进入真实 review／repair；等待 integration 会饿死另一个已准入 builder。窄修复保留精确 approval、owner、token 和 permit 检查。版本 migration 13–15 保留历史 migration 文本，恢复有效初始 attempt metadata，并实现独立签名 setup abandonment，不重置 settlement、不授予 child。指定 task 的 repository integration approval 被单独 fingerprint，不等同 Git setup approval。既有 run 恢复必须匹配原持久化批准，不以已改变源码事实重新绑定。
+真实使用暴露夹具准备掩盖的 regression：CLI 仍走 legacy cutover gate；初始 setup STARTING attempt 缺少时间戳；Set 序列化及 task collection 顺序破坏 launch identity；handoff 后 attempt 未获重新执行授权；evaluate retry 尝试覆盖不可变 evidence；失败 verification 无法进入真实 review／repair；等待 integration 会饿死另一个已准入 builder。窄修复保留精确 approval、owner、token 和 permit 检查。版本 migration 13–15 保留历史 migration 文本，为新的准入转换记录实际时间，历史 metadata 仅从既有来源时间戳回填，并实现独立签名 setup abandonment，不重置 settlement、不授予 child。指定 task 的 repository integration approval 被单独 fingerprint，不等同 Git setup approval。既有 run 恢复必须匹配原持久化批准，不以已改变源码事实重新绑定。
 
 部署将 Linux dependency verification image 和临时执行预算固定在计划批准 policy 中，显式提供容器 Git identity 而不修改仓库 config，并重建隔离 SDK，使 DeepSeek 工具续轮必需 thinking marker 仅在内存保留。可修正的缺失只读路径和无副作用 edit precondition 返回 tool error；不明确 write、persistence 或 permit completion 仍保留 ownership。真实失败测试及 review 产生真实 repair，包括 timeout／UNKNOWN，记录没有被改成成功。使用独立 worker／container／permit 核验和既有 version-CAS reclaim，没有直接编辑 authority 行。本地仍需要 task 间手工 operator setup 及明确 Temporal recovery／reset；不声称自动 recovery。
 
 最新全镜像 Forge `pnpm check` 通过 89 个文件中的全部 967 项测试，无跳过，包括格式、TypeScript、lint 与编译后 CLI／worker 构建验收。语句、分支、函数、代码行覆盖率为 90.84%、85.88%、94.53% 和 90.72%，高于未修改门槛。本地操作及 A–G 失败分类见 `docs/local-groundgraph-validation.en.md`；只读 evidence 命令输出持久化事实，不包含 key、transcript 或隐藏 reasoning。M3／M4.1／M4.2／M4.3 保持独立接受基线，仅为具体真实 regression 重开修复。本新批次等待复审，不代表自动生产上线、SQLite 受保护 trust 或 uncertain-owner 自动恢复。
+
+### 增量复审：保留未知的历史启动时间
+
+复审指出一个窄 blocker：migration 14 用执行 migration 的时钟填补未知历史 STARTING 时间戳。现已移除该 UPDATE，版本 14 保留为显式 no-op ledger entry。Migration 13 及此前全部 migration 文本不变：新准入转换记录实际转换时间，历史修复仅使用已经持久化的 `createdAt`。两种来源均不存在时，记录保留缺失时间戳，由既有 parser fail-closed，而不是声称不存在的执行证据。
+
+真实 PostgreSQL 升级回归证明版本 13／14 前后 malformed payload 完全不变且 parser 拒绝；另一个样例证明确定性的既有 `createdAt` 回填在重复安装版本 14 后仍保留。全镜像 `pnpm check` 通过 89 个文件中的全部 968 项测试，无跳过；语句、分支、函数、代码行覆盖率为 90.84%、85.91%、94.53%、90.72%。构建、格式、类型和 lint 检查通过。本轮不新增 GroundGraph 实验，不改变 recovery 行为或 abandonment 协议。已经记录被拒绝版本 14 checksum 的数据库会被既有 migration integrity 检查拒绝；本修复不改写其 ledger，也不编造替代历史证据。

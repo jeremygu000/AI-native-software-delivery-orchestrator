@@ -4365,6 +4365,71 @@ it('creates only globally bound run metadata after GLOBAL_READY without granting
   }
 });
 
+it('preserves unknown historical STARTING times and only backfills existing creation evidence', async () => {
+  const schema = `forge_starting_history_${++fixtureOrdinal}`;
+  const migration = { connectionString: ownerConnectionString, schema, role };
+  const runtime = { connectionString: runtimeConnectionString, schema, role: runtimeRole };
+  const owner = postgres(ownerConnectionString, { onnotice: () => undefined });
+  let store: PostgresOrchestrationPersistence | undefined;
+  try {
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 12);
+    store = await PostgresOrchestrationPersistence.connect(runtime);
+    await owner.unsafe(`insert into "${schema}".forge_global_scopes (id,state,next_token)
+      values ('scope','REGISTERING',2)`);
+    const createdAt = '2026-09-01T00:00:00.000Z';
+    for (const source of ['unknown', 'created'] as const) {
+      await store.createRun(durableAuthorityRunRequest(source));
+      const attempt = {
+        ...durableAuthorityInitialDispatch(source).attempts[0].attempt,
+        state: 'STARTING',
+        revision: 2,
+        ...(source === 'created' ? { createdAt } : {})
+      };
+      await owner.unsafe(
+        `insert into "${schema}".forge_records (run_id,kind,key,payload) values ($1,'builder',$2,$3)`,
+        [source, attempt.id, JSON.stringify(attempt)]
+      );
+      await owner.unsafe(
+        `insert into "${schema}".forge_global_claims
+          (scope_id,claim_id,owner_json,token,state,version)
+          values ('scope',$1,$2,1,'ACTIVE',1)`,
+        [source, JSON.stringify({ runId: source, attemptId: attempt.id })]
+      );
+      await owner.unsafe(
+        `insert into "${schema}".forge_global_workspace_phases (scope_id,parent_claim_id,phase)
+          values ('scope',$1,'INITIAL_ADMITTED')`,
+        [source]
+      );
+    }
+    const originalUnknown = await owner.unsafe(
+      `select payload from "${schema}".forge_records where run_id='unknown' and kind='builder'`
+    );
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 13);
+    const before14 = await owner.unsafe(
+      `select run_id,payload from "${schema}".forge_records where kind='builder' order by run_id`
+    );
+    expect(JSON.parse(before14[0].payload).startedAt).toBe(createdAt);
+    expect(before14[1].payload).toBe(originalUnknown[0].payload);
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 14);
+    await migratePostgresAuthoritySchema(migration, runtimeRole, 14);
+    expect(
+      await owner.unsafe(
+        `select run_id,payload from "${schema}".forge_records where kind='builder' order by run_id`
+      )
+    ).toEqual(before14);
+    await expect(store.recoverRun('unknown')).rejects.toThrow(
+      'STARTING attempt requires startedAt'
+    );
+    expect((await store.recoverRun('created'))?.attempts[0].attempt.startedAt).toEqual(
+      new Date(createdAt)
+    );
+  } finally {
+    await store?.close();
+    await owner.unsafe(`drop schema if exists "${schema}" cascade`);
+    await owner.end();
+  }
+});
+
 it('installs, upgrades, and safely reruns migrations without losing persisted authority', async () => {
   const schema = `forge_upgrade_${++fixtureOrdinal}`;
   const migration = { connectionString: ownerConnectionString, schema, role };
