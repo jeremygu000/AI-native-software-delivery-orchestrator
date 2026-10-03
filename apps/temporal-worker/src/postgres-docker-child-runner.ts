@@ -6,6 +6,8 @@ import {
 import type { PostgresGlobalMutationAuthority } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 import { PostgresExecutionChildRunner } from './postgres-execution-child-runner.js';
 import type { PostgresExecutionChildTools } from './postgres-execution-child.js';
+import { context } from '@opentelemetry/api';
+import { traceForgeModelRequest } from './forge-telemetry.js';
 
 /** Explicit global builder composition. Recovery stops the registered container
  * only after quarantine; it never proves old host callbacks drained or releases
@@ -20,6 +22,11 @@ export const createPostgresDockerChildRunner = (options: {
   readonly dockerExecutable?: string;
   readonly timeoutMs?: number;
   readonly modelProxy: PiHostModelProxy;
+  readonly modelIdentity?: {
+    readonly provider: string;
+    readonly model: string;
+    readonly reasoningEffort: string;
+  };
 }): PostgresExecutionChildRunner => {
   const recoveryGateway = new DockerPiSessionGateway(options);
   const gateways = new Map<string, DockerPiSessionGateway>();
@@ -28,8 +35,20 @@ export const createPostgresDockerChildRunner = (options: {
     tools: options.tools,
     stopRecoveredContainer: (container) => recoveryGateway.stopPersistedContainer(container),
     createRunner: (tools, launch) => {
+      let traceIdentity: { runId: string; taskId: string; attemptId: string } | undefined;
+      let parent = context.active();
       const gateway = new DockerPiSessionGateway({
         ...options,
+        modelProxy: {
+          complete: (modelContext, enabledTools, signal) =>
+            options.modelIdentity === undefined || traceIdentity === undefined
+              ? options.modelProxy.complete(modelContext, enabledTools, signal)
+              : traceForgeModelRequest(
+                  { ...options.modelIdentity, ...traceIdentity, role: 'builder' },
+                  () => options.modelProxy.complete(modelContext, enabledTools, signal),
+                  parent
+                )
+        },
         launchReservation: launch.reservation,
         persistCreated: launch.persistCreated
       });
@@ -39,6 +58,12 @@ export const createPostgresDockerChildRunner = (options: {
       });
       return {
         run: async (request) => {
+          traceIdentity = {
+            runId: request.runId,
+            taskId: request.taskId,
+            attemptId: request.attempt.id
+          };
+          parent = context.active();
           const key = JSON.stringify([request.runId, request.attempt.id]);
           if (gateways.has(key)) {
             throw new Error('Builder gateway already owns this attempt');

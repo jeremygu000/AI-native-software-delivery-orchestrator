@@ -2,6 +2,7 @@ import { createTemporalWorker } from '@ai-native-software-delivery-orchestrator/
 import { createForgeWorkerComposition } from './forge-worker-composition.js';
 import { resolveWorkerDeployment } from './worker-deployment-config.js';
 import { inspectWorkerDeployment } from './worker-preflight.js';
+import { startForgeTelemetry } from './forge-telemetry.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -15,17 +16,39 @@ async function main(): Promise<void> {
     process.exitCode = report.status === 'ready' ? 0 : 1;
     return;
   }
-  const composition = await createForgeWorkerComposition(deployment);
-  const handle = await createTemporalWorker(temporal, {
-    forgeActivities: composition.forgeActivities
-  });
-  const shutdown = async (): Promise<void> => {
-    await handle.shutdown();
-    await composition.close();
-  };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
-  await handle.run();
+  const telemetry = startForgeTelemetry();
+  try {
+    const composition = await createForgeWorkerComposition(deployment);
+    let closed = false;
+    const closeComposition = async (): Promise<void> => {
+      if (!closed) {
+        closed = true;
+        await composition.close();
+      }
+    };
+    try {
+      const handle = await createTemporalWorker(temporal, {
+        forgeActivities: composition.forgeActivities,
+        ...(telemetry === undefined ? {} : { plugins: [telemetry.plugin] })
+      });
+      const shutdown = async (): Promise<void> => {
+        await handle.shutdown();
+        await closeComposition();
+      };
+      process.on('SIGTERM', shutdown);
+      process.on('SIGINT', shutdown);
+      try {
+        await handle.run();
+      } finally {
+        process.off('SIGTERM', shutdown);
+        process.off('SIGINT', shutdown);
+      }
+    } finally {
+      await closeComposition();
+    }
+  } finally {
+    await telemetry?.shutdown();
+  }
 }
 
 main().catch((error: unknown) => {

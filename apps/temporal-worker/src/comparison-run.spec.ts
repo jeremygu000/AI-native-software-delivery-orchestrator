@@ -64,11 +64,11 @@ describe('comparison CLI candidate profiles', () => {
         await mkdir(join(directory, 'apps/cli/dist'), { recursive: true });
         await writeFile(
           join(directory, '.env.local'),
-          'TEMPORAL_TASK_QUEUE=wrong\nFORGE_MODEL_REASONING_EFFORT=off\nLOCAL_DBA_PASSWORD=test-only\nFORGE_MODEL_API_KEY=test-only\n'
+          'TEMPORAL_TASK_QUEUE=wrong\nFORGE_MODEL_REASONING_EFFORT=off\nLOCAL_DBA_PASSWORD=test-only\nFORGE_MODEL_API_KEY=test-only\nFORGE_OWNER_CONNECTION_STRING=test-only\nFORGE_SETUP_CONNECTION_STRING=test-only\n'
         );
         await writeFile(
           join(directory, 'apps/cli/dist/main.js'),
-          `console.log(JSON.stringify({args:process.argv.slice(2),provider:process.env.FORGE_WORKER_REVIEW_PROVIDER,model:process.env.FORGE_WORKER_REVIEW_MODEL,effort:process.env.FORGE_MODEL_REASONING_EFFORT,queue:process.env.TEMPORAL_TASK_QUEUE,privileged:process.env.LOCAL_DBA_PASSWORD!==undefined,apiKey:process.env.FORGE_MODEL_API_KEY!==undefined}));`
+          `console.log(JSON.stringify({args:process.argv.slice(2),provider:process.env.FORGE_WORKER_REVIEW_PROVIDER,model:process.env.FORGE_WORKER_REVIEW_MODEL,effort:process.env.FORGE_MODEL_REASONING_EFFORT,queue:process.env.TEMPORAL_TASK_QUEUE,privileged:process.env.LOCAL_DBA_PASSWORD!==undefined||process.env.FORGE_OWNER_CONNECTION_STRING!==undefined||process.env.FORGE_SETUP_CONNECTION_STRING!==undefined,apiKey:process.env.FORGE_MODEL_API_KEY!==undefined}));`
         );
         const args = equals
           ? ['run', `--review-provider=${provider}`, `--review-model=${model}`]

@@ -30,7 +30,11 @@ import { PostgresWorkspaceHandoff } from '../src/postgres-workspace-handoff.js';
 
 // Separate operator process: these credentials are never passed to the worker.
 const root = process.cwd();
-const env = parseEnv(await readFile(resolve(root, '.env.local'), 'utf8'));
+const localEnv = parseEnv(await readFile(resolve(root, '.env.local'), 'utf8'));
+const comparisonEnv = process.env.FORGE_COMPARISON_ENV_FILE
+  ? parseEnv(await readFile(process.env.FORGE_COMPARISON_ENV_FILE, 'utf8'))
+  : {};
+const env = { ...localEnv, ...comparisonEnv };
 const [runId, artifactId, approvalId, operation] = process.argv.slice(2);
 if (operation !== undefined && operation !== '--abandon') {
   throw new Error('Unknown operator operation');
@@ -39,6 +43,23 @@ if (!runId || !artifactId || !approvalId) {
   throw new Error('Usage: prepare-workspaces run-id artifact-id approval-id');
 }
 const config = (role: string, password: string | undefined) => {
+  if (process.env.FORGE_COMPARISON_ENV_FILE) {
+    const key = `FORGE_${role.slice('forge_'.length).toUpperCase()}_CONNECTION_STRING`;
+    const connectionString = localEnv[key];
+    if (!connectionString) {
+      throw new Error(`Missing independent Neon operator connection for ${role}`);
+    }
+    const url = new URL(connectionString);
+    const runtimeUrl = new URL(env.FORGE_POSTGRES_CONNECTION_STRING ?? '');
+    if (
+      url.username !== role ||
+      url.host !== runtimeUrl.host ||
+      url.pathname !== runtimeUrl.pathname
+    ) {
+      throw new Error(`Neon operator connection does not match comparison authority: ${role}`);
+    }
+    return { connectionString, schema: env.FORGE_POSTGRES_SCHEMA ?? 'forge', role };
+  }
   if (!password) {
     throw new Error('Missing independent operator credential');
   }

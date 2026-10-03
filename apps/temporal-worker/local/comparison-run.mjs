@@ -35,12 +35,17 @@ if (command === 'cli') {
     }
   }
 }
-const env = { ...process.env, ...parseEnv(await readFile('.env.local', 'utf8')) };
-env.FORGE_WORKER_REPOSITORY_PATH = resolve(`.local/comparison-${candidate}`);
+const neonComparison = process.env.FORGE_COMPARISON_ENV_FILE !== undefined;
+const comparison = neonComparison
+  ? parseEnv(await readFile(process.env.FORGE_COMPARISON_ENV_FILE, 'utf8'))
+  : {};
+const env = { ...process.env, ...parseEnv(await readFile('.env.local', 'utf8')), ...comparison };
+const prefix = neonComparison ? 'neon-comparison' : 'comparison';
+env.FORGE_WORKER_REPOSITORY_PATH = resolve(`.local/${prefix}-${candidate}`);
 env.FORGE_WORKER_REVIEW_PROVIDER = profile.provider;
 env.FORGE_WORKER_REVIEW_MODEL = profile.model;
 env.FORGE_MODEL_REASONING_EFFORT = profile.effort;
-env.TEMPORAL_TASK_QUEUE = `forge-comparison-${candidate}`;
+env.TEMPORAL_TASK_QUEUE = `forge-${prefix}-${candidate}`;
 env.FORGE_SUBSCRIPTION_AUTH_DIRECTORY = join(homedir(), '.config/forge/subscription-auth');
 if (profile.provider !== 'deepseek') {
   delete env.FORGE_MODEL_API_KEY;
@@ -51,11 +56,22 @@ if (process.env.FORGE_PREPARE_ONLY === 'true') {
 let entry;
 let parameters = args;
 if (command === 'register') {
-  entry = 'apps/temporal-worker/local/bootstrap.mjs';
-  parameters = ['authority'];
+  entry = neonComparison
+    ? 'apps/temporal-worker/local/neon-comparison-authority.mjs'
+    : 'apps/temporal-worker/local/bootstrap.mjs';
+  parameters = neonComparison ? ['register', candidate] : ['authority'];
 } else {
   for (const key of Object.keys(env)) {
-    if (key.startsWith('LOCAL_')) {
+    if (
+      key.startsWith('LOCAL_') ||
+      [
+        'FORGE_OWNER_CONNECTION_STRING',
+        'FORGE_TRUST_CONNECTION_STRING',
+        'FORGE_ISSUER_CONNECTION_STRING',
+        'FORGE_SETUP_CONNECTION_STRING',
+        'FORGE_RECOVERY_CONNECTION_STRING'
+      ].includes(key)
+    ) {
       delete env[key];
     }
   }

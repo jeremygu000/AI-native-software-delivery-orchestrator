@@ -1,4 +1,4 @@
-import { NativeConnection, Worker } from '@temporalio/worker';
+import { NativeConnection, Worker, type WorkerOptions } from '@temporalio/worker';
 import { fileURLToPath } from 'node:url';
 import type { TemporalConfig } from './config.js';
 import type { ForgeActivities } from './activities/forge-activities.js';
@@ -19,6 +19,8 @@ export async function createTemporalWorker(
     workflowsPath?: string;
     /** Forge Scenario A activities implementation. */
     forgeActivities?: ForgeActivities;
+    /** Deployment-owned tracing plugins; disabled by default. */
+    plugins?: WorkerOptions['plugins'];
   }
 ): Promise<TemporalWorkerHandle> {
   const connection = await NativeConnection.connect({
@@ -34,7 +36,8 @@ export async function createTemporalWorker(
     namespace: config.namespace,
     taskQueue: config.taskQueue,
     workflowsPath: options?.workflowsPath ?? getWorkflowsPath(),
-    activities: options.forgeActivities
+    activities: options.forgeActivities,
+    ...(options.plugins === undefined ? {} : { plugins: options.plugins })
   });
 
   let shutdownRequested = false;

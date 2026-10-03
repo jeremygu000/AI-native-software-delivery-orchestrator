@@ -33,6 +33,7 @@ import { createPostgresDockerRepairRunner } from './postgres-docker-repair-runne
 import { PostgresExecutionChildTools } from './postgres-execution-child.js';
 import { PostgresIntegrationRunner } from './postgres-integration-runner.js';
 import { DockerIntegrationGit } from './docker-integration-git.js';
+import { traceForgeOperation } from './forge-telemetry.js';
 
 /** Opt-in global activity routing. All legacy writer activities are replaced;
  * externally approved setup/handoff must already exist before builder launch. */
@@ -50,6 +51,11 @@ export const createPostgresGlobalWorkerComposition = (options: {
   sessionTimeoutMs?: number;
   approvedVerificationPolicyFingerprint?: string;
   modelProxy: PiHostModelProxy;
+  modelIdentity?: {
+    readonly provider: string;
+    readonly model: string;
+    readonly reasoningEffort: string;
+  };
   cancellationSignal?: () => AgentRunRequest['cancellationSignal'];
 }): ForgeRuntimeComposition => {
   const { persistence, authority } = options;
@@ -68,7 +74,21 @@ export const createPostgresGlobalWorkerComposition = (options: {
       }
     })
   });
-  const collector = new TaskCodeReviewCollector({ reviewer: options.reviewer, store: persistence });
+  const collector = new TaskCodeReviewCollector({
+    reviewer: {
+      review: (request) =>
+        traceForgeOperation(
+          'forge.review',
+          {
+            runId: request.runId,
+            taskId: request.task.id,
+            attemptId: request.builderAttempt.id
+          },
+          () => options.reviewer.review(request)
+        )
+    },
+    store: persistence
+  });
   const tools = new PostgresExecutionChildTools({
     authority,
     persistence,
@@ -82,6 +102,7 @@ export const createPostgresGlobalWorkerComposition = (options: {
     executable: '/usr/local/bin/node',
     args: ['/opt/forge/entrypoint.mjs'],
     modelProxy: options.modelProxy,
+    modelIdentity: options.modelIdentity,
     timeoutMs: options.sessionTimeoutMs
   });
   const repair = createPostgresDockerRepairRunner({
@@ -91,6 +112,7 @@ export const createPostgresGlobalWorkerComposition = (options: {
     executable: '/usr/local/bin/node',
     args: ['/opt/forge/entrypoint.mjs'],
     modelProxy: options.modelProxy,
+    modelIdentity: options.modelIdentity,
     timeoutMs: options.sessionTimeoutMs,
     resolveResource: (path) => resolver.resolve(path),
     resolveFileId: (path) => resolver.fileId(path)
@@ -139,11 +161,17 @@ export const createPostgresGlobalWorkerComposition = (options: {
         'Global evaluation requires completed approved output and verification policy'
       );
     }
-    const verified = await options.verifier.verify({
-      runId,
-      task: context.task,
-      workspace: context.workspace
-    });
+    const verified = await traceForgeOperation(
+      'forge.verification',
+      { runId, taskId, attemptId: output.id },
+      () =>
+        options.verifier.verify({
+          runId,
+          task: context.task,
+          workspace: context.workspace
+        }),
+      (result) => result.status
+    );
     const snapshot = await snapshots.capture({ repositoryPath: context.workspace.workspacePath });
     const recordedEvidence = (await persistence.recoverVerificationEvidence(runId)).find(
       (item) => item.attemptId === output.id
@@ -226,62 +254,72 @@ export const createPostgresGlobalWorkerComposition = (options: {
     };
   };
   const integrateAcceptedOutput: ForgeRuntimeComposition['forgeActivities']['integrateAcceptedOutput'] =
-    async (input) => {
-      const context = await recover(input.runId, input.taskId);
-      const review = (await persistence.recoverReviews(input.runId)).find(
-        (item) =>
-          item.taskId === input.taskId &&
-          item.review.recommendation === 'accept' &&
-          item.subject?.outputAttemptId === input.subjectRef.outputAttemptId &&
-          item.subject.builderAttemptId === input.subjectRef.builderAttemptId &&
-          item.subject.workspaceId === input.workspaceId
-      );
-      if (review?.subject === undefined) {
-        throw new Error('Global integration requires exact accepted review');
-      }
-      const scopeId = await authority.recoverGlobalRunScope(input.runId);
-      const admission = await authority.admitIntegrationExecution({
-        scopeId,
-        claimId: `integration-execution:${input.runId}:${input.taskId}:${review.iteration}`,
-        reviewIteration: review.iteration,
-        subject: review.subject,
-        owner: {
+    async (input) =>
+      traceForgeOperation(
+        'forge.integration',
+        {
           runId: input.runId,
           taskId: input.taskId,
-          attemptId: `integration:${review.subject.outputAttemptId}`,
-          agentId: 'forge-integration',
-          workspaceId: context.workspace.id
-        }
-      });
-      if (admission.status === 'blocked') {
-        return { runId: input.runId, taskId: input.taskId, status: 'blocked' };
-      }
-      const git = new DockerIntegrationGit({
-        image: options.gitImage,
-        commitIdentity: options.commitIdentity,
-        workspace: context.workspace
-      });
-      const state = await new PostgresIntegrationRunner({
-        authority,
-        snapshots,
-        workspaceManager: new GitWorkspaceManager(git),
-        confirmStopped: async () => git.confirmedStopEvidence()
-      }).run(admission.execution);
-      if (state !== 'RELEASED') {
-        throw new Error('Integration requires independent repository recovery');
-      }
-      await progression.advance(input.runId, {
-        type: 'verification-completed',
-        taskId: input.taskId,
-        state: 'INTEGRATING'
-      });
-      await progression.advance(input.runId, {
-        type: 'workspace-integrated',
-        taskId: input.taskId,
-        state: 'COMPLETED'
-      });
-      return { runId: input.runId, taskId: input.taskId, status: 'integrated' };
-    };
+          attemptId: input.subjectRef.outputAttemptId
+        },
+        async () => {
+          const context = await recover(input.runId, input.taskId);
+          const review = (await persistence.recoverReviews(input.runId)).find(
+            (item) =>
+              item.taskId === input.taskId &&
+              item.review.recommendation === 'accept' &&
+              item.subject?.outputAttemptId === input.subjectRef.outputAttemptId &&
+              item.subject.builderAttemptId === input.subjectRef.builderAttemptId &&
+              item.subject.workspaceId === input.workspaceId
+          );
+          if (review?.subject === undefined) {
+            throw new Error('Global integration requires exact accepted review');
+          }
+          const scopeId = await authority.recoverGlobalRunScope(input.runId);
+          const admission = await authority.admitIntegrationExecution({
+            scopeId,
+            claimId: `integration-execution:${input.runId}:${input.taskId}:${review.iteration}`,
+            reviewIteration: review.iteration,
+            subject: review.subject,
+            owner: {
+              runId: input.runId,
+              taskId: input.taskId,
+              attemptId: `integration:${review.subject.outputAttemptId}`,
+              agentId: 'forge-integration',
+              workspaceId: context.workspace.id
+            }
+          });
+          if (admission.status === 'blocked') {
+            return { runId: input.runId, taskId: input.taskId, status: 'blocked' };
+          }
+          const git = new DockerIntegrationGit({
+            image: options.gitImage,
+            commitIdentity: options.commitIdentity,
+            workspace: context.workspace
+          });
+          const state = await new PostgresIntegrationRunner({
+            authority,
+            snapshots,
+            workspaceManager: new GitWorkspaceManager(git),
+            confirmStopped: async () => git.confirmedStopEvidence()
+          }).run(admission.execution);
+          if (state !== 'RELEASED') {
+            throw new Error('Integration requires independent repository recovery');
+          }
+          await progression.advance(input.runId, {
+            type: 'verification-completed',
+            taskId: input.taskId,
+            state: 'INTEGRATING'
+          });
+          await progression.advance(input.runId, {
+            type: 'workspace-integrated',
+            taskId: input.taskId,
+            state: 'COMPLETED'
+          });
+          return { runId: input.runId, taskId: input.taskId, status: 'integrated' };
+        },
+        (result) => result.status
+      );
   return {
     close: async () => {
       await options.base.close();
@@ -356,102 +394,113 @@ export const createPostgresGlobalWorkerComposition = (options: {
         }
         return evaluate(input.runId, input.taskId, input.builderAttemptId, output);
       },
-      executeRepair: async (input) => {
-        const context = await recover(input.runId, input.taskId);
-        const pending = (await persistence.recoverRepairAttempts(input.runId)).find(
-          (item) => item.attempt.id === input.repairAttemptId
-        )?.attempt;
-        const review = (await persistence.recoverReviews(input.runId)).find(
-          (item) => `${item.taskId}:${item.iteration}` === input.reviewId
-        );
-        if (
-          pending === undefined ||
-          review?.subject === undefined ||
-          pending.parentReviewIteration !== review.iteration ||
-          pending.parentReviewSubject.builderAttemptId !== input.builderAttemptId ||
-          input.workspaceId !== context.workspace.id
-        ) {
-          throw new Error('Global repair activity lineage mismatch');
-        }
-        const scopeId = await authority.recoverGlobalRunScope(input.runId);
-        const owner = {
-          runId: input.runId,
-          taskId: input.taskId,
-          attemptId: pending.id,
-          agentId: pending.agentId,
-          workspaceId: context.workspace.id
-        };
-        const claimId = `repair-execution:${pending.id}`;
-        const grant = await authority.claimGlobalMutation({
-          scopeId,
-          claimId,
-          owner,
-          resources: context.binding.leasePlan.predictedResources
-        });
-        if (grant.status === 'blocked') {
-          return {
-            runId: input.runId,
-            taskId: input.taskId,
-            state: 'blocked',
-            repairAttemptId: pending.id,
-            blockerLeaseId: grant.blockers[0]?.leaseId
-          };
-        }
-        const recovered = await authority.recoverRepairExecution({
-          scopeId,
-          claimId,
-          owner,
-          token: grant.token
-        });
-        if (recovered.attempt.state !== 'STARTING' && recovered.attempt.state !== 'RUNNING') {
-          throw new Error('Repair is not admitted for global execution');
-        }
-        const attempt: AgentExecutionAttempt = {
-          ...recovered.attempt,
-          state: recovered.attempt.state,
-          leasePlanFingerprint: `repair:${pending.parentReviewSubject.workspaceChangeFingerprint}`,
-          commandPolicyFingerprint:
-            context.recovered.attempts.find((item) => item.attempt.id === input.builderAttemptId)
-              ?.attempt.commandPolicyFingerprint ?? ''
-        };
-        const result = await repair.run(
-          { scopeId, claimId, owner, token: grant.token },
+      executeRepair: async (input) =>
+        traceForgeOperation(
+          'forge.repair',
           {
             runId: input.runId,
             taskId: input.taskId,
-            task: context.task,
-            attempt,
-            workspace: context.workspace,
-            impact: context.impact,
-            instructions: `${context.task.goal}\nRepair review ${pending.parentReviewIteration}: ${review.review.summary}\nUse only enabled Forge tools and workspace-relative paths. Make the exact requested corrections, preserve all validation gates, and finish with a concise summary. Forge performs the approved verification and independent review after this session. Do not search for shell tools or run verification when forge_command is not enabled.`,
-            cancellationSignal: options.cancellationSignal?.(),
-            onStarted: async () => {}
-          }
-        );
-        if (result.result.status !== 'completed' || result.claimState !== 'RELEASED') {
-          return {
-            runId: input.runId,
-            taskId: input.taskId,
-            state: 'unknown',
-            repairAttemptId: pending.id,
-            detail: 'Repair retained unresolved external authority'
-          };
-        }
-        const terminal = (await persistence.recoverRepairAttempts(input.runId)).find(
-          (item) => item.attempt.id === pending.id
-        )?.attempt;
-        if (terminal === undefined || terminal.state !== 'COMPLETED') {
-          throw new Error('Missing completed global repair output');
-        }
-        const evaluation = await evaluate(input.runId, input.taskId, input.builderAttemptId, {
-          ...attempt,
-          ...terminal,
-          state: 'COMPLETED',
-          leasePlanFingerprint: attempt.leasePlanFingerprint,
-          commandPolicyFingerprint: attempt.commandPolicyFingerprint
-        });
-        return { ...evaluation, state: 'completed', repairAttemptId: pending.id };
-      },
+            attemptId: input.repairAttemptId
+          },
+          async () => {
+            const context = await recover(input.runId, input.taskId);
+            const pending = (await persistence.recoverRepairAttempts(input.runId)).find(
+              (item) => item.attempt.id === input.repairAttemptId
+            )?.attempt;
+            const review = (await persistence.recoverReviews(input.runId)).find(
+              (item) => `${item.taskId}:${item.iteration}` === input.reviewId
+            );
+            if (
+              pending === undefined ||
+              review?.subject === undefined ||
+              pending.parentReviewIteration !== review.iteration ||
+              pending.parentReviewSubject.builderAttemptId !== input.builderAttemptId ||
+              input.workspaceId !== context.workspace.id
+            ) {
+              throw new Error('Global repair activity lineage mismatch');
+            }
+            const scopeId = await authority.recoverGlobalRunScope(input.runId);
+            const owner = {
+              runId: input.runId,
+              taskId: input.taskId,
+              attemptId: pending.id,
+              agentId: pending.agentId,
+              workspaceId: context.workspace.id
+            };
+            const claimId = `repair-execution:${pending.id}`;
+            const grant = await authority.claimGlobalMutation({
+              scopeId,
+              claimId,
+              owner,
+              resources: context.binding.leasePlan.predictedResources
+            });
+            if (grant.status === 'blocked') {
+              return {
+                runId: input.runId,
+                taskId: input.taskId,
+                state: 'blocked',
+                repairAttemptId: pending.id,
+                blockerLeaseId: grant.blockers[0]?.leaseId
+              };
+            }
+            const recovered = await authority.recoverRepairExecution({
+              scopeId,
+              claimId,
+              owner,
+              token: grant.token
+            });
+            if (recovered.attempt.state !== 'STARTING' && recovered.attempt.state !== 'RUNNING') {
+              throw new Error('Repair is not admitted for global execution');
+            }
+            const attempt: AgentExecutionAttempt = {
+              ...recovered.attempt,
+              state: recovered.attempt.state,
+              leasePlanFingerprint: `repair:${pending.parentReviewSubject.workspaceChangeFingerprint}`,
+              commandPolicyFingerprint:
+                context.recovered.attempts.find(
+                  (item) => item.attempt.id === input.builderAttemptId
+                )?.attempt.commandPolicyFingerprint ?? ''
+            };
+            const result = await repair.run(
+              { scopeId, claimId, owner, token: grant.token },
+              {
+                runId: input.runId,
+                taskId: input.taskId,
+                task: context.task,
+                attempt,
+                workspace: context.workspace,
+                impact: context.impact,
+                instructions: `${context.task.goal}\nRepair review ${pending.parentReviewIteration}: ${review.review.summary}\nUse only enabled Forge tools and workspace-relative paths. Make the exact requested corrections, preserve all validation gates, and finish with a concise summary. Forge performs the approved verification and independent review after this session. Do not search for shell tools or run verification when forge_command is not enabled.`,
+                cancellationSignal: options.cancellationSignal?.(),
+                onStarted: async () => {}
+              }
+            );
+            if (result.result.status !== 'completed' || result.claimState !== 'RELEASED') {
+              return {
+                runId: input.runId,
+                taskId: input.taskId,
+                state: 'unknown',
+                repairAttemptId: pending.id,
+                detail: 'Repair retained unresolved external authority'
+              };
+            }
+            const terminal = (await persistence.recoverRepairAttempts(input.runId)).find(
+              (item) => item.attempt.id === pending.id
+            )?.attempt;
+            if (terminal === undefined || terminal.state !== 'COMPLETED') {
+              throw new Error('Missing completed global repair output');
+            }
+            const evaluation = await evaluate(input.runId, input.taskId, input.builderAttemptId, {
+              ...attempt,
+              ...terminal,
+              state: 'COMPLETED',
+              leasePlanFingerprint: attempt.leasePlanFingerprint,
+              commandPolicyFingerprint: attempt.commandPolicyFingerprint
+            });
+            return { ...evaluation, state: 'completed', repairAttemptId: pending.id };
+          },
+          (result) => result.state
+        ),
       integrateAcceptedOutput,
       resumeBlockedIntegration: integrateAcceptedOutput,
       resumeBlockedRepair: async (input) => {

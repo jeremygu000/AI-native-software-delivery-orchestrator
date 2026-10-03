@@ -99,6 +99,15 @@ importers:
       '@ai-native-software-delivery-orchestrator/workspace-git':
         specifier: workspace:*
         version: link:../../libs/workspace-git
+      '@opentelemetry/api':
+        specifier: ^1.9.1
+        version: 1.9.1
+      '@opentelemetry/exporter-trace-otlp-proto':
+        specifier: ^0.222.0
+        version: 0.222.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-node':
+        specifier: ^0.222.0
+        version: 0.222.0(@opentelemetry/api@1.9.1)
       commander:
         specifier: 15.0.0
         version: 15.0.0
@@ -144,12 +153,30 @@ importers:
       '@ai-native-software-delivery-orchestrator/workspace-git':
         specifier: workspace:*
         version: link:../../libs/workspace-git
+      '@opentelemetry/api':
+        specifier: ^1.9.1
+        version: 1.9.1
+      '@opentelemetry/exporter-trace-otlp-proto':
+        specifier: ^0.222.0
+        version: 0.222.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/resources':
+        specifier: ^2.11.0
+        version: 2.11.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-node':
+        specifier: ^0.222.0
+        version: 0.222.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-trace-base':
+        specifier: ^2.11.0
+        version: 2.11.0(@opentelemetry/api@1.9.1)
       '@temporalio/activity':
         specifier: ^1.24.0
         version: 1.24.0
       '@temporalio/client':
         specifier: ^1.24.0
         version: 1.24.0
+      '@temporalio/interceptors-opentelemetry-v2':
+        specifier: 1.24.0
+        version: 1.24.0(@temporalio/common@1.24.0)(@temporalio/workflow@1.24.0)
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
@@ -445,6 +472,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/forge-runtime-contracts':
         specifier: workspace:*
         version: link:../forge-runtime-contracts
+      '@opentelemetry/api':
+        specifier: ^1.9.1
+        version: 1.9.1
       '@temporalio/activity':
         specifier: ^1.24.0
         version: 1.24.0
@@ -2057,8 +2087,22 @@ packages:
     resolution: {integrity: sha512-6kzPB8RsHcPU6HDNUSDBFC0JG2UFrV3ThmPmJkeEafKh2DFrKARM8IzxgKeE5MzvdIXYmONFM0UmHg+TZ0/qrQ==}
     engines: {node: '>= 20.3.0'}
 
+  '@temporalio/interceptors-opentelemetry-v2@1.24.0':
+    resolution: {integrity: sha512-DVQGRToN5BP0In+aVsGJ0u3Alq6+Gvm3q19r4zkjO9hzBJUoyphP1Bg6Pze9AwEbIH7acvbKx8FRa2oZ9p0KIQ==}
+    engines: {node: '>= 20.0.0'}
+    peerDependencies:
+      '@temporalio/common': 1.24.0
+      '@temporalio/workflow': 1.24.0
+    peerDependenciesMeta:
+      '@temporalio/workflow':
+        optional: true
+
   '@temporalio/nexus@1.24.0':
     resolution: {integrity: sha512-SQOQia98KFowgpgH6Cn+7rcpWVEjmJbV5FlqQVQoDH82Q7yl5gT81GO9vN7YRYj5RE2P+DVzEsCc8ohT7Hy57g==}
+    engines: {node: '>= 20.3.0'}
+
+  '@temporalio/plugin@1.24.0':
+    resolution: {integrity: sha512-D5fXbD5jKpWtJUrmbTmXqe9XCYoBxs892B1bDjULgNS1nDEuMDkE8D2O6zB/bIGI7dJHqKZirlBQ4srMXPxDGQ==}
     engines: {node: '>= 20.3.0'}
 
   '@temporalio/proto@1.24.0':
@@ -5367,6 +5411,17 @@ snapshots:
       '@grpc/grpc-js': 1.14.4
       '@temporalio/common': 1.24.0
 
+  '@temporalio/interceptors-opentelemetry-v2@1.24.0(@temporalio/common@1.24.0)(@temporalio/workflow@1.24.0)':
+    dependencies:
+      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/core': 2.11.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/resources': 2.11.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-trace-base': 2.11.0(@opentelemetry/api@1.9.1)
+      '@temporalio/common': 1.24.0
+      '@temporalio/plugin': 1.24.0
+    optionalDependencies:
+      '@temporalio/workflow': 1.24.0
+
   '@temporalio/nexus@1.24.0':
     dependencies:
       '@temporalio/client': 1.24.0
@@ -5374,6 +5429,8 @@ snapshots:
       '@temporalio/proto': 1.24.0
       long: 5.3.2
       nexus-rpc: 0.0.3
+
+  '@temporalio/plugin@1.24.0': {}
 
   '@temporalio/proto@1.24.0':
     dependencies:

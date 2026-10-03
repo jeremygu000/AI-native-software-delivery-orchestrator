@@ -3981,3 +3981,15 @@ Planning 使用真实 SDK 与批准 execution adapter；global builder、repair�
 这个小型运维阶段增加了独立的 `pnpm local:otel-check` 命令。它使用工作区根目录的 OpenTelemetry SDK 和 trace exporter，在 Node.js 中创建一条 `forge.startup` span，等待 OTLP／HTTP 导出完成后退出。endpoint 和 `Authorization=Basic` header 只放在被忽略且权限为 600 的 `.env.local` 或操作者的 shell，不写入受版本控制的文件。操作者可以先拿到 trace ID 去 Grafana 查询，再决定如何给 worker 和副作用加埋点。该命令不打开 Forge authority，也不改动 worker、workflow、mutation 或 recovery 路径。
 
 配置的 Grafana endpoint 已接受一次真实导出，service 为 `forge-local`，命令报告的 trace ID 为 `5c93a0275dbb98a693d2a3253302c3fa`。操作者已在 Tempo 中独立查到 `forge-local` 下只有一条 span 的 `forge.startup` trace。因此本地 smoke 路径的 OTLP 连接、trace 入库及 Tempo 查询均为 PASS。TypeScript、lint、本次修改文件的格式及 `git diff --check` 均通过。完整 `pnpm check` 因另一份并行修改的本地实验文件格式不合规而停在格式阶段。在沙箱外单独运行的完整测试有 970 项通过、18 项跳过；由于缺少这 18 项镜像测试的覆盖率，测得语句 87.69%、分支 82.77%、代码行 87.56%，覆盖率门槛未通过。命令和环境格式见 `docs/local-groundgraph-validation.en.md`。运行时 span 传播和稳定的 run／task／attempt 属性仍未实现。
+
+## Forge 正式追踪与 Neon 对比准备
+
+此前的 `forge.startup` 只证明这台电脑能向 Grafana Cloud 发送一条 span 并在 Tempo 查到。Forge 现在可在全新 Temporal 队列选择启用运行时追踪：`forge.run` 覆盖 workflow，`forge.task` 覆盖获准执行的任务；worker activity 产生 `forge.verification`、`forge.review`、`forge.repair`、`forge.integration`。规划及宿主模型调用产生 `forge.model.request`，记录获批准的 provider、model、reasoning effort、角色、可用的 run／task／attempt 标识及简短结果。OpenTelemetry 自动记录 span 耗时。Workflow patch 保留埋点之前历史的 replay 行为，Temporal trace 插件在 workflow 与 activity 间传递同一 trace。普通 worker 只有明确设置 `FORGE_OTEL_INSTRUMENTATION=1` 才启用。
+
+这是一条仅含元数据的观测路径。Worker 在每条 span 导出前只允许八个标量属性，包括 Temporal 自动生成的 span，并移除 event、link 和 status message。Prompt、模型回复、隐藏 reasoning、凭据、数据库 URL、源码及 diff 均不导出。OTLP 凭据保存在被忽略的本地环境文件中。一项真实 Temporal 集成测试在不发送测试数据到 Grafana 的条件下，检查七种 Forge span 名称、run／task 父子关系、共同 trace 标识以及字段过滤。操作方法和限制见新增的 `docs/forge-observability.en.md`。
+
+已从同一干净的 `1e8835d37a0827c111291fa8a6cf4f12cc2caa68` 基线准备三个被忽略的 GroundGraph clone。Neon bootstrap helper 在 migration 前检查角色 URL、共同数据库、三个 clone 的相同基线、全新 schema 和受支持的 PostgreSQL 版本；普通 CLI 和 worker 不接收 owner／setup／issuer／recovery 凭据。独立 operator 的 workspace 准备过程可选择私有 comparison runtime 配置，并单独读取 Neon 特权角色 URL。既有旧 authority 及其被拒绝的 migration ledger 没有修改。
+
+当前 Neon endpoint 是 PostgreSQL 18.0。Forge 的严格权限审计尚未扩展到新版本权限，因此明确只接受 PostgreSQL 14–16。只读检查还发现六个已配置角色都有数据库 `TEMP` 权限，不符合 Forge 对 runtime 和受限 operator 的最小权限要求。Bootstrap 在创建 schema 前失败；只读查询确认拟建的 comparison schema 不存在。共享数据库权限和旧 authority ledger 均未改变。因此 Neon authority 未进入 GLOBAL_READY，也没有运行新的带 trace 的 DeepSeek／Copilot／Codex GroundGraph E2E 对比。继续需要独立的 PostgreSQL 14–16 Neon 数据库及正确受限角色，或在隔离项目中另行复审 PostgreSQL 18 兼容性与权限迁移。先前已完成的三模型对比仍是历史证据，但不包含本次新增的运行时 trace。
+
+本阶段验证：`pnpm build`、格式、TypeScript 项目引用、类型感知 lint 和 `git diff --check` 全部通过。完整的镜像测试 `pnpm check` 也通过，包含真实 Temporal trace 传播测试与 Docker 验收测试；语句、分支、函数、代码行覆盖率依次为 90.75%、85.75%、94.70%、90.63%，高于未变更的 90/85/90/90 门槛。之前一次测试失败是因为向可选 supervisor 测试传了裸镜像 ID，而该测试要求带仓库名的 digest；最终使用本地已有且以 digest 固定的 Node 镜像。测试 exporter 和受阻的 Neon bootstrap 都不能证明七类 GroundGraph span 已进入 Tempo；这一点须在首次受支持的真实运行中确认。

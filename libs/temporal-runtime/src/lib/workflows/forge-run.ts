@@ -8,6 +8,7 @@ import {
   setHandler,
   sleep
 } from '@temporalio/workflow';
+import { context, trace } from '@opentelemetry/api';
 import type { ForgeActivities } from '../activities/forge-activities.js';
 import {
   ForgeRunInputSchema,
@@ -104,21 +105,40 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
     pendingIntegrationWakeKeys.add(integrationWakeKey(parsed));
   });
 
-  try {
-    return await executeForgeRun(runId, pendingWakeRepairIds, pendingIntegrationWakeKeys);
-  } catch (error) {
-    if (!isCancellation(error)) {
-      throw error;
-    }
-    return CancellationScope.nonCancellable(async () => {
-      let result = await finalizeRunCancellation({ runId });
-      while (result.status === 'pending') {
-        await sleep('5 seconds');
-        result = await finalizeRunCancellation({ runId });
+  const executeWithCancellation = async (): Promise<ForgeRunResult> => {
+    try {
+      return await executeForgeRun(runId, pendingWakeRepairIds, pendingIntegrationWakeKeys);
+    } catch (error) {
+      if (!isCancellation(error)) {
+        throw error;
       }
-      return ForgeRunResultSchema.parse(result);
-    });
+      return CancellationScope.nonCancellable(async () => {
+        let result = await finalizeRunCancellation({ runId });
+        while (result.status === 'pending') {
+          await sleep('5 seconds');
+          result = await finalizeRunCancellation({ runId });
+        }
+        return ForgeRunResultSchema.parse(result);
+      });
+    }
+  };
+  if (!patched('forge-observability-v1')) {
+    return executeWithCancellation();
   }
+  return trace
+    .getTracer('forge-temporal')
+    .startActiveSpan('forge.run', { attributes: { run_id: runId } }, async (span) => {
+      try {
+        const result = await executeWithCancellation();
+        span.setAttribute('outcome', result.status);
+        return result;
+      } catch (error) {
+        span.setAttribute('outcome', 'error');
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
 }
 
 async function executeForgeRun(
@@ -149,193 +169,243 @@ async function executeForgeRun(
   // Step 2: process each snapshot of task starts authorized by Forge.
   while (authorizedTasks.length > 0) {
     const builderWave = authorizedTasks.splice(0);
+    const taskSpans = builderWave.map((task) =>
+      trace.getTracer('forge-temporal').startSpan('forge.task', {
+        attributes: { run_id: runId, task_id: task.taskId, attempt_id: task.attemptId }
+      })
+    );
+    const withinTask = <T>(index: number, operation: () => Promise<T>): Promise<T> => {
+      const span = taskSpans[index];
+      return span === undefined
+        ? operation()
+        : context.with(trace.setSpan(context.active(), span), operation);
+    };
     for (const task of builderWave) {
       queuedAuthorizationKeys.delete(authorizationKey(task));
     }
-    const builderResults = await Promise.all(
-      builderWave.map((task) =>
-        executeBuilder({
-          runId,
-          taskId: task.taskId,
-          attemptId: task.attemptId
-        })
-      )
-    );
+    let builderResults: Awaited<ReturnType<typeof executeBuilder>>[];
+    try {
+      builderResults = await Promise.all(
+        builderWave.map((task, index) =>
+          withinTask(index, () =>
+            executeBuilder({
+              runId,
+              taskId: task.taskId,
+              attemptId: task.attemptId
+            })
+          )
+        )
+      );
+    } catch (error) {
+      for (const span of taskSpans) {
+        span.end();
+      }
+      throw error;
+    }
     let blockedBuilder = false;
 
     for (const [index, builderResult] of builderResults.entries()) {
       const task = builderWave[index];
+      const taskSpan = taskSpans[index];
       if (task === undefined) {
+        taskSpan?.end();
         continue;
       }
 
-      if (!isCompletedBuilderResult(builderResult)) {
-        // The composition has already durably recorded the lease-blocked state.
-        blockedBuilder = true;
-        continue;
-      }
-      completedAuthorizationKeys.add(authorizationKey(task));
+      try {
+        if (!isCompletedBuilderResult(builderResult)) {
+          // The composition has already durably recorded the lease-blocked state.
+          blockedBuilder = true;
+          taskSpan?.setAttribute('outcome', 'blocked');
+          continue;
+        }
+        completedAuthorizationKeys.add(authorizationKey(task));
 
-      // Step 4: advance Forge task state after the builder run.
-      // New authorizations wait for the next builder wave.
-      const reevaluation = await reevaluateRun({ runId });
-      enqueueAuthorizations(reevaluation.authorizedTasks);
+        // Step 4: advance Forge task state after the builder run.
+        // New authorizations wait for the next builder wave.
+        const reevaluation = await withinTask(index, () => reevaluateRun({ runId }));
+        enqueueAuthorizations(reevaluation.authorizedTasks);
 
-      // Step 5: evaluate the builder output
-      const evalResult = await evaluateBuilderOutput({
-        runId,
-        taskId: task.taskId,
-        workspaceId: builderResult.workspaceId,
-        builderAttemptId: builderResult.attemptId,
-        impactId: builderResult.impactId
-      });
-
-      // Reject: no integration for this task
-      if (evalResult.recommendation === 'reject') {
-        continue;
-      }
-
-      let finalSubjectRef = evalResult.subjectRef;
-      let recommendation: 'accept' | 'repair' | 'reject' = evalResult.recommendation;
-      let currentReviewId = evalResult.reviewId;
-      let repairFailed = false;
-
-      // Step 6 (optional): repair admission + execution loop.
-      while (recommendation === 'repair') {
-        const admittedRepair = await admitRepair({
-          runId,
-          taskId: task.taskId,
-          reviewId: currentReviewId,
-          subjectRef: finalSubjectRef
-        });
-
-        let repairResult = await executeRepair({
-          runId,
-          taskId: task.taskId,
-          workspaceId: builderResult.workspaceId,
-          builderAttemptId: builderResult.attemptId,
-          impactId: builderResult.impactId,
-          reviewId: currentReviewId,
-          repairAttemptId: admittedRepair.repairAttemptId
-        });
-
-        // Scenario B: a repair may BLOCK on a lease, wait for a wake signal
-        // scoped to the same repairAttemptId, then resume and re-execute. This
-        // is a loop because the same repairAttemptId can block again after a
-        // resume, and an early wake (blocker lease still ACTIVE) must not
-        // permanently fail the repair — the wake is a hint, not authority.
-        while (repairResult.state === 'blocked') {
-          const blockedRepairAttemptId = repairResult.repairAttemptId;
-          await condition(() => pendingWakeRepairIds.has(blockedRepairAttemptId));
-          pendingWakeRepairIds.delete(blockedRepairAttemptId);
-          const resumeResult = await resumeBlockedRepair({
-            runId,
-            repairAttemptId: blockedRepairAttemptId
-          });
-          if (resumeResult.status === 'ignored') {
-            // Early wake or stale blocker: keep waiting for the next matching
-            // wake instead of abandoning the continuation.
-            continue;
-          }
-          if (resumeResult.status !== 'resumed') {
-            repairFailed = true;
-            break;
-          }
-          repairResult = await executeRepair({
+        // Step 5: evaluate the builder output
+        const evalResult = await withinTask(index, () =>
+          evaluateBuilderOutput({
             runId,
             taskId: task.taskId,
             workspaceId: builderResult.workspaceId,
             builderAttemptId: builderResult.attemptId,
-            impactId: builderResult.impactId,
-            reviewId: currentReviewId,
-            repairAttemptId: blockedRepairAttemptId
-          });
+            impactId: builderResult.impactId
+          })
+        );
+
+        // Reject: no integration for this task
+        if (evalResult.recommendation === 'reject') {
+          continue;
+        }
+
+        let finalSubjectRef = evalResult.subjectRef;
+        let recommendation: 'accept' | 'repair' | 'reject' = evalResult.recommendation;
+        let currentReviewId = evalResult.reviewId;
+        let repairFailed = false;
+
+        // Step 6 (optional): repair admission + execution loop.
+        while (recommendation === 'repair') {
+          const admittedRepair = await withinTask(index, () =>
+            admitRepair({
+              runId,
+              taskId: task.taskId,
+              reviewId: currentReviewId,
+              subjectRef: finalSubjectRef
+            })
+          );
+
+          let repairResult = await withinTask(index, () =>
+            executeRepair({
+              runId,
+              taskId: task.taskId,
+              workspaceId: builderResult.workspaceId,
+              builderAttemptId: builderResult.attemptId,
+              impactId: builderResult.impactId,
+              reviewId: currentReviewId,
+              repairAttemptId: admittedRepair.repairAttemptId
+            })
+          );
+
+          // Scenario B: a repair may BLOCK on a lease, wait for a wake signal
+          // scoped to the same repairAttemptId, then resume and re-execute. This
+          // is a loop because the same repairAttemptId can block again after a
+          // resume, and an early wake (blocker lease still ACTIVE) must not
+          // permanently fail the repair — the wake is a hint, not authority.
+          while (repairResult.state === 'blocked') {
+            const blockedRepairAttemptId = repairResult.repairAttemptId;
+            await condition(() => pendingWakeRepairIds.has(blockedRepairAttemptId));
+            pendingWakeRepairIds.delete(blockedRepairAttemptId);
+            const resumeResult = await withinTask(index, () =>
+              resumeBlockedRepair({
+                runId,
+                repairAttemptId: blockedRepairAttemptId
+              })
+            );
+            if (resumeResult.status === 'ignored') {
+              // Early wake or stale blocker: keep waiting for the next matching
+              // wake instead of abandoning the continuation.
+              continue;
+            }
+            if (resumeResult.status !== 'resumed') {
+              repairFailed = true;
+              break;
+            }
+            repairResult = await withinTask(index, () =>
+              executeRepair({
+                runId,
+                taskId: task.taskId,
+                workspaceId: builderResult.workspaceId,
+                builderAttemptId: builderResult.attemptId,
+                impactId: builderResult.impactId,
+                reviewId: currentReviewId,
+                repairAttemptId: blockedRepairAttemptId
+              })
+            );
+          }
+
+          if (repairFailed) {
+            break;
+          }
+
+          if (repairResult.state !== 'completed' || repairResult.subjectRef === undefined) {
+            repairFailed = true;
+            break;
+          }
+
+          if (repairResult.recommendation === undefined) {
+            repairFailed = true;
+            break;
+          }
+
+          finalSubjectRef = repairResult.subjectRef;
+
+          if (repairResult.reviewId !== undefined) {
+            currentReviewId = repairResult.reviewId;
+          } else if (repairResult.recommendation === 'repair') {
+            repairFailed = true;
+            break;
+          }
+
+          recommendation = repairResult.recommendation;
         }
 
         if (repairFailed) {
-          break;
-        }
-
-        if (repairResult.state !== 'completed' || repairResult.subjectRef === undefined) {
-          repairFailed = true;
-          break;
-        }
-
-        if (repairResult.recommendation === undefined) {
-          repairFailed = true;
-          break;
-        }
-
-        finalSubjectRef = repairResult.subjectRef;
-
-        if (repairResult.reviewId !== undefined) {
-          currentReviewId = repairResult.reviewId;
-        } else if (repairResult.recommendation === 'repair') {
-          repairFailed = true;
-          break;
-        }
-
-        recommendation = repairResult.recommendation;
-      }
-
-      if (repairFailed) {
-        continue;
-      }
-
-      if (recommendation !== 'accept') {
-        continue;
-      }
-
-      // Step 7: integrate the accepted output
-      let integrationResult = await integrateAcceptedOutput({
-        runId,
-        taskId: task.taskId,
-        workspaceId: builderResult.workspaceId,
-        subjectRef: finalSubjectRef
-      });
-
-      const integrationWake = {
-        taskId: task.taskId,
-        workspaceId: builderResult.workspaceId,
-        subjectRef: finalSubjectRef
-      };
-      const wakeKey = integrationWakeKey(integrationWake);
-      if (
-        integrationResult.status === 'blocked' &&
-        patched('global-integration-admitted-builder-progress-v1')
-      ) {
-        // A separately admitted builder can itself hold the repository scope
-        // needed by this integration. Do not wait on that blocker before
-        // consuming the durable authorizations which can settle it.
-        const waitingReevaluation = await reevaluateRun({ runId });
-        enqueueAuthorizations(waitingReevaluation.authorizedTasks);
-        if (authorizedTasks.length > 0) {
-          deferredIntegrations.push(async () => {
-            let resumed = await resumeBlockedIntegration({ runId, ...integrationWake });
-            while (resumed.status === 'blocked') {
-              await condition(() => pendingIntegrationWakeKeys.has(wakeKey));
-              pendingIntegrationWakeKeys.delete(wakeKey);
-              resumed = await resumeBlockedIntegration({ runId, ...integrationWake });
-            }
-          });
           continue;
         }
-      }
-      while (integrationResult.status === 'blocked') {
-        await condition(() => pendingIntegrationWakeKeys.has(wakeKey));
-        pendingIntegrationWakeKeys.delete(wakeKey);
-        const resumed = await resumeBlockedIntegration({ runId, ...integrationWake });
-        if (resumed.status === 'integrated') {
-          integrationResult = {
-            runId: resumed.runId,
-            taskId: resumed.taskId,
-            status: 'integrated'
-          };
-        }
-      }
 
-      const postIntegrationReevaluation = await reevaluateRun({ runId });
-      enqueueAuthorizations(postIntegrationReevaluation.authorizedTasks);
+        if (recommendation !== 'accept') {
+          continue;
+        }
+
+        // Step 7: integrate the accepted output
+        let integrationResult = await withinTask(index, () =>
+          integrateAcceptedOutput({
+            runId,
+            taskId: task.taskId,
+            workspaceId: builderResult.workspaceId,
+            subjectRef: finalSubjectRef
+          })
+        );
+
+        const integrationWake = {
+          taskId: task.taskId,
+          workspaceId: builderResult.workspaceId,
+          subjectRef: finalSubjectRef
+        };
+        const wakeKey = integrationWakeKey(integrationWake);
+        if (
+          integrationResult.status === 'blocked' &&
+          patched('global-integration-admitted-builder-progress-v1')
+        ) {
+          // A separately admitted builder can itself hold the repository scope
+          // needed by this integration. Do not wait on that blocker before
+          // consuming the durable authorizations which can settle it.
+          const waitingReevaluation = await withinTask(index, () => reevaluateRun({ runId }));
+          enqueueAuthorizations(waitingReevaluation.authorizedTasks);
+          if (authorizedTasks.length > 0) {
+            deferredIntegrations.push(async () => {
+              let resumed = await withinTask(index, () =>
+                resumeBlockedIntegration({ runId, ...integrationWake })
+              );
+              while (resumed.status === 'blocked') {
+                await condition(() => pendingIntegrationWakeKeys.has(wakeKey));
+                pendingIntegrationWakeKeys.delete(wakeKey);
+                resumed = await withinTask(index, () =>
+                  resumeBlockedIntegration({ runId, ...integrationWake })
+                );
+              }
+            });
+            continue;
+          }
+        }
+        while (integrationResult.status === 'blocked') {
+          await condition(() => pendingIntegrationWakeKeys.has(wakeKey));
+          pendingIntegrationWakeKeys.delete(wakeKey);
+          const resumed = await withinTask(index, () =>
+            resumeBlockedIntegration({ runId, ...integrationWake })
+          );
+          if (resumed.status === 'integrated') {
+            integrationResult = {
+              runId: resumed.runId,
+              taskId: resumed.taskId,
+              status: 'integrated'
+            };
+          }
+        }
+
+        const postIntegrationReevaluation = await withinTask(index, () => reevaluateRun({ runId }));
+        enqueueAuthorizations(postIntegrationReevaluation.authorizedTasks);
+        taskSpan?.setAttribute('outcome', 'integrated');
+      } catch (error) {
+        taskSpan?.setAttribute('outcome', 'error');
+        throw error;
+      } finally {
+        taskSpan?.end();
+      }
     }
 
     if (blockedBuilder) {

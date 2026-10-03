@@ -71,6 +71,7 @@ import {
   startForgeRun
 } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 import { Command } from 'commander';
+import { tracePlanningModelRequest } from './cli-telemetry.js';
 
 export interface ForgeProgramDependencies {
   readonly cwd?: string;
@@ -250,6 +251,12 @@ const createRepositoryPlan = async (request: {
       ? {}
       : { apiKey: process.env.FORGE_MODEL_API_KEY })
   });
+  const reasoningEffort =
+    execution?.target.reasoningConfig.effort ??
+    process.env.FORGE_MODEL_REASONING_EFFORT ??
+    (model?.reasoning ? 'high' : 'off');
+  const planner = new PiPlanningAgent(planningGateway);
+  const semanticReviewer = new PiSemanticPlanReviewer(planningGateway);
   const snapshotProvider = new GitRepositorySnapshotProvider();
   const [content, registry, snapshotBeforeAnalysis] = await Promise.all([
     readFile(request.specificationPath, 'utf8'),
@@ -267,8 +274,32 @@ const createRepositoryPlan = async (request: {
     path: request.specificationPath
   };
   const preparedPlan = await new AutonomousPlanPhase({
-    planner: new PiPlanningAgent(planningGateway),
-    reviewer: new PiSemanticPlanReviewer(planningGateway),
+    planner: {
+      propose: (input) =>
+        tracePlanningModelRequest(
+          {
+            provider: request.reviewProvider,
+            model: request.reviewModel,
+            reasoningEffort,
+            role: 'planner',
+            attemptId: String(input.attempt)
+          },
+          () => planner.propose(input)
+        )
+    },
+    reviewer: {
+      review: (input) =>
+        tracePlanningModelRequest(
+          {
+            provider: request.reviewProvider,
+            model: request.reviewModel,
+            reasoningEffort,
+            role: 'reviewer',
+            attemptId: String(input.attempt)
+          },
+          () => semanticReviewer.review(input)
+        )
+    },
     impactAnalyzer: new RepositoryTaskImpactAnalyzer(registry),
     conflictAnalyzer: new DeterministicConflictEngine(registry),
     scheduler: new DeterministicScheduler()

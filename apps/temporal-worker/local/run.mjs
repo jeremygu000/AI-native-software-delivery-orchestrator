@@ -16,12 +16,30 @@ if (!(command in entries)) {
 // Privileged bootstrap credentials and signing files are never passed to workers/CLI.
 const env = { ...process.env };
 for (const name of Object.keys(env)) {
-  if (name.startsWith('LOCAL_')) {
+  if (
+    name.startsWith('LOCAL_') ||
+    [
+      'FORGE_OWNER_CONNECTION_STRING',
+      'FORGE_TRUST_CONNECTION_STRING',
+      'FORGE_ISSUER_CONNECTION_STRING',
+      'FORGE_SETUP_CONNECTION_STRING',
+      'FORGE_RECOVERY_CONNECTION_STRING'
+    ].includes(name)
+  ) {
     delete env[name];
   }
 }
 for (const [name, value] of Object.entries(local)) {
-  if (!name.startsWith('LOCAL_')) {
+  if (
+    !name.startsWith('LOCAL_') &&
+    ![
+      'FORGE_OWNER_CONNECTION_STRING',
+      'FORGE_TRUST_CONNECTION_STRING',
+      'FORGE_ISSUER_CONNECTION_STRING',
+      'FORGE_SETUP_CONNECTION_STRING',
+      'FORGE_RECOVERY_CONNECTION_STRING'
+    ].includes(name)
+  ) {
     env[name] = value;
   }
 }

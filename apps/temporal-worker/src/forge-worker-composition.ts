@@ -38,6 +38,7 @@ import type {
   ForgeRuntimeComposition,
   ForgeRuntimeCompositionOverrides
 } from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
+import { traceForgeModelRequest } from './forge-telemetry.js';
 
 export { verificationPolicyFingerprint } from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
 export type {
@@ -244,6 +245,14 @@ export async function createForgeWorkerComposition(
           ? { reasoning: 'high' as const }
           : {})
       });
+      const modelIdentity = {
+        provider: deployment.reviewModel.provider,
+        model: deployment.reviewModel.id,
+        reasoningEffort:
+          deployment.globalExecution.execution?.target.reasoningConfig.effort ??
+          process.env.FORGE_MODEL_REASONING_EFFORT ??
+          (deployment.reviewModel.reasoning ? 'high' : 'off')
+      };
       const base = await createForgeRuntimeComposition(
         {
           persistence,
@@ -274,6 +283,7 @@ export async function createForgeWorkerComposition(
           commitIdentity: deployment.globalExecution.commitIdentity,
           sessionTimeoutMs: deployment.globalExecution.sessionTimeoutMs,
           modelProxy: proxy,
+          modelIdentity,
           verifier: new SandboxedPackageScriptVerifier({
             policy: activeVerificationPolicy,
             graph
@@ -323,19 +333,29 @@ export async function createForgeWorkerComposition(
                 }
                 addedFiles.push({ path, content: contents.toString('utf8') });
               }
-              const response = await proxy.complete(
+              const response = await traceForgeModelRequest(
                 {
-                  tools: [],
-                  messages: [
-                    {
-                      role: 'user',
-                      timestamp: Date.now(),
-                      content: `Return only a JSON code review with recommendation accept|repair|reject, summary and findings (id,severity critical|high|medium|low,fileIds,symbolIds,description,optional requirementReference). Accept requires findings []. Repair or reject requires at least one finding. Every fileId MUST exactly equal an entry in allowedFileIds below, not a path or newly created file; report a new-file test defect against its existing approved implementation file. Use symbolIds [] unless an exact supplied symbol ID is necessary. A failed verification gate forbids accept: diagnose it against the actual diff and return actionable repair findings on known file IDs, or reject if it cannot be repaired within the approved task. Do not bypass or weaken verification.\n${JSON.stringify({ task: request.task, subject: request.subject, verificationResult: request.verificationResult, diff: diff.stdout, addedFiles, allowedFileIds: [...request.repository.files.keys()], files: [...request.repository.files.values()] })}`
-                    }
-                  ]
+                  ...modelIdentity,
+                  role: 'reviewer',
+                  runId: request.runId,
+                  taskId: request.task.id,
+                  attemptId: request.builderAttempt.id
                 },
-                [],
-                new AbortController().signal
+                () =>
+                  proxy.complete(
+                    {
+                      tools: [],
+                      messages: [
+                        {
+                          role: 'user',
+                          timestamp: Date.now(),
+                          content: `Return only a JSON code review with recommendation accept|repair|reject, summary and findings (id,severity critical|high|medium|low,fileIds,symbolIds,description,optional requirementReference). Accept requires findings []. Repair or reject requires at least one finding. Every fileId MUST exactly equal an entry in allowedFileIds below, not a path or newly created file; report a new-file test defect against its existing approved implementation file. Use symbolIds [] unless an exact supplied symbol ID is necessary. A failed verification gate forbids accept: diagnose it against the actual diff and return actionable repair findings on known file IDs, or reject if it cannot be repaired within the approved task. Do not bypass or weaken verification.\n${JSON.stringify({ task: request.task, subject: request.subject, verificationResult: request.verificationResult, diff: diff.stdout, addedFiles, allowedFileIds: [...request.repository.files.keys()], files: [...request.repository.files.values()] })}`
+                        }
+                      ]
+                    },
+                    [],
+                    new AbortController().signal
+                  )
               );
               return response.content
                 .filter((item) => item.type === 'text')

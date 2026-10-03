@@ -63,6 +63,10 @@ or change the production execution path. Search the trace ID or service in the
 collector UI. An HTTP export failure makes the command fail; the diagnostic omits
 endpoint and authentication details.
 
+Formal workflow and activity tracing uses an additional worker opt-in on a fresh
+Temporal queue and authority. See `docs/forge-observability.en.md` before starting
+a traced GroundGraph comparison run.
+
 ## Approve verification before planning
 
 The original GroundGraph checkout's macOS dependencies cannot be reused as Linux
