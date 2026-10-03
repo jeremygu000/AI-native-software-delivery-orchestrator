@@ -45,7 +45,33 @@ export const resolveWorkerDeployment = (environment: NodeJS.ProcessEnv = process
         'Global worker requires pinned FORGE_PI_IMAGE/FORGE_GIT_IMAGE and host FORGE_MODEL_API_KEY'
       );
     }
-    globalExecution = { image, gitImage, apiKey };
+    const sessionTimeoutMs = Number(environment.FORGE_PI_SESSION_TIMEOUT_MS ?? 300_000);
+    if (
+      !Number.isSafeInteger(sessionTimeoutMs) ||
+      sessionTimeoutMs < 1_000 ||
+      sessionTimeoutMs > 1_800_000
+    ) {
+      throw new Error('FORGE_PI_SESSION_TIMEOUT_MS must be between 1000 and 1800000');
+    }
+    const name = environment.FORGE_GIT_AUTHOR_NAME;
+    const email = environment.FORGE_GIT_AUTHOR_EMAIL;
+    if (
+      (name !== undefined || email !== undefined) &&
+      (name === undefined ||
+        email === undefined ||
+        [name, email].some((value) => value.trim().length === 0 || /[\r\n\0]/.test(value)))
+    ) {
+      throw new Error(
+        'FORGE_GIT_AUTHOR_NAME and FORGE_GIT_AUTHOR_EMAIL must be supplied together as nonempty single-line values'
+      );
+    }
+    globalExecution = {
+      image,
+      gitImage,
+      apiKey,
+      sessionTimeoutMs,
+      ...(name === undefined || email === undefined ? {} : { commitIdentity: { name, email } })
+    };
   }
   const deployment: ForgeWorkerCompositionDeployment = {
     authority,

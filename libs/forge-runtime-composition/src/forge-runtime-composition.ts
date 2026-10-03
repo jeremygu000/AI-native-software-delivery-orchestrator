@@ -204,6 +204,7 @@ export interface ActivityExecutionContext {
 export interface ForgeRuntimeCompositionOptions {
   readonly getActivityExecutionContext?: () => ActivityExecutionContext | undefined;
   readonly repositoryPath?: string;
+  readonly approvedVerificationPolicyFingerprint?: string;
 }
 
 export async function createForgeRuntimeComposition(
@@ -215,6 +216,8 @@ export async function createForgeRuntimeComposition(
     throw new Error('Forge runtime composition requires an explicit code review policy');
   }
   const activeReviewPolicyFingerprint = codeReviewPolicyFingerprint(activeCodeReviewPolicy);
+  const activeVerificationPolicyFingerprint =
+    options.approvedVerificationPolicyFingerprint ?? verificationPolicyFingerprint;
   const currentActivityCancellationSignal = () =>
     options.getActivityExecutionContext?.()?.cancellationSignal;
   const repository = await (overrides.repositoryGraph === undefined
@@ -423,7 +426,8 @@ export async function createForgeRuntimeComposition(
       throw new Error(`Run not found: ${runId}`);
     }
     if (
-      recovered.run.authority.verificationPolicyFingerprint !== verificationPolicyFingerprint ||
+      recovered.run.authority.verificationPolicyFingerprint !==
+        activeVerificationPolicyFingerprint ||
       recovered.run.authority.codeReviewPolicyFingerprint !== activeReviewPolicyFingerprint
     ) {
       throw new Error(`Worker policy authority mismatch for ${runId}`);

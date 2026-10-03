@@ -18,6 +18,7 @@ export const planApprovalSchema = z.object({
   planFingerprint: digestSchema,
   approvedBy: z.string().trim().min(1),
   approvedAt: z.iso.datetime({ offset: true }),
+  repositoryIntegrationTasks: z.array(z.string().trim().min(1)).optional(),
   approvalFingerprint: digestSchema
 });
 
@@ -65,6 +66,7 @@ export const createPlanApproval = (request: {
   readonly artifact: PlanArtifact;
   readonly approvedBy: string;
   readonly approvedAt: string;
+  readonly repositoryIntegrationTasks?: readonly string[];
 }): PlanApproval => {
   const artifact = parsePlanArtifact(request.artifact);
   const payload = {
@@ -74,7 +76,12 @@ export const createPlanApproval = (request: {
     artifactRevision: artifact.revision,
     planFingerprint: artifact.planFingerprint,
     approvedBy: request.approvedBy,
-    approvedAt: request.approvedAt
+    approvedAt: request.approvedAt,
+    ...(request.repositoryIntegrationTasks === undefined
+      ? {}
+      : {
+          repositoryIntegrationTasks: [...new Set(request.repositoryIntegrationTasks)].toSorted()
+        })
   };
   const approval = planApprovalSchema.parse({
     ...payload,
@@ -83,6 +90,13 @@ export const createPlanApproval = (request: {
   const mismatches = planApprovalMismatches(approval, artifact);
   if (mismatches.length > 0) {
     throw new PlanApprovalIntegrityError(`Invalid plan approval: ${mismatches.join(', ')}`);
+  }
+  if (
+    approval.repositoryIntegrationTasks?.some(
+      (id) => !artifact.decision.specification.tasks.some((task) => task.id === id)
+    )
+  ) {
+    throw new PlanApprovalIntegrityError('Repository integration approval names an unknown task');
   }
   return approval;
 };

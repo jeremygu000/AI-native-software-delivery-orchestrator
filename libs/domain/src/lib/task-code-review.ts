@@ -90,6 +90,10 @@ export interface TaskCodeReviewRequest {
   readonly subject: TaskCodeReviewSubject;
   readonly repository: Pick<RepositoryGraph, 'files' | 'symbols'>;
   readonly iteration: number;
+  /** Observed gate outcome; diagnostics are transient review input, not authority. */
+  readonly verificationResult?:
+    | { readonly status: 'passed' }
+    | { readonly status: 'failed'; readonly detail: string };
 }
 
 export interface TaskCodeReviewer {

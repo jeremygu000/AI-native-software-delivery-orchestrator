@@ -21,7 +21,46 @@ export interface SandboxedVerificationPolicy {
   readonly executionProfile: DockerVerificationProfile;
 }
 
-const dockerDigestImage = /^.+@sha256:[a-f0-9]{64}$/;
+const dockerDigestImage = /^(?:[^\s]+@)?sha256:[a-f0-9]{64}$/;
+
+/** These settings form part of the approval fingerprint, never a runtime-only override. */
+export function resolveVerificationPolicy(
+  base: SandboxedVerificationPolicy,
+  environment: Readonly<Record<string, string | undefined>>
+): SandboxedVerificationPolicy {
+  const image = environment.FORGE_VERIFICATION_IMAGE;
+  if (image === undefined) {
+    if (
+      environment.FORGE_VERIFICATION_TEMPORARY_BYTES !== undefined ||
+      environment.FORGE_VERIFICATION_TEMPORARY_EXECUTABLE !== undefined
+    ) {
+      throw new Error('Verification temporary settings require an explicitly pinned image');
+    }
+    return base;
+  }
+  if (!dockerDigestImage.test(image)) {
+    throw new Error('Verification image must be digest pinned');
+  }
+  const temporaryBytes = Number(environment.FORGE_VERIFICATION_TEMPORARY_BYTES ?? 67_108_864);
+  const executable = environment.FORGE_VERIFICATION_TEMPORARY_EXECUTABLE ?? 'false';
+  if (
+    !Number.isSafeInteger(temporaryBytes) ||
+    temporaryBytes < 67_108_864 ||
+    temporaryBytes > 4_294_967_296 ||
+    !['true', 'false'].includes(executable)
+  ) {
+    throw new Error('Invalid approved verification temporary settings');
+  }
+  return {
+    ...base,
+    executionProfile: {
+      ...base.executionProfile,
+      image,
+      temporaryBytes,
+      temporaryExecutable: executable === 'true'
+    }
+  };
+}
 
 export class SandboxedPackageScriptVerifier implements TaskVerifier {
   readonly #policy: SandboxedVerificationPolicy;
@@ -75,7 +114,7 @@ export class SandboxedPackageScriptVerifier implements TaskVerifier {
       if (result.status !== 'completed' || result.exitCode !== 0) {
         const detail =
           result.status === 'completed'
-            ? result.stderr.trim()
+            ? `${result.stderr}\n${result.stdout}`.trim().slice(0, 8192)
             : result.status === 'failed'
               ? result.detail
               : result.status;

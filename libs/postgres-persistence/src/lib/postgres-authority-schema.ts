@@ -1036,11 +1036,123 @@ const migrations = [
         end $$`,
       `revoke all on function {schema}.forge_workspace_recovery_handoff(${Array(16).fill('text').join(',')}) from public`
     ]
+  },
+  {
+    version: 13,
+    statements: [
+      `do $$ declare definition text; old_expression text := $old$jsonb_set(attempt_payload,'{state}','"STARTING"'::jsonb)$old$;
+        begin
+          select pg_get_functiondef(p.oid) into definition from pg_proc p
+            join pg_namespace n on n.oid=p.pronamespace
+            where n.oid='{schema}'::regnamespace and p.proname='forge_setup_admit';
+          if definition is null or strpos(definition,old_expression)=0 then
+            raise exception 'Unexpected setup admission definition';
+          end if;
+          execute replace(definition,old_expression,
+            $new$jsonb_set(jsonb_set(attempt_payload,'{state}','"STARTING"'::jsonb),'{startedAt}',to_jsonb(clock_timestamp()))$new$);
+        end $$`,
+      `update {schema}.forge_records r set payload=jsonb_set(r.payload::jsonb,'{startedAt}',r.payload::jsonb->'createdAt')::text
+        where r.kind='builder' and r.payload::jsonb->>'state'='STARTING'
+          and not (r.payload::jsonb ? 'startedAt') and r.payload::jsonb->>'createdAt' is not null
+          and exists (select 1 from {schema}.forge_global_claims c
+            join {schema}.forge_global_workspace_phases p on p.scope_id=c.scope_id and p.parent_claim_id=c.claim_id
+            where c.owner_json::jsonb->>'runId'=r.run_id and c.owner_json::jsonb->>'attemptId'=r.key)`
+    ]
+  },
+  {
+    version: 14,
+    statements: [
+      `update {schema}.forge_records r set payload=jsonb_set(r.payload::jsonb,'{startedAt}',to_jsonb(clock_timestamp()))::text
+        where r.kind='builder' and r.payload::jsonb->>'state'='STARTING'
+          and r.payload::jsonb->>'startedAt' is null and r.payload::jsonb->>'sessionRef' is null
+          and exists (select 1 from {schema}.forge_global_claims c
+            join {schema}.forge_global_workspace_phases p on p.scope_id=c.scope_id and p.parent_claim_id=c.claim_id
+            where c.owner_json::jsonb->>'runId'=r.run_id and c.owner_json::jsonb->>'attemptId'=r.key
+              and p.phase in ('INITIAL_ADMITTED','WORKSPACE_ARMED','WORKSPACE_UNCERTAIN'))`
+    ]
+  },
+  {
+    version: 15,
+    statements: [
+      `create function {schema}.forge_workspace_recovery_abandon(
+        target_scope text, parent_id text, run_identity text, generation_identity text,
+        expected_token text, attestation_identity text, attestation_digest text,
+        signing_identity text, setup_digest text, authorization_identity text,
+        workspace_identity text)
+        returns text language plpgsql security definer set search_path = pg_catalog as $$
+        declare parent_row record; phase_row record; lineage_row record; generation_row record;
+        begin
+          if attestation_identity is null or attestation_identity='' or
+            attestation_digest !~ '^sha256:[0-9a-f]{64}$' then
+            raise exception 'Abandonment requires independent signed evidence';
+          end if;
+          perform pg_advisory_xact_lock_shared(hashtext('forge-trust:{schema}'));
+          if not exists (select 1 from {schema}.forge_global_trust_registry where id=1 and policy_version='git-workspace-setup-v1')
+            or not exists (select 1 from {schema}.forge_global_trust_keys where key_id=signing_identity and state='ACTIVE')
+            or exists (select 1 from {schema}.forge_global_trust_revocations where
+              (kind='DECISION' and digest=setup_digest) or (kind='AUTHORIZATION' and digest=authorization_identity))
+            or not exists (select 1 from {schema}.forge_global_control where id=1 and state='GLOBAL_READY') then
+            raise exception 'Abandonment trust is not current';
+          end if;
+          perform 1 from {schema}.forge_global_scopes where id=target_scope and state='ACTIVE_FOR_GLOBAL_CLAIMS' for update;
+          if not found then raise exception 'Abandonment scope is not active'; end if;
+          perform 1 from {schema}.forge_runs r join {schema}.forge_global_run_bindings b on b.run_id=r.id
+            join {schema}.forge_global_aliases a on a.repository_id=b.repository_id
+            where r.id=run_identity and r.state='ACTIVE' and b.scope_id=target_scope and a.scope_id=target_scope
+              and r.payload::jsonb->'run'->>'repositoryId'=b.repository_id for update of r;
+          if not found then raise exception 'Abandonment run is not active and bound'; end if;
+          select * into parent_row from {schema}.forge_global_claims where scope_id=target_scope and claim_id=parent_id;
+          select * into phase_row from {schema}.forge_global_workspace_phases where scope_id=target_scope and parent_claim_id=parent_id;
+          select * into lineage_row from {schema}.forge_global_workspace_permit_lineages where scope_id=target_scope and parent_claim_id=parent_id;
+          select * into generation_row from {schema}.forge_global_generations where id=generation_identity;
+          if parent_row.token::text is distinct from expected_token
+            or parent_row.owner_json::jsonb->>'runId' is distinct from run_identity
+            or parent_row.owner_json::jsonb->>'workspaceId' is distinct from workspace_identity
+            or phase_row.workspace_id is distinct from workspace_identity
+            or phase_row.execution_generation is distinct from generation_identity
+            or phase_row.setup_plan_digest is distinct from setup_digest
+            or phase_row.signing_key is distinct from signing_identity
+            or phase_row.authorization_digest is distinct from authorization_identity
+            or phase_row.child_claim_id is not null
+            or lineage_row.completed is distinct from true
+            or lineage_row.owner_json::jsonb is distinct from parent_row.owner_json::jsonb
+            or lineage_row.token is distinct from parent_row.token
+            or lineage_row.workspace_id is distinct from workspace_identity
+            or lineage_row.generation_id is distinct from generation_identity
+            or generation_row.state is distinct from 'REVOKED'
+            or generation_row.scope_id is distinct from target_scope
+            or generation_row.parent_claim_id is distinct from parent_id
+            or generation_row.run_id is distinct from run_identity
+            or generation_row.task_id is distinct from parent_row.owner_json::jsonb->>'taskId'
+            or generation_row.attempt_id is distinct from parent_row.owner_json::jsonb->>'attemptId'
+            or generation_row.workspace_id is distinct from workspace_identity
+            or generation_row.setup_plan_digest is distinct from setup_digest
+            or generation_row.execution_plan_digest is distinct from phase_row.execution_plan_digest
+            or exists (select 1 from {schema}.forge_global_permits where scope_id=target_scope and claim_id=parent_id) then
+            raise exception 'Abandonment parent or stopped generation is incompatible';
+          end if;
+          if phase_row.phase='ABANDONED' and parent_row.state='RELEASED' then
+            if exists (select 1 from {schema}.forge_global_audit where id='abandon:'||attestation_identity
+              and action='workspace-abandoned' and subject=parent_id and evidence=attestation_digest) then return 'ABANDONED'; end if;
+            raise exception 'Abandonment evidence identity cannot change';
+          end if;
+          if phase_row.phase <> 'WORKSPACE_UNCERTAIN' or parent_row.state <> 'HELD_UNCERTAIN' then
+            raise exception 'Only an uncertain completed setup can be abandoned';
+          end if;
+          insert into {schema}.forge_global_audit(id,action,subject,evidence)
+            values('abandon:'||attestation_identity,'workspace-abandoned',parent_id,attestation_digest);
+          update {schema}.forge_global_claims set state='RELEASED',version=version+1,
+            evidence='Independent setup abandonment '||attestation_identity where scope_id=target_scope and claim_id=parent_id;
+          update {schema}.forge_global_workspace_phases set phase='ABANDONED' where scope_id=target_scope and parent_claim_id=parent_id;
+          return 'ABANDONED';
+        end $$`,
+      `revoke all on function {schema}.forge_workspace_recovery_abandon(${Array(11).fill('text').join(',')}) from public`
+    ]
   }
 ] as const;
 
 export const POSTGRES_AUTHORITY_SCHEMA_VERSION = 2;
-export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 12;
+export const POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION = 15;
 export type PostgresAuthoritySchemaVersion =
   | 1
   | typeof POSTGRES_AUTHORITY_SCHEMA_VERSION
@@ -1053,6 +1165,9 @@ export type PostgresAuthoritySchemaVersion =
   | 9
   | 10
   | 11
+  | 12
+  | 13
+  | 14
   | typeof POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION;
 
 export type PostgresAuthorityWriterRoles = {
@@ -1654,6 +1769,9 @@ const assertRestrictedWriterFunctions = async (
       : []),
     ...(version >= 12
       ? [
+          ...(version >= 15
+            ? [['forge_workspace_recovery_abandon', Array(11).fill('text').join(', ')]]
+            : []),
           ['forge_workspace_recovery_handoff', Array(16).fill('text').join(', ')],
           ['forge_workspace_recovery_settle', Array(12).fill('text').join(', ')]
         ]
@@ -1681,6 +1799,10 @@ const assertRestrictedWriterFunctions = async (
   const handoffBinding =
     version >= 12
       ? functions.find((fn) => fn.name === 'forge_workspace_recovery_handoff')?.writer_roles
+      : null;
+  const abandonBinding =
+    version >= 15
+      ? functions.find((fn) => fn.name === 'forge_workspace_recovery_abandon')?.writer_roles
       : null;
   let recoveryRole: string | undefined;
   if (recoveryBinding !== null && recoveryBinding !== undefined) {
@@ -1727,6 +1849,7 @@ const assertRestrictedWriterFunctions = async (
   if (
     (version >= 10 && armBinding !== setupBinding) ||
     (version >= 12 && handoffBinding !== recoveryBinding) ||
+    (version >= 15 && abandonBinding !== recoveryBinding) ||
     (version >= 11 && permitBinding !== setupBinding) ||
     (version >= 11 && finishBinding !== setupBinding) ||
     functions.length !== expected.length ||
@@ -1743,7 +1866,8 @@ const assertRestrictedWriterFunctions = async (
           fn.name === 'forge_workspace_permit_begin' ||
           fn.name === 'forge_workspace_permit_finish'
             ? (setupRole ?? null)
-            : fn.name === 'forge_workspace_recovery_settle' ||
+            : fn.name === 'forge_workspace_recovery_abandon' ||
+                fn.name === 'forge_workspace_recovery_settle' ||
                 fn.name === 'forge_workspace_recovery_handoff'
               ? (recoveryRole ?? null)
               : writers === undefined
@@ -1758,7 +1882,8 @@ const assertRestrictedWriterFunctions = async (
               ? setupRole === undefined
                 ? []
                 : [{ grantee: setupRole, privilege: 'EXECUTE', grantable: false }]
-              : fn.name === 'forge_workspace_recovery_settle' ||
+              : fn.name === 'forge_workspace_recovery_abandon' ||
+                  fn.name === 'forge_workspace_recovery_settle' ||
                   fn.name === 'forge_workspace_recovery_handoff'
                 ? recoveryRole === undefined
                   ? []
@@ -2031,6 +2156,9 @@ export const migratePostgresAuthoritySchema = async (
             : []),
           ...(targetVersion >= 12
             ? [
+                ...(targetVersion >= 15
+                  ? [`forge_workspace_recovery_abandon(${Array(11).fill('text').join(',')})`]
+                  : []),
                 `forge_workspace_recovery_settle(${Array(12).fill('text').join(',')})`,
                 `forge_workspace_recovery_handoff(${Array(16).fill('text').join(',')})`
               ]
@@ -2116,14 +2244,17 @@ export const migratePostgresAuthoritySchema = async (
           const recoveryBindings = await tx`select obj_description(p.oid,'pg_proc') as binding
             from pg_proc p join pg_namespace n on n.oid=p.pronamespace
              where n.nspname=${configuration.schema} and p.proname in
-               ('forge_workspace_recovery_settle','forge_workspace_recovery_handoff')`;
+                ('forge_workspace_recovery_settle','forge_workspace_recovery_handoff','forge_workspace_recovery_abandon')`;
           if (
-            recoveryBindings.length !== 2 ||
+            recoveryBindings.length !== (targetVersion >= 15 ? 3 : 2) ||
             recoveryBindings.some((row) => row.binding !== null && row.binding !== recoveryRole)
           ) {
             throw new Error('PostgreSQL recovery role binding cannot be changed');
           }
           const signatures = [
+            ...(targetVersion >= 15
+              ? [`forge_workspace_recovery_abandon(${Array(11).fill('text').join(',')})`]
+              : []),
             `forge_workspace_recovery_settle(${Array(12).fill('text').join(',')})`,
             `forge_workspace_recovery_handoff(${Array(16).fill('text').join(',')})`
           ];
@@ -2282,7 +2413,21 @@ const grantRuntimePrivileges = async (
 export const assertPostgresAuthoritySchema = async (
   sql: Sql,
   configuration: PostgresEvidenceStoreConfiguration,
-  requiredVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = POSTGRES_AUTHORITY_SCHEMA_VERSION
+  requiredVersion:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15 = POSTGRES_AUTHORITY_SCHEMA_VERSION
 ): Promise<void> => {
   assertPostgresAuthorityLogin(configuration);
   if (sql.options.user !== configuration.role) {

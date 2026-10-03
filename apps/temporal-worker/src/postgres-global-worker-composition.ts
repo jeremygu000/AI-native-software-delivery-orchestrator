@@ -46,10 +46,15 @@ export const createPostgresGlobalWorkerComposition = (options: {
   verifier: TaskVerifier;
   image: string;
   gitImage: string;
+  commitIdentity?: { name: string; email: string };
+  sessionTimeoutMs?: number;
+  approvedVerificationPolicyFingerprint?: string;
   modelProxy: PiHostModelProxy;
   cancellationSignal?: () => AgentRunRequest['cancellationSignal'];
 }): ForgeRuntimeComposition => {
   const { persistence, authority } = options;
+  const activeVerificationFingerprint =
+    options.approvedVerificationPolicyFingerprint ?? verificationPolicyFingerprint;
   const resolver = new RepositoryResourceResolver(options.graph);
   const snapshots = new GitRepositorySnapshotProvider();
   const progression = new ForgeRunProgressionService({
@@ -76,7 +81,8 @@ export const createPostgresGlobalWorkerComposition = (options: {
     image: options.image,
     executable: '/usr/local/bin/node',
     args: ['/opt/forge/entrypoint.mjs'],
-    modelProxy: options.modelProxy
+    modelProxy: options.modelProxy,
+    timeoutMs: options.sessionTimeoutMs
   });
   const repair = createPostgresDockerRepairRunner({
     authority,
@@ -85,6 +91,7 @@ export const createPostgresGlobalWorkerComposition = (options: {
     executable: '/usr/local/bin/node',
     args: ['/opt/forge/entrypoint.mjs'],
     modelProxy: options.modelProxy,
+    timeoutMs: options.sessionTimeoutMs,
     resolveResource: (path) => resolver.resolve(path),
     resolveFileId: (path) => resolver.fileId(path)
   });
@@ -98,7 +105,8 @@ export const createPostgresGlobalWorkerComposition = (options: {
     const workspace = recovered.workspaces.find(
       (item) => item.workspace.taskId === taskId
     )?.workspace;
-    const impact = recovered.impacts.find((item) => item.taskId === taskId)?.impact;
+    const impact =
+      recovered.impacts.find((item) => item.taskId === taskId)?.impact ?? binding?.impact;
     if (
       task === undefined ||
       binding === undefined ||
@@ -123,7 +131,7 @@ export const createPostgresGlobalWorkerComposition = (options: {
       builderAttempt === undefined ||
       output.state !== 'COMPLETED' ||
       context.recovered.run.authority?.verificationPolicyFingerprint !==
-        verificationPolicyFingerprint ||
+        activeVerificationFingerprint ||
       context.recovered.run.authority.codeReviewPolicyFingerprint !==
         options.codeReviewPolicyFingerprint
     ) {
@@ -136,18 +144,31 @@ export const createPostgresGlobalWorkerComposition = (options: {
       task: context.task,
       workspace: context.workspace
     });
-    if (verified.status !== 'passed') {
-      throw new Error('Approved read-only verification failed');
-    }
     const snapshot = await snapshots.capture({ repositoryPath: context.workspace.workspacePath });
-    const evidence = new TaskVerificationEvidenceFactory().create({
-      id: randomUUID(),
-      attempt: output,
-      workspace: { ...context.workspace, workspacePath: snapshot.repositoryRoot },
-      snapshot,
-      verificationPolicyFingerprint,
-      verifiedAt: new Date()
-    });
+    const recordedEvidence = (await persistence.recoverVerificationEvidence(runId)).find(
+      (item) => item.attemptId === output.id
+    );
+    if (
+      recordedEvidence !== undefined &&
+      (recordedEvidence.workspaceId !== context.workspace.id ||
+        recordedEvidence.workspaceRevision !== context.workspace.revision ||
+        recordedEvidence.workspaceChangeFingerprint !== snapshot.workingTreeFingerprint ||
+        recordedEvidence.verificationPolicyFingerprint !== activeVerificationFingerprint ||
+        recordedEvidence.status !== verified.status)
+    ) {
+      throw new Error('Verification retry differs from its immutable output evidence');
+    }
+    const evidence =
+      recordedEvidence ??
+      new TaskVerificationEvidenceFactory().create({
+        id: randomUUID(),
+        attempt: output,
+        workspace: { ...context.workspace, workspacePath: snapshot.repositoryRoot },
+        snapshot,
+        verificationPolicyFingerprint: activeVerificationFingerprint,
+        verifiedAt: new Date(),
+        status: verified.status
+      });
     await persistence.persistVerificationEvidence(evidence);
     const subject = new SnapshotTaskCodeReviewSubjectProvider().createSubject({
       builderAttempt,
@@ -158,6 +179,23 @@ export const createPostgresGlobalWorkerComposition = (options: {
       verificationFingerprint: evidence.fingerprint
     });
     const reviews = await persistence.recoverReviews(runId);
+    const recordedReview = reviews.find(
+      (item) => item.taskId === taskId && JSON.stringify(item.subject) === JSON.stringify(subject)
+    );
+    if (recordedReview !== undefined) {
+      return {
+        runId,
+        taskId,
+        recommendation: recordedReview.review.recommendation,
+        verificationId: evidence.fingerprint,
+        subjectRef: {
+          builderAttemptId: builderId,
+          outputAttemptId: output.id,
+          workspaceId: context.workspace.id
+        },
+        reviewId: `${taskId}:${recordedReview.iteration}`
+      };
+    }
     const iteration =
       Math.max(
         0,
@@ -171,7 +209,8 @@ export const createPostgresGlobalWorkerComposition = (options: {
       builderAttempt,
       subject,
       repository: options.graph,
-      iteration
+      iteration,
+      verificationResult: verified
     });
     return {
       runId,
@@ -186,6 +225,63 @@ export const createPostgresGlobalWorkerComposition = (options: {
       reviewId: `${taskId}:${iteration}`
     };
   };
+  const integrateAcceptedOutput: ForgeRuntimeComposition['forgeActivities']['integrateAcceptedOutput'] =
+    async (input) => {
+      const context = await recover(input.runId, input.taskId);
+      const review = (await persistence.recoverReviews(input.runId)).find(
+        (item) =>
+          item.taskId === input.taskId &&
+          item.review.recommendation === 'accept' &&
+          item.subject?.outputAttemptId === input.subjectRef.outputAttemptId &&
+          item.subject.builderAttemptId === input.subjectRef.builderAttemptId &&
+          item.subject.workspaceId === input.workspaceId
+      );
+      if (review?.subject === undefined) {
+        throw new Error('Global integration requires exact accepted review');
+      }
+      const scopeId = await authority.recoverGlobalRunScope(input.runId);
+      const admission = await authority.admitIntegrationExecution({
+        scopeId,
+        claimId: `integration-execution:${input.runId}:${input.taskId}:${review.iteration}`,
+        reviewIteration: review.iteration,
+        subject: review.subject,
+        owner: {
+          runId: input.runId,
+          taskId: input.taskId,
+          attemptId: `integration:${review.subject.outputAttemptId}`,
+          agentId: 'forge-integration',
+          workspaceId: context.workspace.id
+        }
+      });
+      if (admission.status === 'blocked') {
+        return { runId: input.runId, taskId: input.taskId, status: 'blocked' };
+      }
+      const git = new DockerIntegrationGit({
+        image: options.gitImage,
+        commitIdentity: options.commitIdentity,
+        workspace: context.workspace
+      });
+      const state = await new PostgresIntegrationRunner({
+        authority,
+        snapshots,
+        workspaceManager: new GitWorkspaceManager(git),
+        confirmStopped: async () => git.confirmedStopEvidence()
+      }).run(admission.execution);
+      if (state !== 'RELEASED') {
+        throw new Error('Integration requires independent repository recovery');
+      }
+      await progression.advance(input.runId, {
+        type: 'verification-completed',
+        taskId: input.taskId,
+        state: 'INTEGRATING'
+      });
+      await progression.advance(input.runId, {
+        type: 'workspace-integrated',
+        taskId: input.taskId,
+        state: 'COMPLETED'
+      });
+      return { runId: input.runId, taskId: input.taskId, status: 'integrated' };
+    };
   return {
     close: async () => {
       await options.base.close();
@@ -193,6 +289,25 @@ export const createPostgresGlobalWorkerComposition = (options: {
     },
     forgeActivities: {
       ...options.base.forgeActivities,
+      reevaluateRun: async (input) => {
+        const recovered = await persistence.recoverRun(input.runId);
+        if (recovered === undefined) {
+          throw new Error('Missing global run');
+        }
+        if (recovered.run.state !== 'ACTIVE') {
+          return { runId: input.runId, authorizedTasks: [] };
+        }
+        const authorizedTasks: { taskId: string; attemptId: string }[] = [];
+        for (const { attempt } of recovered.attempts) {
+          if (attempt.state !== 'STARTING' && attempt.state !== 'RUNNING') {
+            continue;
+          }
+          const parent = await authority.recoverExecutionParent(input.runId, attempt.id);
+          await authority.recoverExecutionChild(parent.scopeId, parent.parentClaimId);
+          authorizedTasks.push({ taskId: attempt.taskId, attemptId: attempt.id });
+        }
+        return { runId: input.runId, authorizedTasks };
+      },
       executeBuilder: async (input) => {
         const context = await recover(input.runId, input.taskId);
         const attempt = context.recovered.attempts.find(
@@ -209,7 +324,7 @@ export const createPostgresGlobalWorkerComposition = (options: {
           attempt,
           workspace: context.workspace,
           impact: context.impact,
-          instructions: `${context.task.goal}\n${context.task.description ?? ''}`,
+          instructions: `${context.task.goal}\n${context.task.description ?? ''}\nUse only the enabled Forge tools and workspace-relative paths. After implementing the approved changes and tests, finish with a concise summary. Forge runs the approved verification and independent review after your session. Do not search for shell tools or run verification yourself when forge_command is not enabled.`,
           commandPolicy: context.binding.commandPolicy,
           cancellationSignal: options.cancellationSignal?.(),
           onStarted: async () => {}
@@ -308,7 +423,7 @@ export const createPostgresGlobalWorkerComposition = (options: {
             attempt,
             workspace: context.workspace,
             impact: context.impact,
-            instructions: `${context.task.goal}\nRepair review ${pending.parentReviewIteration}: ${review.review.summary}`,
+            instructions: `${context.task.goal}\nRepair review ${pending.parentReviewIteration}: ${review.review.summary}\nUse only enabled Forge tools and workspace-relative paths. Make the exact requested corrections, preserve all validation gates, and finish with a concise summary. Forge performs the approved verification and independent review after this session. Do not search for shell tools or run verification when forge_command is not enabled.`,
             cancellationSignal: options.cancellationSignal?.(),
             onStarted: async () => {}
           }
@@ -337,66 +452,28 @@ export const createPostgresGlobalWorkerComposition = (options: {
         });
         return { ...evaluation, state: 'completed', repairAttemptId: pending.id };
       },
-      integrateAcceptedOutput: async (input) => {
-        const context = await recover(input.runId, input.taskId);
-        const review = (await persistence.recoverReviews(input.runId)).find(
-          (item) =>
-            item.taskId === input.taskId &&
-            item.review.recommendation === 'accept' &&
-            item.subject?.outputAttemptId === input.subjectRef.outputAttemptId &&
-            item.subject.builderAttemptId === input.subjectRef.builderAttemptId &&
-            item.subject.workspaceId === input.workspaceId
-        );
-        if (review?.subject === undefined) {
-          throw new Error('Global integration requires exact accepted review');
-        }
-        const scopeId = await authority.recoverGlobalRunScope(input.runId);
-        const admission = await authority.admitIntegrationExecution({
-          scopeId,
-          claimId: `integration-execution:${input.taskId}:${review.iteration}`,
-          reviewIteration: review.iteration,
-          subject: review.subject,
-          owner: {
+      integrateAcceptedOutput,
+      resumeBlockedIntegration: integrateAcceptedOutput,
+      resumeBlockedRepair: async (input) => {
+        const attempt = (await persistence.recoverRepairAttempts(input.runId)).find(
+          (item) => item.attempt.id === input.repairAttemptId
+        )?.attempt;
+        if (attempt === undefined || attempt.state !== 'PREPARING') {
+          return {
             runId: input.runId,
-            taskId: input.taskId,
-            attemptId: `integration:${review.subject.outputAttemptId}`,
-            agentId: 'forge-integration',
-            workspaceId: context.workspace.id
-          }
-        });
-        if (admission.status === 'blocked') {
-          return { runId: input.runId, taskId: input.taskId, status: 'blocked' };
+            repairAttemptId: input.repairAttemptId,
+            status: 'ignored',
+            detail: 'Only a never-started blocked repair may retry admission'
+          };
         }
-        const git = new DockerIntegrationGit({
-          image: options.gitImage,
-          workspace: context.workspace
-        });
-        const state = await new PostgresIntegrationRunner({
-          authority,
-          snapshots,
-          workspaceManager: new GitWorkspaceManager(git),
-          confirmStopped: async () => git.confirmedStopEvidence()
-        }).run(admission.execution);
-        if (state !== 'RELEASED') {
-          throw new Error('Integration requires independent repository recovery');
-        }
-        await progression.advance(input.runId, {
-          type: 'verification-completed',
-          taskId: input.taskId,
-          state: 'INTEGRATING'
-        });
-        await progression.advance(input.runId, {
-          type: 'workspace-integrated',
-          taskId: input.taskId,
-          state: 'COMPLETED'
-        });
-        return { runId: input.runId, taskId: input.taskId, status: 'integrated' };
-      },
-      resumeBlockedIntegration: async () => {
-        throw new Error('Global blocked Git requires independent recovery');
-      },
-      resumeBlockedRepair: async () => {
-        throw new Error('Global blocked repair requires a new approved dispatch');
+        // A wake is only a hint. executeRepair repeats the full persisted
+        // provenance/current-trust admission and may still return BLOCKED.
+        return {
+          runId: input.runId,
+          repairAttemptId: input.repairAttemptId,
+          taskId: attempt.taskId,
+          status: 'resumed'
+        };
       },
       finalizeRunState: async (input) => {
         if (await authority.hasUnresolvedRunAuthority(input.runId)) {

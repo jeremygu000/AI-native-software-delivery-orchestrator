@@ -129,15 +129,17 @@ export class PostgresWorkspaceSetupAdmission {
         finishFunction[0].can_execute !== true ||
         finishFunction[0].public_execute !== false ||
         finishFunction[0].can_grant !== false ||
-        otherFunctions.length !== 4 ||
+        otherFunctions.length !== 5 ||
         otherFunctions[0]?.name !== 'forge_generation_write' ||
         otherFunctions[0].can_execute !== false ||
         otherFunctions[1]?.name !== 'forge_trust_write' ||
         otherFunctions[1].can_execute !== false ||
-        otherFunctions[2]?.name !== 'forge_workspace_recovery_handoff' ||
+        otherFunctions[2]?.name !== 'forge_workspace_recovery_abandon' ||
         otherFunctions[2].can_execute !== false ||
-        otherFunctions[3]?.name !== 'forge_workspace_recovery_settle' ||
+        otherFunctions[3]?.name !== 'forge_workspace_recovery_handoff' ||
         otherFunctions[3].can_execute !== false ||
+        otherFunctions[4]?.name !== 'forge_workspace_recovery_settle' ||
+        otherFunctions[4].can_execute !== false ||
         direct.length !== 0 ||
         schemaCreate.length !== 0 ||
         keyRead[0]?.allowed !== true

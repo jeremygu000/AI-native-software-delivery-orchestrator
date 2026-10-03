@@ -12,6 +12,29 @@ import {
 import { fingerprintPlanValue } from './plan-artifact.js';
 
 describe('PlanApproval', () => {
+  it('fingerprints explicit repository integration approval and rejects unknown task grants', () => {
+    const artifact = approvalTestArtifact();
+    const taskId = artifact.decision.specification.tasks[0]?.id;
+    if (taskId === undefined) {
+      throw new Error('Missing fixture task');
+    }
+    const options = {
+      approvalId: 'git-approval',
+      artifact,
+      approvedBy: 'operator',
+      approvedAt: '2026-08-13T01:00:00.000Z'
+    };
+    const ordinary = createPlanApproval(options);
+    const approved = createPlanApproval({ ...options, repositoryIntegrationTasks: [taskId] });
+    expect(approved.approvalFingerprint).not.toBe(ordinary.approvalFingerprint);
+    expect(parsePlanApproval(approved).repositoryIntegrationTasks).toEqual([taskId]);
+    expect(() =>
+      parsePlanApproval({ ...ordinary, repositoryIntegrationTasks: [taskId] })
+    ).toThrow();
+    expect(() =>
+      createPlanApproval({ ...options, repositoryIntegrationTasks: ['unknown-task'] })
+    ).toThrow();
+  });
   it('creates an immutable approval for one exact artifact revision and fingerprint', () => {
     const artifact = approvalTestArtifact();
     const approval = createPlanApproval({

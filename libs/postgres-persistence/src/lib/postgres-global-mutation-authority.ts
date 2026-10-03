@@ -108,7 +108,18 @@ const required = (value: string, name: string): string => {
   }
   return value;
 };
-const json = (value: unknown): unknown => JSON.parse(String(value));
+const json = (value: unknown): unknown =>
+  JSON.parse(String(value), (_key: string, entry: unknown): unknown => {
+    if (
+      typeof entry === 'object' &&
+      entry !== null &&
+      '$set' in entry &&
+      Array.isArray(entry.$set)
+    ) {
+      return new Set(entry.$set);
+    }
+    return entry;
+  });
 const fields = (value: unknown): Record<string, unknown> => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('Invalid persisted global authority payload');
@@ -2196,6 +2207,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
       const evidence = taskVerificationEvidenceSchema.parse(json(row.payload));
       assertTaskVerificationEvidenceIntegrity(evidence);
       return (
+        evidence.status === 'passed' &&
         evidence.runId === runId &&
         evidence.taskId === taskId &&
         evidence.attemptId === output.id &&

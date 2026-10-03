@@ -83,6 +83,32 @@ const request: TaskCodeReviewRequest = {
 };
 
 describe('TaskCodeReviewCollector', () => {
+  it('passes the observed failed gate to the reviewer and refuses accept without persistence', async () => {
+    const records: Parameters<TaskCodeReviewStore['persistReview']>[0][] = [];
+    let received: TaskCodeReviewRequest | undefined;
+    const collector = new TaskCodeReviewCollector({
+      reviewer: {
+        review: async (input) => {
+          received = input;
+          return { recommendation: 'accept', summary: 'Looks good', findings: [] };
+        }
+      },
+      store: {
+        persistReview: async (record) => {
+          records.push(record);
+        },
+        recoverReviews: async () => records
+      }
+    });
+    await expect(
+      collector.collect({
+        ...request,
+        verificationResult: { status: 'failed', detail: 'Formatting failed for value.txt' }
+      })
+    ).rejects.toThrow('failed verification gate');
+    expect(received?.verificationResult?.status).toBe('failed');
+    expect(records).toEqual([]);
+  });
   it('persists a parsed structured review as durable evidence', async () => {
     const records: Parameters<TaskCodeReviewStore['persistReview']>[0][] = [];
     const collector = new TaskCodeReviewCollector({

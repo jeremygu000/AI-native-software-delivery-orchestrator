@@ -21,6 +21,7 @@ export class TaskVerificationEvidenceFactory {
     readonly snapshot: RepositorySnapshot;
     readonly verificationPolicyFingerprint: string;
     readonly verifiedAt: Date;
+    readonly status?: 'passed' | 'failed';
   }): TaskVerificationEvidence {
     if (request.attempt.state !== 'COMPLETED') {
       throw new TaskVerificationEvidenceFactoryError(
@@ -50,7 +51,7 @@ export class TaskVerificationEvidenceFactory {
       workspaceRevision: request.workspace.revision,
       workspaceChangeFingerprint: request.snapshot.workingTreeFingerprint,
       verificationPolicyFingerprint: request.verificationPolicyFingerprint,
-      status: 'passed' as const,
+      status: request.status ?? 'passed',
       verifiedAt: request.verifiedAt.toISOString()
     };
     return { ...payload, fingerprint: taskVerificationEvidenceFingerprint(payload) };

@@ -8,6 +8,7 @@ export { LocalRuntimeBindingPolicy } from './lib/local-runtime-binding-policy.js
 export { RepositoryResourceResolver } from './lib/repository-resource-resolver.js';
 export {
   SandboxedPackageScriptVerifier,
+  resolveVerificationPolicy,
   type SandboxedVerificationPolicy
 } from './lib/sandboxed-package-script-verifier.js';
 export { RepositoryImpactReconciler } from './lib/repository-impact-reconciler.js';

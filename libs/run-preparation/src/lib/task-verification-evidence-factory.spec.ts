@@ -71,4 +71,15 @@ describe('TaskVerificationEvidenceFactory', () => {
       factory.create({ ...base, attempt: { ...base.attempt, state: 'RUNNING' } })
     ).toThrow(TaskVerificationEvidenceFactoryError);
   });
+
+  it('records failed gates distinctly without changing output identity or inventing a pass', () => {
+    const factory = new TaskVerificationEvidenceFactory();
+    const input = request(`sha256:${'1'.repeat(64)}`, `sha256:${'2'.repeat(64)}`);
+    const passed = factory.create(input);
+    const failed = factory.create({ ...input, status: 'failed' });
+    expect(failed.status).toBe('failed');
+    expect(failed.attemptId).toBe(passed.attemptId);
+    expect(failed.workspaceChangeFingerprint).toBe(passed.workspaceChangeFingerprint);
+    expect(failed.fingerprint).not.toBe(passed.fingerprint);
+  });
 });

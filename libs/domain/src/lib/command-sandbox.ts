@@ -38,7 +38,9 @@ export const agentCommandSandboxProfileSchema = z.discriminatedUnion('kind', [
     processTree: z.literal('container'),
     memoryBytes: z.int().min(1).max(17_179_869_184),
     cpuCount: z.number().positive().max(16),
-    pidLimit: z.int().min(1).max(4_096)
+    pidLimit: z.int().min(1).max(4_096),
+    temporaryBytes: z.int().min(67_108_864).max(4_294_967_296).optional(),
+    temporaryExecutable: z.boolean().optional()
   })
 ]);
 

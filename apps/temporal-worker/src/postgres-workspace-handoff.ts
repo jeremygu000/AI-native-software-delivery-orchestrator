@@ -88,9 +88,10 @@ export class PostgresWorkspaceHandoff {
         identity.create_temp !== false ||
         writes.length !== 0 ||
         schemas.length !== 0 ||
-        functions.length !== 8 ||
+        functions.length !== 9 ||
         functions.some((fn) => {
           const allowed =
+            fn.name === 'forge_workspace_recovery_abandon' ||
             fn.name === 'forge_workspace_recovery_settle' ||
             fn.name === 'forge_workspace_recovery_handoff';
           return (
@@ -101,6 +102,7 @@ export class PostgresWorkspaceHandoff {
               'forge_trust_write',
               'forge_workspace_permit_begin',
               'forge_workspace_permit_finish',
+              'forge_workspace_recovery_abandon',
               'forge_workspace_recovery_handoff',
               'forge_workspace_recovery_settle'
             ].includes(String(fn.name)) ||
@@ -187,6 +189,34 @@ export class PostgresWorkspaceHandoff {
     );
     if (rows[0]?.outcome !== 'SETTLED') {
       throw new Error('Unexpected Git permit settlement outcome');
+    }
+  }
+
+  async abandon(
+    generation: SupervisedWorkspaceGeneration,
+    attestation: WorkspaceRecoveryAttestation
+  ): Promise<void> {
+    await this.#assertCurrent(generation, attestation, false);
+    const snapshot = attestation.observation.authority;
+    const args = [
+      snapshot.scopeId,
+      snapshot.parentClaimId,
+      snapshot.owner.runId,
+      generation.generationId,
+      String(snapshot.token),
+      attestation.id,
+      attestation.digest,
+      snapshot.signingKey,
+      snapshot.setupPlanDigest,
+      snapshot.authorizationDigest,
+      snapshot.workspaceId
+    ];
+    const [row] = await this.sql.unsafe(
+      `select ${this.schema}.forge_workspace_recovery_abandon(${args.map((_, i) => `$${i + 1}`).join(',')}) as outcome`,
+      args
+    );
+    if (row?.outcome !== 'ABANDONED') {
+      throw new Error('Unexpected workspace abandonment outcome');
     }
   }
 

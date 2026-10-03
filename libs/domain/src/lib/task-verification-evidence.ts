@@ -13,7 +13,7 @@ export const taskVerificationEvidenceSchema = z.object({
   workspaceRevision: z.int().positive(),
   workspaceChangeFingerprint: fingerprintSchema,
   verificationPolicyFingerprint: fingerprintSchema,
-  status: z.literal('passed'),
+  status: z.enum(['passed', 'failed']),
   verifiedAt: z.string().datetime(),
   fingerprint: fingerprintSchema
 });

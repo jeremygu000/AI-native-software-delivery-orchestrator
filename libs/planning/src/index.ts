@@ -76,3 +76,4 @@ export {
   createCodeReviewPolicy
 } from './lib/code-review-policy.js';
 export type { CodeReviewPolicy } from './lib/code-review-policy.js';
+export { approvedTaskLeasePlan } from './lib/approved-task-lease-plan.js';

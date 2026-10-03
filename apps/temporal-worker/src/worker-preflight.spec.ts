@@ -8,7 +8,7 @@ import { authorityConfigurationFingerprint } from '@ai-native-software-delivery-
 import { resolveWorkerDeployment } from './worker-deployment-config.js';
 import { deploymentProbes, inspectWorkerDeployment } from './worker-preflight.js';
 
-const configuration = () => {
+const configuration = (overrides: NodeJS.ProcessEnv = {}) => {
   const authority = {
     backend: 'postgres' as const,
     connectionString: 'postgres://runtime:private-password@localhost/forge',
@@ -27,11 +27,45 @@ const configuration = () => {
     FORGE_WORKER_AUTHORITY_MODE: 'global',
     FORGE_PI_IMAGE: `sha256:${'a'.repeat(64)}`,
     FORGE_GIT_IMAGE: `sha256:${'b'.repeat(64)}`,
-    FORGE_MODEL_API_KEY: 'private-api-key'
+    FORGE_MODEL_API_KEY: 'private-api-key',
+    ...overrides
   });
 };
 
 describe('worker deployment preflight', () => {
+  it('keeps the existing session deadline by default and bounds explicit deployment overrides', () => {
+    expect(configuration().deployment.globalExecution?.sessionTimeoutMs).toBe(300_000);
+    expect(
+      configuration({ FORGE_PI_SESSION_TIMEOUT_MS: '600000' }).deployment.globalExecution
+        ?.sessionTimeoutMs
+    ).toBe(600_000);
+    for (const value of ['0', '1800001', 'NaN', '1000.5']) {
+      expect(() => configuration({ FORGE_PI_SESSION_TIMEOUT_MS: value })).toThrow(
+        'between 1000 and 1800000'
+      );
+    }
+  });
+  it('uses only explicit paired commit identity without changing repository configuration', () => {
+    expect(configuration().deployment.globalExecution?.commitIdentity).toBeUndefined();
+    expect(
+      configuration({
+        FORGE_GIT_AUTHOR_NAME: 'Forge Local',
+        FORGE_GIT_AUTHOR_EMAIL: 'forge@localhost'
+      }).deployment.globalExecution?.commitIdentity
+    ).toEqual({ name: 'Forge Local', email: 'forge@localhost' });
+    expect(() => configuration({ FORGE_GIT_AUTHOR_NAME: 'Forge Local' })).toThrow(
+      'supplied together'
+    );
+    expect(() =>
+      configuration({
+        FORGE_GIT_AUTHOR_NAME: 'Forge\nLocal',
+        FORGE_GIT_AUTHOR_EMAIL: 'forge@localhost'
+      })
+    ).toThrow('single-line');
+    expect(() =>
+      configuration({ FORGE_GIT_AUTHOR_NAME: ' ', FORGE_GIT_AUTHOR_EMAIL: 'forge@localhost' })
+    ).toThrow('nonempty');
+  });
   it('collects every check and never serializes deployment credentials or driver errors', async () => {
     const calls: string[] = [];
     const report = await inspectWorkerDeployment(configuration(), {

@@ -21,6 +21,9 @@ export class TaskCodeReviewCollector {
 
   async collect(request: TaskCodeReviewRequest) {
     const review = parseTaskCodeReview(await this.#reviewer.review(request));
+    if (request.verificationResult?.status === 'failed' && review.recommendation === 'accept') {
+      throw new Error('A failed verification gate cannot receive an accepted review');
+    }
     assertTaskCodeReviewFindingEvidence(review, request.repository);
     await this.#store.persistReview({
       runId: request.runId,

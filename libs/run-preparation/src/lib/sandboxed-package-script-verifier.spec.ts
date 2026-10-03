@@ -5,7 +5,10 @@ import type {
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { describe, expect, it, vi } from 'vitest';
 
-import { SandboxedPackageScriptVerifier } from './sandboxed-package-script-verifier.js';
+import {
+  resolveVerificationPolicy,
+  SandboxedPackageScriptVerifier
+} from './sandboxed-package-script-verifier.js';
 
 const profile = {
   kind: 'docker-read-only',
@@ -73,6 +76,41 @@ const request = (
 });
 
 describe('SandboxedPackageScriptVerifier', () => {
+  it('pins temporary dependency execution settings into an explicit verification policy', () => {
+    const base = {
+      version: 2,
+      autonomousRules: ['package-script-required', 'free-form-command-forbidden'],
+      packageScriptRunner: 'npm-from-pinned-node-image',
+      executionProfile: profile
+    } as const;
+    expect(resolveVerificationPolicy(base, {})).toBe(base);
+    const configured = resolveVerificationPolicy(base, {
+      FORGE_VERIFICATION_IMAGE: `sha256:${'b'.repeat(64)}`,
+      FORGE_VERIFICATION_TEMPORARY_BYTES: '2147483648',
+      FORGE_VERIFICATION_TEMPORARY_EXECUTABLE: 'true'
+    });
+    expect(configured.executionProfile).toEqual({
+      ...profile,
+      image: `sha256:${'b'.repeat(64)}`,
+      temporaryBytes: 2147483648,
+      temporaryExecutable: true
+    });
+    expect(base.executionProfile).toEqual(profile);
+    expect(() =>
+      resolveVerificationPolicy(base, { FORGE_VERIFICATION_TEMPORARY_EXECUTABLE: 'true' })
+    ).toThrow('explicitly pinned');
+    expect(() =>
+      resolveVerificationPolicy(base, { FORGE_VERIFICATION_IMAGE: 'node:latest' })
+    ).toThrow('digest pinned');
+    for (const value of ['0', '4294967297', 'NaN']) {
+      expect(() =>
+        resolveVerificationPolicy(base, {
+          FORGE_VERIFICATION_IMAGE: `sha256:${'b'.repeat(64)}`,
+          FORGE_VERIFICATION_TEMPORARY_BYTES: value
+        })
+      ).toThrow('Invalid');
+    }
+  });
   it('rejects unpinned images before any sandbox command', () => {
     expect(
       () =>

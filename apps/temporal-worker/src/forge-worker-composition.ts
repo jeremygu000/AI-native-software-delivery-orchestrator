@@ -21,6 +21,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 import { SandboxedPackageScriptVerifier } from '@ai-native-software-delivery-orchestrator/run-preparation';
 import { verificationPolicy } from '@ai-native-software-delivery-orchestrator/forge-runtime-composition';
+import { resolveVerificationPolicy } from '@ai-native-software-delivery-orchestrator/run-preparation';
 import { createPostgresGlobalWorkerComposition } from './postgres-global-worker-composition.js';
 import { resolveM312ExternalSmokeConfig } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 import {
@@ -29,6 +30,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/persistence';
 import {
   createCodeReviewPolicy,
+  fingerprintPlanValue,
   codeReviewPolicyFingerprint,
   type CodeReviewPolicy
 } from '@ai-native-software-delivery-orchestrator/planning';
@@ -128,7 +130,9 @@ export interface ForgeWorkerCompositionDeployment {
   readonly globalExecution?: {
     readonly image: string;
     readonly gitImage: string;
+    readonly commitIdentity?: { name: string; email: string };
     readonly apiKey: string;
+    readonly sessionTimeoutMs?: number;
   };
 }
 
@@ -227,9 +231,14 @@ export async function createForgeWorkerComposition(
       }
       await persistence.assertGlobalWorkerCompositionAllowed();
       const graph = (await analyzeRepository(deployment.repositoryPath)).graph;
+      const activeVerificationPolicy = resolveVerificationPolicy(verificationPolicy, process.env);
+      const activeVerificationPolicyFingerprint = fingerprintPlanValue(activeVerificationPolicy);
       const proxy = new ApprovedPiHostModelProxy({
         model: deployment.reviewModel,
-        apiKey: deployment.globalExecution.apiKey
+        apiKey: deployment.globalExecution.apiKey,
+        ...(deployment.reviewModel.provider === 'deepseek' && deployment.reviewModel.reasoning
+          ? { reasoning: 'high' as const }
+          : {})
       });
       const base = await createForgeRuntimeComposition(
         {
@@ -242,7 +251,10 @@ export async function createForgeWorkerComposition(
             }
           }
         },
-        { repositoryPath: deployment.repositoryPath }
+        {
+          repositoryPath: deployment.repositoryPath,
+          approvedVerificationPolicyFingerprint: activeVerificationPolicyFingerprint
+        }
       );
       let authority: PostgresGlobalMutationAuthority | undefined;
       try {
@@ -255,8 +267,14 @@ export async function createForgeWorkerComposition(
           codeReviewPolicyFingerprint: codeReviewPolicyFingerprint(deployment.codeReviewPolicy),
           image: deployment.globalExecution.image,
           gitImage: deployment.globalExecution.gitImage,
+          commitIdentity: deployment.globalExecution.commitIdentity,
+          sessionTimeoutMs: deployment.globalExecution.sessionTimeoutMs,
           modelProxy: proxy,
-          verifier: new SandboxedPackageScriptVerifier({ policy: verificationPolicy, graph }),
+          verifier: new SandboxedPackageScriptVerifier({
+            policy: activeVerificationPolicy,
+            graph
+          }),
+          approvedVerificationPolicyFingerprint: activeVerificationPolicyFingerprint,
           reviewer: {
             review: async (request) => {
               // Review inference has no code loader, command executor or write tools.
@@ -308,7 +326,7 @@ export async function createForgeWorkerComposition(
                     {
                       role: 'user',
                       timestamp: Date.now(),
-                      content: `Return only a JSON code review with recommendation accept|repair|reject, summary and findings (id,severity,fileIds,symbolIds,description,requirementReference).\n${JSON.stringify({ task: request.task, subject: request.subject, diff: diff.stdout, addedFiles, files: [...request.repository.files.values()] })}`
+                      content: `Return only a JSON code review with recommendation accept|repair|reject, summary and findings (id,severity critical|high|medium|low,fileIds,symbolIds,description,optional requirementReference). Accept requires findings []. Repair or reject requires at least one finding. Every fileId MUST exactly equal an entry in allowedFileIds below, not a path or newly created file; report a new-file test defect against its existing approved implementation file. Use symbolIds [] unless an exact supplied symbol ID is necessary. A failed verification gate forbids accept: diagnose it against the actual diff and return actionable repair findings on known file IDs, or reject if it cannot be repaired within the approved task. Do not bypass or weaken verification.\n${JSON.stringify({ task: request.task, subject: request.subject, verificationResult: request.verificationResult, diff: diff.stdout, addedFiles, allowedFileIds: [...request.repository.files.keys()], files: [...request.repository.files.values()] })}`
                     }
                   ]
                 },

@@ -4,13 +4,11 @@ import type {
 } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 import {
   fingerprintPlanValue,
+  approvedTaskLeasePlan,
   parsePlanExecutionIntent,
   type PlanExecutionIntent
 } from '@ai-native-software-delivery-orchestrator/planning';
-import {
-  taskLeasePlanFingerprint,
-  taskLeasePlanFromPredictedImpact
-} from '@ai-native-software-delivery-orchestrator/domain';
+import { taskLeasePlanFingerprint } from '@ai-native-software-delivery-orchestrator/domain';
 
 export interface ExecutionAuthorityRevalidator {
   revalidate(intent: PlanExecutionIntent): Promise<PlanExecutionIntent>;
@@ -151,14 +149,18 @@ export class RunPreparation<Result = RecoveredRuntimeRun> {
       ) {
         throw new RunPreparationError(`Runtime workspace escapes approved checkout: ${task.id}`);
       }
-      const expectedLeasePlan = taskLeasePlanFromPredictedImpact({
-        taskId: impact.taskId,
-        projectsWritten: new Set(impact.projectsWritten),
-        filesWritten: new Set(impact.filesWritten),
-        symbolDerivedFilesWritten: new Set(impact.symbolDerivedFilesWritten),
-        symbolsWritten: new Set(impact.symbolsWritten),
-        sharedResources: new Set(impact.sharedResources)
-      });
+      const expectedLeasePlan = approvedTaskLeasePlan(
+        {
+          ...binding.impact.predicted,
+          taskId: impact.taskId,
+          projectsWritten: new Set(impact.projectsWritten),
+          filesWritten: new Set(impact.filesWritten),
+          symbolDerivedFilesWritten: new Set(impact.symbolDerivedFilesWritten),
+          symbolsWritten: new Set(impact.symbolsWritten),
+          sharedResources: new Set(impact.sharedResources)
+        },
+        intent.approval
+      );
       if (
         taskLeasePlanFingerprint(binding.leasePlan) !== taskLeasePlanFingerprint(expectedLeasePlan)
       ) {

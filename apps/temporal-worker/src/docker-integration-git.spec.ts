@@ -41,6 +41,8 @@ it.skipIf(process.env.FORGE_TEST_GIT_IMAGE === undefined)(
       writeFileSync(join(root, 'value.txt'), 'before');
       git('add', '.');
       git('commit', '-m', 'base');
+      git('config', '--unset', 'user.name');
+      git('config', '--unset', 'user.email');
       const workspace = await new GitWorkspaceManager().create({
         id: 'workspace',
         runId: 'run',
@@ -54,7 +56,8 @@ it.skipIf(process.env.FORGE_TEST_GIT_IMAGE === undefined)(
       writeFileSync(join(worktree, 'value.txt'), 'after');
       const runner = new DockerIntegrationGit({
         image: process.env.FORGE_TEST_GIT_IMAGE!,
-        workspace
+        workspace,
+        commitIdentity: { name: 'Forge Integration', email: 'forge-integration@example.test' }
       });
       const manager = new GitWorkspaceManager(runner);
       await expect(runner.run('/tmp', ['status'])).rejects.toThrow('outside');
@@ -63,6 +66,11 @@ it.skipIf(process.env.FORGE_TEST_GIT_IMAGE === undefined)(
       ).resolves.toBeDefined();
       expect((await manager.integrate(workspace)).workspace.phase).toBe('INTEGRATED');
       expect(git('show', 'main:value.txt')).toBe('after');
+      expect(git('log', '-1', '--format=%an <%ae>')).toBe(
+        'Forge Integration <forge-integration@example.test>'
+      );
+      expect(() => git('config', '--local', '--get', 'user.name')).toThrow();
+      expect(() => git('config', '--local', '--get', 'user.email')).toThrow();
       expect(runner.confirmedStopEvidence()).toContain('Docker Git process trees exited');
     } finally {
       rmSync(worktree, { recursive: true, force: true });

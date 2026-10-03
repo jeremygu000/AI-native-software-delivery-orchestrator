@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 
 import {
-  taskLeasePlanFromPredictedImpact,
   taskConflictSchema,
   type AgentCommandPolicy,
   type PredictedTaskImpact,
@@ -14,7 +13,10 @@ import type {
   RuntimeTaskBinding,
   StartRuntimeRunRequest
 } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
-import type { PlanExecutionIntent } from '@ai-native-software-delivery-orchestrator/planning';
+import {
+  approvedTaskLeasePlan,
+  type PlanExecutionIntent
+} from '@ai-native-software-delivery-orchestrator/planning';
 
 import type { IntegrationCheckout, RuntimeBindingPolicy } from './run-preparation.js';
 
@@ -107,7 +109,7 @@ export class LocalRuntimeBindingPolicy implements RuntimeBindingPolicy {
         return {
           taskId: task.id,
           agentId: `agent-${taskIdentity}`,
-          leasePlan: taskLeasePlanFromPredictedImpact(impact),
+          leasePlan: approvedTaskLeasePlan(impact, intent.approval),
           impact: { predicted: impact },
           ...(this.#commandPolicy === undefined ? {} : { commandPolicy: this.#commandPolicy }),
           ...(this.#trustedCommandPath === undefined

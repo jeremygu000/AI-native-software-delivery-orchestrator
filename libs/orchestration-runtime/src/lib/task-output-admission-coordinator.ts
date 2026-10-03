@@ -90,6 +90,7 @@ export class TaskOutputAdmissionCoordinator {
       await this.#verificationEvidence.recoverVerificationEvidence(request.runId)
     ).find(
       (verification) =>
+        verification.status === 'passed' &&
         verification.taskId === request.task.id &&
         verification.attemptId === request.builderAttempt.id &&
         verification.workspaceId === request.workspace.id &&

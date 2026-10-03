@@ -424,299 +424,381 @@ const createTrustedSetupFixture = async () => {
   };
 };
 
-it('atomically hands off an uncertain setup parent to its separately approved execution resources', async () => {
-  const fixture = await createTrustedSetupFixture();
-  const admission = await PostgresWorkspaceSetupAdmission.connect({
-    connectionString: setupAdmissionConnectionString,
-    schema: fixture.schema,
-    role: setupAdmissionRole
-  });
-  const issuer = await PostgresExecutionGenerationIssuer.connect({
-    connectionString: generationIssuerConnectionString,
-    schema: fixture.schema,
-    role: generationIssuerRole
-  });
-  const recovery = postgres(recoveryConnectionString, {
-    onnotice: () => undefined,
-    connection: { application_name: 'forge-workspace-recovery' }
-  });
-  const request = {
-    ...fixture.request,
-    parentClaimId: 'handoff-parent',
-    attemptId: 'approved-setup-attempt',
-    generationId: 'handoff-generation',
-    supervisorId: 'handoff-supervisor',
-    binding: fixture.approvedBinding
-  };
-  try {
-    await fixture.authority.releaseGlobalMutation({
-      ...fixture.originalClaim,
-      token: fixture.originalGrant.token,
-      expectedVersion: fixture.originalGrant.leases[0]?.version ?? 1,
-      stopEvidence: 'The previous writer has stopped.'
+it.each(['handoff', 'abandon'])(
+  'independently closes an uncertain setup parent through %s',
+  async (operation) => {
+    const fixture = await createTrustedSetupFixture();
+    const admission = await PostgresWorkspaceSetupAdmission.connect({
+      connectionString: setupAdmissionConnectionString,
+      schema: fixture.schema,
+      role: setupAdmissionRole
     });
-    const parent = await admission.admit(request);
-    if (parent.status !== 'granted') {
-      throw new Error('Expected repository setup authority');
-    }
-    await issuer.issue({
-      generationId: request.generationId,
-      scopeId: request.scopeId,
-      parentClaimId: request.parentClaimId,
-      runId: request.runId,
-      taskId: request.setupApproval.taskId,
-      attemptId: request.attemptId,
-      workspaceId: request.workspaceId,
-      supervisorId: request.supervisorId,
-      setupPlanDigest: request.setupApproval.setupApprovalFingerprint.slice(7),
-      executionPlanDigest: fingerprintPlanValue(request.binding.leasePlan).slice(7)
+    const issuer = await PostgresExecutionGenerationIssuer.connect({
+      connectionString: generationIssuerConnectionString,
+      schema: fixture.schema,
+      role: generationIssuerRole
     });
-    await admission.arm(request);
-    const permit = await admission.beginWorkspaceCreationPermit({
-      ...request,
-      token: parent.token,
-      version: 1
+    const recovery = postgres(recoveryConnectionString, {
+      onnotice: () => undefined,
+      connection: { application_name: 'forge-workspace-recovery' }
     });
-    await admission.finishWorkspaceCreationPermit(permit, 'The Git callback requires recovery.');
-    await issuer.revoke(request.generationId, request.scopeId);
-    await fixture.admin.unsafe(
-      `insert into "${fixture.schema}".forge_records (run_id,kind,key,payload) values ($1,'workspace',$2,$3)`,
-      [
-        request.runId,
-        request.workspaceId,
-        JSON.stringify({ ...request.binding.workspace, revision: 1, phase: 'READY_TO_INTEGRATE' })
-      ]
-    );
-    const digest = `sha256:${'a'.repeat(64)}`;
-    const args = [
-      request.scopeId,
-      request.parentClaimId,
-      permit.id,
-      request.runId,
-      request.generationId,
-      String(parent.token),
-      'handoff-attestation',
-      digest,
-      request.authorization.keyId,
-      request.setupApproval.setupApprovalFingerprint.slice(7),
-      fingerprintPlanValue(request.authorization).slice(7),
-      request.workspaceId
-    ];
-    const settled = await recovery.unsafe(
-      `select "${fixture.schema}".forge_workspace_recovery_settle(${args.map((_, i) => `$${i + 1}`).join(',')}) as outcome`,
-      args
-    );
-    expect(settled[0]?.outcome).toBe('SETTLED');
-    const approvedResources = request.binding.leasePlan.predictedResources;
-    const competingResource = approvedResources[0];
-    if (competingResource === undefined) {
-      throw new Error('Expected an approved execution lease');
-    }
-    const handoffArgs = [
-      request.scopeId,
-      request.parentClaimId,
-      request.runId,
-      request.generationId,
-      String(parent.token),
-      'handoff-attestation',
-      digest,
-      request.authorization.keyId,
-      request.setupApproval.setupApprovalFingerprint.slice(7),
-      fingerprintPlanValue(request.authorization).slice(7),
-      request.workspaceId,
-      '1',
-      request.binding.workspace.workspacePath,
-      request.binding.workspace.branchName,
-      request.artifact.repository.baseCommit,
-      taskLeasePlanFingerprint(request.binding.leasePlan)
-    ];
-    await fixture.admin.unsafe(
-      `insert into "${fixture.schema}".forge_global_claims (scope_id,claim_id,owner_json,token,state,version) values ($1,'competing-child',$2,$3,'ACTIVE',1)`,
-      [
-        request.scopeId,
-        JSON.stringify({
-          runId: request.runId,
-          taskId: 'other-task',
-          attemptId: 'other-attempt',
-          agentId: 'other-agent',
-          workspaceId: 'other-workspace'
-        }),
-        parent.token
-      ]
-    );
-    await fixture.admin.unsafe(
-      `insert into "${fixture.schema}".forge_global_leases (scope_id,claim_id,lease_id,resource_json) values ($1,'competing-child','competing-lease',$2)`,
-      [request.scopeId, JSON.stringify(competingResource)]
-    );
-    const blocked = await recovery.unsafe(
-      `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')}) as outcome`,
-      handoffArgs
-    );
-    expect(blocked[0]?.outcome).toBe('BLOCKED');
-    expect(
+    const request = {
+      ...fixture.request,
+      parentClaimId: 'handoff-parent',
+      attemptId: 'approved-setup-attempt',
+      generationId: 'handoff-generation',
+      supervisorId: 'handoff-supervisor',
+      binding: fixture.approvedBinding
+    };
+    try {
+      await fixture.authority.releaseGlobalMutation({
+        ...fixture.originalClaim,
+        token: fixture.originalGrant.token,
+        expectedVersion: fixture.originalGrant.leases[0]?.version ?? 1,
+        stopEvidence: 'The previous writer has stopped.'
+      });
+      const parent = await admission.admit(request);
+      if (parent.status !== 'granted') {
+        throw new Error('Expected repository setup authority');
+      }
+      const persisted = await fixture.store.recoverRun(request.runId);
+      const started = persisted?.attempts.find(
+        ({ attempt }) => attempt.id === request.attemptId
+      )?.attempt;
+      expect(started?.state).toBe('STARTING');
+      expect(started?.startedAt).toBeInstanceOf(Date);
+      expect(
+        (
+          await fixture.authority.recoverWorkspaceSetupEvidence(
+            request.scopeId,
+            request.parentClaimId
+          )
+        ).phase
+      ).toBe('INITIAL_ADMITTED');
+      await issuer.issue({
+        generationId: request.generationId,
+        scopeId: request.scopeId,
+        parentClaimId: request.parentClaimId,
+        runId: request.runId,
+        taskId: request.setupApproval.taskId,
+        attemptId: request.attemptId,
+        workspaceId: request.workspaceId,
+        supervisorId: request.supervisorId,
+        setupPlanDigest: request.setupApproval.setupApprovalFingerprint.slice(7),
+        executionPlanDigest: fingerprintPlanValue(request.binding.leasePlan).slice(7)
+      });
+      await admission.arm(request);
+      const permit = await admission.beginWorkspaceCreationPermit({
+        ...request,
+        token: parent.token,
+        version: 1
+      });
+      await admission.finishWorkspaceCreationPermit(permit, 'The Git callback requires recovery.');
+      await issuer.revoke(request.generationId, request.scopeId);
       await fixture.admin.unsafe(
-        `select state from "${fixture.schema}".forge_global_claims where claim_id=$1`,
-        [request.parentClaimId]
-      )
-    ).toMatchObject([{ state: 'HELD_UNCERTAIN' }]);
-    expect(
-      await fixture.admin.unsafe(
-        `select next_token from "${fixture.schema}".forge_global_scopes where id=$1`,
-        [request.scopeId]
-      )
-    ).toMatchObject([{ next_token: String(parent.token) }]);
-    expect(
-      await fixture.admin.unsafe(
-        `select count(*)::integer as count from "${fixture.schema}".forge_global_workspace_phases where child_claim_id is not null`
-      )
-    ).toMatchObject([{ count: 0 }]);
-    await fixture.admin.unsafe(
-      `update "${fixture.schema}".forge_global_claims set state='RELEASED' where claim_id='competing-child'`
-    );
-    let unlockScope: (() => void) | undefined;
-    let scopeLocked: ((pid: number) => void) | undefined;
-    const locked = new Promise<number>((resolve) => {
-      scopeLocked = resolve;
-    });
-    const release = new Promise<void>((resolve) => {
-      unlockScope = resolve;
-    });
-    const cancellation = fixture.admin.begin(async (tx) => {
-      const row = await tx.unsafe(
-        `select pg_backend_pid() as pid from "${fixture.schema}".forge_global_scopes where id=$1 for update`,
-        [request.scopeId]
+        `insert into "${fixture.schema}".forge_records (run_id,kind,key,payload) values ($1,'workspace',$2,$3)`,
+        [
+          request.runId,
+          request.workspaceId,
+          JSON.stringify({ ...request.binding.workspace, revision: 1, phase: 'READY_TO_INTEGRATE' })
+        ]
       );
-      scopeLocked?.(Number(row[0]?.pid));
-      await release;
-      await tx.unsafe(
-        `update "${fixture.schema}".forge_runs set state='CANCEL_REQUESTED' where id=$1`,
+      const digest = `sha256:${'a'.repeat(64)}`;
+      const args = [
+        request.scopeId,
+        request.parentClaimId,
+        permit.id,
+        request.runId,
+        request.generationId,
+        String(parent.token),
+        'handoff-attestation',
+        digest,
+        request.authorization.keyId,
+        request.setupApproval.setupApprovalFingerprint.slice(7),
+        fingerprintPlanValue(request.authorization).slice(7),
+        request.workspaceId
+      ];
+      const settled = await recovery.unsafe(
+        `select "${fixture.schema}".forge_workspace_recovery_settle(${args.map((_, i) => `$${i + 1}`).join(',')}) as outcome`,
+        args
+      );
+      expect(settled[0]?.outcome).toBe('SETTLED');
+      if (operation === 'abandon') {
+        const abandonArgs = [
+          request.scopeId,
+          request.parentClaimId,
+          request.runId,
+          request.generationId,
+          String(parent.token),
+          'independent-abandon-attestation',
+          digest,
+          request.authorization.keyId,
+          request.setupApproval.setupApprovalFingerprint.slice(7),
+          fingerprintPlanValue(request.authorization).slice(7),
+          request.workspaceId
+        ];
+        const abandon = () =>
+          recovery.unsafe(
+            `select "${fixture.schema}".forge_workspace_recovery_abandon(${abandonArgs.map((_, i) => `$${i + 1}`).join(',')}) as outcome`,
+            abandonArgs
+          );
+        await fixture.admin.unsafe(
+          `update "${fixture.schema}".forge_global_generations set state='ISSUED' where id=$1`,
+          [request.generationId]
+        );
+        await expect(abandon()).rejects.toThrow('stopped generation is incompatible');
+        await fixture.admin.unsafe(
+          `update "${fixture.schema}".forge_global_generations set state='REVOKED' where id=$1`,
+          [request.generationId]
+        );
+        await fixture.admin.unsafe(
+          `update "${fixture.schema}".forge_global_workspace_permit_lineages set completed=false where permit_id=$1`,
+          [permit.id]
+        );
+        await expect(abandon()).rejects.toThrow();
+        await fixture.admin.unsafe(
+          `update "${fixture.schema}".forge_global_workspace_permit_lineages set completed=true where permit_id=$1`,
+          [permit.id]
+        );
+        expect((await abandon())[0]?.outcome).toBe('ABANDONED');
+        expect((await abandon())[0]?.outcome).toBe('ABANDONED');
+        expect(
+          await fixture.admin.unsafe(
+            `select state from "${fixture.schema}".forge_global_claims where claim_id=$1`,
+            [request.parentClaimId]
+          )
+        ).toMatchObject([{ state: 'RELEASED' }]);
+        expect(
+          await fixture.admin.unsafe(
+            `select phase,child_claim_id from "${fixture.schema}".forge_global_workspace_phases where parent_claim_id=$1`,
+            [request.parentClaimId]
+          )
+        ).toMatchObject([{ phase: 'ABANDONED', child_claim_id: null }]);
+        expect(
+          await fixture.admin.unsafe(
+            `select settlement_id,settlement_digest from "${fixture.schema}".forge_global_workspace_permit_lineages where permit_id=$1`,
+            [permit.id]
+          )
+        ).toMatchObject([{ settlement_id: 'handoff-attestation', settlement_digest: digest }]);
+        expect(
+          await fixture.admin.unsafe(
+            `select next_token from "${fixture.schema}".forge_global_scopes where id=$1`,
+            [request.scopeId]
+          )
+        ).toMatchObject([{ next_token: String(parent.token) }]);
+        return;
+      }
+      const approvedResources = request.binding.leasePlan.predictedResources;
+      const competingResource = approvedResources[0];
+      if (competingResource === undefined) {
+        throw new Error('Expected an approved execution lease');
+      }
+      const handoffArgs = [
+        request.scopeId,
+        request.parentClaimId,
+        request.runId,
+        request.generationId,
+        String(parent.token),
+        'handoff-attestation',
+        digest,
+        request.authorization.keyId,
+        request.setupApproval.setupApprovalFingerprint.slice(7),
+        fingerprintPlanValue(request.authorization).slice(7),
+        request.workspaceId,
+        '1',
+        request.binding.workspace.workspacePath,
+        request.binding.workspace.branchName,
+        request.artifact.repository.baseCommit,
+        taskLeasePlanFingerprint(request.binding.leasePlan)
+      ];
+      await fixture.admin.unsafe(
+        `insert into "${fixture.schema}".forge_global_claims (scope_id,claim_id,owner_json,token,state,version) values ($1,'competing-child',$2,$3,'ACTIVE',1)`,
+        [
+          request.scopeId,
+          JSON.stringify({
+            runId: request.runId,
+            taskId: 'other-task',
+            attemptId: 'other-attempt',
+            agentId: 'other-agent',
+            workspaceId: 'other-workspace'
+          }),
+          parent.token
+        ]
+      );
+      await fixture.admin.unsafe(
+        `insert into "${fixture.schema}".forge_global_leases (scope_id,claim_id,lease_id,resource_json) values ($1,'competing-child','competing-lease',$2)`,
+        [request.scopeId, JSON.stringify(competingResource)]
+      );
+      const blocked = await recovery.unsafe(
+        `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')}) as outcome`,
+        handoffArgs
+      );
+      expect(blocked[0]?.outcome).toBe('BLOCKED');
+      expect(
+        await fixture.admin.unsafe(
+          `select state from "${fixture.schema}".forge_global_claims where claim_id=$1`,
+          [request.parentClaimId]
+        )
+      ).toMatchObject([{ state: 'HELD_UNCERTAIN' }]);
+      expect(
+        await fixture.admin.unsafe(
+          `select next_token from "${fixture.schema}".forge_global_scopes where id=$1`,
+          [request.scopeId]
+        )
+      ).toMatchObject([{ next_token: String(parent.token) }]);
+      expect(
+        await fixture.admin.unsafe(
+          `select count(*)::integer as count from "${fixture.schema}".forge_global_workspace_phases where child_claim_id is not null`
+        )
+      ).toMatchObject([{ count: 0 }]);
+      await fixture.admin.unsafe(
+        `update "${fixture.schema}".forge_global_claims set state='RELEASED' where claim_id='competing-child'`
+      );
+      let unlockScope: (() => void) | undefined;
+      let scopeLocked: ((pid: number) => void) | undefined;
+      const locked = new Promise<number>((resolve) => {
+        scopeLocked = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        unlockScope = resolve;
+      });
+      const cancellation = fixture.admin.begin(async (tx) => {
+        const row = await tx.unsafe(
+          `select pg_backend_pid() as pid from "${fixture.schema}".forge_global_scopes where id=$1 for update`,
+          [request.scopeId]
+        );
+        scopeLocked?.(Number(row[0]?.pid));
+        await release;
+        await tx.unsafe(
+          `update "${fixture.schema}".forge_runs set state='CANCEL_REQUESTED' where id=$1`,
+          [request.runId]
+        );
+      });
+      const cancellationPid = await locked;
+      const waitingHandoff = recovery
+        .unsafe(
+          `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
+          handoffArgs
+        )
+        .then(() => {
+          throw new Error('Cancelled run unexpectedly handed off');
+        });
+      try {
+        const waiting = await blockedBackend(
+          fixture.admin,
+          fixture.schema,
+          'forge-workspace-recovery',
+          'forge_global_scopes'
+        );
+        expect(waiting.blockers).toContain(cancellationPid);
+      } finally {
+        unlockScope?.();
+        await cancellation;
+      }
+      await expect(waitingHandoff).rejects.toThrow('not active');
+      await expect(
+        recovery.unsafe(
+          `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
+          handoffArgs
+        )
+      ).rejects.toThrow('not active');
+      await fixture.admin.unsafe(
+        `update "${fixture.schema}".forge_runs set state='ACTIVE' where id=$1`,
         [request.runId]
       );
-    });
-    const cancellationPid = await locked;
-    const waitingHandoff = recovery
-      .unsafe(
-        `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
+      await expect(
+        recovery.unsafe(
+          `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
+          handoffArgs.map((entry, index) => (index === 15 ? 'forged-attempt-fingerprint' : entry))
+        )
+      ).rejects.toThrow('incompatible');
+      const result = await recovery.unsafe(
+        `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')}) as outcome`,
         handoffArgs
-      )
-      .then(() => {
-        throw new Error('Cancelled run unexpectedly handed off');
-      });
-    try {
-      const waiting = await blockedBackend(
-        fixture.admin,
-        fixture.schema,
-        'forge-workspace-recovery',
-        'forge_global_scopes'
       );
-      expect(waiting.blockers).toContain(cancellationPid);
-    } finally {
-      unlockScope?.();
-      await cancellation;
-    }
-    await expect(waitingHandoff).rejects.toThrow('not active');
-    await expect(
-      recovery.unsafe(
-        `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
-        handoffArgs
-      )
-    ).rejects.toThrow('not active');
-    await fixture.admin.unsafe(
-      `update "${fixture.schema}".forge_runs set state='ACTIVE' where id=$1`,
-      [request.runId]
-    );
-    await expect(
-      recovery.unsafe(
-        `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
-        handoffArgs.map((entry, index) => (index === 15 ? 'forged-attempt-fingerprint' : entry))
-      )
-    ).rejects.toThrow('incompatible');
-    const result = await recovery.unsafe(
-      `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')}) as outcome`,
-      handoffArgs
-    );
-    expect(result[0]?.outcome).toMatch(/^GRANTED:execution-[0-9a-f]{64}:\d+$/);
-    const childClaimId = String(result[0]?.outcome).split(':')[1];
-    const childToken = Number(String(result[0]?.outcome).split(':')[2]);
-    if (childClaimId === undefined || !Number.isSafeInteger(childToken)) {
-      throw new Error('Missing approved execution child');
-    }
-    await expect(
-      fixture.peer.beginFencedMutation({
-        scopeId: request.scopeId,
-        claimId: request.parentClaimId,
-        owner: {
-          runId: request.runId,
-          taskId: request.setupApproval.taskId,
-          attemptId: request.attemptId,
-          agentId: request.binding.agentId,
-          workspaceId: request.workspaceId
-        },
-        token: parent.token,
-        resource: { type: 'repository' }
-      })
-    ).rejects.toThrow('Workspace setup parent forbids ordinary mutation authority');
-    const childOwner = {
-      runId: request.runId,
-      taskId: request.setupApproval.taskId,
-      attemptId: request.attemptId,
-      agentId: request.binding.agentId,
-      workspaceId: request.workspaceId
-    };
-    await expect(
-      fixture.peer.beginFencedMutation({
+      expect(result[0]?.outcome).toMatch(/^GRANTED:execution-[0-9a-f]{64}:\d+$/);
+      const childClaimId = String(result[0]?.outcome).split(':')[1];
+      const childToken = Number(String(result[0]?.outcome).split(':')[2]);
+      if (childClaimId === undefined || !Number.isSafeInteger(childToken)) {
+        throw new Error('Missing approved execution child');
+      }
+      await expect(
+        fixture.peer.beginFencedMutation({
+          scopeId: request.scopeId,
+          claimId: request.parentClaimId,
+          owner: {
+            runId: request.runId,
+            taskId: request.setupApproval.taskId,
+            attemptId: request.attemptId,
+            agentId: request.binding.agentId,
+            workspaceId: request.workspaceId
+          },
+          token: parent.token,
+          resource: { type: 'repository' }
+        })
+      ).rejects.toThrow('Workspace setup parent forbids ordinary mutation authority');
+      const childOwner = {
+        runId: request.runId,
+        taskId: request.setupApproval.taskId,
+        attemptId: request.attemptId,
+        agentId: request.binding.agentId,
+        workspaceId: request.workspaceId
+      };
+      await expect(
+        fixture.peer.beginFencedMutation({
+          scopeId: request.scopeId,
+          claimId: childClaimId,
+          owner: childOwner,
+          token: childToken,
+          resource: { type: 'repository' }
+        })
+      ).rejects.toThrow();
+      const childPermit = await fixture.peer.beginFencedMutation({
         scopeId: request.scopeId,
         claimId: childClaimId,
         owner: childOwner,
         token: childToken,
-        resource: { type: 'repository' }
-      })
-    ).rejects.toThrow();
-    const childPermit = await fixture.peer.beginFencedMutation({
-      scopeId: request.scopeId,
-      claimId: childClaimId,
-      owner: childOwner,
-      token: childToken,
-      resource: competingResource
-    });
-    await fixture.peer.endFencedMutation(childPermit);
-    expect(
-      (
-        await recovery.unsafe(
-          `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')}) as outcome`,
-          handoffArgs
+        resource: competingResource
+      });
+      await fixture.peer.endFencedMutation(childPermit);
+      expect(
+        (
+          await recovery.unsafe(
+            `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')}) as outcome`,
+            handoffArgs
+          )
+        )[0]?.outcome
+      ).toBe(result[0]?.outcome);
+      await expect(
+        recovery.unsafe(
+          `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
+          handoffArgs.map((entry, index) => (index === 7 ? `sha256:${'b'.repeat(64)}` : entry))
         )
-      )[0]?.outcome
-    ).toBe(result[0]?.outcome);
-    await expect(
-      recovery.unsafe(
-        `select "${fixture.schema}".forge_workspace_recovery_handoff(${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
-        handoffArgs.map((entry, index) => (index === 7 ? `sha256:${'b'.repeat(64)}` : entry))
-      )
-    ).rejects.toThrow();
-    const rows = await fixture.admin.unsafe(
-      `select c.claim_id,c.state,c.token,l.resource_json from "${fixture.schema}".forge_global_claims c left join "${fixture.schema}".forge_global_leases l on l.scope_id=c.scope_id and l.claim_id=c.claim_id where c.scope_id=$1 order by c.token`,
-      [request.scopeId]
-    );
-    expect(
-      rows.map((row) => ({
-        claim_id: row.claim_id,
-        state: row.state,
-        resource: row.resource_json === null ? null : JSON.parse(String(row.resource_json))
-      }))
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ claim_id: request.parentClaimId, state: 'RELEASED' }),
-        expect.objectContaining({ state: 'ACTIVE', resource: approvedResources[0] })
-      ])
-    );
-  } finally {
-    await recovery.end();
-    await issuer.close();
-    await admission.close();
-    await fixture.close();
+      ).rejects.toThrow();
+      const rows = await fixture.admin.unsafe(
+        `select c.claim_id,c.state,c.token,l.resource_json from "${fixture.schema}".forge_global_claims c left join "${fixture.schema}".forge_global_leases l on l.scope_id=c.scope_id and l.claim_id=c.claim_id where c.scope_id=$1 order by c.token`,
+        [request.scopeId]
+      );
+      expect(
+        rows.map((row) => ({
+          claim_id: row.claim_id,
+          state: row.state,
+          resource: row.resource_json === null ? null : JSON.parse(String(row.resource_json))
+        }))
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ claim_id: request.parentClaimId, state: 'RELEASED' }),
+          expect.objectContaining({ state: 'ACTIVE', resource: approvedResources[0] })
+        ])
+      );
+    } finally {
+      await recovery.end();
+      await issuer.close();
+      await admission.close();
+      await fixture.close();
+    }
   }
-});
+);
 
 it('atomically admits a signed repository-only setup parent and INITIAL_ADMITTED marker', async () => {
   const fixture = await createTrustedSetupFixture();
@@ -4256,6 +4338,33 @@ it('atomically creates a v4 run with its pre-registered scope and rejects missin
   }
 });
 
+it('creates only globally bound run metadata after GLOBAL_READY without granting writer authority', async () => {
+  const fixture = await createGlobalPermitFixture();
+  try {
+    const initial = durableAuthorityRunRequest('real-global-launch');
+    await expect(fixture.store.createBoundRun(initial)).rejects.toThrow(
+      'Legacy run launch is closed'
+    );
+    await fixture.store.createGlobalBoundRun(initial);
+    await fixture.store.assertGlobalRunBinding(initial.run.id, initial.run.repositoryId, 'global');
+    expect((await fixture.store.recoverRun(initial.run.id))?.run.state).toBe('ACTIVE');
+    expect(
+      await fixture.admin.unsafe(
+        `select claim_id from "${fixture.schema}".forge_global_claims where owner_json::jsonb->>'runId'=$1`,
+        [initial.run.id]
+      )
+    ).toEqual([]);
+    expect(
+      await fixture.admin.unsafe(
+        `select id from "${fixture.schema}".forge_global_permits where owner_json::jsonb->>'runId'=$1`,
+        [initial.run.id]
+      )
+    ).toEqual([]);
+  } finally {
+    await fixture.close();
+  }
+});
+
 it('installs, upgrades, and safely reruns migrations without losing persisted authority', async () => {
   const schema = `forge_upgrade_${++fixtureOrdinal}`;
   const migration = { connectionString: ownerConnectionString, schema, role };
@@ -4374,7 +4483,9 @@ it('installs M4.2 global authority tables through migration owner and gates runt
     const versions = await admin.unsafe(
       `select version from "${schema}".forge_schema_migrations order by version`
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(versions.map((row) => row.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+    ]);
     expect(
       await runtimeSql.unsafe(
         `select revision,policy_version from "${schema}".forge_global_trust_registry`
@@ -4849,7 +4960,7 @@ it('closes PostgreSQL legacy writer creation after the deployment cutover barrie
   }
 });
 
-it.each([0, 13, Number.NaN])(
+it.each([0, 16, Number.NaN])(
   'rejects unsupported runtime migration target %s before creating schema objects',
   async (target) => {
     const schema = `forge_bad_target_${++fixtureOrdinal}`;

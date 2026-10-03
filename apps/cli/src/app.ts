@@ -50,6 +50,7 @@ import {
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
 import {
   LocalRuntimeBindingPolicy,
+  resolveVerificationPolicy,
   RunPreparation,
   TemporalRunLauncher
 } from '@ai-native-software-delivery-orchestrator/run-preparation';
@@ -89,6 +90,7 @@ export interface ForgeProgramDependencies {
     readonly artifactRevision: number;
     readonly approvalId: string;
     readonly approvedBy: string;
+    readonly repositoryIntegrationTasks?: readonly string[];
     readonly repositoryPath: string;
     readonly planDirectory?: string;
   }) => Promise<PlanApproval>;
@@ -182,22 +184,26 @@ interface SerializableProjectGraph {
   readonly symbolReferences?: readonly { readonly from: string; readonly to: string }[];
 }
 
-const verificationPolicy = {
-  version: 2,
-  autonomousRules: ['package-script-required', 'free-form-command-forbidden'],
-  packageScriptRunner: 'npm-from-pinned-node-image',
-  executionProfile: {
-    kind: 'docker-read-only',
-    image: 'node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43',
-    assurance: 'production-validation',
-    network: 'deny',
-    workspaceAccess: 'read-only',
-    processTree: 'container',
-    memoryBytes: 1_073_741_824,
-    cpuCount: 2,
-    pidLimit: 256
-  }
-} as const;
+const verificationPolicy = resolveVerificationPolicy(
+  {
+    version: 2,
+    autonomousRules: ['package-script-required', 'free-form-command-forbidden'],
+    packageScriptRunner: 'npm-from-pinned-node-image',
+    executionProfile: {
+      kind: 'docker-read-only',
+      image:
+        'node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43',
+      assurance: 'production-validation',
+      network: 'deny',
+      workspaceAccess: 'read-only',
+      processTree: 'container',
+      memoryBytes: 1_073_741_824,
+      cpuCount: 2,
+      pidLimit: 256
+    }
+  } as const,
+  process.env
+);
 
 const resolveReviewPolicy = (provider: string, model: string) => {
   const policy = createCodeReviewPolicy({ provider, model });
@@ -224,7 +230,12 @@ const createRepositoryPlan = async (request: {
   readonly reviewModel: string;
 }): Promise<PlanArtifact> => {
   const { policy, model } = resolveReviewPolicy(request.reviewProvider, request.reviewModel);
-  const planningGateway = new PiPlanningGatewayAdapter(undefined, { model });
+  const planningGateway = new PiPlanningGatewayAdapter(undefined, {
+    model,
+    ...(process.env.FORGE_MODEL_API_KEY === undefined
+      ? {}
+      : { apiKey: process.env.FORGE_MODEL_API_KEY })
+  });
   const snapshotProvider = new GitRepositorySnapshotProvider();
   const [content, registry, snapshotBeforeAnalysis] = await Promise.all([
     readFile(request.specificationPath, 'utf8'),
@@ -395,6 +406,7 @@ const approveRepositoryPlan = async (request: {
   readonly artifactRevision: number;
   readonly approvalId: string;
   readonly approvedBy: string;
+  readonly repositoryIntegrationTasks?: readonly string[];
   readonly repositoryPath: string;
   readonly planDirectory?: string;
 }): Promise<PlanApproval> => {
@@ -409,6 +421,9 @@ const approveRepositoryPlan = async (request: {
     approvalId: request.approvalId,
     artifact,
     approvedBy: request.approvedBy,
+    ...(request.repositoryIntegrationTasks === undefined
+      ? {}
+      : { repositoryIntegrationTasks: request.repositoryIntegrationTasks }),
     approvedAt: new Date().toISOString()
   });
   await approvalStore.save(approval);
@@ -478,10 +493,21 @@ const runRepositoryPlan = async (request: {
   // Fail before binding or provisioning a checkout if the selected deployment cannot open
   // its existing authority schema with the restricted runtime credential.
   const preflight = await openAuthorityPersistence(authorityConfiguration);
+  const globalMode = process.env.FORGE_WORKER_AUTHORITY_MODE === 'global';
   try {
     // The production worker cannot service a legacy launch once cutover closes
     // its writer admission. Refuse before provisioning a checkout or creating a run.
-    await preflight.assertLegacyWorkerCompositionAllowed();
+    if (globalMode) {
+      if (
+        !('assertGlobalWorkerCompositionAllowed' in preflight) ||
+        typeof preflight.assertGlobalWorkerCompositionAllowed !== 'function'
+      ) {
+        throw new Error('Global launch requires PostgreSQL global authority');
+      }
+      await preflight.assertGlobalWorkerCompositionAllowed();
+    } else {
+      await preflight.assertLegacyWorkerCompositionAllowed();
+    }
   } finally {
     await preflight.close();
   }
@@ -515,13 +541,22 @@ const runRepositoryPlan = async (request: {
   );
   return new RunPreparation({
     authority: { revalidate: bind },
-    checkouts: new GitIntegrationCheckoutProvisioner(runDirectory),
+    checkouts: globalMode
+      ? {
+          provision: async ({ sourceRepositoryPath, baseCommit }) => ({
+            repositoryPath: sourceRepositoryPath,
+            baseCommit,
+            integrationRef: `forge/integration/${intent.runId}`
+          })
+        }
+      : new GitIntegrationCheckoutProvisioner(runDirectory),
     bindings: new LocalRuntimeBindingPolicy({ workspaceRoot: runDirectory }),
     runtime: {
       startOrResumeRun: async (runtimeRequest) => {
         const persistence = await openAuthorityPersistence(authorityConfiguration);
         const launcher = new TemporalRunLauncher({
           persistence,
+          mode: globalMode ? 'global' : 'legacy',
           workflow: {
             start: (runId: string) =>
               startForgeRun(
@@ -535,7 +570,9 @@ const runRepositoryPlan = async (request: {
           }
         });
         try {
-          return await launcher.startOrResumeRun(runtimeRequest);
+          return process.env.FORGE_PREPARE_ONLY === 'true'
+            ? await launcher.prepareRun(runtimeRequest)
+            : await launcher.startOrResumeRun(runtimeRequest);
         } finally {
           await persistence.close();
         }
@@ -712,6 +749,10 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .option('--revision <number>', 'plan artifact revision', parsePositiveInteger, 1)
     .option('-r, --repository <path>', 'repository associated with the plan', cwd)
     .option('--plan-directory <path>', 'directory containing immutable plan artifacts')
+    .option(
+      '--allow-repository-integration <task-ids>',
+      'Explicitly approve repository Git execution rights for comma-separated task IDs'
+    )
     .action(
       async (
         artifactId: string,
@@ -721,6 +762,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           revision: number;
           repository: string;
           planDirectory?: string;
+          allowRepositoryIntegration?: string;
         }
       ) => {
         const approval = await approvePlan({
@@ -728,6 +770,13 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           artifactRevision: options.revision,
           approvalId: options.approvalId,
           approvedBy: options.approvedBy,
+          ...(options.allowRepositoryIntegration === undefined
+            ? {}
+            : {
+                repositoryIntegrationTasks: options.allowRepositoryIntegration
+                  .split(',')
+                  .map((id) => id.trim())
+              }),
           repositoryPath: resolve(cwd, options.repository),
           ...(options.planDirectory === undefined
             ? {}

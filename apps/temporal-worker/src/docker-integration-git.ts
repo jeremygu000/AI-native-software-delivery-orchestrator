@@ -46,11 +46,20 @@ export class DockerIntegrationGit implements GitCommandRunner {
     private readonly options: {
       image: string;
       workspace: TaskWorkspace;
+      commitIdentity?: { name: string; email: string };
       dockerExecutable?: string;
     }
   ) {
     if (!/^(?:[^\s]+@)?sha256:[a-f0-9]{64}$/.test(options.image)) {
       throw new Error('Integration Git image must be digest pinned');
+    }
+    if (
+      options.commitIdentity !== undefined &&
+      [options.commitIdentity.name, options.commitIdentity.email].some(
+        (value) => value.trim().length === 0 || /[\r\n\0]/.test(value)
+      )
+    ) {
+      throw new Error('Git commit identity must be nonempty single-line values');
     }
   }
   async run(cwd: string, args: readonly string[]): Promise<{ stdout: string; stderr: string }> {
@@ -66,6 +75,15 @@ export class DockerIntegrationGit implements GitCommandRunner {
     const commonPath = await realpath(resolve(root, common));
     const name = `forge-git-${randomUUID()}`;
     const docker = this.options.dockerExecutable ?? 'docker';
+    const identityArgs =
+      this.options.commitIdentity === undefined
+        ? []
+        : [
+            '-c',
+            `user.name=${this.options.commitIdentity.name}`,
+            '-c',
+            `user.email=${this.options.commitIdentity.email}`
+          ];
     try {
       await command(docker, [
         'create',
@@ -121,6 +139,7 @@ export class DockerIntegrationGit implements GitCommandRunner {
         'tag.gpgsign=false',
         '-c',
         'protocol.allow=never',
+        ...identityArgs,
         ...args
       ]);
       const inspected: unknown = JSON.parse((await command(docker, ['inspect', name])).stdout);
@@ -148,6 +167,7 @@ export class DockerIntegrationGit implements GitCommandRunner {
             'tag.gpgsign=false',
             '-c',
             'protocol.allow=never',
+            ...identityArgs,
             ...args
           ]) ||
         (config.Volumes !== undefined &&

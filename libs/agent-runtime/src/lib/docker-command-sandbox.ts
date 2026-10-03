@@ -72,7 +72,7 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
       '--pids-limit',
       String(request.profile.pidLimit),
       '--tmpfs',
-      '/tmp:rw,noexec,nosuid,size=64m',
+      `/tmp:rw,${request.profile.temporaryExecutable === true ? 'exec' : 'noexec'},nosuid,size=${request.profile.temporaryBytes ?? 67_108_864}`,
       '--workdir',
       '/workspace',
       '--volume',

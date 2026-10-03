@@ -1872,6 +1872,23 @@ it.for([
             builderAttemptId: 'attempt',
             impactId: 'attempt'
           });
+          const evidenceBeforeRetry = await executionStore.recoverVerificationEvidence(
+            request.run.id
+          );
+          const reviewsBeforeRetry = await executionStore.recoverReviews(request.run.id);
+          expect(
+            await global.forgeActivities.evaluateBuilderOutput({
+              runId: request.run.id,
+              taskId: 'task',
+              workspaceId: 'workspace',
+              builderAttemptId: 'attempt',
+              impactId: 'attempt'
+            })
+          ).toEqual(reviewed);
+          expect(await executionStore.recoverVerificationEvidence(request.run.id)).toEqual(
+            evidenceBeforeRetry
+          );
+          expect(await executionStore.recoverReviews(request.run.id)).toEqual(reviewsBeforeRetry);
           if (lifecycle === 'global-repair') {
             expect(reviewed.recommendation).toBe('repair');
             const admitted = await global.forgeActivities.admitRepair({
@@ -2338,6 +2355,59 @@ it.for([
                 `select next_token from "${schema}".forge_global_scopes where id=$1`,
                 [scopeId]
               );
+              if (lifecycle === 'integration-success') {
+                const failedPayload = {
+                  ...evidencePayload,
+                  id: 'failed-integration-verification',
+                  status: 'failed' as const
+                };
+                const failedEvidence = {
+                  ...failedPayload,
+                  fingerprint: taskVerificationEvidenceFingerprint(failedPayload)
+                };
+                const failedSubject = {
+                  ...subject,
+                  verificationFingerprint: failedEvidence.fingerprint
+                };
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='verification' and key=$2`,
+                  [request.run.id, agentRequest.attempt.id, JSON.stringify(failedEvidence)]
+                );
+                await executionStore.persistReview({
+                  runId: request.run.id,
+                  taskId: 'task',
+                  iteration: 2,
+                  subject: failedSubject,
+                  review: {
+                    recommendation: 'accept',
+                    summary: 'Cannot override a failed gate',
+                    findings: []
+                  }
+                });
+                await expect(
+                  resumedAuthority.admitIntegrationExecution({
+                    ...integrationRequest,
+                    reviewIteration: 2,
+                    subject: failedSubject
+                  })
+                ).rejects.toThrow();
+                expect(
+                  await admin.unsafe(
+                    `select next_token from "${schema}".forge_global_scopes where id=$1`,
+                    [scopeId]
+                  )
+                ).toEqual(counterBefore);
+                expect(
+                  await admin.unsafe(
+                    `select 1 from "${schema}".forge_global_claims where claim_id=$1`,
+                    [integrationRequest.claimId]
+                  )
+                ).toHaveLength(0);
+                await admin.unsafe(
+                  `update "${schema}".forge_records set payload=$3 where run_id=$1 and kind='verification' and key=$2`,
+                  [request.run.id, agentRequest.attempt.id, JSON.stringify(evidence)]
+                );
+              }
               if (lifecycle === 'integration-denied' || lifecycle === 'integration-success') {
                 const approvedBinding = request.taskBindings[0];
                 const completedBuilder = (await executionStore.recoverRun(request.run.id))

@@ -72,6 +72,98 @@ const request = (runId = 'run-1'): StartRuntimeRunRequest => ({
 });
 
 describe('TemporalRunLauncher', () => {
+  it('resumes identical multi-task authority despite persistence collection order and still rejects changed bindings', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'forge-launch-order-'));
+    const store = new DrizzleSqliteOrchestrationPersistence(join(directory, 'run.sqlite'));
+    let starts = 0;
+    const first = request('ordered-run');
+    const task = first.tasks[0];
+    const binding = first.taskBindings[0];
+    if (task === undefined || binding === undefined) {
+      throw new Error('Missing launch fixture');
+    }
+    const initial = {
+      ...first,
+      tasks: [{ ...task, id: 'task-z' }, task],
+      taskBindings: [
+        {
+          ...binding,
+          taskId: 'task-z',
+          agentId: 'agent-z',
+          leasePlan: { ...binding.leasePlan, taskId: 'task-z' },
+          workspace: {
+            ...binding.workspace,
+            id: 'workspace-z',
+            taskId: 'task-z',
+            workspacePath: '/workspace-z',
+            branchName: 'forge/ordered-run/task-z'
+          }
+        },
+        binding
+      ]
+    };
+    const launcher = new TemporalRunLauncher({
+      persistence: store,
+      workflow: {
+        async start(runId) {
+          starts++;
+          return { workflowId: runId, workflowRunId: 'execution' };
+        }
+      }
+    });
+    try {
+      await launcher.prepareRun(initial);
+      await launcher.startOrResumeRun({
+        ...initial,
+        tasks: initial.tasks.toReversed(),
+        taskBindings: initial.taskBindings.toReversed()
+      });
+      expect(starts).toBe(1);
+      await expect(
+        launcher.startOrResumeRun({
+          ...initial,
+          taskBindings: initial.taskBindings.map((item) => ({ ...item, agentId: 'changed-agent' }))
+        })
+      ).rejects.toThrow('authority mismatch');
+      expect(starts).toBe(1);
+    } finally {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  it('prepares durable dispatch without claiming a Temporal execution has started', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'forge-prepare-only-'));
+    const store = new DrizzleSqliteOrchestrationPersistence(join(directory, 'run.sqlite'));
+    let starts = 0;
+    const launcher = new TemporalRunLauncher({
+      persistence: store,
+      workflow: {
+        async start(runId) {
+          starts++;
+          return { workflowId: runId, workflowRunId: 'real-execution' };
+        }
+      }
+    });
+    try {
+      const initial = request('prepared-run');
+      expect(await launcher.prepareRun(initial)).toEqual({
+        runId: initial.run.id,
+        status: 'prepared'
+      });
+      expect(starts).toBe(0);
+      expect((await store.recoverRun(initial.run.id))?.attempts[0]?.attempt.state).toBe(
+        'PREPARING'
+      );
+      expect(await launcher.startOrResumeRun(initial)).toMatchObject({
+        workflowRunId: 'real-execution'
+      });
+      expect(starts).toBe(1);
+      expect((await store.recoverRun(initial.run.id))?.attempts).toHaveLength(1);
+    } finally {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it('requires atomic scope binding before initial dispatch and workflow launch, including recovery', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'forge-global-launcher-'));
     const store = new DrizzleSqliteOrchestrationPersistence(join(directory, 'run.sqlite'));

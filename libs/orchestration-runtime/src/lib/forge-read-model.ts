@@ -56,7 +56,7 @@ export interface ForgeAttemptSummary {
 
 export interface ForgeVerificationReference {
   readonly id: string;
-  readonly status: 'passed';
+  readonly status: 'passed' | 'failed';
   readonly verifiedAt: string;
   readonly fingerprint: string;
   readonly correlation: ForgeCorrelation;
