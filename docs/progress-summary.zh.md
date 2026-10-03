@@ -3993,3 +3993,11 @@ Planning 使用真实 SDK 与批准 execution adapter；global builder、repair�
 当前 Neon endpoint 是 PostgreSQL 18.0。Forge 的严格权限审计尚未扩展到新版本权限，因此明确只接受 PostgreSQL 14–16。只读检查还发现六个已配置角色都有数据库 `TEMP` 权限，不符合 Forge 对 runtime 和受限 operator 的最小权限要求。Bootstrap 在创建 schema 前失败；只读查询确认拟建的 comparison schema 不存在。共享数据库权限和旧 authority ledger 均未改变。因此 Neon authority 未进入 GLOBAL_READY，也没有运行新的带 trace 的 DeepSeek／Copilot／Codex GroundGraph E2E 对比。继续需要独立的 PostgreSQL 14–16 Neon 数据库及正确受限角色，或在隔离项目中另行复审 PostgreSQL 18 兼容性与权限迁移。先前已完成的三模型对比仍是历史证据，但不包含本次新增的运行时 trace。
 
 本阶段验证：`pnpm build`、格式、TypeScript 项目引用、类型感知 lint 和 `git diff --check` 全部通过。完整的镜像测试 `pnpm check` 也通过，包含真实 Temporal trace 传播测试与 Docker 验收测试；语句、分支、函数、代码行覆盖率依次为 90.75%、85.75%、94.70%、90.63%，高于未变更的 90/85/90/90 门槛。之前一次测试失败是因为向可选 supervisor 测试传了裸镜像 ID，而该测试要求带仓库名的 digest；最终使用本地已有且以 digest 固定的 Node 镜像。测试 exporter 和受阻的 Neon bootstrap 都不能证明七类 GroundGraph span 已进入 Tempo；这一点须在首次受支持的真实运行中确认。
+
+### 增量复审：deferred integration 的 task span 生命周期
+
+复审 `c032d08` 发现：获准执行的 task 在其受阻 integration 被排入稍后恢复队列时，trace 就提前结束了。持久化 scheduler 正确地先执行另一 task 再恢复 integration，但 trace duration 漏掉了这段等待。现在由 deferred continuation 持有 task span：其他工作执行期间保持开放，恢复集成结束后记录实际 outcome 并结束 span。若 workflow 失败或取消，尚未恢复的 deferred span 也会关闭。修复只改变 telemetry 生命周期，没有增加 workflow patch、activity command、authority contract、provider dependency 或数据库 mutation。
+
+新增真实 Temporal 回归先在 `c032d08` 复现提前结束，再验证 task A integration 受阻、task B 获授权并完成、task A 恢复集成；恢复操作最近的 task 祖先是 A，trace 标识一致，按 workflow 时钟的毫秒精度先于 task A 结束，且先于带 `outcome=integrated` 的 task A 导出。另一失败变体验证 task B 失败时，仍在 deferred 队列的 task A span 以 `outcome=error` 关闭。保留正常 tracing 测试，21 项定向 tracing／workflow 测试通过。本修复使 deferred task 耗时可靠；PostgreSQL 14–18 兼容、deployment owner 的数据库权限加固及 Neon traced E2E 对比仍属于独立阶段。本轮没有重跑 provider 对比，也没有改变线上数据库权限。
+
+最终验证通过 `pnpm build` 和完整镜像版 `pnpm check`：98 个文件中的 1002 项测试全部通过，无跳过，包含编译后 CLI／worker 验收。语句、分支、函数、代码行覆盖率保持为 90.75%、85.75%、94.70%、90.63%，超过未变更门槛。格式、TypeScript、lint 和 `git diff --check` 通过。修复保留为未提交工作树，供相对 `c032d08` 的增量复审。

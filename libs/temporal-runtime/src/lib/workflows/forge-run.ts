@@ -8,7 +8,7 @@ import {
   setHandler,
   sleep
 } from '@temporalio/workflow';
-import { context, trace } from '@opentelemetry/api';
+import { context, trace, type Span } from '@opentelemetry/api';
 import type { ForgeActivities } from '../activities/forge-activities.js';
 import {
   ForgeRunInputSchema,
@@ -106,8 +106,14 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
   });
 
   const executeWithCancellation = async (): Promise<ForgeRunResult> => {
+    const deferredTaskSpans = new Set<Span>();
     try {
-      return await executeForgeRun(runId, pendingWakeRepairIds, pendingIntegrationWakeKeys);
+      return await executeForgeRun(
+        runId,
+        pendingWakeRepairIds,
+        pendingIntegrationWakeKeys,
+        deferredTaskSpans
+      );
     } catch (error) {
       if (!isCancellation(error)) {
         throw error;
@@ -120,6 +126,12 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
         }
         return ForgeRunResultSchema.parse(result);
       });
+    } finally {
+      // Failure or cancellation can prevent a queued continuation from running.
+      for (const span of deferredTaskSpans) {
+        span.setAttribute('outcome', 'error');
+        span.end();
+      }
     }
   };
   if (!patched('forge-observability-v1')) {
@@ -144,7 +156,8 @@ export async function forgeRunWorkflow(input: ForgeRunInput): Promise<ForgeRunRe
 async function executeForgeRun(
   runId: string,
   pendingWakeRepairIds: Set<string>,
-  pendingIntegrationWakeKeys: Set<string>
+  pendingIntegrationWakeKeys: Set<string>,
+  deferredTaskSpans: Set<Span>
 ): Promise<ForgeRunResult> {
   // Step 1: ask the scheduler which tasks are authorized to start
   const initialReevaluation = await reevaluateRun({ runId });
@@ -207,6 +220,7 @@ async function executeForgeRun(
     for (const [index, builderResult] of builderResults.entries()) {
       const task = builderWave[index];
       const taskSpan = taskSpans[index];
+      let spanDeferred = false;
       if (task === undefined) {
         taskSpan?.end();
         continue;
@@ -367,16 +381,32 @@ async function executeForgeRun(
           const waitingReevaluation = await withinTask(index, () => reevaluateRun({ runId }));
           enqueueAuthorizations(waitingReevaluation.authorizedTasks);
           if (authorizedTasks.length > 0) {
+            // The continuation owns this task's span through integration settlement.
+            spanDeferred = true;
+            if (taskSpan !== undefined) {
+              deferredTaskSpans.add(taskSpan);
+            }
             deferredIntegrations.push(async () => {
-              let resumed = await withinTask(index, () =>
-                resumeBlockedIntegration({ runId, ...integrationWake })
-              );
-              while (resumed.status === 'blocked') {
-                await condition(() => pendingIntegrationWakeKeys.has(wakeKey));
-                pendingIntegrationWakeKeys.delete(wakeKey);
-                resumed = await withinTask(index, () =>
+              try {
+                let resumed = await withinTask(index, () =>
                   resumeBlockedIntegration({ runId, ...integrationWake })
                 );
+                while (resumed.status === 'blocked') {
+                  await condition(() => pendingIntegrationWakeKeys.has(wakeKey));
+                  pendingIntegrationWakeKeys.delete(wakeKey);
+                  resumed = await withinTask(index, () =>
+                    resumeBlockedIntegration({ runId, ...integrationWake })
+                  );
+                }
+                taskSpan?.setAttribute('outcome', resumed.status);
+              } catch (error) {
+                taskSpan?.setAttribute('outcome', 'error');
+                throw error;
+              } finally {
+                taskSpan?.end();
+                if (taskSpan !== undefined) {
+                  deferredTaskSpans.delete(taskSpan);
+                }
               }
             });
             continue;
@@ -404,7 +434,9 @@ async function executeForgeRun(
         taskSpan?.setAttribute('outcome', 'error');
         throw error;
       } finally {
-        taskSpan?.end();
+        if (!spanDeferred) {
+          taskSpan?.end();
+        }
       }
     }
 
