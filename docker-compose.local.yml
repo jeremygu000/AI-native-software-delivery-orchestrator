@@ -1,0 +1,46 @@
+name: forge-local
+services:
+  postgres:
+    image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: local_dba
+      POSTGRES_PASSWORD: ${LOCAL_DBA_PASSWORD:?Set LOCAL_DBA_PASSWORD}
+    ports:
+      - '127.0.0.1:54329:5432'
+    volumes:
+      - forge-postgres-16:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U local_dba -d postgres']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  temporal:
+    image: temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: temporal_service
+      POSTGRES_PWD: ${LOCAL_TEMPORAL_PASSWORD:?Set LOCAL_TEMPORAL_PASSWORD}
+      POSTGRES_SEEDS: postgres
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      SKIP_DB_CREATE: 'true'
+    ports:
+      - '127.0.0.1:7233:7233'
+
+  temporal-ui:
+    image: temporalio/ui:2.44.1@sha256:0240f934c5f4204656c68651f384d656b6cfa2e737cd8fd85a03640b72b9b4e7
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - '127.0.0.1:8233:8080'
+
+volumes:
+  forge-postgres-16:

@@ -42,3 +42,7 @@ Thumbs.db
 .claude/worktrees
 .claude/settings.local.json
 vitest.config.*.timestamp*
+
+# Local infrastructure credentials, signing keys and experiment evidence
+.env.local
+.local/
