@@ -3943,3 +3943,19 @@ Heartbeat 到期后，独立连接的 replacement 收到 Temporal attempt 2。�
 复审指出一个窄 blocker：migration 14 用执行 migration 的时钟填补未知历史 STARTING 时间戳。现已移除该 UPDATE，版本 14 保留为显式 no-op ledger entry。Migration 13 及此前全部 migration 文本不变：新准入转换记录实际转换时间，历史修复仅使用已经持久化的 `createdAt`。两种来源均不存在时，记录保留缺失时间戳，由既有 parser fail-closed，而不是声称不存在的执行证据。
 
 真实 PostgreSQL 升级回归证明版本 13／14 前后 malformed payload 完全不变且 parser 拒绝；另一个样例证明确定性的既有 `createdAt` 回填在重复安装版本 14 后仍保留。全镜像 `pnpm check` 通过 89 个文件中的全部 968 项测试，无跳过；语句、分支、函数、代码行覆盖率为 90.84%、85.91%、94.53%、90.72%。构建、格式、类型和 lint 检查通过。本轮不新增 GroundGraph 实验，不改变 recovery 行为或 abandonment 协议。已经记录被拒绝版本 14 checksum 的数据库会被既有 migration integrity 检查拒绝；本修复不改写其 ledger，也不编造替代历史证据。
+
+## 订阅模型执行：独立 Copilot 与 Codex adapters
+
+独立复审接受 `592d5f4`，关闭历史时间戳 blocker，并接受三项真实 GroundGraph 实验。本阶段让模型执行可以替换，不改变已接受 workflow 或 mutation authority。Provider-neutral resolved target 记录 provider／model 身份、reasoning effort、tool／context 能力、transport 与 adapter version。不含凭据的 fingerprint 在 inference 时验证，并进入既有 review policy 及 plan／approval／run identity。改变批准模型配置需要新批准；刷新 access token 不会授予另一模型或 mutation resource。
+
+GitHub Copilot subscription 与 Codex subscription 同等优先，采用两个独立 adapter。Copilot 使用 SDK GitHub OAuth provider 和 Copilot transports；Codex 使用自身 OpenAI OAuth provider 与专用 Codex Responses transport，不经过 GitHub 路由。认证与 target 分离，仅留在宿主。明确的 operator login 将凭据保存到当前用户的私有目录，使用 600 文件、原子替换与逐 provider refresh lock。过期凭据先刷新并保存再 inference；缺失／撤销授权直接失败，不回退 API key、不发现其他应用认证文件，也不自动触发交互登录。Direct API 路径保持兼容，同一 adapter 接口支持显式配置的 local execution；具体 Ollama gateway 部署和 Claude subscription adapter 不属于本增量。
+
+Planning 使用真实 SDK 与批准 execution adapter；global builder、repair、review 使用既有宿主模型 broker。禁用网络的 SDK 容器不接收 auth directory 或 provider 凭据。Forge tool schema 及既有 resource／permit gate 仍由宿主控制。Responses transport 所需 continuation metadata 只在有界宿主内存保留，不进入持久化 transcript 或批准证据。Legacy 非隔离 worker 拒绝 subscription profile，不静默切换 transport。
+
+测试覆盖 target fingerprint 拒绝、独立 provider 选择、原子 refresh 顺序与 single-flight、私有凭据存储、取消、真实 planning SDK 接线，以及真实 SDK 对受控 Copilot／Codex endpoint 的 HTTP／SSE。全镜像 `pnpm check` 通过 96 个文件中的全部 986 项测试，无跳过；语句、分支、函数、代码行覆盖率为 90.95%、85.93%、94.91%、90.84%。格式、TypeScript、lint 和 `pnpm build` 均通过。没有修改 Temporal workflow、PostgreSQL migration、fencing 或 recovery 协议。
+
+实际 Copilot／Codex 订阅 entitlement 与同基线 GroundGraph 对比尚未验证，因为两个账号均需要账号所有者明确交互授权。受控凭据及本地 endpoint 不等于真实订阅证据。没有将任何 subscription run 报告为 COMPLETED，也不将 token／SDK cost estimate 当作订阅 credit balance。Operator 命令及重新批准要求见 `docs/subscription-model-execution.en.md`；登录后仍需为分别批准的真实 run 记录 planning／tool 质量、repair、延迟、usage 可用性与 retry／replay。本增量等待独立复审；M3／M4.1／M4.2／M4.3 保持冻结。
+
+随后操作者授权两个订阅，并明确将两家 target 改为 `gpt-6.1-sol`、medium reasoning。Copilot 实时目录确认精确身份、Responses／tool 支持及 medium；独立 Codex endpoint 也完成该精确模型请求。显式 descriptor 补齐固定 SDK 目录缺口，没有映射旧模型或复制其 API 价格。真实 readiness 推理分别报告 Copilot 13 tokens、Codex 24 tokens，均不是 credit balance。定向模型／配置测试 20/20 通过，类型和 lint 通过。此前真实 Codex `gpt-5.5/high` planning 仅保留为历史证据，不作为新 profile 批准。同基线 COMPLETED 对比仍被本地数据库已拒绝的历史 version-14 ledger checksum 阻塞；没有改写 ledger 或 ownership。
+
+补齐精确模型 descriptor 后，最终验证通过 96 个文件中的全部 988 项测试，无跳过。语句、分支、函数、代码行覆盖率为 90.95%、85.94%、94.91%、90.84%，超过未变更的 90/85/90/90 门槛。格式、TypeScript、lint 和编译后 CLI／worker 构建通过。这验证实现及隔离 transport，不把受阻的真实 GroundGraph 对比当作已完成执行证据。
