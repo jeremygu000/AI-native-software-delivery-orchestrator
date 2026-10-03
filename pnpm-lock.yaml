@@ -138,13 +138,13 @@ importers:
       '@temporalio/activity':
         specifier: ^1.24.0
         version: 1.24.0
+      '@temporalio/client':
+        specifier: ^1.24.0
+        version: 1.24.0
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
     devDependencies:
-      '@temporalio/client':
-        specifier: ^1.24.0
-        version: 1.24.0
       '@temporalio/testing':
         specifier: ^1.24.0
         version: 1.24.0(@swc/helpers@0.5.23)(esbuild@0.28.2)

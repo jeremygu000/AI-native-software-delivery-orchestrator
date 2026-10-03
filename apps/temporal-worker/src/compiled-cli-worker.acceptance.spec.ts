@@ -446,6 +446,37 @@ describe('compiled CLI and Temporal worker process boundary', () => {
         FORGE_WORKER_DATABASE_PATH: undefined
       };
       const routed = { ...fixture, env };
+      const preflight = capture(process.execPath, [workerPath, '--preflight'], env);
+      expect((await preflight.exited).code).toBe(0);
+      expect(JSON.parse(preflight.output())).toMatchObject({
+        status: 'ready',
+        mode: 'legacy',
+        authorityId: env.FORGE_AUTHORITY_ID,
+        checks: [
+          { name: 'repository', status: 'passed' },
+          { name: 'authority', status: 'passed' },
+          { name: 'temporal', status: 'passed' }
+        ]
+      });
+      const untouched = await PostgresOrchestrationPersistence.connect(configuration);
+      try {
+        expect(await untouched.recoverRun(routed.runId)).toBeUndefined();
+      } finally {
+        await untouched.close();
+      }
+      const missingNamespace = capture(process.execPath, [workerPath, '--preflight'], {
+        ...env,
+        TEMPORAL_NAMESPACE: 'missing-preflight-namespace'
+      });
+      expect((await missingNamespace.exited).code).toBe(1);
+      expect(JSON.parse(missingNamespace.output())).toMatchObject({
+        status: 'not-ready',
+        checks: expect.arrayContaining([
+          { name: 'authority', status: 'passed' },
+          { name: 'temporal', status: 'failed' }
+        ])
+      });
+      expect(missingNamespace.output()).not.toContain(runtimeUrl);
       workerProcess = worker(routed);
       await approveAndRun(routed);
       await waitFor(

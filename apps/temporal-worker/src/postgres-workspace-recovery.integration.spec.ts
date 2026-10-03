@@ -809,24 +809,52 @@ it.for([
             if (address === null || typeof address === 'string') {
               throw new Error('Missing production model port');
             }
-            productionComposition = await createForgeWorkerComposition({
-              authority: { backend: 'postgres', ...config },
+            const deployment = {
+              authority: { backend: 'postgres' as const, ...config },
               repositoryPath: integration,
               codeReviewPolicy: createCodeReviewPolicy({ provider: 'openai', model: 'approved' }),
               reviewModel: {
-                api: 'openai-completions',
+                api: 'openai-completions' as const,
                 provider: 'openai',
                 id: 'approved',
                 name: 'Approved',
                 baseUrl: `http://127.0.0.1:${address.port}/v1`,
                 reasoning: false,
-                input: ['text'],
+                input: ['text' as const],
                 contextWindow: 32768,
                 maxTokens: 1024,
                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
               },
               globalExecution: { image, gitImage, apiKey: 'production-host-key' }
-            });
+            };
+            const preflightEnvironment = await TestWorkflowEnvironment.createTimeSkipping();
+            try {
+              const { inspectWorkerDeployment } = await import('./worker-preflight.js');
+              const before = await admin.unsafe(
+                `select count(*)::int as count from "${schema}".forge_records`
+              );
+              const report = await inspectWorkerDeployment({
+                deployment,
+                mode: 'global',
+                temporal: {
+                  serverUrl: `http://${preflightEnvironment.connection.options.address}`,
+                  namespace: 'default',
+                  taskQueue: 'preflight-does-not-poll',
+                  connectTimeoutMs: 10_000,
+                  workerShutdownTimeoutMs: 30_000
+                }
+              });
+              expect(report.status).toBe('ready');
+              expect(report.checks).toHaveLength(5);
+              expect(report.checks.every((check) => check.status === 'passed')).toBe(true);
+              expect(JSON.stringify(report)).not.toContain('production-host-key');
+              expect(
+                await admin.unsafe(`select count(*)::int as count from "${schema}".forge_records`)
+              ).toEqual(before);
+            } finally {
+              await preflightEnvironment.teardown();
+            }
+            productionComposition = await createForgeWorkerComposition(deployment);
             global = productionComposition;
           }
           const builderInput = {

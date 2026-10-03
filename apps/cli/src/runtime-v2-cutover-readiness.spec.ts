@@ -150,6 +150,7 @@ describe('Runtime V2 cutover readiness', () => {
 
   it('keeps activity composition in the independently deployable worker', () => {
     const workerSource = source('apps/temporal-worker/src/main.ts');
+    const deploymentSource = source('apps/temporal-worker/src/worker-deployment-config.ts');
     const workerCompositionSource = source('apps/temporal-worker/src/forge-worker-composition.ts');
     const compositionSource = source(
       'libs/forge-runtime-composition/src/forge-runtime-composition.ts'
@@ -157,7 +158,8 @@ describe('Runtime V2 cutover readiness', () => {
 
     expect(workerSource).toContain('createForgeWorkerComposition');
     expect(workerSource).toContain('createTemporalWorker');
-    expect(workerSource).toContain('resolveWorkerReviewDeploymentConfig');
+    expect(workerSource).toContain('resolveWorkerDeployment');
+    expect(deploymentSource).toContain('resolveWorkerReviewDeploymentConfig');
     expect(workerCompositionSource).toContain('PiCodingAgentGateway');
     expect(workerCompositionSource).toContain('PiTaskCodeReviewer');
     expect(compositionSource).not.toContain('PiCodingAgentGateway');

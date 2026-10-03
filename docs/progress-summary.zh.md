@@ -5,7 +5,7 @@
 
 ## 当前独立接受状态
 
-M3 Runtime V2／Temporal、M4.1 PostgreSQL authority 和 **M4.2 PostgreSQL 全局生产 authority 均为 PASS／CLOSED／FROZEN**。M4.2 在 `91a5ca9f5b6563619a9f221811beaa7052376da7` 上获得独立接受。下方阶段内容保留开发历史；较早的 OPEN 或“尚未实现”描述对应当时增量，不代表当前已接受版本。**M4.3 多 run／worker-fleet 验收为 IN PROGRESS**。首批 fleet 在 `1075a996e5fd3077949b843baf5b3e64b511b67b` 上获得独立接受；下方 abrupt-process-loss 批次是等待独立复审的 closure candidate。
+M3 Runtime V2／Temporal、M4.1 PostgreSQL authority、**M4.2 PostgreSQL 全局生产 authority 和 M4.3 多 run／worker-fleet 验收均为 PASS／CLOSED／FROZEN**。M4.2 在 `91a5ca9f5b6563619a9f221811beaa7052376da7` 上获得独立接受；M4.3 在 `44ed2a277202cd4f139dcbeecff68126d18ecc4e` 上获得独立接受，包括此前 `1075a996e5fd3077949b843baf5b3e64b511b67b` 的首批 fleet。下方保留开发历史；较早 OPEN、“尚未实现”或等待复审描述对应当时增量，不代表当前已接受版本。当前推进实际部署与测试准备，不重新扩充冻结的 fleet matrix。
 
 已接受的生产路径接起独立 setup／handoff、仅持有 runtime PostgreSQL 凭据的 worker、隔离 Pi builder／repair、宿主批准 inference、批准范围内 fenced resource claim、真实 verification 与 exact review、受限 Docker Git、claim release 和原子 run finalization。部署仍须准备批准镜像／model 凭据并完成特权 cutover／setup；接受不等于自动上线。不明确写入者保留阻塞 authority，要求独立／手工恢复。自动 recovery scheduling 和 SQLite 受保护 trust root 是延后项，不是 M4.2 blocker。
 
@@ -3911,3 +3911,13 @@ Heartbeat 到期后，独立连接的 replacement 收到 Temporal attempt 2。�
 测试专用 workflow 使用三秒 heartbeat timeout，最多两次 attempt，不改变生产 workflow policy。Temporal history 记录 timeout 和 replacement identity。Temporal 会压缩中间重试的 start event，因此原执行由 IPC attempt／identity、真实文件变化、durable permit 和确认 SIGKILL 证明，不虚构 history event。独立 scope 路径证明写入进展与释放，不声称第二条完整 review／integration 流程。测试不清算 orphan permit、不释放 uncertain claim，也不增加自动 recovery infrastructure。
 
 真实镜像下突然丢失场景通过。全镜像 `pnpm check` 通过 88 个文件中的全部 946 项测试，无跳过；格式、TypeScript、lint、覆盖率及编译后 CLI／worker 构建验收通过。语句、分支、函数、代码行覆盖率为 91.04%、86.07%、94.58% 和 90.93%。唯一依赖新增是显式声明既有 Temporal workflow 版本供验收 workflow 使用。M4.2 保持 CLOSED／FROZEN；M4.3 仍为等待独立复审的 IN PROGRESS closure candidate。本批只改验收测试、测试夹具与文档，不改 production authority、migration 或权限。
+
+## 实际部署准备：编译后 worker 的只读 preflight
+
+独立复审在 `44ed2a2` 上接受并冻结 M4.3，无 P0／P1 blocker。本阶段不再增加 fleet matrix。不明确写入者的独立／手工恢复保持已接受的操作边界；自动 recovery scheduling 与 SQLite 受保护 trust root 继续延后。
+
+编译后的 worker 现在支持 `--preflight`，在启动 activities 前检查目标部署。正常启动与 preflight 共用一个配置解析器，保证仓库、authority identity、Temporal namespace／queue、批准 review model 和显式 global 设置解释一致。报告只包含 readiness 与固定逐项状态，不输出 driver exception、连接串或 model 凭据。退出码 0 表示已检查前提全部通过；退出码 1 表示配置或某项前提失败。
+
+检查观察真实 Git 根目录及已提交 HEAD、PostgreSQL schema／role 和所选 legacy 或 GLOBAL_READY 准入 gate、已存在 Temporal namespace，以及 global 模式本地可用的 digest-pinned Pi／Git 镜像。Preflight 不 migration、不创建 run、不构造 activities、不 poll queue、不 pull／启动容器、不调用 inference。本命令刻意将 SQLite 报告为不可用，因为打开既有 persistence constructor 会创建或更新 schema。Ready 报告不证明 provider authentication、镜像行为、queue 兼容、批准 run setup／handoff 或未来写入者 quiescence；它不是 mutation authority，也不能替代正常准入检查。
+
+测试覆盖聚合／脱敏失败、真实 Git 和 Temporal 观察、编译后入口对真实 PostgreSQL／Temporal／Git 的检查、缺失 namespace，以及既有 global production 夹具中的真实 PostgreSQL 与两张固定镜像。Global 检查前后持久化 record 数不变，不暴露宿主 model key。全镜像 `pnpm check` 通过 89 个文件中的全部 950 项测试，无跳过，包括格式、TypeScript、lint 与编译后 CLI／worker 构建验收。语句、分支、函数、代码行覆盖率为 91.05%、86.05%、94.67% 和 90.94%。部署操作见 `docs/worker-deployment-preflight.en.md`。本阶段修改部署准备与测试，不修改冻结 authority、migration 或 fleet 语义。
