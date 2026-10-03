@@ -3,6 +3,7 @@ import {
   condition,
   defineSignal,
   isCancellation,
+  patched,
   proxyActivities,
   setHandler,
   sleep
@@ -130,6 +131,7 @@ async function executeForgeRun(
   const authorizedTasks = [...initialReevaluation.authorizedTasks];
   const queuedAuthorizationKeys = new Set(authorizedTasks.map(authorizationKey));
   const completedAuthorizationKeys = new Set<string>();
+  const deferredIntegrations: (() => Promise<void>)[] = [];
 
   const enqueueAuthorizations = (
     authorizations: typeof initialReevaluation.authorizedTasks
@@ -298,6 +300,27 @@ async function executeForgeRun(
         subjectRef: finalSubjectRef
       };
       const wakeKey = integrationWakeKey(integrationWake);
+      if (
+        integrationResult.status === 'blocked' &&
+        patched('global-integration-admitted-builder-progress-v1')
+      ) {
+        // A separately admitted builder can itself hold the repository scope
+        // needed by this integration. Do not wait on that blocker before
+        // consuming the durable authorizations which can settle it.
+        const waitingReevaluation = await reevaluateRun({ runId });
+        enqueueAuthorizations(waitingReevaluation.authorizedTasks);
+        if (authorizedTasks.length > 0) {
+          deferredIntegrations.push(async () => {
+            let resumed = await resumeBlockedIntegration({ runId, ...integrationWake });
+            while (resumed.status === 'blocked') {
+              await condition(() => pendingIntegrationWakeKeys.has(wakeKey));
+              pendingIntegrationWakeKeys.delete(wakeKey);
+              resumed = await resumeBlockedIntegration({ runId, ...integrationWake });
+            }
+          });
+          continue;
+        }
+      }
       while (integrationResult.status === 'blocked') {
         await condition(() => pendingIntegrationWakeKeys.has(wakeKey));
         pendingIntegrationWakeKeys.delete(wakeKey);
@@ -321,6 +344,10 @@ async function executeForgeRun(
       const postWaveReevaluation = await reevaluateRun({ runId });
       enqueueAuthorizations(postWaveReevaluation.authorizedTasks);
     }
+  }
+
+  for (const resumeIntegration of deferredIntegrations) {
+    await resumeIntegration();
   }
 
   // Step 8: finalize the run state
