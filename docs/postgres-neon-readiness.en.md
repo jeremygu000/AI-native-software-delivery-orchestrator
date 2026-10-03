@@ -78,14 +78,26 @@ For a separate private operator configuration, set
 
 Authority login URLs still forbid startup query parameters, including `options`,
 `user` and `role` overrides. For Neon, use query-free role URLs and configure
-verified TLS independently through the Postgres.js `PGSSL=verify-full` setting.
-Set it in the operator shell for bootstrap/setup; bootstrap writes it into the
+verified TLS through Forge's explicit `FORGE_POSTGRES_SSL=verify-full` setting.
+Configure it in the private operator environment for hardening and bootstrap/setup;
+bootstrap writes it into the
 private environment passed to CLI/workers. It rejects query parameters or missing
-verified TLS before any database connection or schema migration. Do not merely remove the TLS query settings without
-providing this transport configuration. A copied Neon URL with `sslmode` or
+verified TLS before any database connection or schema migration. Every persistence,
+migration and operator client uses the same connection helper, which passes
+`ssl: 'verify-full'` directly to Postgres.js. Non-loopback connections without that
+explicit setting are rejected before client creation. Loopback development uses
+explicit `ssl: false` when the setting is omitted. Forge does not rely on driver
+environment fallbacks. A copied Neon URL with `sslmode` or
 `channel_binding` query parameters does not satisfy the current authority login
-contract; the raw database-owner URL may retain its transport parameters because
-it is used only by the separate hardening tool.
+contract. Supply query-free URLs for all seven configured logins, including the
+actual database owner; no transport setting permits startup query overrides.
+
+The pinned Postgres.js 3.4.9 implementation does dynamically read `PGSSL` through
+its generic option fallback, although the README's environment table does not
+list it. This correction replaces that implicit dependency with a configuration
+field and tests the real client's resolved options. See the pinned
+[option parser](https://github.com/porsager/postgres/blob/v3.4.9/src/index.js) and
+[TLS implementation](https://github.com/porsager/postgres/blob/v3.4.9/src/connection.js).
 
 After hardening, follow `docs/forge-observability.en.md`: bootstrap only a new
 `forge_comparison_*` schema, retain three clean clones at the same baseline, use
@@ -98,3 +110,21 @@ all six Forge roles. No live database privileges were changed during that
 inspection. Dedicated-database confirmation, live hardening/bootstrap and the
 new traced GroundGraph comparison remain pending; the earlier provider
 comparison and the one-span Tempo smoke trace do not prove those steps.
+
+## Read-only TLS evidence
+
+On 2026-10-04, a private probe used the shared helper with query-free URLs,
+explicit `ssl: 'verify-full'` and deliberately conflicting `PGSSL=false`.
+All seven configured logins (database owner, Forge owner, runtime, trust,
+issuer, setup and recovery) connected successfully. Their actual Node TLS sockets
+reported `authorized=true`, no authorization error and `TLSv1.3`; each real
+Postgres.js client reported `options.ssl='verify-full'`.
+
+The requested `pg_stat_ssl` query returned `ssl=false` and a null TLS version for
+every backend. That observation is preserved; it is not reported as a backend
+TLS pass. Client-side verified TLS with a non-TLS backend observation is consistent
+with termination at Neon's connection proxy. This interpretation is an inference,
+supported by Neon's [proxy implementation overview](https://github.com/neondatabase/neon/blob/main/proxy/README.md).
+The probe confirms the client-to-endpoint transport, not encryption within
+Neon's infrastructure. All queries ran in read-only transactions. No live
+hardening, bootstrap, GLOBAL_READY or provider execution was performed.

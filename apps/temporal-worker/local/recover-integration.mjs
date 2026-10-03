@@ -2,8 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseEnv } from 'node:util';
-import postgres from 'postgres';
-import { PostgresGlobalMutationAuthority } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
+import {
+  PostgresGlobalMutationAuthority,
+  openPostgresConnection,
+  resolvePostgresConnectionSsl
+} from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 
 const [runId, workerPidText] = process.argv.slice(2);
 const workerPid = Number(workerPidText);
@@ -22,12 +25,13 @@ const env = parseEnv(await readFile(resolve('.env.local'), 'utf8'));
 const configuration = {
   connectionString: env.FORGE_POSTGRES_CONNECTION_STRING,
   schema: env.FORGE_POSTGRES_SCHEMA,
-  role: env.FORGE_POSTGRES_ROLE
+  role: env.FORGE_POSTGRES_ROLE,
+  ssl: resolvePostgresConnectionSsl(env.FORGE_POSTGRES_SSL)
 };
 if (!/^[a-z_][a-z0-9_]*$/.test(configuration.schema)) {
   throw new Error('Invalid authority schema');
 }
-const sql = postgres(configuration.connectionString, { max: 1 });
+const sql = openPostgresConnection(configuration, { max: 1 });
 const authority = await PostgresGlobalMutationAuthority.connect(configuration);
 try {
   const rows = await sql.unsafe(

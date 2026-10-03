@@ -13,7 +13,11 @@ import type {
   TaskRepairWorkItemStore,
   TaskVerificationEvidenceStore
 } from '@ai-native-software-delivery-orchestrator/domain';
-import { PostgresOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
+import {
+  PostgresOrchestrationPersistence,
+  resolvePostgresConnectionSsl,
+  type PostgresEvidenceStoreConfiguration
+} from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 
 import { DrizzleSqliteOrchestrationPersistence } from './drizzle-sqlite-orchestration-persistence.js';
 
@@ -37,12 +41,7 @@ export type AuthorityPersistence = OrchestrationPersistence &
 
 export type AuthorityConfiguration =
   | { readonly backend: 'sqlite'; readonly databasePath: string }
-  | {
-      readonly backend: 'postgres';
-      readonly connectionString: string;
-      readonly schema: string;
-      readonly role: string;
-    };
+  | ({ readonly backend: 'postgres' } & PostgresEvidenceStoreConfiguration);
 
 /** Stable, credential-free identity serialized into the application deployment contract. */
 export function authorityConfigurationIdentity(configuration: AuthorityConfiguration): string {
@@ -95,7 +94,8 @@ export function resolveAuthorityConfiguration(
     if (
       environment.FORGE_POSTGRES_CONNECTION_STRING !== undefined ||
       environment.FORGE_POSTGRES_SCHEMA !== undefined ||
-      environment.FORGE_POSTGRES_ROLE !== undefined
+      environment.FORGE_POSTGRES_ROLE !== undefined ||
+      environment.FORGE_POSTGRES_SSL !== undefined
     ) {
       throw new Error('PostgreSQL authority settings require FORGE_AUTHORITY_BACKEND=postgres');
     }
@@ -116,6 +116,7 @@ export function resolveAuthorityConfiguration(
     if (environment.FORGE_WORKER_DATABASE_PATH !== undefined) {
       throw new Error('PostgreSQL authority cannot use FORGE_WORKER_DATABASE_PATH');
     }
+    const ssl = resolvePostgresConnectionSsl(environment.FORGE_POSTGRES_SSL);
     const configuration: AuthorityConfiguration = {
       backend,
       connectionString: nonempty(
@@ -123,7 +124,8 @@ export function resolveAuthorityConfiguration(
         'FORGE_POSTGRES_CONNECTION_STRING'
       ),
       schema: nonempty(environment.FORGE_POSTGRES_SCHEMA, 'FORGE_POSTGRES_SCHEMA'),
-      role: nonempty(environment.FORGE_POSTGRES_ROLE, 'FORGE_POSTGRES_ROLE')
+      role: nonempty(environment.FORGE_POSTGRES_ROLE, 'FORGE_POSTGRES_ROLE'),
+      ...(ssl === undefined ? {} : { ssl })
     };
     assertDeploymentIdentity(configuration, environment.FORGE_AUTHORITY_ID);
     return configuration;

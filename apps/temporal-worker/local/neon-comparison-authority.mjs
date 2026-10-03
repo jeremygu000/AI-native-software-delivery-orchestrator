@@ -3,13 +3,14 @@ import { access, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { parseEnv } from 'node:util';
-import postgres from 'postgres';
 import {
   migratePostgresAuthoritySchema,
   POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
   PostgresGlobalMutationAuthority,
   PostgresTrustRegistryAdmin,
-  resolvePostgresAuthorityServerMajor
+  resolvePostgresAuthorityServerMajor,
+  openPostgresConnection,
+  resolvePostgresConnectionSsl
 } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 import { authorityConfigurationFingerprint } from '@ai-native-software-delivery-orchestrator/persistence';
 import { GitRepositorySnapshotProvider } from '@ai-native-software-delivery-orchestrator/workspace-git';
@@ -53,16 +54,20 @@ if (
 }
 if (Object.values(urls).some((url) => url.searchParams.size !== 0)) {
   throw new Error(
-    'Neon authority role URLs must be query-free; configure TLS with PGSSL=verify-full'
+    'Neon authority role URLs must be query-free; configure FORGE_POSTGRES_SSL=verify-full'
   );
 }
-if (process.env.PGSSL !== 'verify-full') {
-  throw new Error('Neon comparison bootstrap requires verified TLS through PGSSL=verify-full');
+const ssl = resolvePostgresConnectionSsl(
+  process.env.FORGE_POSTGRES_SSL ?? local.FORGE_POSTGRES_SSL
+);
+if (ssl !== 'verify-full') {
+  throw new Error('Neon comparison bootstrap requires FORGE_POSTGRES_SSL=verify-full');
 }
 const configuration = (role, schema) => ({
   connectionString: urls[role].toString(),
   schema,
-  role
+  role,
+  ssl
 });
 const candidates = ['deepseek', 'copilot', 'codex'];
 const repository = new GitRepositorySnapshotProvider();
@@ -105,7 +110,7 @@ if (action === 'prepare') {
   ) {
     throw new Error('Neon comparison checkouts do not share a clean baseline');
   }
-  const owner = postgres(urls.forge_owner.toString(), { max: 1 });
+  const owner = openPostgresConnection(configuration('forge_owner', schema), { max: 1 });
   try {
     const version = await owner`select current_setting('server_version_num')::integer as version`;
     resolvePostgresAuthorityServerMajor(Number(version[0].version));
@@ -155,7 +160,7 @@ if (action === 'prepare') {
   }
   const runtime = configuration('forge_runtime', schema);
   const privateEnv = [
-    'PGSSL=verify-full',
+    'FORGE_POSTGRES_SSL=verify-full',
     `FORGE_POSTGRES_CONNECTION_STRING=${runtime.connectionString}`,
     `FORGE_POSTGRES_SCHEMA=${schema}`,
     'FORGE_POSTGRES_ROLE=forge_runtime',

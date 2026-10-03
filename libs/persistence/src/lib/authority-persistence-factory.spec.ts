@@ -20,6 +20,35 @@ const postgres = {
 };
 
 describe('production authority routing', () => {
+  it('carries explicit PostgreSQL TLS through CLI/worker routing without changing durable authority identity', () => {
+    const baseline = {
+      backend: 'postgres' as const,
+      connectionString: postgres.FORGE_POSTGRES_CONNECTION_STRING,
+      schema: 'forge_prod',
+      role: 'forge_runtime'
+    };
+    const expected = authorityConfigurationFingerprint(baseline);
+    const configured = resolveAuthorityConfiguration({
+      ...postgres,
+      FORGE_POSTGRES_SSL: 'verify-full',
+      FORGE_AUTHORITY_ID: expected
+    });
+    expect(configured).toEqual({ ...baseline, ssl: 'verify-full' });
+    expect(authorityConfigurationFingerprint(configured)).toBe(expected);
+    expect(() =>
+      resolveAuthorityConfiguration({
+        ...postgres,
+        FORGE_POSTGRES_SSL: 'require',
+        FORGE_AUTHORITY_ID: expected
+      })
+    ).toThrow('FORGE_POSTGRES_SSL');
+    expect(() =>
+      resolveAuthorityConfiguration({
+        FORGE_WORKER_DATABASE_PATH: sqlite,
+        FORGE_POSTGRES_SSL: 'verify-full'
+      })
+    ).toThrow('PostgreSQL authority settings require');
+  });
   it('keeps the documented SQLite compatibility route without guessing from DATABASE_URL', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'forge-route-sqlite-'));
     const configuration = resolveAuthorityConfiguration({

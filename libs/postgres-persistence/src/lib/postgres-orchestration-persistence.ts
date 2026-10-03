@@ -1,4 +1,4 @@
-import postgres from 'postgres';
+import type postgres from 'postgres';
 import type {
   ActiveMutationClaimPersistence,
   AgentExecutionAttempt,
@@ -58,6 +58,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/domain';
 
 import type { PostgresEvidenceStoreConfiguration } from './postgres-evidence-store.js';
+import { openPostgresConnection } from './postgres-connection.js';
 import {
   assertPostgresAuthorityLogin,
   assertPostgresAuthoritySchema
@@ -182,7 +183,7 @@ export class PostgresOrchestrationPersistence
 
   private constructor(configuration: PostgresEvidenceStoreConfiguration) {
     this.#schema = `"${configuration.schema}"`;
-    this.#sql = postgres(configuration.connectionString, {
+    this.#sql = openPostgresConnection(configuration, {
       connection: { application_name: 'forge-authority' },
       onnotice: () => undefined
     });

@@ -1,8 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseEnv } from 'node:util';
-import postgres from 'postgres';
-import { resolvePostgresAuthorityServerMajor } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
+import {
+  resolvePostgresAuthorityServerMajor,
+  openPostgresConnection,
+  resolvePostgresConnectionSsl
+} from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 
 const [action, expectedDatabase, acknowledgement] = process.argv.slice(2);
 if (
@@ -57,7 +60,13 @@ for (const [role, key] of Object.entries(keys)) {
 }
 const quote = (name) => `"${name.replaceAll('"', '""')}"`;
 const restricted = Object.keys(keys).filter((role) => role !== 'forge_owner');
-const sql = postgres(databaseOwner.toString(), { max: 1, onnotice: () => undefined });
+const ssl = resolvePostgresConnectionSsl(
+  local.FORGE_POSTGRES_SSL ?? process.env.FORGE_POSTGRES_SSL
+);
+const sql = openPostgresConnection(
+  { connectionString: databaseOwner.toString(), ssl },
+  { max: 1, onnotice: () => undefined }
+);
 const inspect = async (tx) => {
   const identity = await tx`select current_database() as database, current_user as role,
     session_user as login, pg_get_userbyid(datdba) as owner,

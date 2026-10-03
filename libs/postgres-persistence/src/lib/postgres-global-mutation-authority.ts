@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
-import postgres from 'postgres';
+import type postgres from 'postgres';
 import {
   fingerprintPlanValue,
   verifyWorkspaceSetupAuthorization,
@@ -45,6 +45,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/domain';
 
 import type { PostgresEvidenceStoreConfiguration } from './postgres-evidence-store.js';
+import { openPostgresConnection } from './postgres-connection.js';
 import {
   assertPostgresAuthorityLogin,
   assertPostgresGlobalAuthoritySchema
@@ -301,7 +302,7 @@ export class PostgresGlobalMutationAuthority implements GlobalMutationAuthority 
 
   private constructor(configuration: PostgresEvidenceStoreConfiguration) {
     this.#schema = `"${configuration.schema}"`;
-    this.#sql = postgres(configuration.connectionString, {
+    this.#sql = openPostgresConnection(configuration, {
       connection: { application_name: 'forge-global-authority' },
       onnotice: () => undefined
     });

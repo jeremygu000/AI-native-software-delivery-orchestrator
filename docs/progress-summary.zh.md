@@ -4014,4 +4014,16 @@ Durable authority fixture 可以选择以 digest 固定的 Docker 镜像，确�
 
 验证通过 `pnpm build` 和完整镜像版 `pnpm check`，其中 durable authority fixture 使用 PostgreSQL 18。语句、分支、函数、代码行覆盖率分别为 90.79%、85.81%、94.72%、90.67%，超过未改变的门槛。PG16 authority 回归有 148 项通过，明确跳过五项 PG17／18 特有功能测试；PG18 执行全部 153 项 authority 测试。另有 subprocess 定向检查通过，覆盖错误私有 URL 不暴露输入及 canonical comparison profile 的凭据隔离。最终格式、TypeScript、lint 和 `git diff --check` 均通过。
 
-Neon 只读检查确认 PostgreSQL 18 与实际 `neondb_owner` 登录，六个 Forge 角色仍具有有效 TEMP。没有修改线上数据库权限，没有创建 comparison schema，也没有执行新的 provider run。因为撤销 PUBLIC 权限影响全部数据库用户，仍需确认该数据库专供 Forge。当前角色 URL 还带有 transport query parameter，因此 bootstrap 前须提供无 query 的 authority URL，并独立启用 verified TLS。Bootstrap 现在会在连接前拒绝 query parameter 或缺少 verified TLS 的配置，并在私有 runtime 环境中保存 `PGSSL=verify-full`。线上加固、全新 bootstrap、traced GroundGraph 执行及 Tempo 证据仍是后续运维步骤。本批改动保留供相对已接受 `06aa678` 的独立复审。
+Neon 只读检查确认 PostgreSQL 18 与实际 `neondb_owner` 登录，六个 Forge 角色仍具有有效 TEMP。没有修改线上数据库权限，没有创建 comparison schema，也没有执行新的 provider run。因为撤销 PUBLIC 权限影响全部数据库用户，仍需确认该数据库专供 Forge。当前角色 URL 带有 transport query parameter，因此 bootstrap 前须提供无 query 的 authority URL，并启用 verified TLS。本阶段已作为 `6a0710bcdc5fe9bc210689a5956d66af5f857908` 提交并推送。独立复审接受兼容性与加固权限边界，但将显式 TLS 连接配置及回归证据列为剩余 P1。下述 TLS 增量处理这一要求；线上加固、全新 bootstrap、traced GroundGraph 执行及 Tempo 证据仍待后续完成。
+
+### 增量复审：PostgreSQL 显式 TLS 配置
+
+TLS 用于保护数据库通信，并验证 endpoint 证书与 hostname。此前部署使用 `PGSSL=verify-full` 和 bootstrap 环境检查。核对固定的 Postgres.js 3.4.9 源码与真实 lazy client，确认其通用 option fallback 实际会识别 PGSSL，因此“这个版本完全忽略 PGSSL”的判断不准确。本修正仍去掉对隐式行为的依赖：`PostgresEvidenceStoreConfiguration` 增加仅属于 PostgreSQL 的可选 `ssl` transport field；deployment composition 解析 `FORGE_POSTGRES_SSL=verify-full`，传入共用连接 helper，再以 `ssl: 'verify-full'` 显式构造 Postgres.js。非 loopback 连接缺少该设置时，在创建 client 前拒绝。本地 loopback 开发默认显式 `ssl: false`，覆盖 driver 环境 fallback。
+
+Migration、runtime persistence、global authority、trust、issuer、setup、evidence 与 recovery 连接共用该 helper。Neon bootstrap、database owner hardening、独立 workspace preparation，以及 recovery／evidence 工具都传递同一设置；bootstrap 将 Forge 专属设置写入私有 comparison 配置。Startup URL query parameter 仍然禁止。Transport field 不改变 database／schema／role identity、authority fingerprint、migration SQL／checksum、durable command、provider adapter、domain contract 或 workflow patch。Database owner 凭据隔离保持不变。
+
+36 项定向测试通过：检查真实 Postgres.js client options，证明即使设置 PGSSL，缺少或弱化的远端 TLS 配置仍在构造前拒绝；显式 verified TLS 也能覆盖冲突的 PGSSL=false。七项 constructor-entry 回归在打开 socket 前，观察 migration／runtime／global／trust／issuer／setup／evidence 的实际配置传递。Configuration routing 验证 CLI／worker 携带该设置，同时既有 durable authority identity 不变。`pnpm build`、TypeScript 与 lint 均通过。
+
+只读线上 probe 在 PGSSL=false 下，用共用 helper 对七个 Neon 登录显式启用 verified TLS。所有 client 都解析为 ssl=verify-full，所有实际 Node TLS socket 都报告 authorized=true、无 authorization error、TLSv1.3。按要求查询的 pg_stat_ssl 对全部 backend 返回 false，TLS version 为 null；保留这些结果，不将其记为 backend TLS PASS。客户端 verified TLS 与 backend 观察结果符合 Neon proxy 终止 TLS 的解释，但这是推断，不是对 Neon 内部传输的测量。证据证明客户端到 endpoint 的连接。私有 probe 只在内存中规范化已知 provider transport parameter，没有改变私有 role URL、线上权限、schema 或 authority row。Hardening、bootstrap 与 traced E2E 明确仍不执行。本修正保留供相对 `6a0710b` 的增量复审。
+
+最终完整镜像版 `pnpm check` 通过，durable authority fixture 使用 PostgreSQL 18：101 个文件中的 1050 项测试全部通过，无跳过。语句、分支、函数、代码行覆盖率分别为 90.81%、85.86%、94.73%、90.69%，超过未变更门槛。Build、格式、TypeScript、lint 和 `git diff --check` 通过。可独立转交的增量复审说明见 `docs/postgres-tls-review.en.md`。按用户要求，本修正作为独立 commit 供增量复审；独立接受结论仍待确认。

@@ -30,11 +30,11 @@ The bootstrap refuses a dirty clone, an existing schema, or a PostgreSQL server
 outside Forge's supported 14–18 range. It writes only a new schema and ignored
 mode-600 runtime configuration; it does not rewrite an existing authority ledger.
 Complete the separate database-owner hardening in `docs/postgres-neon-readiness.en.md`
-first. Use query-free authority role URLs and verified TLS through `PGSSL=verify-full`
+first. Use query-free authority role URLs and explicit `FORGE_POSTGRES_SSL=verify-full`
 in the operator shell and private comparison environment.
 
 ```sh
-export PGSSL=verify-full
+export FORGE_POSTGRES_SSL=verify-full
 node apps/temporal-worker/local/neon-comparison-authority.mjs prepare forge_comparison_YYYYMMDD
 export FORGE_COMPARISON_ENV_FILE="$PWD/.local/neon-comparison.env"
 node apps/temporal-worker/local/comparison-run.mjs deepseek register

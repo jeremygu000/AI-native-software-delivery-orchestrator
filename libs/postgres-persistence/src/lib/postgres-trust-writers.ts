@@ -1,7 +1,8 @@
-import postgres from 'postgres';
+import type postgres from 'postgres';
 import { createPublicKey } from 'node:crypto';
 
 import type { PostgresEvidenceStoreConfiguration } from './postgres-evidence-store.js';
+import { openPostgresConnection } from './postgres-connection.js';
 import { assertPostgresAuthorityLogin } from './postgres-authority-schema.js';
 
 type Sql = ReturnType<typeof postgres>;
@@ -18,7 +19,7 @@ const connectWriter = async (
   functionName: 'forge_trust_write' | 'forge_generation_write'
 ): Promise<Sql> => {
   assertPostgresAuthorityLogin(configuration);
-  const sql = postgres(configuration.connectionString, {
+  const sql = openPostgresConnection(configuration, {
     connection: {
       application_name:
         functionName === 'forge_trust_write' ? 'forge-trust-admin' : 'forge-generation-issuer'

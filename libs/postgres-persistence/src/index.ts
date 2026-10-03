@@ -29,3 +29,5 @@ export {
   POSTGRES_AUTHORITY_SERVER_MAJORS,
   resolvePostgresAuthorityServerMajor
 } from './lib/postgres-server-version.js';
+// CLI, worker and independent operators share the explicit PostgreSQL transport boundary.
+export { openPostgresConnection, resolvePostgresConnectionSsl } from './lib/postgres-connection.js';

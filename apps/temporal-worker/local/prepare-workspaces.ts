@@ -17,7 +17,8 @@ import {
   PostgresExecutionGenerationIssuer,
   PostgresGlobalMutationAuthority,
   PostgresOrchestrationPersistence,
-  PostgresWorkspaceSetupAdmission
+  PostgresWorkspaceSetupAdmission,
+  resolvePostgresConnectionSsl
 } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 import {
   DockerWorkspaceGenerationSupervisor,
@@ -35,6 +36,7 @@ const comparisonEnv = process.env.FORGE_COMPARISON_ENV_FILE
   ? parseEnv(await readFile(process.env.FORGE_COMPARISON_ENV_FILE, 'utf8'))
   : {};
 const env = { ...localEnv, ...comparisonEnv };
+const ssl = resolvePostgresConnectionSsl(env.FORGE_POSTGRES_SSL ?? process.env.FORGE_POSTGRES_SSL);
 const [runId, artifactId, approvalId, operation] = process.argv.slice(2);
 if (operation !== undefined && operation !== '--abandon') {
   throw new Error('Unknown operator operation');
@@ -58,7 +60,7 @@ const config = (role: string, password: string | undefined) => {
     ) {
       throw new Error(`Neon operator connection does not match comparison authority: ${role}`);
     }
-    return { connectionString, schema: env.FORGE_POSTGRES_SCHEMA ?? 'forge', role };
+    return { connectionString, schema: env.FORGE_POSTGRES_SCHEMA ?? 'forge', role, ssl };
   }
   if (!password) {
     throw new Error('Missing independent operator credential');
@@ -69,7 +71,8 @@ const config = (role: string, password: string | undefined) => {
   return {
     connectionString: url.toString(),
     schema: env.FORGE_POSTGRES_SCHEMA ?? 'forge',
-    role
+    role,
+    ssl
   };
 };
 const runtime = config('forge_runtime', env.LOCAL_FORGE_RUNTIME_PASSWORD);

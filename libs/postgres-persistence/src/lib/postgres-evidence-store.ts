@@ -5,7 +5,10 @@ import type {
   TaskRepairWorkItemStore,
   TaskVerificationEvidenceStore
 } from '@ai-native-software-delivery-orchestrator/domain';
-import postgres from 'postgres';
+import {
+  openPostgresConnection,
+  type PostgresConnectionConfiguration
+} from './postgres-connection.js';
 
 /**
  * Candidate configuration metadata for a future Forge authority persistence adapter.
@@ -13,8 +16,7 @@ import postgres from 'postgres';
  * Schema and role are validation metadata only at this milestone. A future adapter must configure and test
  * search_path and role isolation with a real PostgreSQL deployment.
  */
-export interface PostgresEvidenceStoreConfiguration {
-  readonly connectionString: string;
+export interface PostgresEvidenceStoreConfiguration extends PostgresConnectionConfiguration {
   readonly schema: string;
   readonly role: string;
 }
@@ -63,7 +65,7 @@ export const connectPostgresEvidenceStore = (
   configuration: PostgresEvidenceStoreConfiguration
 ): PostgresEvidenceStoreConnection => {
   assertPostgresEvidenceStoreConfiguration(configuration);
-  const sql = postgres(configuration.connectionString, {
+  const sql = openPostgresConnection(configuration, {
     connection: { application_name: 'forge-authority' },
     onnotice: () => undefined
   });

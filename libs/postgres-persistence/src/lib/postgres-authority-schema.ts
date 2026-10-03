@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 
-import postgres from 'postgres';
+import type postgres from 'postgres';
 
 import {
   assertPostgresEvidenceStoreConfiguration,
   type PostgresEvidenceStoreConfiguration
 } from './postgres-evidence-store.js';
 import { resolvePostgresAuthorityServerMajor } from './postgres-server-version.js';
+import { openPostgresConnection } from './postgres-connection.js';
 
 type Sql = ReturnType<typeof postgres>;
 type TransactionSql = postgres.TransactionSql;
@@ -2108,7 +2109,7 @@ export const migratePostgresAuthoritySchema = async (
   ) {
     throw new Error('PostgreSQL authority writer roles must be distinct, valid logins on v8');
   }
-  const sql = postgres(configuration.connectionString);
+  const sql = openPostgresConnection(configuration);
   const schema = quote(configuration.schema);
   try {
     await sql.begin(async (tx) => {

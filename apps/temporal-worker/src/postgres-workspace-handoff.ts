@@ -2,10 +2,13 @@ import { createPublicKey } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import postgres from 'postgres';
+import type postgres from 'postgres';
 import type { SupervisedWorkspaceGeneration } from '@ai-native-software-delivery-orchestrator/workspace-git';
 import type { PostgresEvidenceStoreConfiguration } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
-import { assertPostgresAuthorityLogin } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
+import {
+  assertPostgresAuthorityLogin,
+  openPostgresConnection
+} from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 
 import {
   verifyWorkspaceRecoveryAttestation,
@@ -44,7 +47,7 @@ export class PostgresWorkspaceHandoff {
     ) {
       throw new Error('Recovery must use a separate Ed25519-authorized restricted login');
     }
-    const sql = postgres(recovery.connectionString, {
+    const sql = openPostgresConnection(recovery, {
       onnotice: () => undefined,
       connection: { application_name: 'forge-workspace-recovery' }
     });

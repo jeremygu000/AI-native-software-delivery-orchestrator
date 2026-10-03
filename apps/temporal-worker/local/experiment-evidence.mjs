@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseEnv } from 'node:util';
-import postgres from 'postgres';
+import {
+  openPostgresConnection,
+  resolvePostgresConnectionSsl
+} from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 import { Connection, Client } from '@temporalio/client';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -10,7 +13,13 @@ const runIds = process.argv.slice(2);
 if (runIds.length === 0) {
   throw new Error('Usage: experiment-evidence.mjs run-id [run-id ...]');
 }
-const sql = postgres(env.FORGE_POSTGRES_CONNECTION_STRING, { max: 1 });
+const sql = openPostgresConnection(
+  {
+    connectionString: env.FORGE_POSTGRES_CONNECTION_STRING,
+    ssl: resolvePostgresConnectionSsl(env.FORGE_POSTGRES_SSL)
+  },
+  { max: 1 }
+);
 const connection = await Connection.connect({ address: new URL(env.TEMPORAL_SERVER_URL).host });
 try {
   const client = new Client({ connection, namespace: env.TEMPORAL_NAMESPACE });

@@ -5,7 +5,10 @@ import {
   JsonFilePlanApprovalStore,
   JsonFilePlanArtifactStore
 } from '@ai-native-software-delivery-orchestrator/persistence';
-import { PostgresOrchestrationPersistence } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
+import {
+  PostgresOrchestrationPersistence,
+  resolvePostgresConnectionSsl
+} from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 import {
   resolveTemporalConfig,
   startForgeRun
@@ -39,7 +42,8 @@ if (
 const persistence = await PostgresOrchestrationPersistence.connect({
   connectionString: env.FORGE_POSTGRES_CONNECTION_STRING,
   schema: env.FORGE_POSTGRES_SCHEMA,
-  role: env.FORGE_POSTGRES_ROLE
+  role: env.FORGE_POSTGRES_ROLE,
+  ssl: resolvePostgresConnectionSsl(env.FORGE_POSTGRES_SSL)
 });
 try {
   await persistence.assertGlobalWorkerCompositionAllowed();

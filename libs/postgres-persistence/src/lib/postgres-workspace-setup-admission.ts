@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, randomBytes } from 'node:crypto';
 
-import postgres from 'postgres';
+import type postgres from 'postgres';
 import {
   fingerprintPlanValue,
   verifyWorkspaceSetupAuthorization,
@@ -16,6 +16,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/domain';
 
 import type { PostgresEvidenceStoreConfiguration } from './postgres-evidence-store.js';
+import { openPostgresConnection } from './postgres-connection.js';
 import { assertPostgresAuthorityLogin } from './postgres-authority-schema.js';
 
 type Sql = ReturnType<typeof postgres>;
@@ -34,7 +35,7 @@ export class PostgresWorkspaceSetupAdmission {
     configuration: PostgresEvidenceStoreConfiguration
   ): Promise<PostgresWorkspaceSetupAdmission> {
     assertPostgresAuthorityLogin(configuration);
-    const sql = postgres(configuration.connectionString, {
+    const sql = openPostgresConnection(configuration, {
       onnotice: () => undefined,
       connection: { application_name: 'forge-setup-admission' }
     });

@@ -2,9 +2,12 @@ import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseEnv } from 'node:util';
-import postgres from 'postgres';
 import { DockerPiSessionGateway } from '@ai-native-software-delivery-orchestrator/agent-runtime';
-import { PostgresGlobalMutationAuthority } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
+import {
+  PostgresGlobalMutationAuthority,
+  openPostgresConnection,
+  resolvePostgresConnectionSsl
+} from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 
 // Independent local operator: never infer quiescence from a lease timeout.
 const [runId, deadWorkerPidText, repairAttemptId] = process.argv.slice(2);
@@ -24,9 +27,10 @@ const env = parseEnv(await readFile(resolve('.env.local'), 'utf8'));
 const configuration = {
   connectionString: env.FORGE_POSTGRES_CONNECTION_STRING,
   schema: env.FORGE_POSTGRES_SCHEMA,
-  role: env.FORGE_POSTGRES_ROLE
+  role: env.FORGE_POSTGRES_ROLE,
+  ssl: resolvePostgresConnectionSsl(env.FORGE_POSTGRES_SSL)
 };
-const sql = postgres(configuration.connectionString, { max: 1 });
+const sql = openPostgresConnection(configuration, { max: 1 });
 const authority = await PostgresGlobalMutationAuthority.connect(configuration);
 try {
   const schema = configuration.schema;
