@@ -3959,3 +3959,19 @@ Planning 使用真实 SDK 与批准 execution adapter；global builder、repair�
 随后操作者授权两个订阅，并明确将两家 target 改为 `gpt-6.1-sol`、medium reasoning。Copilot 实时目录确认精确身份、Responses／tool 支持及 medium；独立 Codex endpoint 也完成该精确模型请求。显式 descriptor 补齐固定 SDK 目录缺口，没有映射旧模型或复制其 API 价格。真实 readiness 推理分别报告 Copilot 13 tokens、Codex 24 tokens，均不是 credit balance。定向模型／配置测试 20/20 通过，类型和 lint 通过。此前真实 Codex `gpt-5.5/high` planning 仅保留为历史证据，不作为新 profile 批准。同基线 COMPLETED 对比仍被本地数据库已拒绝的历史 version-14 ledger checksum 阻塞；没有改写 ledger 或 ownership。
 
 补齐精确模型 descriptor 后，最终验证通过 96 个文件中的全部 988 项测试，无跳过。语句、分支、函数、代码行覆盖率为 90.95%、85.94%、94.91%、90.84%，超过未变更的 90/85/90/90 门槛。格式、TypeScript、lint 和编译后 CLI／worker 构建通过。这验证实现及隔离 transport，不把受阻的真实 GroundGraph 对比当作已完成执行证据。
+
+## 同基线 DeepSeek、Copilot 与 Codex 真实对比
+
+操作者授权创建干净 comparison authority，而不是改写旧数据库被拒绝的 migration-14 ledger。既有 bootstrap 安装版本 1–15 并进入 GLOBAL_READY，保留旧数据库及私有环境。三个干净 GroundGraph clone 从 `1e8835d37a0827c111291fa8a6cf4f12cc2caa68` 出发，共享同一 repository scope，使用分别生成的 plan 与不可变批准顺序执行。共同任务要求拒绝空白 question、trim 有效输入，并明确保留 trim 前 10000 字符限制。没有手工修改目标源码。
+
+三个真实 PostgreSQL run 与 Temporal workflow 均完成：`comparison-deepseek` 使用 DeepSeek Flash/high，零 repair；`comparison-copilot` 使用 GPT-6.1 Sol/medium，一次 repair；独立 Codex `comparison-codex` 使用 GPT-6.1 Sol/medium，两次 repair。从 builder start 到 integration 的观测耗时为 161.7、244.7、337.8 秒。最终 verification gate 均通过，model review 均 accept；各自 3／4／5 个 claim 全部释放，generic／workspace 未完成 permit 均为零。观测到的 activity attempt 均为 1。Copilot 与 Codex 最初 builder 空 diff 被真实 review 拒绝；Codex 还通过 repair 修复一次真实格式检查失败。
+
+流程完成不等于质量等价。只读检查发现 DeepSeek 的 `.trim().min(1).max(10000)` 改变了要求保留的 trim 前长度限制，其测试与 accepting review 均漏检。Copilot 和 Codex 使用 `.min(1).max(10000).trim().min(1)` 及显式边界测试保留该约束。保留全部原始结果，包括 DeepSeek 缺陷，没有手工修复。每家一次且批准 reasoning 设置不同，不能推导一般排名。全流程 token 总量、模型请求数、订阅 credits 和费用没有持久化，均不可提供；不拿 readiness usage 代替。
+
+最终 commit、证据边界、耗时及复现命令见 `docs/subscription-provider-comparison.en.md`。本地 helper 仅在数据库不存在时创建新 authority，选择明确 provider queue／profile，并输出不含凭据或 transcript 的 durable evidence。格式、TypeScript、lint 通过。全镜像测试使用独立 ignored coverage 目录避开另一进程的 coverage lock：96 个文件 988/988 项通过，无跳过，覆盖率 90.95／85.94／94.91／90.84，编译构建验收通过。本验证批次没有修改 provider、workflow、migration 或 mutation 契约，冻结阶段保持冻结。
+
+## 本地 OpenTelemetry 最小验证
+
+这个小型运维阶段增加了独立的 `pnpm local:otel-check` 命令。它使用工作区根目录的 OpenTelemetry SDK 和 trace exporter，在 Node.js 中创建一条 `forge.startup` span，等待 OTLP／HTTP 导出完成后退出。endpoint 和 `Authorization=Basic` header 只放在被忽略且权限为 600 的 `.env.local` 或操作者的 shell，不写入受版本控制的文件。操作者可以先拿到 trace ID 去 Grafana 查询，再决定如何给 worker 和副作用加埋点。该命令不打开 Forge authority，也不改动 worker、workflow、mutation 或 recovery 路径。
+
+配置的 Grafana endpoint 已接受一次真实导出，service 为 `forge-local`，命令报告的 trace ID 为 `5c93a0275dbb98a693d2a3253302c3fa`。操作者已在 Tempo 中独立查到 `forge-local` 下只有一条 span 的 `forge.startup` trace。因此本地 smoke 路径的 OTLP 连接、trace 入库及 Tempo 查询均为 PASS。TypeScript、lint、本次修改文件的格式及 `git diff --check` 均通过。完整 `pnpm check` 因另一份并行修改的本地实验文件格式不合规而停在格式阶段。在沙箱外单独运行的完整测试有 970 项通过、18 项跳过；由于缺少这 18 项镜像测试的覆盖率，测得语句 87.69%、分支 82.77%、代码行 87.56%，覆盖率门槛未通过。命令和环境格式见 `docs/local-groundgraph-validation.en.md`。运行时 span 传播和稳定的 run／task／attempt 属性仍未实现。
