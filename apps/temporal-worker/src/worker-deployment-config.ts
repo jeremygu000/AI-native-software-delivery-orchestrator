@@ -36,8 +36,7 @@ export const resolveWorkerDeployment = (environment: NodeJS.ProcessEnv = process
     if (
       image === undefined ||
       gitImage === undefined ||
-      apiKey === undefined ||
-      apiKey.trim().length === 0 ||
+      (review.execution === undefined && (apiKey === undefined || apiKey.trim().length === 0)) ||
       !/^(?:[^\s]+@)?sha256:[a-f0-9]{64}$/.test(image) ||
       !/^(?:[^\s]+@)?sha256:[a-f0-9]{64}$/.test(gitImage)
     ) {
@@ -68,7 +67,8 @@ export const resolveWorkerDeployment = (environment: NodeJS.ProcessEnv = process
     globalExecution = {
       image,
       gitImage,
-      apiKey,
+      apiKey: review.execution === undefined ? (apiKey ?? '') : '',
+      ...(review.execution === undefined ? {} : { execution: review.execution }),
       sessionTimeoutMs,
       ...(name === undefined || email === undefined ? {} : { commitIdentity: { name, email } })
     };

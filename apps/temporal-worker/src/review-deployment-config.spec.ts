@@ -22,6 +22,28 @@ const model: PiSessionModel = {
 };
 
 describe('resolveWorkerReviewDeploymentConfig', () => {
+  it.each(['github-copilot', 'openai-codex'])(
+    'pins %s subscription profile independently of API credentials',
+    (provider) => {
+      const result = resolveWorkerReviewDeploymentConfig({
+        FORGE_WORKER_REVIEW_PROVIDER: provider,
+        FORGE_WORKER_REVIEW_MODEL: 'gpt-5.4',
+        FORGE_SUBSCRIPTION_AUTH_DIRECTORY: '/private/host-only-auth'
+      });
+      expect(result.execution?.target.providerId).toBe(provider);
+      expect(result.policy.reviewer.model.executionTarget).toEqual(result.execution?.target);
+      expect(JSON.stringify(result.policy)).not.toContain('/private/host-only-auth');
+      const changed = resolveWorkerReviewDeploymentConfig({
+        FORGE_WORKER_REVIEW_PROVIDER: provider,
+        FORGE_WORKER_REVIEW_MODEL: 'gpt-5.4',
+        FORGE_SUBSCRIPTION_AUTH_DIRECTORY: '/private/host-only-auth',
+        FORGE_MODEL_REASONING_EFFORT: 'low'
+      });
+      expect(codeReviewPolicyFingerprint(result.policy)).not.toBe(
+        codeReviewPolicyFingerprint(changed.policy)
+      );
+    }
+  );
   it('fails closed for missing or blank deployment identity', () => {
     expect(() => resolveWorkerReviewDeploymentConfig({}, () => model)).toThrow(
       'Worker requires FORGE_WORKER_REVIEW_PROVIDER and FORGE_WORKER_REVIEW_MODEL'

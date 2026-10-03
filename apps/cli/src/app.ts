@@ -7,7 +7,8 @@ import {
   PiCodeReviewModelResolver,
   PiPlanningGatewayAdapter,
   PiPlanningAgent,
-  PiSemanticPlanReviewer
+  PiSemanticPlanReviewer,
+  resolveSubscriptionExecution
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import { DeterministicConflictEngine } from '@ai-native-software-delivery-orchestrator/conflict-engine';
 import type {
@@ -206,10 +207,19 @@ const verificationPolicy = resolveVerificationPolicy(
 );
 
 const resolveReviewPolicy = (provider: string, model: string) => {
-  const policy = createCodeReviewPolicy({ provider, model });
+  provider = provider.trim();
+  model = model.trim();
+  const resolved = new PiCodeReviewModelResolver().resolve({ provider, id: model });
+  const execution = resolved === undefined ? undefined : resolveSubscriptionExecution(resolved);
+  const policy = createCodeReviewPolicy({
+    provider,
+    model,
+    ...(execution === undefined ? {} : { executionTarget: execution.target })
+  });
   return {
     policy,
-    model: new PiCodeReviewModelResolver().resolve(policy.reviewer.model)
+    model: resolved,
+    execution
   };
 };
 
@@ -229,9 +239,13 @@ const createRepositoryPlan = async (request: {
   readonly reviewProvider: string;
   readonly reviewModel: string;
 }): Promise<PlanArtifact> => {
-  const { policy, model } = resolveReviewPolicy(request.reviewProvider, request.reviewModel);
+  const { policy, model, execution } = resolveReviewPolicy(
+    request.reviewProvider,
+    request.reviewModel
+  );
   const planningGateway = new PiPlanningGatewayAdapter(undefined, {
     model,
+    ...(execution === undefined ? {} : { execution }),
     ...(process.env.FORGE_MODEL_API_KEY === undefined
       ? {}
       : { apiKey: process.env.FORGE_MODEL_API_KEY })

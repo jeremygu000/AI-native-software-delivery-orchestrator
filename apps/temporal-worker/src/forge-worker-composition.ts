@@ -132,6 +132,7 @@ export interface ForgeWorkerCompositionDeployment {
     readonly gitImage: string;
     readonly commitIdentity?: { name: string; email: string };
     readonly apiKey: string;
+    readonly execution?: import('@ai-native-software-delivery-orchestrator/agent-runtime').ResolvedSubscriptionExecution;
     readonly sessionTimeoutMs?: number;
   };
 }
@@ -236,6 +237,9 @@ export async function createForgeWorkerComposition(
       const proxy = new ApprovedPiHostModelProxy({
         model: deployment.reviewModel,
         apiKey: deployment.globalExecution.apiKey,
+        ...(deployment.globalExecution.execution === undefined
+          ? {}
+          : { execution: deployment.globalExecution.execution }),
         ...(deployment.reviewModel.provider === 'deepseek' && deployment.reviewModel.reasoning
           ? { reasoning: 'high' as const }
           : {})
@@ -353,6 +357,11 @@ export async function createForgeWorkerComposition(
         throw error;
       }
     } else {
+      if (
+        deployment.codeReviewPolicy.reviewer.model.executionTarget?.providerKind === 'subscription'
+      ) {
+        throw new Error('Subscription execution requires the isolated global worker composition');
+      }
       if (overrides.persistence === undefined) {
         if (
           !('assertLegacyWorkerCompositionAllowed' in persistence) ||

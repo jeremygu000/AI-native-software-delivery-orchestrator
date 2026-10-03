@@ -1,5 +1,7 @@
 import {
   PiCodeReviewModelResolver,
+  resolveSubscriptionExecution,
+  type ResolvedSubscriptionExecution,
   type PiSessionModel
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import {
@@ -10,6 +12,7 @@ import {
 export interface WorkerReviewDeploymentConfig {
   readonly policy: CodeReviewPolicy;
   readonly model: PiSessionModel;
+  readonly execution?: ResolvedSubscriptionExecution;
 }
 
 export const resolveWorkerReviewDeploymentConfig = (
@@ -23,10 +26,18 @@ export const resolveWorkerReviewDeploymentConfig = (
   if (provider === undefined || model === undefined) {
     throw new Error('Worker requires FORGE_WORKER_REVIEW_PROVIDER and FORGE_WORKER_REVIEW_MODEL');
   }
-  const policy = createCodeReviewPolicy({ provider, model });
+  const resolved = resolveModel({ provider: provider.trim(), id: model.trim() });
+  const execution =
+    resolved === undefined ? undefined : resolveSubscriptionExecution(resolved, environment);
+  const policy = createCodeReviewPolicy({
+    provider,
+    model,
+    ...(execution === undefined ? {} : { executionTarget: execution.target })
+  });
   return {
     policy,
-    model: resolveModel(policy.reviewer.model)
+    model: resolved,
+    ...(execution === undefined ? {} : { execution })
   };
 };
 
