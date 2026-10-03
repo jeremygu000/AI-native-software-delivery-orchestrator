@@ -17,6 +17,22 @@ export { runIsolatedPiSession } from './lib/isolated-pi-session.js';
 export { ApprovedPiHostModelProxy } from './lib/pi-model-proxy.js';
 export type { PiHostModelProxy } from './lib/pi-model-proxy.js';
 export {
+  ApiModelExecutionAdapter,
+  GitHubCopilotExecutionAdapter,
+  CodexSubscriptionExecutionAdapter
+} from './lib/model-execution-provider.js';
+export type {
+  ModelExecutionProvider,
+  SubscriptionCredentialStore
+} from './lib/model-execution-provider.js';
+export { FileSubscriptionCredentialStore } from './lib/subscription-credential-store.js';
+export {
+  resolveSubscriptionExecution,
+  isSubscriptionProvider
+} from './lib/model-execution-deployment.js';
+export type { ResolvedSubscriptionExecution } from './lib/model-execution-deployment.js';
+export { loginModelSubscription } from './lib/subscription-login.js';
+export {
   createPlanningFactTools,
   PiPlanningAgent,
   PiPlanningGatewayAdapter

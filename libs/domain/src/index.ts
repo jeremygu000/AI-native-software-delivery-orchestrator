@@ -14,3 +14,8 @@ export * from './lib/workspace.js';
 export * from './lib/agent-execution.js';
 export * from './lib/command-policy.js';
 export * from './lib/command-sandbox.js';
+export {
+  createModelExecutionTarget,
+  resolvedModelExecutionTargetSchema
+} from './lib/model-execution.js';
+export type { ProviderAuth, ResolvedModelExecutionTarget } from './lib/model-execution.js';

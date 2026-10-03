@@ -7,6 +7,7 @@ import { AuthStorage, createAgentSession, ModelRegistry } from '@mariozechner/pi
 
 import { createIsolatedPlanningResourceLoader } from './pi-planning-agent.js';
 import { createReadOnlyPiTools, type PiToolCall, type PiToolResult } from './pi-gateway.js';
+import { resolveSubscriptionModel } from './subscription-model-catalog.js';
 
 type PiSdkSessionOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 
@@ -62,6 +63,12 @@ export class PiCodeReviewModelResolver implements CodeReviewModelResolver {
   }
 
   resolve(model: CodeReviewPolicy['reviewer']['model']): PiSdkSessionOptions['model'] {
+    if (model.provider === 'github-copilot' || model.provider === 'openai-codex') {
+      const subscriptionModel = resolveSubscriptionModel(model.provider, model.id);
+      if (subscriptionModel !== undefined) {
+        return subscriptionModel;
+      }
+    }
     // DeepSeek renamed the Flash API identity after the pinned SDK catalogue.
     // Keep the deployment-approved identity, using the same provider compatibility.
     if (model.provider === 'deepseek' && model.id === 'deepseek-flash') {

@@ -8,6 +8,8 @@ import {
 } from '@mariozechner/pi-ai';
 import { createControlledPiTools, type PiToolCall } from './pi-gateway.js';
 import { protocolObject, protocolText } from './pi-session-protocol.js';
+import type { ResolvedSubscriptionExecution } from './model-execution-deployment.js';
+import { createHash } from 'node:crypto';
 
 /** Public routing identity only. It contains no provider endpoint or credential. */
 export const isolatedPiModel: Model<'openai-completions'> = {
@@ -139,17 +141,27 @@ export interface PiHostModelProxy {
 /** Deployment configuration fixes the model, credential and budgets. The container
  * supplies conversation content, never a URL, key, header, provider or options. */
 export class ApprovedPiHostModelProxy implements PiHostModelProxy {
+  // Provider-specific continuation material stays on the host, never in durable facts.
+  readonly #continuations = new Map<string, AssistantMessage>();
   constructor(
     private readonly configuration: {
       readonly model: Model<Api>;
-      readonly apiKey: string;
+      readonly apiKey?: string;
+      readonly execution?: ResolvedSubscriptionExecution;
       readonly maxTokens?: number;
       readonly reasoning?: 'high';
       readonly complete?: typeof completeSimple;
     }
   ) {
-    if (configuration.apiKey.length === 0) {
+    if (configuration.execution === undefined && (configuration.apiKey ?? '').length === 0) {
       throw new Error('Approved host model requires a credential');
+    }
+    if (
+      configuration.execution !== undefined &&
+      (configuration.execution.target.providerId !== configuration.model.provider ||
+        configuration.execution.target.modelId !== configuration.model.id)
+    ) {
+      throw new Error('Host model and approved execution target differ');
     }
   }
 
@@ -177,14 +189,21 @@ export class ApprovedPiHostModelProxy implements PiHostModelProxy {
       messages: array(item.messages)
         .map(parseMessage)
         .map((message) =>
-          message.role === 'assistant'
-            ? {
+          message.role === 'assistant' && this.configuration.execution !== undefined
+            ? (this.#continuations.get(this.continuationKey(message)) ?? {
                 ...message,
                 api: this.configuration.model.api,
                 provider: this.configuration.model.provider,
                 model: this.configuration.model.id
-              }
-            : message
+              })
+            : message.role === 'assistant'
+              ? {
+                  ...message,
+                  api: this.configuration.model.api,
+                  provider: this.configuration.model.provider,
+                  model: this.configuration.model.id
+                }
+              : message
         ),
       tools: createControlledPiTools(async () => {
         throw new Error('Model inference cannot execute a tool');
@@ -192,21 +211,34 @@ export class ApprovedPiHostModelProxy implements PiHostModelProxy {
         .filter((tool) => names.includes(tool.name))
         .map(({ name, description, parameters }) => ({ name, description, parameters }))
     };
-    const response = await (this.configuration.complete ?? completeSimple)(
-      this.configuration.model,
-      context,
-      {
-        apiKey: this.configuration.apiKey,
-        signal,
-        maxTokens: this.configuration.maxTokens ?? 4096,
-        ...(this.configuration.reasoning === undefined
-          ? {}
-          : { reasoning: this.configuration.reasoning }),
-        maxRetries: 0,
-        timeoutMs: 60_000
-      }
-    );
+    const response =
+      this.configuration.execution === undefined
+        ? await (this.configuration.complete ?? completeSimple)(this.configuration.model, context, {
+            apiKey: this.configuration.apiKey,
+            signal,
+            maxTokens: this.configuration.maxTokens ?? 4096,
+            ...(this.configuration.reasoning === undefined
+              ? {}
+              : { reasoning: this.configuration.reasoning }),
+            maxRetries: 0,
+            timeoutMs: 60_000
+          })
+        : await this.configuration.execution.provider.complete(
+            this.configuration.execution.target,
+            context,
+            signal
+          );
     // Never forward provider diagnostics/error bodies or credential-bearing metadata.
-    return parseIsolatedAssistant(response);
+    const normalized = parseIsolatedAssistant(response);
+    if (this.configuration.execution !== undefined) {
+      if (this.#continuations.size >= 1024) {
+        throw new Error('Host subscription continuation limit reached');
+      }
+      this.#continuations.set(this.continuationKey(normalized), response);
+    }
+    return normalized;
+  }
+  private continuationKey(message: AssistantMessage): string {
+    return createHash('sha256').update(JSON.stringify(message)).digest('hex');
   }
 }

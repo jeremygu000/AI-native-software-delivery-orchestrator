@@ -15,6 +15,8 @@ import {
 import { Type } from 'typebox';
 
 import type { PiSessionModel } from './pi-gateway.js';
+import type { ResolvedSubscriptionExecution } from './model-execution-deployment.js';
+import { modelExecutionStream } from './model-execution-stream.js';
 
 type PiSdkSessionOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 
@@ -206,6 +208,9 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
     createSession: PiPlanningSessionFactory = async (options) => {
       const resourceLoader = await createIsolatedPlanningResourceLoader();
       const { session } = await createAgentSession({ ...options, resourceLoader });
+      if (configuration.execution !== undefined) {
+        session.agent.streamFn = modelExecutionStream(configuration.execution);
+      }
       return {
         session: {
           sessionId: session.sessionId,
@@ -230,11 +235,18 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
         }
       };
     },
-    options: { readonly model?: PiSessionModel; readonly apiKey?: string } = {}
+    configuration: {
+      readonly model?: PiSessionModel;
+      readonly apiKey?: string;
+      readonly execution?: ResolvedSubscriptionExecution;
+    } = {}
   ) {
     this.#createSession = createSession;
-    this.#model = options.model;
-    this.#apiKey = options.apiKey;
+    this.#model = configuration.model;
+    this.#apiKey =
+      configuration.execution === undefined
+        ? configuration.apiKey
+        : 'forge-host-subscription-routing';
   }
 
   async generate(options: {
