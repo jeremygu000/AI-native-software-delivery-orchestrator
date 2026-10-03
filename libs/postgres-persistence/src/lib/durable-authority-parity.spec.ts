@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 
 import postgres from 'postgres';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
@@ -53,6 +53,8 @@ import {
 } from './postgres-authority-schema.js';
 
 let directory: string;
+let containerId: string | undefined;
+let serverMajor: number;
 let connectionString: string;
 let role: string;
 let runtimeRole: string;
@@ -82,27 +84,77 @@ const port = async (): Promise<number> =>
   });
 
 beforeAll(async () => {
-  directory = mkdtempSync(join(tmpdir(), 'forge-postgres-authority-'));
-  const data = join(directory, 'data');
-  execFileSync('initdb', ['-D', data, '-A', 'trust', '--no-instructions'], { stdio: 'pipe' });
+  const image = process.env.FORGE_TEST_POSTGRES_IMAGE;
   const assignedPort = await port();
-  execFileSync(
-    'pg_ctl',
-    [
-      '-D',
-      data,
-      '-l',
-      join(directory, 'postgres.log'),
-      '-o',
-      `-h 127.0.0.1 -p ${assignedPort}`,
-      '-w',
-      'start'
-    ],
-    { stdio: 'pipe' }
-  );
-  connectionString = `postgresql://127.0.0.1:${assignedPort}/postgres`;
+  if (image !== undefined) {
+    if (!/@sha256:[a-f0-9]{64}$/.test(image)) {
+      throw new Error('PostgreSQL test image must be pinned by repository digest');
+    }
+    containerId = execFileSync(
+      'docker',
+      [
+        'run',
+        '--rm',
+        '--detach',
+        '--publish',
+        `127.0.0.1:${assignedPort}:5432`,
+        '--env',
+        'POSTGRES_HOST_AUTH_METHOD=trust',
+        '--env',
+        'POSTGRES_INITDB_ARGS=--locale=C',
+        image
+      ],
+      { encoding: 'utf8' }
+    ).trim();
+    const deadline = Date.now() + 60_000;
+    while (true) {
+      try {
+        execFileSync(
+          'docker',
+          ['exec', containerId, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres'],
+          {
+            stdio: 'pipe'
+          }
+        );
+        break;
+      } catch (error) {
+        if (Date.now() >= deadline) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    connectionString = `postgresql://postgres@127.0.0.1:${assignedPort}/postgres`;
+  } else {
+    directory = mkdtempSync(join(tmpdir(), 'forge-postgres-authority-'));
+    const data = join(directory, 'data');
+    execFileSync('initdb', ['-D', data, '-A', 'trust', '--no-instructions'], { stdio: 'pipe' });
+    execFileSync(
+      'pg_ctl',
+      [
+        '-D',
+        data,
+        '-l',
+        join(directory, 'postgres.log'),
+        '-o',
+        `-h 127.0.0.1 -p ${assignedPort}`,
+        '-w',
+        'start'
+      ],
+      { stdio: 'pipe' }
+    );
+    connectionString = `postgresql://127.0.0.1:${assignedPort}/postgres`;
+  }
   const admin = postgres(connectionString, { onnotice: () => undefined });
   try {
+    const version = await admin`select current_setting('server_version_num')::integer as version`;
+    serverMajor = Math.floor(Number(version[0]?.version) / 10_000);
+    if (
+      process.env.FORGE_TEST_POSTGRES_MAJOR !== undefined &&
+      serverMajor !== Number(process.env.FORGE_TEST_POSTGRES_MAJOR)
+    ) {
+      throw new Error('PostgreSQL test server does not match the requested matrix major');
+    }
     const identity = await admin`select current_user as name`;
     const adminRole = String(identity[0]?.name);
     role = `forge_migrator_${process.pid}`;
@@ -136,6 +188,9 @@ beforeAll(async () => {
 }, 90_000);
 
 afterAll(() => {
+  if (containerId !== undefined) {
+    execFileSync('docker', ['stop', '--time', '5', containerId], { stdio: 'pipe' });
+  }
   if (directory !== undefined) {
     try {
       execFileSync('pg_ctl', ['-D', join(directory, 'data'), '-m', 'immediate', '-w', 'stop'], {
@@ -2384,6 +2439,276 @@ it('restricts trust writes to the administrator function and preserves key ident
     await fixture.close();
   }
 });
+
+it('hardens only an explicitly dedicated database as its actual owner and rolls back inherited privilege drift', async () => {
+  const admin = postgres(connectionString, { onnotice: () => undefined });
+  const database = `forge_hardening_${process.pid}`;
+  const databaseOwnerRole = `forge_database_owner_${process.pid}`;
+  const inheritedRole = `forge_temp_grant_${process.pid}`;
+  const roles = [
+    'forge_owner',
+    'forge_runtime',
+    'forge_trust',
+    'forge_issuer',
+    'forge_setup',
+    'forge_recovery'
+  ];
+  const temporary = mkdtempSync(join(tmpdir(), 'forge-database-hardening-'));
+  const envFile = join(temporary, 'private.env');
+  const createdRoles: string[] = [];
+  let createdDatabase = false;
+  let target: ReturnType<typeof postgres> | undefined;
+  try {
+    for (const roleName of [databaseOwnerRole, inheritedRole, ...roles]) {
+      await admin.unsafe(`create role "${roleName}" login`);
+      createdRoles.push(roleName);
+    }
+    await admin.unsafe(`create database "${database}" owner "${databaseOwnerRole}"`);
+    createdDatabase = true;
+    const urlFor = (roleName: string): string => {
+      const url = new URL(connectionString);
+      url.username = roleName;
+      url.pathname = `/${database}`;
+      return url.toString();
+    };
+    const privateEnvironment = (login: string): void => {
+      writeFileSync(
+        envFile,
+        [
+          `FORGE_DATABASE_OWNER_CONNECTION_STRING=${urlFor(login)}`,
+          ...roles.map(
+            (roleName) =>
+              `FORGE_${roleName.slice('forge_'.length).toUpperCase()}_CONNECTION_STRING=${urlFor(roleName)}`
+          )
+        ].join('\n'),
+        { mode: 0o600 }
+      );
+    };
+    target = postgres(urlFor(databaseOwnerRole), { onnotice: () => undefined });
+    await target`create table public.existing_operator_evidence (payload text not null)`;
+    await target`insert into public.existing_operator_evidence values ('preserve this row')`;
+    await target.unsafe(`grant temporary on database "${database}" to "${inheritedRole}"`);
+    await admin.unsafe(`grant "${inheritedRole}" to forge_runtime`);
+    const invoke = (action: string, acknowledge = true): string =>
+      execFileSync(
+        process.execPath,
+        [
+          resolvePath(
+            import.meta.dirname,
+            '../../../../apps/temporal-worker/local/neon-database-hardening.mjs'
+          ),
+          action,
+          database,
+          ...(action === 'apply' && acknowledge ? ['--dedicated-forge-database'] : [])
+        ],
+        {
+          encoding: 'utf8',
+          stdio: 'pipe',
+          env: { ...process.env, FORGE_DATABASE_HARDENING_ENV_FILE: envFile }
+        }
+      );
+    writeFileSync(envFile, 'FORGE_DATABASE_OWNER_CONNECTION_STRING=invalid-private-test-secret', {
+      mode: 0o600
+    });
+    try {
+      invoke('inspect');
+      throw new Error('Expected private URL validation to fail');
+    } catch (error) {
+      expect(String(error)).toContain(
+        'Invalid private connection for FORGE_DATABASE_OWNER_CONNECTION_STRING'
+      );
+      expect(String(error)).not.toContain('invalid-private-test-secret');
+    }
+    privateEnvironment(databaseOwnerRole);
+    expect(
+      JSON.parse(invoke('inspect')).roles.every(
+        (entry: { create_temp: boolean }) => entry.create_temp
+      )
+    ).toBe(true);
+    expect(() => invoke('apply', false)).toThrow();
+    privateEnvironment('forge_owner');
+    expect(() => invoke('apply')).toThrow('actual database owner login');
+    privateEnvironment(databaseOwnerRole);
+    expect(() => invoke('apply')).toThrow('hardening transaction was rolled back');
+    const rolledBack =
+      await target.unsafe(`select has_database_privilege('forge_setup',current_database(),'TEMP') as temp,
+      has_database_privilege('forge_owner',current_database(),'CREATE') as create_schema`);
+    expect(rolledBack[0]).toMatchObject({ temp: true, create_schema: false });
+    await admin.unsafe(`revoke "${inheritedRole}" from forge_runtime`);
+    expect(invoke('apply')).toContain('"action": "applied"');
+    const result = JSON.parse(invoke('inspect'));
+    expect(
+      result.roles.every(
+        (entry: {
+          role: string;
+          connect: boolean;
+          create_temp: boolean;
+          create_schema: boolean;
+          create_public: boolean;
+        }) =>
+          entry.connect &&
+          !entry.create_public &&
+          (entry.role === 'forge_owner'
+            ? entry.create_schema
+            : !entry.create_schema && !entry.create_temp)
+      )
+    ).toBe(true);
+    expect(await target`select payload from public.existing_operator_evidence`).toEqual([
+      { payload: 'preserve this row' }
+    ]);
+  } finally {
+    await target?.end();
+    if (createdDatabase) {
+      await admin.unsafe(`drop database "${database}" with (force)`);
+    }
+    for (const roleName of createdRoles.toReversed()) {
+      await admin.unsafe(`drop role "${roleName}"`);
+    }
+    await admin.end();
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(Number(process.env.FORGE_TEST_POSTGRES_MAJOR ?? '14') < 17)(
+  'rejects MAINTAIN for every restricted role and PUBLIC without startup ACL repair',
+  async () => {
+    expect(serverMajor).toBeGreaterThanOrEqual(17);
+    const fixture = await createGlobalPermitFixture();
+    const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
+    const configuration = {
+      connectionString: runtimeConnectionString,
+      schema: fixture.schema,
+      role: runtimeRole
+    };
+    try {
+      for (const grantee of [
+        runtimeRole,
+        trustAdminRole,
+        generationIssuerRole,
+        setupAdmissionRole,
+        recoveryRole,
+        'PUBLIC'
+      ]) {
+        for (const table of ['forge_schema_migrations', 'forge_runs', 'forge_global_scopes']) {
+          const target = grantee === 'PUBLIC' ? 'public' : `"${grantee}"`;
+          await fixture.admin.unsafe(`grant maintain on "${fixture.schema}".${table} to ${target}`);
+          await expect(assertPostgresGlobalAuthoritySchema(runtime, configuration)).rejects.toThrow(
+            'MAINTAIN'
+          );
+          const granted = await fixture.admin.unsafe(
+            `select has_table_privilege($1,$2,'MAINTAIN') as allowed`,
+            [grantee === 'PUBLIC' ? runtimeRole : grantee, `${fixture.schema}.${table}`]
+          );
+          expect(granted[0]?.allowed).toBe(true);
+          await fixture.admin.unsafe(
+            `revoke maintain on "${fixture.schema}".${table} from ${target}`
+          );
+          await assertPostgresGlobalAuthoritySchema(runtime, configuration);
+        }
+      }
+      await fixture.admin.unsafe(
+        `grant maintain on "${fixture.schema}".forge_runs to "${runtimeRole}" with grant option`
+      );
+      await expect(assertPostgresGlobalAuthoritySchema(runtime, configuration)).rejects.toThrow(
+        'MAINTAIN'
+      );
+    } finally {
+      await runtime.end();
+      await fixture.close();
+    }
+  }
+);
+
+it
+  .skipIf(Number(process.env.FORGE_TEST_POSTGRES_MAJOR ?? '14') < 18)
+  .each(['base', 'global'] as const)(
+  'rejects PostgreSQL 18 %s NOT NULL inheritance drift without migration repair',
+  async (area) => {
+    expect(serverMajor).toBe(18);
+    const fixture = await createGlobalPermitFixture();
+    const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
+    const configuration = {
+      connectionString: runtimeConnectionString,
+      schema: fixture.schema,
+      role: runtimeRole
+    };
+    const table = area === 'base' ? 'forge_runs' : 'forge_global_scopes';
+    try {
+      const constraints = await fixture.admin.unsafe(
+        `select con.conname from pg_constraint con join pg_class c on c.oid=con.conrelid
+       join pg_namespace n on n.oid=c.relnamespace
+       where n.nspname=$1 and c.relname=$2 and con.contype='n' order by con.conname limit 1`,
+        [fixture.schema, table]
+      );
+      const name = String(constraints[0]?.conname);
+      await fixture.admin.unsafe(
+        `alter table "${fixture.schema}".${table} alter constraint "${name}" no inherit`
+      );
+      await expect(assertPostgresGlobalAuthoritySchema(runtime, configuration)).rejects.toThrow();
+      await expect(
+        migratePostgresAuthoritySchema(
+          { connectionString: ownerConnectionString, schema: fixture.schema, role },
+          runtimeRole,
+          POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+          { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
+        )
+      ).rejects.toThrow();
+      await fixture.admin.unsafe(
+        `alter table "${fixture.schema}".${table} alter constraint "${name}" inherit`
+      );
+      await assertPostgresGlobalAuthoritySchema(runtime, configuration);
+    } finally {
+      await runtime.end();
+      await fixture.close();
+    }
+  }
+);
+
+it.skipIf(Number(process.env.FORGE_TEST_POSTGRES_MAJOR ?? '14') < 18).each([
+  [
+    'unvalidated NOT NULL',
+    'alter table SCHEMA.forge_runs alter column payload drop not null; alter table SCHEMA.forge_runs add constraint payload_required not null payload not valid'
+  ],
+  [
+    'unenforced foreign key',
+    'alter table SCHEMA.forge_records alter constraint forge_records_run_id_fkey not enforced'
+  ]
+] as const)(
+  'rejects PostgreSQL 18 %s without accepting or repairing weak constraints',
+  async (_name, ddl) => {
+    expect(serverMajor).toBe(18);
+    const fixture = await createFixture();
+    const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
+    const admin = postgres(connectionString, { onnotice: () => undefined });
+    try {
+      for (const statement of ddl.replaceAll('SCHEMA', `"${fixture.schema}"`).split(';')) {
+        await admin.unsafe(statement);
+      }
+      const configuration = {
+        connectionString: runtimeConnectionString,
+        schema: fixture.schema,
+        role: runtimeRole
+      };
+      await expect(assertPostgresAuthoritySchema(runtime, configuration)).rejects.toThrow();
+      await expect(
+        migratePostgresAuthoritySchema(
+          { connectionString: ownerConnectionString, schema: fixture.schema, role },
+          runtimeRole
+        )
+      ).rejects.toThrow();
+      const weakened = await admin.unsafe(
+        `select 1 from pg_constraint con
+      join pg_namespace n on n.oid=con.connamespace where n.nspname=$1 and
+      (not con.conenforced or not con.convalidated)`,
+        [fixture.schema]
+      );
+      expect(weakened).toHaveLength(1);
+    } finally {
+      await Promise.all([runtime.end(), admin.end()]);
+      await fixture.close();
+    }
+  }
+);
 
 it('rejects direct writer grants on base authority tables and repairs them on migration rerun', async () => {
   const fixture = await createGlobalPermitFixture();
@@ -5259,10 +5584,9 @@ it('rejects an assumed runtime role whose session can restore a privileged login
     await admin.unsafe(`create role "${proxyRole}" login createdb`);
     created = true;
     await admin.unsafe(`grant "${runtimeRole}" to "${proxyRole}"`);
-    const proxyConnectionString = connectionString.replace(
-      'postgresql://',
-      `postgresql://${proxyRole}@`
-    );
+    const proxyUrl = new URL(connectionString);
+    proxyUrl.username = proxyRole;
+    const proxyConnectionString = proxyUrl.toString();
     const proxy = postgres(proxyConnectionString);
     try {
       await proxy.unsafe(`set role "${runtimeRole}"`);
@@ -5310,10 +5634,9 @@ it('rejects a privileged login even after changing both SQL identities to runtim
   try {
     await admin.unsafe(`create role "${proxyRole}" login superuser`);
     created = true;
-    const proxyConnectionString = connectionString.replace(
-      'postgresql://',
-      `postgresql://${proxyRole}@`
-    );
+    const proxyUrl = new URL(connectionString);
+    proxyUrl.username = proxyRole;
+    const proxyConnectionString = proxyUrl.toString();
     const proxy = postgres(proxyConnectionString);
     try {
       await proxy.unsafe(`set session authorization "${runtimeRole}"`);

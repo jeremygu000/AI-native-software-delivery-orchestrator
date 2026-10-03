@@ -6,6 +6,7 @@ import {
   assertPostgresEvidenceStoreConfiguration,
   type PostgresEvidenceStoreConfiguration
 } from './postgres-evidence-store.js';
+import { resolvePostgresAuthorityServerMajor } from './postgres-server-version.js';
 
 type Sql = ReturnType<typeof postgres>;
 type TransactionSql = postgres.TransactionSql;
@@ -1224,12 +1225,51 @@ export const assertPostgresAuthorityLogin = (
   }
 };
 
-// PostgreSQL 17 adds MAINTAIN; extend the privilege audit before supporting it.
-const assertSupportedServerVersion = async (sql: TransactionSql | Sql): Promise<void> => {
+const assertSupportedServerVersion = async (sql: TransactionSql | Sql): Promise<number> => {
   const rows = await sql`select current_setting('server_version_num')::integer as version`;
   const version = Number(rows[0]?.version);
-  if (!Number.isInteger(version) || version < 140000 || version >= 170000) {
-    throw new Error('PostgreSQL authority requires server major version 14 through 16');
+  return resolvePostgresAuthorityServerMajor(version);
+};
+
+const assertNoMaintenancePrivileges = async (
+  sql: TransactionSql | Sql,
+  schema: string,
+  roles: readonly string[],
+  serverMajor: number
+): Promise<void> => {
+  if (serverMajor < 17) {
+    return;
+  }
+  const grants = await sql`select r.rolname as role, c.relname as relation
+    from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    cross join pg_roles r
+    where n.nspname=${schema} and c.relkind in ('r','p')
+      and r.rolname = any(${sql.array([...roles])}::text[])
+      and has_table_privilege(r.oid,c.oid,'MAINTAIN') limit 1`;
+  if (grants.length > 0) {
+    throw new Error(
+      `PostgreSQL authority role has MAINTAIN privilege: ${grants[0].role}/${grants[0].relation}`
+    );
+  }
+};
+
+const assertConstraintEnforcement = async (
+  sql: TransactionSql | Sql,
+  schema: string,
+  serverMajor: number
+): Promise<void> => {
+  if (serverMajor < 18) {
+    return;
+  }
+  const drift = await sql`select 1 from pg_constraint con
+    join pg_class c on c.oid=con.conrelid join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname=${schema} and (
+      not con.conenforced or not con.convalidated or
+      (con.contype='n' and (con.connoinherit or not con.conislocal or con.coninhcount<>0
+        or con.condeferrable or con.condeferred))
+    ) limit 1`;
+  if (drift.length > 0) {
+    throw new Error('PostgreSQL authority constraint enforcement is incompatible');
   }
 };
 
@@ -1376,7 +1416,8 @@ const installedGlobalTables = (version: number): readonly (typeof globalTables)[
 const assertGlobalAuthorityShape = async (
   sql: TransactionSql | Sql,
   schema: string,
-  version: number
+  version: number,
+  serverMajor: number
 ): Promise<void> => {
   const relations = await sql`select c.relname as name, c.relkind as kind,
     c.relpersistence as persistence, c.relrowsecurity as row_security,
@@ -1462,6 +1503,11 @@ const assertGlobalAuthorityShape = async (
     where n.nspname=${schema} and c.relname like 'forge_global_%'
     order by c.relname, con.contype, pg_get_constraintdef(con.oid)`;
   const expectedConstraints = [
+    ...(serverMajor >= 18
+      ? expected
+          .filter(([, , , notNull]) => notNull === true)
+          .map(([table, column]) => [String(table), 'n', `NOT NULL ${column}`])
+      : []),
     [
       'forge_global_aliases',
       'f',
@@ -1621,7 +1667,8 @@ const assertGlobalAuthorityShape = async (
 const assertAuthorityShape = async (
   sql: TransactionSql | Sql,
   schema: string,
-  version: number
+  version: number,
+  serverMajor: number
 ): Promise<void> => {
   const tables: (keyof typeof expectedColumns)[] =
     version >= 1
@@ -1699,17 +1746,28 @@ const assertAuthorityShape = async (
     from pg_constraint con join pg_class c on c.oid = con.conrelid
     join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
-    order by c.relname, con.contype`;
+    order by c.relname, con.contype, pg_get_constraintdef(con.oid)`;
   const actualConstraints = constraints.map((row) => [row.table_name, row.kind, row.definition]);
-  const expectedConstraints =
-    version >= 1
+  const expectedConstraints = [
+    ...(serverMajor >= 18
+      ? expected
+          .filter(([, , , notNull]) => notNull === true)
+          .map(([table, column]) => [String(table), 'n', `NOT NULL ${column}`])
+      : []),
+    ...(version >= 1
       ? [
           ['forge_records', 'f', `FOREIGN KEY (run_id) REFERENCES ${schema}.forge_runs(id)`],
           ['forge_records', 'p', 'PRIMARY KEY (run_id, kind, key)'],
           ['forge_runs', 'p', 'PRIMARY KEY (id)'],
           ['forge_schema_migrations', 'p', 'PRIMARY KEY (version)']
         ]
-      : [['forge_schema_migrations', 'p', 'PRIMARY KEY (version)']];
+      : [['forge_schema_migrations', 'p', 'PRIMARY KEY (version)']])
+  ].toSorted(
+    ([tableA, kindA, defA], [tableB, kindB, defB]) =>
+      tableA.localeCompare(tableB) ||
+      kindA.localeCompare(kindB) ||
+      (defA < defB ? -1 : defA > defB ? 1 : 0)
+  );
   if (JSON.stringify(actualConstraints) !== JSON.stringify(expectedConstraints)) {
     throw new Error('PostgreSQL authority table constraints are incompatible');
   }
@@ -1739,7 +1797,8 @@ const assertRestrictedWriterFunctions = async (
   sql: TransactionSql | Sql,
   schema: string,
   runtimeRole: string,
-  version = 8
+  version: number,
+  serverMajor: number
 ): Promise<void> => {
   const functions = await sql`select p.proname as name, oidvectortypes(p.proargtypes) as arguments,
     p.proowner::regrole::text as owner, p.prosecdef as security_definer,
@@ -2001,6 +2060,16 @@ const assertRestrictedWriterFunctions = async (
       throw new Error('PostgreSQL restricted writer has direct table mutation privileges');
     }
   }
+  await assertNoMaintenancePrivileges(
+    sql,
+    schema,
+    [
+      ...(writers === undefined ? [] : [writers.trustAdminRole, writers.generationIssuerRole]),
+      ...(setupRole === undefined ? [] : [setupRole]),
+      ...(recoveryRole === undefined ? [] : [recoveryRole])
+    ],
+    serverMajor
+  );
 };
 
 /** Installer-only operation. Never invoke it from an activity or runtime connection. */
@@ -2043,7 +2112,7 @@ export const migratePostgresAuthoritySchema = async (
   const schema = quote(configuration.schema);
   try {
     await sql.begin(async (tx) => {
-      await assertSupportedServerVersion(tx);
+      const serverMajor = await assertSupportedServerVersion(tx);
       const identity = await tx`select current_user as name`;
       if (identity[0]?.name !== configuration.role) {
         throw new Error('PostgreSQL migration owner role mismatch');
@@ -2103,9 +2172,10 @@ export const migratePostgresAuthoritySchema = async (
       if (applied.length > targetVersion) {
         throw new Error('PostgreSQL authority migrations cannot downgrade a schema');
       }
-      await assertAuthorityShape(tx, configuration.schema, applied.length);
+      await assertAuthorityShape(tx, configuration.schema, applied.length, serverMajor);
+      await assertConstraintEnforcement(tx, configuration.schema, serverMajor);
       if (applied.length >= 3) {
-        await assertGlobalAuthorityShape(tx, configuration.schema, applied.length);
+        await assertGlobalAuthorityShape(tx, configuration.schema, applied.length, serverMajor);
       }
       for (const migration of migrations.slice(applied.length, targetVersion)) {
         for (const statement of migration.statements) {
@@ -2117,11 +2187,13 @@ export const migratePostgresAuthoritySchema = async (
           [migration.version, checksum(migration.statements)]
         );
       }
-      await assertAuthorityShape(tx, configuration.schema, targetVersion);
+      await assertAuthorityShape(tx, configuration.schema, targetVersion, serverMajor);
+      await assertConstraintEnforcement(tx, configuration.schema, serverMajor);
       if (targetVersion >= 3) {
-        await assertGlobalAuthorityShape(tx, configuration.schema, targetVersion);
+        await assertGlobalAuthorityShape(tx, configuration.schema, targetVersion, serverMajor);
       }
       await grantRuntimePrivileges(tx, schema, runtimeRole, targetVersion);
+      await assertNoMaintenancePrivileges(tx, configuration.schema, [runtimeRole], serverMajor);
       if (targetVersion >= 8) {
         const roleBinding =
           writerRoles === undefined
@@ -2367,7 +2439,13 @@ export const migratePostgresAuthoritySchema = async (
             );
           }
         }
-        await assertRestrictedWriterFunctions(tx, configuration.schema, runtimeRole, targetVersion);
+        await assertRestrictedWriterFunctions(
+          tx,
+          configuration.schema,
+          runtimeRole,
+          targetVersion,
+          serverMajor
+        );
       }
     });
   } finally {
@@ -2429,7 +2507,7 @@ export const assertPostgresAuthoritySchema = async (
   if (sql.options.user !== configuration.role) {
     throw new Error('PostgreSQL authority connection login role mismatch');
   }
-  await assertSupportedServerVersion(sql);
+  const serverMajor = await assertSupportedServerVersion(sql);
   const schema = quote(configuration.schema);
   const identity = await sql`select current_user as current_name, session_user as session_name`;
   if (
@@ -2554,6 +2632,7 @@ export const assertPostgresAuthoritySchema = async (
     has_any_column_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'UPDATE WITH GRANT OPTION') as records_grant_update,
     has_table_privilege(current_user, ${`${configuration.schema}.forge_records`}, 'DELETE WITH GRANT OPTION') as records_grant_delete`;
   const p = privileges[0];
+  await assertNoMaintenancePrivileges(sql, configuration.schema, [configuration.role], serverMajor);
   if (
     p?.usage !== true ||
     p.usage_grant !== false ||
@@ -2595,17 +2674,19 @@ export const assertPostgresAuthoritySchema = async (
   ) {
     throw new Error('PostgreSQL authority runtime privileges are incompatible');
   }
-  await assertAuthorityShape(sql, configuration.schema, applied.length);
+  await assertAuthorityShape(sql, configuration.schema, applied.length, serverMajor);
+  await assertConstraintEnforcement(sql, configuration.schema, serverMajor);
   if (applied.length >= 8) {
     await assertRestrictedWriterFunctions(
       sql,
       configuration.schema,
       configuration.role,
-      applied.length
+      applied.length,
+      serverMajor
     );
   }
   if (applied.length >= 3) {
-    await assertGlobalAuthorityShape(sql, configuration.schema, applied.length);
+    await assertGlobalAuthorityShape(sql, configuration.schema, applied.length, serverMajor);
     for (const table of installedGlobalTables(applied.length)) {
       const relation = `${configuration.schema}.${table}`;
       const globalPrivileges = await sql`select

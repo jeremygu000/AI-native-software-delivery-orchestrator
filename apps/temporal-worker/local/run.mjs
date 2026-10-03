@@ -19,6 +19,8 @@ for (const name of Object.keys(env)) {
   if (
     name.startsWith('LOCAL_') ||
     [
+      'FORGE_DATABASE_OWNER_CONNECTION_STRING',
+      'FORGE_DATABASE_HARDENING_ENV_FILE',
       'FORGE_OWNER_CONNECTION_STRING',
       'FORGE_TRUST_CONNECTION_STRING',
       'FORGE_ISSUER_CONNECTION_STRING',
@@ -33,6 +35,8 @@ for (const [name, value] of Object.entries(local)) {
   if (
     !name.startsWith('LOCAL_') &&
     ![
+      'FORGE_DATABASE_OWNER_CONNECTION_STRING',
+      'FORGE_DATABASE_HARDENING_ENV_FILE',
       'FORGE_OWNER_CONNECTION_STRING',
       'FORGE_TRUST_CONNECTION_STRING',
       'FORGE_ISSUER_CONNECTION_STRING',

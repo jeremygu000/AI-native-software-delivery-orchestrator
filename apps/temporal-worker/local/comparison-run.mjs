@@ -40,6 +40,9 @@ const comparison = neonComparison
   ? parseEnv(await readFile(process.env.FORGE_COMPARISON_ENV_FILE, 'utf8'))
   : {};
 const env = { ...process.env, ...parseEnv(await readFile('.env.local', 'utf8')), ...comparison };
+// Database-owner credentials belong exclusively to the explicit hardening tool.
+delete env.FORGE_DATABASE_OWNER_CONNECTION_STRING;
+delete env.FORGE_DATABASE_HARDENING_ENV_FILE;
 const prefix = neonComparison ? 'neon-comparison' : 'comparison';
 env.FORGE_WORKER_REPOSITORY_PATH = resolve(`.local/${prefix}-${candidate}`);
 env.FORGE_WORKER_REVIEW_PROVIDER = profile.provider;

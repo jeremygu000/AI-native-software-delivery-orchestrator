@@ -24,3 +24,8 @@ export {
   POSTGRES_AUTHORITY_SCHEMA_VERSION,
   POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
 } from './lib/postgres-authority-schema.js';
+// Deployment preflight shares the adapter's explicit supported-major contract.
+export {
+  POSTGRES_AUTHORITY_SERVER_MAJORS,
+  resolvePostgresAuthorityServerMajor
+} from './lib/postgres-server-version.js';

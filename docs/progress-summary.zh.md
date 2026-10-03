@@ -4000,4 +4000,18 @@ Planning 使用真实 SDK 与批准 execution adapter；global builder、repair�
 
 新增真实 Temporal 回归先在 `c032d08` 复现提前结束，再验证 task A integration 受阻、task B 获授权并完成、task A 恢复集成；恢复操作最近的 task 祖先是 A，trace 标识一致，按 workflow 时钟的毫秒精度先于 task A 结束，且先于带 `outcome=integrated` 的 task A 导出。另一失败变体验证 task B 失败时，仍在 deferred 队列的 task A span 以 `outcome=error` 关闭。保留正常 tracing 测试，21 项定向 tracing／workflow 测试通过。本修复使 deferred task 耗时可靠；PostgreSQL 14–18 兼容、deployment owner 的数据库权限加固及 Neon traced E2E 对比仍属于独立阶段。本轮没有重跑 provider 对比，也没有改变线上数据库权限。
 
-最终验证通过 `pnpm build` 和完整镜像版 `pnpm check`：98 个文件中的 1002 项测试全部通过，无跳过，包含编译后 CLI／worker 验收。语句、分支、函数、代码行覆盖率保持为 90.75%、85.75%、94.70%、90.63%，超过未变更门槛。格式、TypeScript、lint 和 `git diff --check` 通过。修复保留为未提交工作树，供相对 `c032d08` 的增量复审。
+最终验证通过 `pnpm build` 和完整镜像版 `pnpm check`：98 个文件中的 1002 项测试全部通过，无跳过，包含编译后 CLI／worker 验收。语句、分支、函数、代码行覆盖率保持为 90.75%、85.75%、94.70%、90.63%，超过未变更门槛。格式、TypeScript、lint 和 `git diff --check` 通过。修复已作为 `06aa678a555f871bd557fee5714d77069745a050` 提交并推送；独立增量复审已接受，并关闭 deferred integration 的 observability blocker。
+
+## PostgreSQL 14–18 兼容与 database owner 准备
+
+本阶段将 PostgreSQL 明确支持范围从 14–16 扩展为 14–18。Adapter 与 Neon bootstrap 共用一个版本解析器，单元测试覆盖每个受支持 major，并拒绝 PostgreSQL 13、未来 19 及不合法版本值；不会自动接受所有未来服务器。既有 migration SQL、checksum、schema version、authority contract 与 workflow command 均保持不变。
+
+严格审计现在识别两项服务器变化。PostgreSQL 17 增加 MAINTAIN 表权限，Forge 对 runtime、trust、issuer、setup、recovery 在 authority 表上的这项权限一律拒绝，也检查经 PUBLIC 继承的有效权限。PostgreSQL 18 将 NOT NULL 约束记录到 constraint catalog；Forge 检查完整预期约束，不再把这些合法的新条目误认为 schema drift。缺少或多出的约束、继承方式变化、未验证约束和未执行约束仍然拒绝。Startup 只读检查不相容状态，不会自动修复。
+
+Durable authority fixture 可以选择以 digest 固定的 Docker 镜像，确认实际服务器 major，只绑定 localhost，并在结束后清理自己创建的容器。因此既有真实 migration、schema audit、受限 writer、GLOBAL_READY、fencing 与 lock 测试可以在 PG16、PG18 上执行。只有目标 major 不具备相应功能时才跳过特定功能测试。定期运行的五 major release matrix 尚未加入；现有应用验收 fixture 仍使用原生 PostgreSQL。
+
+新增独立 operator 工具使用实际 database owner 登录，只读检查或显式加固专供 Forge 的数据库。它以一笔事务撤销 PUBLIC TEMP／CREATE 和 public schema CREATE，向 Forge 角色授予 CONNECT，将数据库 CREATE 限于 Forge migration owner，并在提交前再次检查受限角色有效权限。不改变 role definition、authority schema、migration ledger 或持久化 authority row。真实临时数据库回归验证 owner 身份、必需的显式确认、继承 TEMP 残留时完整回滚，以及保留既有数据行。普通 CLI／worker 环境会剥离 database owner 凭据和私有 hardening 环境文件路径。部署流程、未改变的无 query parameter authority 登录规则及独立 verified TLS 配置见 `docs/postgres-neon-readiness.en.md`。
+
+验证通过 `pnpm build` 和完整镜像版 `pnpm check`，其中 durable authority fixture 使用 PostgreSQL 18。语句、分支、函数、代码行覆盖率分别为 90.79%、85.81%、94.72%、90.67%，超过未改变的门槛。PG16 authority 回归有 148 项通过，明确跳过五项 PG17／18 特有功能测试；PG18 执行全部 153 项 authority 测试。另有 subprocess 定向检查通过，覆盖错误私有 URL 不暴露输入及 canonical comparison profile 的凭据隔离。最终格式、TypeScript、lint 和 `git diff --check` 均通过。
+
+Neon 只读检查确认 PostgreSQL 18 与实际 `neondb_owner` 登录，六个 Forge 角色仍具有有效 TEMP。没有修改线上数据库权限，没有创建 comparison schema，也没有执行新的 provider run。因为撤销 PUBLIC 权限影响全部数据库用户，仍需确认该数据库专供 Forge。当前角色 URL 还带有 transport query parameter，因此 bootstrap 前须提供无 query 的 authority URL，并独立启用 verified TLS。Bootstrap 现在会在连接前拒绝 query parameter 或缺少 verified TLS 的配置，并在私有 runtime 环境中保存 `PGSSL=verify-full`。线上加固、全新 bootstrap、traced GroundGraph 执行及 Tempo 证据仍是后续运维步骤。本批改动保留供相对已接受 `06aa678` 的独立复审。

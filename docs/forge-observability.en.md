@@ -27,10 +27,14 @@ For a Neon comparison, configure six separate role URLs in ignored `.env.local`
 the same endpoint and database for all six roles. Prepare three clean clones at
 the same GroundGraph commit under `.local/neon-comparison-{deepseek,copilot,codex}`.
 The bootstrap refuses a dirty clone, an existing schema, or a PostgreSQL server
-outside Forge's supported 14–16 range. It writes only a new schema and ignored
+outside Forge's supported 14–18 range. It writes only a new schema and ignored
 mode-600 runtime configuration; it does not rewrite an existing authority ledger.
+Complete the separate database-owner hardening in `docs/postgres-neon-readiness.en.md`
+first. Use query-free authority role URLs and verified TLS through `PGSSL=verify-full`
+in the operator shell and private comparison environment.
 
 ```sh
+export PGSSL=verify-full
 node apps/temporal-worker/local/neon-comparison-authority.mjs prepare forge_comparison_YYYYMMDD
 export FORGE_COMPARISON_ENV_FILE="$PWD/.local/neon-comparison.env"
 node apps/temporal-worker/local/comparison-run.mjs deepseek register
@@ -75,7 +79,9 @@ export filter without sending its test data to Grafana. The configured Neon
 endpoint reported PostgreSQL 18.0 on 2026-10-04. Forge's version gate correctly
 rejected that bootstrap before creating the comparison schema. A read-only role
 inspection also found database `TEMP` privilege on every configured role, while
-Forge requires the runtime and restricted operator roles to lack it. The shared
-database was not modified. The Neon comparison needs a PostgreSQL 14–16
-database with independently restricted roles, or a separately reviewed server
-compatibility and database-privilege migration in an isolated project.
+Forge requires the runtime and restricted operator roles to lack it. That earlier
+bootstrap did not modify the database. PostgreSQL 14–18 compatibility is now
+implemented with real PG16/PG18 regression evidence. Live database-owner
+hardening still requires confirmation that the database is dedicated to Forge;
+live bootstrap and the first traced comparison remain pending. The new deployment
+guide documents this boundary and the separate owner operation.
