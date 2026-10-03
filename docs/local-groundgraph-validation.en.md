@@ -44,6 +44,25 @@ pnpm local:preflight
 These are different observations: preflight does not call a model; model-check makes
 a real paid inference request but emits only sanitized readiness metadata.
 
+## Standalone OpenTelemetry trace check
+
+Set `OTEL_SERVICE_NAME=forge-local`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_TRACES_EXPORTER=otlp` in the ignored,
+mode-600 `.env.local`, or export them in the shell. The headers value must use
+OpenTelemetry's `key=value` format, for example
+`"Authorization=Basic BASE64_CREDENTIAL"`. For an OTLP/HTTP base endpoint ending
+in `/otlp`, the exporter sends traces to `/otlp/v1/traces`.
+
+```sh
+pnpm local:otel-check
+```
+
+This starts one `forge.startup` span under service `forge-local`, waits for OTLP
+export and prints its trace ID. It does not start a worker, access Forge authority,
+or change the production execution path. Search the trace ID or service in the
+collector UI. An HTTP export failure makes the command fail; the diagnostic omits
+endpoint and authentication details.
+
 ## Approve verification before planning
 
 The original GroundGraph checkout's macOS dependencies cannot be reused as Linux
