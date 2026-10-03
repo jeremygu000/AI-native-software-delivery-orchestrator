@@ -477,6 +477,24 @@ describe('compiled CLI and Temporal worker process boundary', () => {
         ])
       });
       expect(missingNamespace.output()).not.toContain(runtimeUrl);
+      // Composition opens the real PostgreSQL pool before Temporal connects.
+      // A failed normal startup must exit even while that pool has live handles.
+      const failedStartup = capture(process.execPath, [workerPath], {
+        ...env,
+        TEMPORAL_SERVER_URL: `http://127.0.0.1:${await freePort()}`
+      });
+      try {
+        const exited = await Promise.race([
+          failedStartup.exited,
+          sleep(20_000).then(() => {
+            throw new Error(`Failed worker startup did not exit: ${failedStartup.output()}`);
+          })
+        ]);
+        expect(exited).toEqual({ code: 1, signal: null });
+        expect(failedStartup.output()).toContain('Worker failed to start:');
+      } finally {
+        await stop(failedStartup);
+      }
       workerProcess = worker(routed);
       await approveAndRun(routed);
       await waitFor(

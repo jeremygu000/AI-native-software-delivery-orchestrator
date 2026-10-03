@@ -4758,6 +4758,8 @@ The abrupt-loss scenario passes with real images. Full image-enabled `pnpm check
 
 ## Actual deployment preparation: read-only compiled worker preflight
 
+Incremental review of `0049371` accepted the preflight boundaries and evidence but found one startup-exit regression. Normal worker startup failures again call `process.exit(1)`, preserving the pre-preflight behavior even when composition has opened PostgreSQL handles; preflight configuration failures keep their fixed sanitized message and `process.exitCode = 1`. A narrow compiled-entry regression uses the real PostgreSQL composition followed by an unavailable Temporal endpoint and requires exit code 1 without a signal or test-forced termination. The compiled acceptance suite passes all five tests and rebuilds the CLI/worker. No cleanup framework, probe expansion or frozen authority change is included.
+
 Independent review accepted and froze M4.3 at `44ed2a2` with no P0/P1 blocker. Further fleet matrices are not part of this stage. Manual independent recovery of uncertain writers remains an accepted operating boundary; automated recovery scheduling and SQLite's protected trust root stay deferred.
 
 The compiled worker now supports `--preflight`: a preparation command that checks the intended deployment before starting activities. Normal startup and preflight share one configuration resolver, so repository, authority identity, Temporal namespace/queue, approved review model and explicit global-mode settings are interpreted identically. The report contains readiness and fixed per-check statuses, not driver exceptions, connection strings or model credentials. Exit code 0 means all checked prerequisites passed; exit code 1 means configuration or a prerequisite failed.

@@ -3914,6 +3914,8 @@ Heartbeat 到期后，独立连接的 replacement 收到 Temporal attempt 2。�
 
 ## 实际部署准备：编译后 worker 的只读 preflight
 
+对 `0049371` 的增量复审接受 preflight 边界与证据，但发现一个启动退出 regression。正常 worker 启动失败恢复调用 `process.exit(1)`，即使 composition 已打开 PostgreSQL handle 也保留引入 preflight 前的行为；preflight 配置失败仍使用固定脱敏消息及 `process.exitCode = 1`。一条窄编译入口回归使用真实 PostgreSQL composition，再连接不可用 Temporal endpoint，要求自行以退出码 1 结束，没有 signal 或测试强制终止。编译后验收套件五项全部通过，并重新构建 CLI／worker。本轮不加入 cleanup framework、不扩 probe、不改变冻结 authority。
+
 独立复审在 `44ed2a2` 上接受并冻结 M4.3，无 P0／P1 blocker。本阶段不再增加 fleet matrix。不明确写入者的独立／手工恢复保持已接受的操作边界；自动 recovery scheduling 与 SQLite 受保护 trust root 继续延后。
 
 编译后的 worker 现在支持 `--preflight`，在启动 activities 前检查目标部署。正常启动与 preflight 共用一个配置解析器，保证仓库、authority identity、Temporal namespace／queue、批准 review model 和显式 global 设置解释一致。报告只包含 readiness 与固定逐项状态，不输出 driver exception、连接串或 model 凭据。退出码 0 表示已检查前提全部通过；退出码 1 表示配置或某项前提失败。

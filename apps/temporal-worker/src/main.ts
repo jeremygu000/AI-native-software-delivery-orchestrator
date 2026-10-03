@@ -31,8 +31,9 @@ async function main(): Promise<void> {
 main().catch((error: unknown) => {
   if (process.argv.includes('--preflight')) {
     console.error('Worker preflight configuration or invocation is invalid');
+    process.exitCode = 1;
   } else {
     console.error('Worker failed to start:', error);
+    process.exit(1);
   }
-  process.exitCode = 1;
 });
