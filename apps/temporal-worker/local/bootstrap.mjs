@@ -23,7 +23,11 @@ const roles = {
   LOCAL_FORGE_SETUP_PASSWORD: 'forge_setup',
   LOCAL_FORGE_RECOVERY_PASSWORD: 'forge_recovery'
 };
-const connection = (role, password, database = 'forge') => {
+const forgeDatabase = process.env.LOCAL_FORGE_DATABASE ?? 'forge';
+if (!/^[a-z][a-z0-9_]*$/.test(forgeDatabase)) {
+  throw new Error('Invalid local Forge database name');
+}
+const connection = (role, password, database = forgeDatabase) => {
   const url = new URL(`postgres://127.0.0.1:54329/${database}`);
   url.username = role;
   url.password = password;
@@ -93,7 +97,7 @@ if (action === 'env') {
       for (const [database, owner] of [
         ['temporal', 'temporal_service'],
         ['temporal_visibility', 'temporal_service'],
-        ['forge', 'forge_owner']
+        [forgeDatabase, 'forge_owner']
       ]) {
         const found =
           await dba`select datname, datdba::regrole::text as owner from pg_database where datname=${database}`;
@@ -106,7 +110,9 @@ if (action === 'env') {
         }
         await dba.unsafe(`revoke all on database ${database} from public`);
       }
-      await dba.unsafe(`grant connect on database forge to ${Object.values(roles).join(',')}`);
+      await dba.unsafe(
+        `grant connect on database ${forgeDatabase} to ${Object.values(roles).join(',')}`
+      );
       const forgeDba = postgres(connection('local_dba', env.LOCAL_DBA_PASSWORD), { max: 1 });
       try {
         await forgeDba.unsafe('revoke create on schema public from public');

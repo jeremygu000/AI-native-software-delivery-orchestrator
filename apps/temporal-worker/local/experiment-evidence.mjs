@@ -32,7 +32,7 @@ try {
       where owner_json::jsonb->>'runId'=${runId} and not completed`;
     const records = await sql`
       select kind, key, payload from forge.forge_records where run_id=${runId}
-      and kind in ('builder', 'verification', 'review', 'integration-claim') order by kind, key`;
+       and kind in ('builder', 'repair', 'verification', 'review', 'integration-claim') order by kind, key`;
     const facts = records.map((record) => {
       const value = JSON.parse(record.payload);
       return {
@@ -47,11 +47,22 @@ try {
       };
     });
     const description = await client.workflow.getHandle(`forge-run:${runId}`).describe();
+    const history = await client.workflow.getHandle(`forge-run:${runId}`).fetchHistory();
+    const activityAttempts = (history.events ?? []).flatMap((event) => {
+      const started = event.activityTaskStartedEventAttributes;
+      return started ? [{ attempt: started.attempt, workerIdentity: started.identity }] : [];
+    });
     results.push({
       runId,
       state: runs[0].state,
       workflowStatus: description.status.name,
       workflowRunId: description.runId,
+      workflowStartedAt: description.startTime,
+      workflowClosedAt: description.closeTime,
+      elapsedMs: description.closeTime
+        ? description.closeTime.getTime() - description.startTime.getTime()
+        : undefined,
+      activityAttempts,
       authority: request.run.authority,
       claims,
       unresolvedGenericPermits: permits[0].count,
