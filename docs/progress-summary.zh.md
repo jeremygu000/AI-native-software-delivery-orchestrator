@@ -5,7 +5,7 @@
 
 ## 当前独立接受状态
 
-M3 Runtime V2／Temporal、M4.1 PostgreSQL authority 和 **M4.2 PostgreSQL 全局生产 authority 均为 PASS／CLOSED／FROZEN**。M4.2 在 `91a5ca9f5b6563619a9f221811beaa7052376da7` 上获得独立接受。下方阶段内容保留开发历史；较早的 OPEN 或“尚未实现”描述对应当时增量，不代表当前已接受版本。**M4.3 多 run／worker-fleet 验收为 IN PROGRESS**，首批真实 fleet 场景已实现，等待独立复审。
+M3 Runtime V2／Temporal、M4.1 PostgreSQL authority 和 **M4.2 PostgreSQL 全局生产 authority 均为 PASS／CLOSED／FROZEN**。M4.2 在 `91a5ca9f5b6563619a9f221811beaa7052376da7` 上获得独立接受。下方阶段内容保留开发历史；较早的 OPEN 或“尚未实现”描述对应当时增量，不代表当前已接受版本。**M4.3 多 run／worker-fleet 验收为 IN PROGRESS**。首批 fleet 在 `1075a996e5fd3077949b843baf5b3e64b511b67b` 上获得独立接受；下方 abrupt-process-loss 批次是等待独立复审的 closure candidate。
 
 已接受的生产路径接起独立 setup／handoff、仅持有 runtime PostgreSQL 凭据的 worker、隔离 Pi builder／repair、宿主批准 inference、批准范围内 fenced resource claim、真实 verification 与 exact review、受限 Docker Git、claim release 和原子 run finalization。部署仍须准备批准镜像／model 凭据并完成特权 cutover／setup；接受不等于自动上线。不明确写入者保留阻塞 authority，要求独立／手工恢复。自动 recovery scheduling 和 SQLite 受保护 trust root 是延后项，不是 M4.2 blocker。
 
@@ -3901,3 +3901,13 @@ A 的 builder 完成且所属 broker 清算后，原 worker 优雅 drain，由 r
 同 scope 的 A 全部清算后，一个新的 ACTIVE successor run 可以取得更高 scope token；测试绝不复活原来 FAILED 的 competitor。使用旧 child token 的 callback 在调用前被拒绝；精确 successor permit 可从另一连接观察，随后正常完成、释放，并不改变 Git。这一集中批次覆盖竞争、独立进展、优雅 worker 替换、stale writer 拒绝和安全后续准入。B 的独立 scope workflow 在受控 SDK 写入／释放后刻意使用夹具 review rejection 并终结为 FAILED，不声称完成第二条完整 production review／integration 链。
 
 两项 fleet 场景在真实镜像下通过。全镜像 `pnpm check` 通过 88 个文件中的全部 945 项测试，无跳过，覆盖格式、TypeScript、lint、覆盖率及编译后 CLI／worker 构建验收。语句、分支、函数、代码行覆盖率为 90.96%、86.02%、94.43% 和 90.85%，全部高于配置门槛。M4.3 保持 IN PROGRESS，不是 CLOSED：活动 callback 期间进程突然丢失和其余 fleet failure matrix 仍需验收证据。本批只修改测试与状态／入门文档，不新增 scheduler、authority 机制、migration 或权限，保留 M4.2 已接受冻结状态。
+
+## M4.3 failure／fleet closure candidate：真实写入期间突然丢失进程
+
+独立复审已接受 `1075a99` 首批 fleet。本轮集中测试将原 Temporal worker 放在独立操作系统进程中，使用真实隔离 Pi SDK、宿主 broker、PostgreSQL execution child 和 linked Git worktree。测试等待批准文件确实变化、observed impact 已提交，而精确 mutation permit 仍为 ACTIVE。IPC 标识子进程、worker 和 Temporal attempt 1；父进程核对后用 SIGKILL 杀死进程。这是突然丢失，不是优雅 shutdown 或模拟异常。
+
+Heartbeat 到期后，独立连接的 replacement 收到 Temporal attempt 2。已接受的 RUNNING recovery 路径先保存 UNKNOWN 和 HELD_UNCERTAIN，再停止已登记 Docker 容器，不调用 inference 或启动替代写入者。独立 SQL 证明原 permit 保持不变。Stale callback 在调用前被拒绝；新的同 scope repository claim 被 BLOCKED，不消耗 token、不留下 claim，取消 finalization 保持 pending。同时另一个显式登记的仓库 scope 完成真实 SDK／broker fenced 写入和 confirmed release。因此隔离一个 scope 不会冻结无关工作，失败 run 的 integration repository 保持未改。
+
+测试专用 workflow 使用三秒 heartbeat timeout，最多两次 attempt，不改变生产 workflow policy。Temporal history 记录 timeout 和 replacement identity。Temporal 会压缩中间重试的 start event，因此原执行由 IPC attempt／identity、真实文件变化、durable permit 和确认 SIGKILL 证明，不虚构 history event。独立 scope 路径证明写入进展与释放，不声称第二条完整 review／integration 流程。测试不清算 orphan permit、不释放 uncertain claim，也不增加自动 recovery infrastructure。
+
+真实镜像下突然丢失场景通过。全镜像 `pnpm check` 通过 88 个文件中的全部 946 项测试，无跳过；格式、TypeScript、lint、覆盖率及编译后 CLI／worker 构建验收通过。语句、分支、函数、代码行覆盖率为 91.04%、86.07%、94.58% 和 90.93%。唯一依赖新增是显式声明既有 Temporal workflow 版本供验收 workflow 使用。M4.2 保持 CLOSED／FROZEN；M4.3 仍为等待独立复审的 IN PROGRESS closure candidate。本批只改验收测试、测试夹具与文档，不改 production authority、migration 或权限。

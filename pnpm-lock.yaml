@@ -151,6 +151,9 @@ importers:
       '@temporalio/worker':
         specifier: ^1.24.0
         version: 1.24.0(@swc/helpers@0.5.23)(esbuild@0.28.2)
+      '@temporalio/workflow':
+        specifier: 1.24.0
+        version: 1.24.0
 
   libs/agent-runtime:
     dependencies:

@@ -1,7 +1,8 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, fork } from 'node:child_process';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { build } from 'esbuild';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { once } from 'node:events';
@@ -161,7 +162,8 @@ it.for([
   ['completed', 'global-restart'],
   ['completed', 'global-repair'],
   ['completed', 'global-fleet'],
-  ['completed', 'global-fleet-independent']
+  ['completed', 'global-fleet-independent'],
+  ['completed', 'global-fleet-loss']
 ] as const)(
   'hands off a %s Git permit and executes the %s child lifecycle',
   { timeout: 60_000 },
@@ -832,6 +834,452 @@ it.for([
             taskId: 'task',
             attemptId: 'attempt'
           };
+          if (lifecycle === 'global-fleet-loss') {
+            const environment = await TestWorkflowEnvironment.createTimeSkipping();
+            const peer = await PostgresGlobalMutationAuthority.connect(config);
+            const peerStore = await PostgresOrchestrationPersistence.connect(config);
+            const taskQueue = `fleet-loss-${process.pid}-${randomUUID()}`;
+            const fixtureBuild = mkdtempSync(
+              resolve('apps/temporal-worker/test-fixtures/.abrupt-')
+            );
+            const fixtureEntry = join(fixtureBuild, 'worker.mjs');
+            await build({
+              entryPoints: [
+                resolve('apps/temporal-worker/test-fixtures/abrupt-builder-worker.mjs')
+              ],
+              outfile: fixtureEntry,
+              bundle: true,
+              packages: 'external',
+              platform: 'node',
+              format: 'esm',
+              target: 'node24'
+            });
+            const workerProcess = fork(fixtureEntry, [], {
+              stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+              execArgv: [],
+              env: { ...process.env, NODE_OPTIONS: '' }
+            });
+            let output = '';
+            workerProcess.stdout?.on('data', (data) => {
+              output += String(data);
+            });
+            workerProcess.stderr?.on('data', (data) => {
+              output += String(data);
+            });
+            const message = (expected: string) =>
+              new Promise<object>((done, reject) => {
+                const timer = setTimeout(
+                  () => reject(new Error(`Missing ${expected}: ${output}`)),
+                  20_000
+                );
+                const listener = (value: unknown) => {
+                  if (typeof value !== 'object' || value === null || !('type' in value)) {
+                    return;
+                  }
+                  if (value.type === expected || value.type === 'failed') {
+                    clearTimeout(timer);
+                    workerProcess.off('message', listener);
+                    if (value.type === 'failed') {
+                      reject(new Error(`${JSON.stringify(value)}\n${output}`));
+                    } else {
+                      done(value);
+                    }
+                  }
+                };
+                workerProcess.on('message', listener);
+              });
+            const ready = message('ready');
+            const held = message('callback-held');
+            // A startup failure is awaited through ready; do not leave the later
+            // callback notification as an unhandled rejection during cleanup.
+            void held.catch(() => {});
+            let replacement: Worker | undefined;
+            let replacementRun: Promise<void> | undefined;
+            let connection: NativeConnection | undefined;
+            let orphanContainer: string | undefined;
+            const independentRepository = `${integration}-loss-independent`;
+            const independentWorktree = `${worktree}-loss-independent`;
+            try {
+              workerProcess.send({
+                database: config,
+                image,
+                taskQueue,
+                address: environment.connection.options.address,
+                workflowsPath: resolve(
+                  'apps/temporal-worker/test-fixtures/abrupt-builder-workflow.cjs'
+                )
+              });
+              await ready;
+              const workflow = await environment.client.workflow.start('abruptBuilderWorkflow', {
+                workflowId: `abrupt-${process.pid}-${randomUUID()}`,
+                taskQueue,
+                args: [builderInput]
+              });
+              expect(await held).toMatchObject({
+                identity: 'fleet-loss-original-process',
+                attempt: 1,
+                pid: workerProcess.pid
+              });
+              expect(await readFile(join(worktree, 'approved.txt'), 'utf8')).toBe(
+                'written-before-process-loss'
+              );
+              expect(await readFile(join(integration, 'approved.txt'), 'utf8')).toBe('before');
+              const permits = await peer.recoverFencedMutationPermits(scopeId, child.claimId);
+              expect(permits).toHaveLength(1);
+              expect(
+                await admin.unsafe(
+                  `select state from "${schema}".forge_global_claims where claim_id=$1`,
+                  [child.claimId]
+                )
+              ).toMatchObject([{ state: 'ACTIVE' }]);
+              const records = await admin.unsafe(
+                `select payload from "${schema}".forge_records where run_id=$1 and kind='pi-container'`,
+                [request.run.id]
+              );
+              orphanContainer = JSON.parse(String(records[0].payload)).container.id;
+              if (orphanContainer === undefined) {
+                throw new Error('Missing durable orphan container identity');
+              }
+              const died = once(workerProcess, 'exit');
+              workerProcess.kill('SIGKILL');
+              const [, signal] = await died;
+              expect(signal).toBe('SIGKILL');
+              expect(await peer.recoverFencedMutationPermits(scopeId, child.claimId)).toEqual(
+                permits
+              );
+              connection = await NativeConnection.connect({
+                address: environment.connection.options.address
+              });
+              let retried = 0;
+              replacement = await Worker.create({
+                connection,
+                taskQueue,
+                identity: 'fleet-loss-replacement',
+                maxCachedWorkflows: 0,
+                workflowsPath: resolve(
+                  'apps/temporal-worker/test-fixtures/abrupt-builder-workflow.cjs'
+                ),
+                activities: {
+                  executeBuilder: async (input: typeof builderInput) => {
+                    retried++;
+                    const recovered = await peerStore.recoverRun(input.runId);
+                    const pending = recovered?.attempts.find(
+                      (item) => item.attempt.id === input.attemptId
+                    )?.attempt;
+                    if (pending === undefined) {
+                      throw new Error('Missing lost builder');
+                    }
+                    const runner = createPostgresDockerChildRunner({
+                      authority: peer,
+                      tools: new PostgresExecutionChildTools({
+                        authority: peer,
+                        persistence: peerStore,
+                        resolveResource: () => ({ type: 'project', projectId: 'project' }),
+                        resolveFileId: (path) => `project:${path}`
+                      }),
+                      image,
+                      executable: '/usr/local/bin/node',
+                      args: ['/opt/forge/entrypoint.mjs'],
+                      modelProxy: {
+                        complete: async () => {
+                          throw new Error('Replacement must never launch inference');
+                        }
+                      }
+                    });
+                    return runner.run(scopeId, 'parent', { ...agentRequest, attempt: pending });
+                  }
+                }
+              });
+              replacementRun = replacement.run();
+              expect(await workflow.result()).toEqual({ status: 'quarantined' });
+              expect(retried).toBe(1);
+              expect(await peer.recoverFencedMutationPermits(scopeId, child.claimId)).toEqual(
+                permits
+              );
+              expect(
+                await admin.unsafe(
+                  `select state from "${schema}".forge_global_claims where claim_id=$1`,
+                  [child.claimId]
+                )
+              ).toMatchObject([{ state: 'HELD_UNCERTAIN' }]);
+              expect((await peerStore.recoverRun(request.run.id))?.attempts[0].attempt.state).toBe(
+                'UNKNOWN'
+              );
+              const stopped = JSON.parse(
+                execFileSync('docker', ['inspect', orphanContainer], { encoding: 'utf8' })
+              )[0];
+              expect(stopped.State.Running).toBe(false);
+              let staleCalled = false;
+              await expect(
+                new FencedMutationPort(peer).execute(
+                  {
+                    scopeId,
+                    claimId: child.claimId,
+                    token: child.token,
+                    owner: {
+                      runId: request.run.id,
+                      taskId: 'task',
+                      attemptId: 'attempt',
+                      agentId: 'agent',
+                      workspaceId: 'workspace'
+                    },
+                    resource: { type: 'repository' }
+                  },
+                  async () => {
+                    staleCalled = true;
+                  }
+                )
+              ).rejects.toThrow();
+              expect(staleCalled).toBe(false);
+              const blockedRunId = `${request.run.id}-blocked-after-loss`;
+              await peerStore.createRun({
+                ...request,
+                run: { ...request.run, id: blockedRunId },
+                taskBindings: request.taskBindings.map((binding) => ({
+                  ...binding,
+                  runId: blockedRunId,
+                  workspace: { ...binding.workspace, runId: blockedRunId }
+                }))
+              });
+              await peer.bindRun(blockedRunId, request.run.repositoryId);
+              await peerStore.persistAttempt({
+                runId: blockedRunId,
+                attempt: {
+                  ...agentRequest.attempt,
+                  id: 'blocked-after-loss-attempt',
+                  runId: blockedRunId,
+                  revision: 1,
+                  state: 'PREPARING',
+                  startedAt: undefined
+                }
+              });
+              const counterBeforeBlocked = await admin.unsafe(
+                `select next_token from "${schema}".forge_global_scopes where id=$1`,
+                [scopeId]
+              );
+              const blockedAfterLoss = await peer.claimGlobalMutation({
+                scopeId,
+                claimId: 'blocked-after-loss',
+                owner: {
+                  runId: blockedRunId,
+                  taskId: 'task',
+                  attemptId: 'blocked-after-loss-attempt',
+                  agentId: 'agent',
+                  workspaceId: 'workspace'
+                },
+                resources: [{ type: 'repository' }]
+              });
+              expect(blockedAfterLoss.status).toBe('blocked');
+              expect(
+                await admin.unsafe(
+                  `select next_token from "${schema}".forge_global_scopes where id=$1`,
+                  [scopeId]
+                )
+              ).toEqual(counterBeforeBlocked);
+              expect(
+                await admin.unsafe(
+                  `select 1 from "${schema}".forge_global_claims where claim_id='blocked-after-loss'`
+                )
+              ).toHaveLength(0);
+              await peerStore.requestCancellation(request.run.id);
+              expect(await peerStore.finalizeGlobalCancellation(request.run.id)).toMatchObject({
+                status: 'pending',
+                state: 'CANCEL_REQUESTED'
+              });
+              // An uncertain writer in A must not become a deployment-wide mutex.
+              mkdirSync(independentRepository);
+              execFileSync('git', ['init', '-b', 'main', independentRepository]);
+              execFileSync('git', ['config', 'user.name', 'Loss fixture'], {
+                cwd: independentRepository
+              });
+              execFileSync('git', ['config', 'user.email', 'loss@example.test'], {
+                cwd: independentRepository
+              });
+              writeFileSync(join(independentRepository, 'approved.txt'), 'independent-before');
+              execFileSync('git', ['add', '.'], { cwd: independentRepository });
+              execFileSync('git', ['commit', '-m', 'Independent loss base'], {
+                cwd: independentRepository
+              });
+              const independentRun = `${request.run.id}-loss-independent`;
+              const independentBinding = {
+                ...request.taskBindings[0],
+                runId: independentRun,
+                workspace: {
+                  ...request.taskBindings[0].workspace,
+                  runId: independentRun,
+                  workspacePath: independentWorktree,
+                  integrationRepositoryPath: independentRepository,
+                  branchName: 'forge/loss-independent/task'
+                }
+              };
+              await peerStore.createRun({
+                ...request,
+                run: {
+                  ...request.run,
+                  id: independentRun,
+                  repositoryId: 'loss-independent',
+                  authority: {
+                    ...request.run.authority,
+                    repositoryRoot: independentRepository,
+                    baseCommit: execFileSync('git', ['rev-parse', 'HEAD'], {
+                      cwd: independentRepository,
+                      encoding: 'utf8'
+                    }).trim()
+                  }
+                },
+                taskBindings: [independentBinding]
+              });
+              const independentScope = await peer.registerScope('loss-independent');
+              await peer.bindRun(independentRun, 'loss-independent');
+              await peer.activateScope(independentScope);
+              await new GitWorkspaceManager().create(independentBinding.workspace);
+              await peerStore.persistAttempt({
+                runId: independentRun,
+                attempt: {
+                  ...agentRequest.attempt,
+                  id: 'loss-independent-attempt',
+                  runId: independentRun,
+                  state: 'PREPARING',
+                  revision: 1,
+                  startedAt: undefined
+                }
+              });
+              const independentOwner = {
+                runId: independentRun,
+                taskId: 'task',
+                attemptId: 'loss-independent-attempt',
+                agentId: 'agent',
+                workspaceId: 'workspace'
+              };
+              const grant = await peer.claimGlobalMutation({
+                scopeId: independentScope,
+                claimId: 'loss-independent-writer',
+                owner: independentOwner,
+                resources: [{ type: 'repository' }]
+              });
+              if (grant.status !== 'granted') {
+                throw new Error('Uncertain A blocked independent scope');
+              }
+              let independentModelCalls = 0;
+              const isolated = new DockerPiSessionGateway({
+                image,
+                executable: '/usr/local/bin/node',
+                args: ['/opt/forge/entrypoint.mjs'],
+                modelProxy: {
+                  complete: async () => ({
+                    role: 'assistant',
+                    api: 'openai-completions',
+                    provider: 'forge-host-proxy',
+                    model: 'forge-isolated',
+                    content:
+                      independentModelCalls++ > 0
+                        ? [{ type: 'text', text: 'Done' }]
+                        : [
+                            {
+                              type: 'toolCall',
+                              id: 'loss-independent-write',
+                              name: 'forge_write',
+                              arguments: { path: 'approved.txt', content: 'independent-after-loss' }
+                            }
+                          ],
+                    stopReason: independentModelCalls > 1 ? 'stop' : 'toolUse',
+                    usage: {
+                      input: 0,
+                      output: 0,
+                      cacheRead: 0,
+                      cacheWrite: 0,
+                      totalTokens: 0,
+                      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+                    },
+                    timestamp: Date.now()
+                  })
+                }
+              });
+              await isolated.start({
+                cwd: independentWorktree,
+                prompt: 'Write the approved file',
+                tools: ['forge_write'],
+                onStarted: async () => {},
+                executeTool: async (call) => {
+                  if (call.name !== 'forge_write' || call.path !== 'approved.txt') {
+                    throw new Error('Unexpected independent tool');
+                  }
+                  return new FencedMutationPort(peer).execute(
+                    {
+                      scopeId: independentScope,
+                      claimId: 'loss-independent-writer',
+                      token: grant.token,
+                      owner: independentOwner,
+                      resource: { type: 'repository' }
+                    },
+                    async () => {
+                      await writeFile(join(independentWorktree, call.path), call.content);
+                      return { content: 'Written through durable permit' };
+                    }
+                  );
+                }
+              });
+              await peer.releaseGlobalMutation({
+                scopeId: independentScope,
+                claimId: 'loss-independent-writer',
+                owner: independentOwner,
+                token: grant.token,
+                expectedVersion: grant.leases[0].version,
+                stopEvidence: isolated.confirmedStopEvidence()
+              });
+              expect(await readFile(join(independentWorktree, 'approved.txt'), 'utf8')).toBe(
+                'independent-after-loss'
+              );
+              expect(await peer.recoverFencedMutationPermits(scopeId, child.claimId)).toEqual(
+                permits
+              );
+              expect(await peer.hasUnresolvedRunAuthority(request.run.id)).toBe(true);
+              expect(await readFile(join(worktree, 'approved.txt'), 'utf8')).toBe(
+                'written-before-process-loss'
+              );
+              const history = await workflow.fetchHistory();
+              // Temporal compacts intermediate retry starts out of history. The
+              // original attempt is proven by its child-process IPC receipt,
+              // committed file/permit and SIGKILL exit; history records the retry.
+              expect(
+                history.events?.filter(
+                  (event) =>
+                    event.activityTaskStartedEventAttributes?.identity ===
+                    'fleet-loss-original-process'
+                )
+              ).toHaveLength(0);
+              expect(
+                history.events?.filter(
+                  (event) =>
+                    event.activityTaskStartedEventAttributes?.identity === 'fleet-loss-replacement'
+                )
+              ).toHaveLength(1);
+              expect(
+                history.events?.some(
+                  (event) => event.activityTaskTimedOutEventAttributes !== undefined
+                )
+              ).toBe(true);
+              return;
+            } finally {
+              if (workerProcess.exitCode === null && workerProcess.signalCode === null) {
+                workerProcess.kill('SIGKILL');
+              }
+              if (replacement?.getState() === 'RUNNING') {
+                replacement.shutdown();
+              }
+              await replacementRun;
+              await connection?.close();
+              if (orphanContainer !== undefined) {
+                execFileSync('docker', ['rm', '-f', orphanContainer], { stdio: 'pipe' });
+              }
+              await peer.close();
+              await peerStore.close();
+              await environment.teardown();
+              rmSync(fixtureBuild, { recursive: true, force: true });
+              rmSync(independentWorktree, { recursive: true, force: true });
+              rmSync(independentRepository, { recursive: true, force: true });
+            }
+          }
           if (lifecycle.startsWith('global-fleet')) {
             const environment = await TestWorkflowEnvironment.createTimeSkipping();
             const peerAuthority = await PostgresGlobalMutationAuthority.connect(config);
