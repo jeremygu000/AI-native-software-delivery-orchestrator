@@ -84,7 +84,19 @@ if (command === 'register') {
     parameters = ['--preflight'];
   }
 }
-const child = spawn(process.execPath, [resolve(entry), ...parameters], { env, stdio: 'inherit' });
+const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
+const interactiveNodeArguments =
+  command === 'cli' && args.length === 0 && (nodeMajor > 26 || (nodeMajor === 26 && nodeMinor >= 4))
+    ? ['--experimental-ffi']
+    : [];
+const child = spawn(
+  process.execPath,
+  [...interactiveNodeArguments, resolve(entry), ...parameters],
+  {
+    env,
+    stdio: 'inherit'
+  }
+);
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => child.kill(signal));
 }

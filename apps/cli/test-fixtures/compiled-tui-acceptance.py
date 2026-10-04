@@ -11,15 +11,15 @@ import sys
 import termios
 import time
 
-node, entry = sys.argv[1:]
+node, *arguments = sys.argv[1:]
 pid, terminal = pty.fork()
 if pid == 0:
     environment = {
         key: value for key, value in os.environ.items()
-        if key in ("PATH", "HOME", "TMPDIR", "LANG")
+        if key in ("PATH", "HOME", "TMPDIR", "LANG", "FORGE_COMPARISON_ENV_FILE")
     }
     environment["TERM"] = "xterm-256color"
-    os.execve(node, [node, "--experimental-ffi", entry], environment)
+    os.execve(node, [node, *arguments], environment)
 
 output = b""
 cancelled = False
@@ -53,7 +53,7 @@ finally:
     os.close(terminal)
     if status is None:
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.killpg(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         os.waitpid(pid, 0)
