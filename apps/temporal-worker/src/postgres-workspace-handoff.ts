@@ -7,6 +7,7 @@ import type { SupervisedWorkspaceGeneration } from '@ai-native-software-delivery
 import type { PostgresEvidenceStoreConfiguration } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 import {
   assertPostgresAuthorityLogin,
+  assertRestrictedPostgresRoleMemberships,
   openPostgresConnection
 } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 
@@ -52,10 +53,13 @@ export class PostgresWorkspaceHandoff {
       connection: { application_name: 'forge-workspace-recovery' }
     });
     try {
+      await assertRestrictedPostgresRoleMemberships(
+        sql,
+        [recovery.role],
+        'PostgreSQL recovery requires its isolated restricted principal'
+      );
       const [identity] = await sql`select current_user as name, session_user as session_name,
         rolsuper, rolcreatedb, rolcreaterole,
-        exists (select 1 from pg_auth_members m where m.member=current_user::regrole::oid
-          or m.roleid=current_user::regrole::oid) as membership,
         has_database_privilege(current_user,current_database(),'CREATE') as create_database,
         has_database_privilege(current_user,current_database(),'TEMP') as create_temp
         from pg_roles where rolname=current_user`;
@@ -86,7 +90,6 @@ export class PostgresWorkspaceHandoff {
         identity.rolsuper !== false ||
         identity.rolcreatedb !== false ||
         identity.rolcreaterole !== false ||
-        identity.membership !== false ||
         identity.create_database !== false ||
         identity.create_temp !== false ||
         writes.length !== 0 ||

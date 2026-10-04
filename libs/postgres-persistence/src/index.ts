@@ -31,6 +31,8 @@ export {
 } from './lib/postgres-server-version.js';
 // CLI, worker and independent operators share the explicit PostgreSQL transport boundary.
 export { openPostgresConnection, resolvePostgresConnectionSsl } from './lib/postgres-connection.js';
+// Independent recovery operators must use the same restricted-role membership audit.
+export { assertRestrictedPostgresRoleMemberships } from './lib/postgres-role-membership.js';
 // Deployment operators prepare a schema without acquiring database-wide authority for Forge roles.
 export {
   preparePostgresAuthoritySchema,

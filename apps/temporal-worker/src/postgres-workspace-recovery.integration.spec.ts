@@ -68,6 +68,7 @@ let owner: string;
 let runtime: string;
 let issuerLogin: string;
 let admin: ReturnType<typeof postgres>;
+let postgresContainer: string | undefined;
 const roles = {
   migration: `forge_recovery_owner_${process.pid}`,
   runtime: `forge_recovery_runtime_${process.pid}`,
@@ -95,14 +96,64 @@ const availablePort = (): Promise<number> =>
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), 'forge-recovery-pg-'));
   const data = join(root, 'data');
-  execFileSync('initdb', ['-D', data, '-A', 'trust', '--no-instructions'], { stdio: 'pipe' });
   const port = await availablePort();
-  execFileSync(
-    'pg_ctl',
-    ['-D', data, '-l', join(root, 'postgres.log'), '-o', `-h 127.0.0.1 -p ${port}`, '-w', 'start'],
-    { stdio: 'pipe' }
-  );
-  const url = `postgresql://127.0.0.1:${port}/postgres`;
+  const image = process.env.FORGE_TEST_POSTGRES_IMAGE;
+  if (image === undefined) {
+    execFileSync('initdb', ['-D', data, '-A', 'trust', '--no-instructions'], { stdio: 'pipe' });
+    execFileSync(
+      'pg_ctl',
+      [
+        '-D',
+        data,
+        '-l',
+        join(root, 'postgres.log'),
+        '-o',
+        `-h 127.0.0.1 -p ${port}`,
+        '-w',
+        'start'
+      ],
+      { stdio: 'pipe' }
+    );
+  } else {
+    if (!/@sha256:[a-f0-9]{64}$/.test(image)) {
+      throw new Error('PostgreSQL test image must be pinned by repository digest');
+    }
+    postgresContainer = execFileSync(
+      'docker',
+      [
+        'run',
+        '--rm',
+        '--detach',
+        '--publish',
+        `127.0.0.1:${port}:5432`,
+        '--env',
+        'POSTGRES_HOST_AUTH_METHOD=trust',
+        '--env',
+        'POSTGRES_INITDB_ARGS=--locale=C',
+        image
+      ],
+      { encoding: 'utf8' }
+    ).trim();
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      try {
+        execFileSync(
+          'docker',
+          ['exec', postgresContainer, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres'],
+          {
+            stdio: 'pipe'
+          }
+        );
+        break;
+      } catch (error) {
+        if (Date.now() >= deadline) {
+          throw error;
+        }
+        await new Promise((done) => setTimeout(done, 100));
+      }
+    }
+  }
+  const url = `postgresql://${image === undefined ? '' : 'postgres@'}127.0.0.1:${port}/postgres`;
   admin = postgres(url, { onnotice: () => undefined });
   for (const role of Object.values(roles)) {
     await admin.unsafe(`create role "${role}" login`);
@@ -119,12 +170,119 @@ afterAll(async () => {
   await admin?.end();
   if (root !== undefined) {
     try {
-      execFileSync('pg_ctl', ['-D', join(root, 'data'), '-m', 'immediate', '-w', 'stop'], {
-        stdio: 'pipe'
-      });
+      if (postgresContainer === undefined) {
+        execFileSync('pg_ctl', ['-D', join(root, 'data'), '-m', 'immediate', '-w', 'stop'], {
+          stdio: 'pipe'
+        });
+      } else {
+        execFileSync('docker', ['rm', '--force', postgresContainer], { stdio: 'pipe' });
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }
+});
+
+const unusedHandoffObservation = async (): Promise<never> => {
+  throw new Error('Connection audit must not recover a workspace');
+};
+
+it.for([
+  'owner ADMIN-only',
+  'different incoming member',
+  'owner without ADMIN',
+  'owner INHERIT',
+  'owner SET',
+  'outgoing membership',
+  'restricted incoming member',
+  'additional incompatible grant'
+] as const)('audits recovery handoff connection with %s', async (shape, context) => {
+  const [server] = await admin`select current_setting('server_version_num')::integer as version`;
+  if (Number(server?.version) < 160000) {
+    context.skip();
+  }
+  const schema = `handoff_membership_${process.pid}`;
+  await migratePostgresAuthoritySchema(
+    { connectionString: owner, role: roles.migration, schema },
+    roles.runtime,
+    POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+    {
+      trustAdminRole: roles.trust,
+      generationIssuerRole: roles.issuer,
+      setupAdmissionRole: roles.setup,
+      recoveryRole: roles.recovery
+    }
+  );
+  const [database] = await admin`select pg_get_userbyid(datdba) as owner
+    from pg_database where datname=current_database()`;
+  const databaseOwner = String(database?.owner);
+  const outsider = `forge_handoff_other_${process.pid}`;
+  await admin.unsafe(`create role "${outsider}"`);
+  const membership = () => admin`select roleid,member,grantor,admin_option,inherit_option,set_option
+    from pg_auth_members where roleid=${roles.recovery}::regrole
+      or member=${roles.recovery}::regrole order by roleid,member,grantor`;
+  const observer = new PostgresWorkspaceRecoveryObserver({
+    authority: { recoverWorkspaceSetupEvidence: unusedHandoffObservation },
+    issuer: { revoke: unusedHandoffObservation },
+    persistence: { recoverRun: unusedHandoffObservation },
+    supervisor: {
+      stopAndVerify: unusedHandoffObservation,
+      assertStopped: unusedHandoffObservation,
+      inspectStoppedWorkspace: unusedHandoffObservation
+    }
+  });
+  const { publicKey } = generateKeyPairSync('ed25519');
+  const connect = () =>
+    PostgresWorkspaceHandoff.connect({
+      recovery: {
+        connectionString: `postgresql://${roles.recovery}@${runtime.split('@')[1]}`,
+        schema,
+        role: roles.recovery
+      },
+      runtime: { connectionString: runtime, schema, role: roles.runtime },
+      issuer: { connectionString: issuerLogin, schema, role: roles.issuer },
+      observer,
+      keyId: 'handoff-audit',
+      publicKey: publicKey.export({ type: 'spki', format: 'pem' })
+    });
+  try {
+    if (shape === 'outgoing membership') {
+      await admin.unsafe(
+        `grant "${outsider}" to "${roles.recovery}" with inherit false, set false`
+      );
+    } else if (shape === 'different incoming member' || shape === 'restricted incoming member') {
+      const member = shape === 'different incoming member' ? outsider : roles.runtime;
+      await admin.unsafe(
+        `grant "${roles.recovery}" to "${member}" with admin true, inherit false, set false`
+      );
+    } else {
+      await admin.unsafe(`grant "${roles.recovery}" to "${databaseOwner}" with
+        admin ${shape !== 'owner without ADMIN'}, inherit ${shape === 'owner INHERIT'}, set ${shape === 'owner SET'}`);
+      if (shape === 'additional incompatible grant') {
+        await admin.unsafe(
+          `grant "${roles.recovery}" to "${outsider}" with admin true, inherit false, set false`
+        );
+      }
+    }
+    const before = await membership();
+    if (shape === 'owner ADMIN-only') {
+      expect(before).toMatchObject([
+        { admin_option: true, inherit_option: false, set_option: false }
+      ]);
+      const handoff = await connect();
+      await handoff.close();
+    } else {
+      await expect(connect()).rejects.toThrow(
+        'PostgreSQL recovery requires its isolated restricted principal'
+      );
+    }
+    expect(await membership()).toEqual(before);
+  } finally {
+    await admin.unsafe(`revoke "${roles.recovery}" from "${outsider}", "${roles.runtime}"`);
+    await admin.unsafe(`revoke "${roles.recovery}" from "${databaseOwner}"`);
+    await admin.unsafe(`revoke "${outsider}" from "${roles.recovery}"`);
+    await admin.unsafe(`drop role "${outsider}"`);
+    await admin.unsafe(`drop schema "${schema}" cascade`);
   }
 });
 
