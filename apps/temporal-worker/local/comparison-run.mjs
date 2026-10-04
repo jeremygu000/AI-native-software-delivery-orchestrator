@@ -3,14 +3,15 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { parseEnv } from 'node:util';
+import { forgeModelProfiles } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 
 const [candidate, command, ...args] = process.argv.slice(2);
-const profiles = {
-  deepseek: { provider: 'deepseek', model: 'deepseek-flash', effort: 'high' },
-  copilot: { provider: 'github-copilot', model: 'gpt-6.1-sol', effort: 'medium' },
-  codex: { provider: 'openai-codex', model: 'gpt-6.1-sol', effort: 'medium' }
+const providers = {
+  deepseek: 'deepseek',
+  copilot: 'github-copilot',
+  codex: 'openai-codex'
 };
-const profile = profiles[candidate];
+const profile = forgeModelProfiles.find((entry) => entry.provider === providers[candidate]);
 if (!profile || !['cli', 'worker', 'preflight', 'register'].includes(command)) {
   throw new Error('Usage: comparison-run deepseek|copilot|codex cli|worker|preflight|register');
 }
@@ -47,7 +48,7 @@ const prefix = neonComparison ? 'neon-comparison' : 'comparison';
 env.FORGE_WORKER_REPOSITORY_PATH = resolve(`.local/${prefix}-${candidate}`);
 env.FORGE_WORKER_REVIEW_PROVIDER = profile.provider;
 env.FORGE_WORKER_REVIEW_MODEL = profile.model;
-env.FORGE_MODEL_REASONING_EFFORT = profile.effort;
+env.FORGE_MODEL_REASONING_EFFORT = profile.reasoningEffort;
 env.TEMPORAL_TASK_QUEUE = `forge-${prefix}-${candidate}`;
 env.FORGE_SUBSCRIPTION_AUTH_DIRECTORY = join(homedir(), '.config/forge/subscription-auth');
 if (profile.provider !== 'deepseek') {

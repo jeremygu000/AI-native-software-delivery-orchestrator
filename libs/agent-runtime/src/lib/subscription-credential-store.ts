@@ -41,6 +41,9 @@ export class FileSubscriptionCredentialStore implements SubscriptionCredentialSt
   }
   private async prepare(): Promise<void> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    await this.validateDirectory();
+  }
+  private async validateDirectory(): Promise<void> {
     const stat = await lstat(this.directory);
     if (
       !stat.isDirectory() ||
@@ -56,6 +59,15 @@ export class FileSubscriptionCredentialStore implements SubscriptionCredentialSt
   }
   async load(provider: string): Promise<OAuthCredentials> {
     await this.prepare();
+    return this.read(provider);
+  }
+  /** Read-only presence check: never creates directories, refreshes or repairs credentials. */
+  async hasCredentials(provider: string): Promise<boolean> {
+    await this.validateDirectory();
+    await this.read(provider);
+    return true;
+  }
+  private async read(provider: string): Promise<OAuthCredentials> {
     const file = await open(
       join(this.directory, `${providerName(provider)}.json`),
       constants.O_RDONLY | constants.O_NOFOLLOW

@@ -41,6 +41,17 @@ describe('Explicit independent subscription login', () => {
         await expect(loginModelSubscription('claude-future', directory, callbacks)).rejects.toThrow(
           'Unsupported'
         );
+        const controller = new AbortController();
+        selected.mockImplementationOnce(async () => {
+          controller.abort();
+          return { ...credentials, access: 'cancelled-access' };
+        });
+        await expect(
+          loginModelSubscription(provider, directory, { ...callbacks, signal: controller.signal })
+        ).rejects.toThrow('cancelled');
+        expect(await new FileSubscriptionCredentialStore(directory).load(provider)).toEqual(
+          credentials
+        );
         selected.mockRejectedValue(new Error('Login cancelled'));
         await expect(loginModelSubscription(provider, directory, callbacks)).rejects.toThrow(
           'cancelled'

@@ -97,11 +97,18 @@ pnpm build
 node apps/cli/dist/main.js --help
 pnpm exec forge analyze .
 pnpm exec forge analyze . --full
+pnpm exec forge model list
+pnpm exec forge model select
 pnpm exec forge plan request.md --repository . --max-concurrency 2 --semantic-review
 pnpm exec forge approve <artifact-id> --approved-by reviewer@example.com --repository .
 pnpm exec forge bind <artifact-id> --approval <approval-id> --run-id <run-id> --repository .
 pnpm exec forge run <artifact-id> --approval <approval-id> --run-id <run-id> --repository .
 ```
+
+Interactive planning requires `--semantic-review` and Forge credentials. Missing provider/model
+flags open the picker only in a terminal; automation must pass them explicitly. See
+[Interactive Model Selection CLI](docs/interactive-model-selection.en.md) for profiles, login,
+reasoning effort and exact worker-target matching.
 
 ## Workspace
 

@@ -4,11 +4,11 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import {
-  PiCodeReviewModelResolver,
   PiPlanningGatewayAdapter,
   PiPlanningAgent,
   PiSemanticPlanReviewer,
-  resolveSubscriptionExecution
+  resolveForgeModelSelection,
+  type loginModelSubscription
 } from '@ai-native-software-delivery-orchestrator/agent-runtime';
 import { DeterministicConflictEngine } from '@ai-native-software-delivery-orchestrator/conflict-engine';
 import type {
@@ -23,7 +23,6 @@ import {
   AutonomousPlanPhase,
   AutonomousPlanningError,
   assertStableRepositorySnapshot,
-  createCodeReviewPolicy,
   createPlanApproval,
   createPlanArtifact,
   PlanExecutionBinder,
@@ -72,8 +71,20 @@ import {
 } from '@ai-native-software-delivery-orchestrator/temporal-runtime';
 import { Command } from 'commander';
 import { tracePlanningModelRequest } from './cli-telemetry.js';
+import {
+  createModelSelectionTerminal,
+  listForgeModels,
+  selectForgeModel,
+  resolvePlanModelSelection,
+  loginForgeModel,
+  type ModelSelectionTerminal
+} from './model-selection.js';
+import { resolveCliReviewPolicy } from './review-policy.js';
 
 export interface ForgeProgramDependencies {
+  readonly modelTerminal?: ModelSelectionTerminal;
+  readonly modelEnvironment?: NodeJS.ProcessEnv;
+  readonly loginModel?: typeof loginModelSubscription;
   readonly cwd?: string;
   readonly analyzeRepository?: (repositoryPath: string) => Promise<RepositoryGraphAnalysis>;
   readonly planRepository?: (request: {
@@ -86,6 +97,7 @@ export interface ForgeProgramDependencies {
     readonly semanticReviewAuthorized: true;
     readonly reviewProvider: string;
     readonly reviewModel: string;
+    readonly reasoningEffort?: string;
   }) => Promise<PlanArtifact>;
   readonly approvePlan?: (request: {
     readonly artifactId: string;
@@ -106,6 +118,7 @@ export interface ForgeProgramDependencies {
     readonly planDirectory?: string;
     readonly reviewProvider: string;
     readonly reviewModel: string;
+    readonly reasoningEffort?: string;
   }) => Promise<PlanExecutionIntent>;
   readonly runPlan?: (request: {
     readonly artifactId: string;
@@ -118,6 +131,7 @@ export interface ForgeProgramDependencies {
     readonly runDirectory?: string;
     readonly reviewProvider: string;
     readonly reviewModel: string;
+    readonly reasoningEffort?: string;
   }) => Promise<unknown>;
   readonly statusRun?: (request: {
     readonly runId: string;
@@ -207,23 +221,6 @@ const verificationPolicy = resolveVerificationPolicy(
   process.env
 );
 
-const resolveReviewPolicy = (provider: string, model: string) => {
-  provider = provider.trim();
-  model = model.trim();
-  const resolved = new PiCodeReviewModelResolver().resolve({ provider, id: model });
-  const execution = resolved === undefined ? undefined : resolveSubscriptionExecution(resolved);
-  const policy = createCodeReviewPolicy({
-    provider,
-    model,
-    ...(execution === undefined ? {} : { executionTarget: execution.target })
-  });
-  return {
-    policy,
-    model: resolved,
-    execution
-  };
-};
-
 const operationalAuthority = (runId: string, runDirectory: string) =>
   openAuthorityPersistence(
     resolveAuthorityConfiguration(process.env, join(runDirectory, runId, 'run.sqlite'))
@@ -239,10 +236,12 @@ const createRepositoryPlan = async (request: {
   readonly semanticReviewAuthorized: true;
   readonly reviewProvider: string;
   readonly reviewModel: string;
+  readonly reasoningEffort?: string;
 }): Promise<PlanArtifact> => {
-  const { policy, model, execution } = resolveReviewPolicy(
+  const { policy, model, execution } = resolveCliReviewPolicy(
     request.reviewProvider,
-    request.reviewModel
+    request.reviewModel,
+    request.reasoningEffort
   );
   const planningGateway = new PiPlanningGatewayAdapter(undefined, {
     model,
@@ -252,6 +251,7 @@ const createRepositoryPlan = async (request: {
       : { apiKey: process.env.FORGE_MODEL_API_KEY })
   });
   const reasoningEffort =
+    request.reasoningEffort ??
     execution?.target.reasoningConfig.effort ??
     process.env.FORGE_MODEL_REASONING_EFFORT ??
     (model?.reasoning ? 'high' : 'off');
@@ -485,8 +485,13 @@ const bindRepositoryPlan = async (request: {
   readonly planDirectory?: string;
   readonly reviewProvider: string;
   readonly reviewModel: string;
+  readonly reasoningEffort?: string;
 }): Promise<PlanExecutionIntent> => {
-  const { policy } = resolveReviewPolicy(request.reviewProvider, request.reviewModel);
+  const { policy } = resolveCliReviewPolicy(
+    request.reviewProvider,
+    request.reviewModel,
+    request.reasoningEffort
+  );
   const [stores, registry] = await Promise.all([
     planStores(request),
     loadSharedResourceRegistry(request.sharedResourcesPath)
@@ -521,8 +526,13 @@ const runRepositoryPlan = async (request: {
   readonly runDirectory?: string;
   readonly reviewProvider: string;
   readonly reviewModel: string;
+  readonly reasoningEffort?: string;
 }): Promise<unknown> => {
-  const { policy } = resolveReviewPolicy(request.reviewProvider, request.reviewModel);
+  const { policy } = resolveCliReviewPolicy(
+    request.reviewProvider,
+    request.reviewModel,
+    request.reasoningEffort
+  );
   const authorityConfiguration = resolveAuthorityConfiguration(process.env);
   const workerRepositoryPath = process.env.FORGE_WORKER_REPOSITORY_PATH;
   if (
@@ -692,10 +702,39 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
   const writeOutput =
     dependencies.writeOutput ?? ((output: string) => process.stdout.write(output));
 
+  const modelTerminal = dependencies.modelTerminal ?? createModelSelectionTerminal();
+  const modelEnvironment = dependencies.modelEnvironment ?? process.env;
+
   const program = new Command()
     .name('forge')
     .description('Repository-aware multi-agent coding orchestrator')
     .version('0.0.1');
+
+  const modelCommand = program
+    .command('model')
+    .description('Inspect and select Forge execution profiles');
+  modelCommand
+    .command('list')
+    .description('List supported profiles and local Forge credential status')
+    .action(async () => {
+      writeOutput(await listForgeModels(modelEnvironment));
+    });
+  modelCommand
+    .command('select')
+    .description('Select and confirm an execution profile without saving it')
+    .action(async () => {
+      const selection = await selectForgeModel(modelTerminal, modelEnvironment);
+      writeOutput(
+        `${JSON.stringify(resolveForgeModelSelection(selection, modelEnvironment), null, 2)}\n`
+      );
+    });
+  modelCommand
+    .command('login')
+    .description('Authorize a subscription in the explicit Forge private store')
+    .argument('<provider>', 'canonical provider ID')
+    .action(async (provider: string) => {
+      await loginForgeModel(provider, modelTerminal, modelEnvironment, dependencies.loginModel);
+    });
 
   program
     .command('analyze')
@@ -735,8 +774,9 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
       '--semantic-review',
       'authorize an independent Pi review using the specification and read-only repository facts'
     )
-    .requiredOption('--review-provider <provider>', 'approved provider for independent code review')
-    .requiredOption('--review-model <model>', 'approved model ID for independent code review')
+    .option('--review-provider <provider>', 'approved provider for independent code review')
+    .option('--review-model <model>', 'approved model ID for independent code review')
+    .option('--reasoning-effort <effort>', 'explicit model reasoning effort')
     .action(
       async (
         specification: string,
@@ -747,11 +787,17 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           maxConcurrency: number;
           planDirectory?: string;
           semanticReview: true;
-          reviewProvider: string;
-          reviewModel: string;
+          reviewProvider?: string;
+          reviewModel?: string;
+          reasoningEffort?: string;
         }
       ) => {
         try {
+          const selection = await resolvePlanModelSelection(
+            options,
+            modelTerminal,
+            modelEnvironment
+          );
           const repositoryPath = resolve(cwd, options.repository);
           const result = await planRepository({
             specificationPath: resolve(cwd, specification),
@@ -765,8 +811,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
               ? {}
               : { planDirectory: resolve(cwd, options.planDirectory) }),
             semanticReviewAuthorized: options.semanticReview,
-            reviewProvider: options.reviewProvider,
-            reviewModel: options.reviewModel
+            ...selection
           });
           writeOutput(`${JSON.stringify(result, null, 2)}\n`);
         } catch (error) {
@@ -846,6 +891,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .option('--plan-directory <path>', 'directory containing plan and approval records')
     .requiredOption('--review-provider <provider>', 'approved provider for independent code review')
     .requiredOption('--review-model <model>', 'approved model ID for independent code review')
+    .option('--reasoning-effort <effort>', 'explicit model reasoning effort')
     .action(
       async (
         artifactId: string,
@@ -858,6 +904,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           planDirectory?: string;
           reviewProvider: string;
           reviewModel: string;
+          reasoningEffort?: string;
         }
       ) => {
         try {
@@ -874,7 +921,10 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
               ? {}
               : { planDirectory: resolve(cwd, options.planDirectory) }),
             reviewProvider: options.reviewProvider,
-            reviewModel: options.reviewModel
+            reviewModel: options.reviewModel,
+            ...(options.reasoningEffort === undefined
+              ? {}
+              : { reasoningEffort: options.reasoningEffort })
           });
           writeOutput(`${JSON.stringify(intent, null, 2)}\n`);
         } catch (error) {
@@ -900,6 +950,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .option('--plan-directory <path>', 'directory containing plan and approval records')
     .requiredOption('--review-provider <provider>', 'approved provider for independent code review')
     .requiredOption('--review-model <model>', 'approved model ID for independent code review')
+    .option('--reasoning-effort <effort>', 'explicit model reasoning effort')
     .option(
       '--run-directory <path>',
       'directory for integration checkout, task worktrees, and run DB'
@@ -917,6 +968,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           runDirectory?: string;
           reviewProvider: string;
           reviewModel: string;
+          reasoningEffort?: string;
         }
       ) => {
         try {
@@ -936,7 +988,10 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
               ? {}
               : { runDirectory: resolve(cwd, options.runDirectory) }),
             reviewProvider: options.reviewProvider,
-            reviewModel: options.reviewModel
+            reviewModel: options.reviewModel,
+            ...(options.reasoningEffort === undefined
+              ? {}
+              : { reasoningEffort: options.reasoningEffort })
           });
           writeOutput(`${JSON.stringify(result, null, 2)}\n`);
         } catch (error) {

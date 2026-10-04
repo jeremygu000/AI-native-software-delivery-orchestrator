@@ -23,6 +23,9 @@ export const loginModelSubscription = async (
   const store = new FileSubscriptionCredentialStore(directory);
   await store.withLock(providerId, async () => {
     const credentials = await provider.login(callbacks);
+    if (callbacks.signal?.aborted === true) {
+      throw new Error('Subscription authorization cancelled');
+    }
     await store.save(providerId, credentials);
   });
 };

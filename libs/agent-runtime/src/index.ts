@@ -27,10 +27,17 @@ export type {
 } from './lib/model-execution-provider.js';
 export { FileSubscriptionCredentialStore } from './lib/subscription-credential-store.js';
 export {
+  forgeModelProfiles,
+  createForgeModelResolver,
+  resolveForgeModelSelection,
+  inspectForgeModelAuthentication,
   resolveSubscriptionExecution,
   isSubscriptionProvider
 } from './lib/model-execution-deployment.js';
-export type { ResolvedSubscriptionExecution } from './lib/model-execution-deployment.js';
+export type {
+  ForgeModelSelection,
+  ResolvedSubscriptionExecution
+} from './lib/model-execution-deployment.js';
 export { loginModelSubscription } from './lib/subscription-login.js';
 export {
   createPlanningFactTools,

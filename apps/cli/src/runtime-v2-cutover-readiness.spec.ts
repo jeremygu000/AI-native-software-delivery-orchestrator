@@ -114,14 +114,20 @@ const inventory = (id: string) => {
 describe('Runtime V2 cutover readiness', () => {
   it('keeps production package roots outside the legacy module graph', () => {
     const cliSource = source('apps/cli/src/app.ts');
+    const reviewPolicySource = source('apps/cli/src/review-policy.ts');
+    const modelDeploymentSource = source(
+      'libs/agent-runtime/src/lib/model-execution-deployment.ts'
+    );
     const runPreparationEntry = source('libs/run-preparation/src/index.ts');
     const orchestrationEntry = source('libs/orchestration-runtime/src/index.ts');
     const cliPackage = record(JSON.parse(source('apps/cli/package.json')), 'CLI package');
 
     expect(cliSource).toContain('TemporalRunLauncher');
     expect(cliSource).toContain('startForgeRun');
-    expect(cliSource).toContain('createCodeReviewPolicy');
-    expect(cliSource).toContain('PiCodeReviewModelResolver');
+    expect(cliSource).toContain('resolveCliReviewPolicy');
+    expect(reviewPolicySource).toContain('createCodeReviewPolicy');
+    expect(reviewPolicySource).toContain('createForgeModelResolver');
+    expect(modelDeploymentSource).toContain('PiCodeReviewModelResolver');
     expect(
       packageImports(
         'apps/cli/src/app.ts',
