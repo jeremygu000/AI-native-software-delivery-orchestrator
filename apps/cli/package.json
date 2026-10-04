@@ -18,6 +18,7 @@
     "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*",
     "@ai-native-software-delivery-orchestrator/task-impact": "workspace:*",
     "@ai-native-software-delivery-orchestrator/temporal-runtime": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/temporal-worker": "workspace:*",
     "@ai-native-software-delivery-orchestrator/workspace-git": "workspace:*",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.222.0",

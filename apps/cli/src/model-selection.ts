@@ -12,8 +12,8 @@ import {
 export class ModelSelectionError extends Error {}
 
 export class ModelSelectionCancelled extends ModelSelectionError {
-  constructor() {
-    super('Model selection cancelled.');
+  constructor(message = 'Model selection cancelled.') {
+    super(message);
   }
 }
 

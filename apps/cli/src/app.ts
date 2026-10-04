@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { realpath, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 
@@ -29,7 +29,8 @@ import {
   PlanExecutionBindingError,
   type PlanApproval,
   type PlanExecutionIntent,
-  type PlanArtifact
+  type PlanArtifact,
+  type PlanningSource
 } from '@ai-native-software-delivery-orchestrator/planning';
 import {
   openAuthorityPersistence,
@@ -79,9 +80,22 @@ import {
   loginForgeModel,
   type ModelSelectionTerminal
 } from './model-selection.js';
+import { checkInteractiveDeployment } from '@ai-native-software-delivery-orchestrator/temporal-worker/interactive-deployment';
+import { prepareApprovedWorkspaces } from '@ai-native-software-delivery-orchestrator/temporal-worker/operator-workspaces';
+import {
+  startInteractiveCoding,
+  type InteractiveCodingDependencies
+} from './interactive-coding.js';
+import { createInteractiveTerminal, type InteractiveTerminal } from './interactive-terminal.js';
 import { resolveCliReviewPolicy } from './review-policy.js';
 
 export interface ForgeProgramDependencies {
+  readonly interactiveTerminal?: InteractiveTerminal;
+  readonly planSource?: typeof planRepositoryFromSource;
+  readonly validateInteractiveRepository?: InteractiveCodingDependencies['validateRepository'];
+  readonly checkInteractiveWorker?: InteractiveCodingDependencies['checkWorker'];
+  readonly setupInteractiveRun?: InteractiveCodingDependencies['setup'];
+  readonly interactiveWait?: InteractiveCodingDependencies['wait'];
   readonly modelTerminal?: ModelSelectionTerminal;
   readonly modelEnvironment?: NodeJS.ProcessEnv;
   readonly loginModel?: typeof loginModelSubscription;
@@ -129,6 +143,7 @@ export interface ForgeProgramDependencies {
     readonly sharedResourcesPath?: string;
     readonly planDirectory?: string;
     readonly runDirectory?: string;
+    readonly prepareOnly?: boolean;
     readonly reviewProvider: string;
     readonly reviewModel: string;
     readonly reasoningEffort?: string;
@@ -226,8 +241,9 @@ const operationalAuthority = (runId: string, runDirectory: string) =>
     resolveAuthorityConfiguration(process.env, join(runDirectory, runId, 'run.sqlite'))
   );
 
-const createRepositoryPlan = async (request: {
-  readonly specificationPath: string;
+export const planRepositoryFromSource = async (request: {
+  readonly signal?: AbortSignal;
+  readonly source: PlanningSource;
   readonly repositoryPath: string;
   readonly sharedResourcesPath?: string;
   readonly maxAttempts: number;
@@ -238,6 +254,7 @@ const createRepositoryPlan = async (request: {
   readonly reviewModel: string;
   readonly reasoningEffort?: string;
 }): Promise<PlanArtifact> => {
+  request.signal?.throwIfAborted();
   const { policy, model, execution } = resolveCliReviewPolicy(
     request.reviewProvider,
     request.reviewModel,
@@ -245,6 +262,7 @@ const createRepositoryPlan = async (request: {
   );
   const planningGateway = new PiPlanningGatewayAdapter(undefined, {
     model,
+    ...(request.signal === undefined ? {} : { signal: request.signal }),
     ...(execution === undefined ? {} : { execution }),
     ...(process.env.FORGE_MODEL_API_KEY === undefined
       ? {}
@@ -258,8 +276,7 @@ const createRepositoryPlan = async (request: {
   const planner = new PiPlanningAgent(planningGateway);
   const semanticReviewer = new PiSemanticPlanReviewer(planningGateway);
   const snapshotProvider = new GitRepositorySnapshotProvider();
-  const [content, registry, snapshotBeforeAnalysis] = await Promise.all([
-    readFile(request.specificationPath, 'utf8'),
+  const [registry, snapshotBeforeAnalysis] = await Promise.all([
     loadSharedResourceRegistry(request.sharedResourcesPath),
     snapshotProvider.capture({ repositoryPath: request.repositoryPath })
   ]);
@@ -268,15 +285,13 @@ const createRepositoryPlan = async (request: {
     snapshotBeforeAnalysis,
     await snapshotProvider.capture({ repositoryPath: request.repositoryPath })
   );
-  const source = {
-    type: 'markdown-spec' as const,
-    content,
-    path: request.specificationPath
-  };
+  request.signal?.throwIfAborted();
+  const source = request.source;
   const preparedPlan = await new AutonomousPlanPhase({
     planner: {
-      propose: (input) =>
-        tracePlanningModelRequest(
+      propose: (input) => {
+        request.signal?.throwIfAborted();
+        return tracePlanningModelRequest(
           {
             provider: request.reviewProvider,
             model: request.reviewModel,
@@ -285,11 +300,13 @@ const createRepositoryPlan = async (request: {
             attemptId: String(input.attempt)
           },
           () => planner.propose(input)
-        )
+        );
+      }
     },
     reviewer: {
-      review: (input) =>
-        tracePlanningModelRequest(
+      review: (input) => {
+        request.signal?.throwIfAborted();
+        return tracePlanningModelRequest(
           {
             provider: request.reviewProvider,
             model: request.reviewModel,
@@ -298,7 +315,8 @@ const createRepositoryPlan = async (request: {
             attemptId: String(input.attempt)
           },
           () => semanticReviewer.review(input)
-        )
+        );
+      }
     },
     impactAnalyzer: new RepositoryTaskImpactAnalyzer(registry),
     conflictAnalyzer: new DeterministicConflictEngine(registry),
@@ -312,6 +330,7 @@ const createRepositoryPlan = async (request: {
       schedule: { maxConcurrency: request.maxConcurrency }
     }
   });
+  request.signal?.throwIfAborted();
   const artifact = createPlanArtifact({
     artifactId: randomUUID(),
     revision: 1,
@@ -328,10 +347,25 @@ const createRepositoryPlan = async (request: {
     repositorySnapshot,
     request.planDirectory
   );
+  request.signal?.throwIfAborted();
   await new JsonFilePlanArtifactStore(artifactDirectory, repositorySnapshot.repositoryRoot).save(
     artifact
   );
   return artifact;
+};
+
+const createRepositoryPlan = async (
+  request: Parameters<NonNullable<ForgeProgramDependencies['planRepository']>>[0]
+): Promise<PlanArtifact> => {
+  const { specificationPath, ...configuration } = request;
+  return planRepositoryFromSource({
+    ...configuration,
+    source: {
+      type: 'markdown-spec',
+      content: await readFile(specificationPath, 'utf8'),
+      path: specificationPath
+    }
+  });
 };
 
 export const loadSharedResourceRegistry = async (
@@ -524,6 +558,7 @@ const runRepositoryPlan = async (request: {
   readonly sharedResourcesPath?: string;
   readonly planDirectory?: string;
   readonly runDirectory?: string;
+  readonly prepareOnly?: boolean;
   readonly reviewProvider: string;
   readonly reviewModel: string;
   readonly reasoningEffort?: string;
@@ -625,7 +660,7 @@ const runRepositoryPlan = async (request: {
           }
         });
         try {
-          return process.env.FORGE_PREPARE_ONLY === 'true'
+          return (request.prepareOnly ?? process.env.FORGE_PREPARE_ONLY === 'true')
             ? await launcher.prepareRun(runtimeRequest)
             : await launcher.startOrResumeRun(runtimeRequest);
         } finally {
@@ -709,6 +744,60 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .name('forge')
     .description('Repository-aware multi-agent coding orchestrator')
     .version('0.0.1');
+
+  program.action(async () => {
+    await startInteractiveCoding({
+      terminal: dependencies.interactiveTerminal ?? createInteractiveTerminal(),
+      cwd,
+      environment: modelEnvironment,
+      validateRepository:
+        dependencies.validateInteractiveRepository ??
+        (async (path) => {
+          const snapshots = new GitRepositorySnapshotProvider();
+          const before = await snapshots.capture({ repositoryPath: await realpath(path) });
+          await analyze(before.repositoryRoot);
+          const after = await snapshots.capture({ repositoryPath: before.repositoryRoot });
+          assertStableRepositorySnapshot(before, after);
+          return await realpath(before.repositoryRoot);
+        }),
+      planSource: dependencies.planSource ?? planRepositoryFromSource,
+      approvePlan,
+      bindPlan,
+      runPlan,
+      statusRun: statusRunFn,
+      cancelRun: cancelRunFn,
+      checkWorker:
+        dependencies.checkInteractiveWorker ?? ((request) => checkInteractiveDeployment(request)),
+      setup:
+        dependencies.setupInteractiveRun ??
+        (async (request) => {
+          if (process.env.FORGE_WORKER_AUTHORITY_MODE !== 'global') {
+            return;
+          }
+          await runPlan({ ...request, prepareOnly: true });
+          const authority = resolveAuthorityConfiguration(process.env);
+          if (authority.backend !== 'postgres') {
+            throw new Error('Global setup requires PostgreSQL authority');
+          }
+          await prepareApprovedWorkspaces({
+            root: cwd,
+            runId: request.runId,
+            artifactId: request.artifactId,
+            artifactRevision: request.artifactRevision,
+            approvalId: request.approvalId,
+            approvedBy: request.approvedBy,
+            authorizeWorkspaceCreation: true,
+            planDirectory: await resolvePlanArtifactDirectory(
+              request.artifact.repository,
+              request.planDirectory
+            ),
+            runtimeConnectionString: authority.connectionString,
+            runtimeSchema: authority.schema
+          });
+        }),
+      ...(dependencies.interactiveWait === undefined ? {} : { wait: dependencies.interactiveWait })
+    });
+  });
 
   const modelCommand = program
     .command('model')

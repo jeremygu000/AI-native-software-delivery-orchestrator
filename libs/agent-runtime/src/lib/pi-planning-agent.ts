@@ -35,6 +35,7 @@ interface PiPlanningSessionFacade {
   setActiveToolsByName(toolNames: string[]): void;
   prompt(prompt: string): Promise<void>;
   assistantMessages(): readonly PiPlanningAssistantMessage[];
+  abort?(): Promise<void>;
   dispose(): void;
 }
 
@@ -203,6 +204,7 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
   readonly #createSession: PiPlanningSessionFactory;
   readonly #model?: PiSessionModel;
   readonly #apiKey?: string;
+  readonly #signal?: AbortSignal;
 
   constructor(
     createSession: PiPlanningSessionFactory = async (options) => {
@@ -216,6 +218,7 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
           sessionId: session.sessionId,
           setActiveToolsByName: (toolNames) => session.setActiveToolsByName(toolNames),
           prompt: (prompt) => session.prompt(prompt),
+          abort: () => session.abort(),
           dispose: () => session.dispose(),
           assistantMessages: () =>
             session.state.messages.flatMap((message) =>
@@ -239,8 +242,10 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
       readonly model?: PiSessionModel;
       readonly apiKey?: string;
       readonly execution?: ResolvedSubscriptionExecution;
+      readonly signal?: AbortSignal;
     } = {}
   ) {
+    this.#signal = configuration.signal;
     this.#createSession = createSession;
     this.#model = configuration.model;
     this.#apiKey =
@@ -254,6 +259,7 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
     readonly prompt: string;
     readonly executeTool: (call: PiPlanningToolCall) => Promise<PiPlanningToolResult>;
   }): Promise<{ readonly sessionId: string; readonly output: string }> {
+    this.#signal?.throwIfAborted();
     const toolNames = ['forge_projects', 'forge_files', 'forge_symbols', 'forge_relationships'];
     const authStorage = AuthStorage.inMemory();
     if (this.#model !== undefined && this.#apiKey !== undefined) {
@@ -273,12 +279,21 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
         : {}),
       ...(this.#model === undefined ? {} : { model: this.#model })
     });
+    const abort = () => {
+      void session.abort?.().catch(() => {});
+    };
+    this.#signal?.addEventListener('abort', abort, { once: true });
+    if (this.#signal?.aborted === true) {
+      abort();
+    }
     let generated: { readonly sessionId: string; readonly output: string } | undefined;
     let operationFailure: unknown;
     let operationFailed = false;
     try {
+      this.#signal?.throwIfAborted();
       session.setActiveToolsByName(toolNames);
       await session.prompt(options.prompt);
+      this.#signal?.throwIfAborted();
       const message = session.assistantMessages().at(-1);
       if (message === undefined) {
         throw new Error('Pi planner returned no assistant response');
@@ -298,6 +313,7 @@ export class PiPlanningGatewayAdapter implements PiPlanningGateway {
       operationFailed = true;
       operationFailure = error;
     }
+    this.#signal?.removeEventListener('abort', abort);
     try {
       session.dispose();
     } catch (disposalFailure) {

@@ -96,6 +96,9 @@ importers:
       '@ai-native-software-delivery-orchestrator/temporal-runtime':
         specifier: workspace:*
         version: link:../../libs/temporal-runtime
+      '@ai-native-software-delivery-orchestrator/temporal-worker':
+        specifier: workspace:*
+        version: link:../temporal-worker
       '@ai-native-software-delivery-orchestrator/workspace-git':
         specifier: workspace:*
         version: link:../../libs/workspace-git

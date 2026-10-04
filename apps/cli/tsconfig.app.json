@@ -41,6 +41,9 @@
     },
     {
       "path": "../../libs/workspace-git/tsconfig.lib.json"
+    },
+    {
+      "path": "../temporal-worker/tsconfig.app.json"
     }
   ]
 }

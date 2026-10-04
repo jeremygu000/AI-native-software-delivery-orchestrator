@@ -408,6 +408,52 @@ describe('PiPlanningAgent', () => {
 });
 
 describe('PiPlanningGatewayAdapter', () => {
+  it('aborts an active planning session and disposes it without returning an artifact input', async () => {
+    const controller = new AbortController();
+    let release: (() => void) | undefined;
+    const abort = vi.fn(async () => {
+      release?.();
+    });
+    const dispose = vi.fn();
+    const gateway = new PiPlanningGatewayAdapter(
+      async () => ({
+        session: {
+          sessionId: 'cancelled-plan',
+          setActiveToolsByName: () => {},
+          prompt: async () => {
+            const pending = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            controller.abort();
+            await pending;
+          },
+          abort,
+          dispose,
+          assistantMessages: () => []
+        }
+      }),
+      { signal: controller.signal }
+    );
+    await expect(
+      gateway.generate({ cwd: '/repo', prompt: 'plan', executeTool: async () => ({ content: '' }) })
+    ).rejects.toThrow();
+    expect(abort).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+  it('rejects an already cancelled planning request before session creation', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const factory = vi.fn();
+    await expect(
+      new PiPlanningGatewayAdapter(factory, { signal: controller.signal }).generate({
+        cwd: '/repo',
+        prompt: 'plan',
+        executeTool: async () => ({ content: '' })
+      })
+    ).rejects.toThrow();
+    expect(factory).not.toHaveBeenCalled();
+  });
+
   it('registers controlled coding and planning tools through the real Pi SDK', async () => {
     const resourceLoader = await createIsolatedPlanningResourceLoader();
     const controlledTools = createControlledPiTools(async () => ({ content: 'ok' }));

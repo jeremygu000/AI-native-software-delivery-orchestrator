@@ -6,6 +6,18 @@
     "forge-worker": "./dist/main.js"
   },
   "type": "module",
+  "exports": {
+    "./operator-workspaces": {
+      "types": "./dist/operator-workspaces.d.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/operator-workspaces.ts",
+      "import": "./dist/operator-workspaces.js"
+    },
+    "./interactive-deployment": {
+      "types": "./dist/interactive-deployment.d.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/interactive-deployment.ts",
+      "import": "./dist/interactive-deployment.js"
+    }
+  },
   "dependencies": {
     "@ai-native-software-delivery-orchestrator/agent-runtime": "workspace:*",
     "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
