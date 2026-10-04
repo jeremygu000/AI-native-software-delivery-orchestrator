@@ -15,6 +15,7 @@ import {
   selectForgeModel
 } from './model-selection.js';
 import type { InteractiveTerminal } from './interactive-terminal.js';
+import type { CodingPresentation, CodingStage } from './interactive-presentation.js';
 import {
   integrationTaskIds,
   renderPlanDetails,
@@ -40,10 +41,18 @@ export interface InteractiveCodingDependencies {
     policyFingerprint: string;
   }) => Promise<void>;
   readonly setup: (
-    request: RunRequest & { artifact: PlanArtifact; approvedBy: string }
+    request: RunRequest & {
+      artifact: PlanArtifact;
+      approvedBy: string;
+      onProgress?: (
+        stage: 'metadata' | 'workspace' | 'authority',
+        state: 'active' | 'complete'
+      ) => void;
+    }
   ) => Promise<void>;
   readonly wait?: (signal: AbortSignal) => Promise<void>;
   readonly createId?: () => string;
+  readonly present?: CodingPresentation;
 }
 
 const taskInput = async (
@@ -91,6 +100,11 @@ export async function startInteractiveCoding(
   let runPrepared = false;
   let cancellationAttempted = false;
   let phase = 'input';
+  let activeStage: CodingStage | undefined;
+  const stage = (value: CodingStage, state: 'active' | 'complete') => {
+    activeStage = state === 'active' ? value : undefined;
+    dependencies.present?.({ type: 'stage', stage: value, state });
+  };
   const createId = dependencies.createId ?? randomUUID;
   const requestCancellation = async () => {
     if (currentRun === undefined || cancellationAttempted) {
@@ -132,14 +146,42 @@ export async function startInteractiveCoding(
       break;
     }
     const entered = await terminal.prompt('Repository', dependencies.cwd, controller.signal);
-    const repositoryPath = await dependencies.validateRepository(
-      resolve(
-        dependencies.cwd,
-        entered.startsWith('~/') ? resolve(homedir(), entered.slice(2)) : entered
+    stage('repository', 'active');
+    if (/\$(?:[A-Za-z_]|\{)/.test(entered)) {
+      throw new ModelSelectionError(
+        `Repository not found: ${entered}\nShell variables such as $PWD are not expanded in this field.`
+      );
+    }
+    const repositoryPath = await dependencies
+      .validateRepository(
+        resolve(
+          dependencies.cwd,
+          entered.startsWith('~/') ? resolve(homedir(), entered.slice(2)) : entered
+        )
       )
-    );
+      .catch((error: unknown) => {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+        ) {
+          throw new ModelSelectionError(
+            `Repository not found: ${entered}\nEnter an existing Git repository path.`
+          );
+        }
+        throw error;
+      });
+    stage('repository', 'complete');
+    dependencies.present?.({ type: 'repository', path: repositoryPath });
     let source = await taskInput(terminal, dependencies.cwd, controller.signal);
     const selection = await selectForgeModel(terminal, environment);
+    dependencies.present?.({
+      type: 'model',
+      provider: selection.provider,
+      model: selection.model,
+      reasoning: selection.reasoningEffort
+    });
     const profile = {
       reviewProvider: selection.provider,
       reviewModel: selection.model,
@@ -156,6 +198,7 @@ export async function startInteractiveCoding(
       requireActive();
       phase = 'planning';
       terminal.write('Creating and reviewing plan...\n');
+      stage('analysis', 'active');
       const artifact = await dependencies.planSource({
         source,
         repositoryPath,
@@ -163,9 +206,22 @@ export async function startInteractiveCoding(
         maxConcurrency: 1,
         semanticReviewAuthorized: true,
         ...profile,
-        signal: controller.signal
+        signal: controller.signal,
+        onProgress: (value) => {
+          if (activeStage !== undefined && activeStage !== 'semantic-review') {
+            stage(activeStage, 'complete');
+          }
+          stage(value, 'active');
+        }
       });
       requireActive();
+      if (activeStage !== undefined) {
+        stage(activeStage, 'complete');
+      }
+      stage('analysis', 'complete');
+      stage('planning', 'complete');
+      stage('semantic-review', 'complete');
+      dependencies.present?.({ type: 'plan', artifact });
       terminal.write(renderPlanSummary(artifact));
       let revise = false;
       let approved = false;
@@ -209,6 +265,8 @@ export async function startInteractiveCoding(
       }
       requireActive();
       phase = 'readiness';
+      stage('readiness', 'active');
+      terminal.write('Checking worker deployment and task queue...\n');
       await dependencies
         .checkWorker({
           repositoryPath,
@@ -221,6 +279,7 @@ export async function startInteractiveCoding(
         });
       requireActive();
       terminal.write('✓ Worker deployment and task queue available\n');
+      stage('readiness', 'complete');
       const approvalId = createId();
       const runId = createId();
       const approvedBy = userInfo().username;
@@ -233,6 +292,8 @@ export async function startInteractiveCoding(
         ...profile
       };
       phase = 'approval';
+      stage('approval', 'active');
+      terminal.write('Recording exact plan approval...\n');
       await dependencies.approvePlan({
         artifactId: artifact.artifactId,
         artifactRevision: artifact.revision,
@@ -243,7 +304,17 @@ export async function startInteractiveCoding(
       });
       requireActive();
       terminal.write(`✓ Exact plan approved\nApproval ID: ${approvalId}\n`);
+      stage('approval', 'complete');
+      dependencies.present?.({
+        type: 'identity',
+        runId,
+        approvalId,
+        artifactId: artifact.artifactId,
+        repositoryPath
+      });
       phase = 'binding';
+      stage('binding', 'active');
+      terminal.write('Binding repository authority...\n');
       try {
         await dependencies.bindPlan(request);
       } catch (error) {
@@ -265,17 +336,24 @@ export async function startInteractiveCoding(
       }
       requireActive();
       terminal.write('✓ Repository authority bound\n');
+      stage('binding', 'complete');
       const runDirectory = resolve(
         resolve(homedir(), '.forge', 'runs', artifact.repository.repositoryId.replace(':', '-'))
       );
       currentRun = { ...request, runDirectory, prepareOnly: false };
       phase = 'setup';
+      stage('workspace', 'active');
       runPrepared = true; // setup includes accepted initial dispatch; failures can leave durable authority.
-      await dependencies.setup({ ...currentRun, artifact, approvedBy });
+      terminal.write('Preparing coding run...\n');
+      await dependencies.setup({ ...currentRun, artifact, approvedBy, onProgress: stage });
       requireActive();
       terminal.write('✓ Setup preparation checked; runtime validation remains authoritative\n');
+      stage('workspace', 'complete');
       phase = 'launch';
+      stage('launch', 'active');
+      terminal.write('Starting coding run...\n');
       await dependencies.runPlan(currentRun);
+      stage('launch', 'complete');
       terminal.write(
         `Running...\nRun ID: ${runId}\nApproval ID: ${approvalId}\nArtifact: ${artifact.artifactId}\nRepository: ${repositoryPath}\nRun directory: ${runDirectory}\n`
       );
@@ -287,6 +365,7 @@ export async function startInteractiveCoding(
           throw new ModelSelectionCancelled('Interactive coding cancelled.');
         }
         const status = await dependencies.statusRun({ runId, runDirectory });
+        dependencies.present?.({ type: 'run', status });
         const rendered = renderRunProgress(status);
         if (rendered !== previous) {
           terminal.write(rendered);
@@ -314,6 +393,13 @@ export async function startInteractiveCoding(
       }
     }
   } catch (error) {
+    if (activeStage !== undefined) {
+      dependencies.present?.({
+        type: 'stage',
+        stage: activeStage,
+        state: 'failed'
+      });
+    }
     if (error instanceof ModelSelectionCancelled || controller.signal.aborted) {
       if (runPrepared) {
         await requestCancellation();

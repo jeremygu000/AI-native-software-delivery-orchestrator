@@ -21,8 +21,10 @@ export async function createTemporalWorker(
     forgeActivities?: ForgeActivities;
     /** Deployment-owned tracing plugins; disabled by default. */
     plugins?: WorkerOptions['plugins'];
+    onStartup?: (stage: 'connecting' | 'bundling' | 'created') => void;
   }
 ): Promise<TemporalWorkerHandle> {
+  options?.onStartup?.('connecting');
   const connection = await NativeConnection.connect({
     address: new URL(config.serverUrl).host
   });
@@ -31,6 +33,7 @@ export async function createTemporalWorker(
     throw new Error('createTemporalWorker requires forgeActivities for the Scenario A workflow');
   }
 
+  options?.onStartup?.('bundling');
   const worker = await Worker.create({
     connection,
     namespace: config.namespace,
@@ -39,6 +42,7 @@ export async function createTemporalWorker(
     activities: options.forgeActivities,
     ...(options.plugins === undefined ? {} : { plugins: options.plugins })
   });
+  options?.onStartup?.('created');
 
   let shutdownRequested = false;
 

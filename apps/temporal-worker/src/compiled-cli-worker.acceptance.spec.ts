@@ -273,7 +273,9 @@ const createFixture = async (
   writeFileSync(join(repository, 'pnpm-workspace.yaml'), 'packages:\n  - .\n');
   writeFileSync(
     join(repository, 'tsconfig.json'),
-    JSON.stringify({ compilerOptions: { module: 'nodenext', moduleResolution: 'nodenext' } })
+    JSON.stringify({
+      compilerOptions: { module: 'nodenext', moduleResolution: 'nodenext' }
+    })
   );
   writeFileSync(join(repository, 'src/index.ts'), 'export const value = "pending";\n');
   git(repository, ['add', '.']);
@@ -294,7 +296,10 @@ const createFixture = async (
     artifactId,
     revision: 1,
     createdAt: new Date().toISOString(),
-    source: { type: 'user-request', content: 'Replace the fixture value with completed.' },
+    source: {
+      type: 'user-request',
+      content: 'Replace the fixture value with completed.'
+    },
     repository: analysis.graph,
     repositorySnapshot: snapshot,
     sharedResourcePolicy: [],
@@ -378,7 +383,11 @@ const recover = async (fixture: AcceptanceFixture) => {
 };
 
 beforeAll(() => {
-  execFileSync('pnpm', ['build'], { cwd: workspaceRoot, stdio: 'inherit', timeout: 180_000 });
+  execFileSync('pnpm', ['build'], {
+    cwd: workspaceRoot,
+    stdio: 'inherit',
+    timeout: 180_000
+  });
   if (!existsSync(cliPath) || !existsSync(workerPath)) {
     throw new Error('M3.11 acceptance requires compiled CLI and worker outputs');
   }
@@ -401,7 +410,9 @@ describe('compiled CLI and Temporal worker process boundary', () => {
     let cancellationFixture: AcceptanceFixture | undefined;
     let cancellationWorker: CapturedProcess | undefined;
     try {
-      execFileSync('initdb', ['-D', data, '-A', 'trust', '--no-instructions'], { stdio: 'pipe' });
+      execFileSync('initdb', ['-D', data, '-A', 'trust', '--no-instructions'], {
+        stdio: 'pipe'
+      });
       execFileSync(
         'pg_ctl',
         [
@@ -491,11 +502,35 @@ describe('compiled CLI and Temporal worker process boundary', () => {
           })
         ]);
         expect(exited).toEqual({ code: 1, signal: null });
+        expect(failedStartup.output()).toContain('Initializing Forge worker...');
+        expect(failedStartup.output()).toContain('Connecting to Temporal...');
+        expect(failedStartup.output()).not.toContain('Building Temporal workflow bundle...');
+        expect(failedStartup.output()).not.toContain('Starting worker on task queue:');
+        expect(failedStartup.output()).not.toContain('Forge worker is ready and polling');
         expect(failedStartup.output()).toContain('Worker failed to start:');
       } finally {
         await stop(failedStartup);
       }
       workerProcess = worker(routed);
+      const startupMessages = [
+        'Initializing Forge worker...',
+        'Connecting to Temporal...',
+        'Building Temporal workflow bundle...',
+        `Starting worker on task queue: ${routed.queue}`,
+        `Forge worker is ready and polling for tasks on ${routed.queue}.`
+      ] as const;
+      await waitFor(
+        async () => workerProcess?.output().includes(startupMessages[4]) === true,
+        'Forge worker ready message'
+      );
+      const startupOutput = workerProcess.output();
+      let previousIndex = -1;
+      for (const message of startupMessages) {
+        const index = startupOutput.indexOf(message);
+        expect(index).toBeGreaterThan(previousIndex);
+        expect(startupOutput.split(message)).toHaveLength(2);
+        previousIndex = index;
+      }
       await approveAndRun(routed);
       await waitFor(
         async () => (await status(routed)).state === 'COMPLETED',
@@ -552,7 +587,10 @@ describe('compiled CLI and Temporal worker process boundary', () => {
         async () => (await status(routedCancellation)).state === 'CANCELLED',
         'PostgreSQL durable cancellation'
       );
-      const mismatchedSchema = { ...routed, env: { ...env, FORGE_POSTGRES_SCHEMA: 'wrong' } };
+      const mismatchedSchema = {
+        ...routed,
+        env: { ...env, FORGE_POSTGRES_SCHEMA: 'wrong' }
+      };
       const mismatch = capture(
         process.execPath,
         [cliPath, 'status', '--run-id', routed.runId, '--run-directory', routed.runDirectory],
@@ -584,7 +622,9 @@ describe('compiled CLI and Temporal worker process boundary', () => {
         await stop(workerProcess);
       }
       if (databaseStarted) {
-        execFileSync('pg_ctl', ['-D', data, '-m', 'immediate', '-w', 'stop'], { stdio: 'pipe' });
+        execFileSync('pg_ctl', ['-D', data, '-m', 'immediate', '-w', 'stop'], {
+          stdio: 'pipe'
+        });
       }
       await environment.teardown();
       await rm(fixture.root, { recursive: true, force: true });

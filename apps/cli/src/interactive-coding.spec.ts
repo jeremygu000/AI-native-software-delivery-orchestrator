@@ -21,6 +21,7 @@ import {
   type InteractiveCodingDependencies
 } from './interactive-coding.js';
 import { ModelSelectionCancelled } from './model-selection.js';
+import { CodingTuiController } from './tui/controller.js';
 import {
   integrationTaskIds,
   renderPlanDetails,
@@ -193,6 +194,55 @@ const fixture = (
   return { dependencies, terminal, choices, calls, artifact, status };
 };
 describe('Interactive coding frontend', () => {
+  it('runs the OpenTUI semantic adapter through exact approval and durable status without changing application order', async () => {
+    const f = fixture();
+    const controller = new CodingTuiController();
+    let requestId = 0;
+    const unsubscribe = controller.subscribe(() => {
+      const request = controller.snapshot().request;
+      if (request === undefined || request.id === requestId) {
+        return;
+      }
+      requestId = request.id;
+      queueMicrotask(() => {
+        if (request.kind === 'choice') {
+          controller.submit(f.choices.shift() ?? 0);
+        } else {
+          controller.submit(
+            request.kind === 'task' ? 'Change one file.\nPreserve the gates.' : '/repo'
+          );
+        }
+      });
+    });
+    try {
+      await startInteractiveCoding({
+        ...f.dependencies,
+        terminal: controller.terminal,
+        present: controller.present
+      });
+      expect(f.calls).toEqual(['plan', 'check', 'approve', 'bind', 'setup', 'run']);
+      expect(vi.mocked(f.dependencies.planSource).mock.calls[0][0].source).toEqual({
+        type: 'user-request',
+        content: 'Change one file.\nPreserve the gates.'
+      });
+      expect(controller.snapshot().events).toContainEqual({
+        type: 'model',
+        provider: 'deepseek',
+        model: 'deepseek-flash',
+        reasoning: 'high'
+      });
+      expect(controller.snapshot().events).toContainEqual({ type: 'run', status: f.status });
+      expect(controller.snapshot().events).toContainEqual({
+        type: 'identity',
+        runId: 'run',
+        approvalId: 'approval',
+        artifactId: f.artifact.artifactId,
+        repositoryPath: '/repo'
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
   it('refuses bare non-TTY invocation before any application operations', async () => {
     const f = fixture();
     f.terminal.isInteractive = false;
@@ -233,6 +283,43 @@ describe('Interactive coding frontend', () => {
     expect(run).toMatchObject(bind);
     expect(vi.mocked(f.dependencies.approvePlan).mock.calls[0][0].approvalId).toBe(bind.approvalId);
     expect(vi.mocked(f.dependencies.setup).mock.calls[0][0]).toMatchObject(run);
+    const stages = [
+      [
+        'Checking worker deployment and task queue...\n',
+        f.dependencies.checkWorker,
+        '✓ Worker deployment and task queue available\n'
+      ],
+      [
+        'Recording exact plan approval...\n',
+        f.dependencies.approvePlan,
+        `✓ Exact plan approved\nApproval ID: ${bind.approvalId}\n`
+      ],
+      [
+        'Binding repository authority...\n',
+        f.dependencies.bindPlan,
+        '✓ Repository authority bound\n'
+      ],
+      [
+        'Preparing coding run...\n',
+        f.dependencies.setup,
+        '✓ Setup preparation checked; runtime validation remains authoritative\n'
+      ],
+      ['Starting coding run...\n', f.dependencies.runPlan, 'Running...\n']
+    ] as const;
+    let previousOrder = f.terminal.choose.mock.invocationCallOrder.at(-1)!;
+    for (const [progress, operation, success] of stages) {
+      const progressIndex = f.terminal.write.mock.calls.findIndex(([text]) => text === progress);
+      const successIndex = f.terminal.write.mock.calls.findIndex(([text]) =>
+        String(text).startsWith(success)
+      );
+      const progressOrder = f.terminal.write.mock.invocationCallOrder[progressIndex];
+      const operationOrder = vi.mocked(operation).mock.invocationCallOrder[0];
+      const successOrder = f.terminal.write.mock.invocationCallOrder[successIndex];
+      expect(progressOrder).toBeGreaterThan(previousOrder);
+      expect(progressOrder).toBeLessThan(operationOrder);
+      expect(successOrder).toBeGreaterThan(operationOrder);
+      previousOrder = successOrder;
+    }
   });
   it('carries subscription medium through plan/bind/run despite a conflicting ambient effort', async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), 'forge-interactive-profile-')));
@@ -320,6 +407,31 @@ describe('Interactive coding frontend', () => {
       order[0]
     );
     expect(vi.mocked(prepareApprovedWorkspaces).mock.invocationCallOrder[0]).toBeLessThan(order[1]);
+    const stages = [
+      ['Preparing run metadata...\n', order[0], '✓ Run metadata prepared\n'],
+      [
+        'Preparing isolated workspaces...\n',
+        vi.mocked(prepareApprovedWorkspaces).mock.invocationCallOrder[0],
+        '✓ Isolated workspaces ready\n'
+      ],
+      ['Starting coding run...\n', order[1], 'Running...\n']
+    ] as const;
+    const bindingIndex = f.terminal.write.mock.calls.findIndex(
+      ([text]) => text === '✓ Repository authority bound\n'
+    );
+    let previousOrder = f.terminal.write.mock.invocationCallOrder[bindingIndex];
+    for (const [progress, operationOrder, success] of stages) {
+      const progressIndex = f.terminal.write.mock.calls.findIndex(([text]) => text === progress);
+      const successIndex = f.terminal.write.mock.calls.findIndex(([text]) =>
+        String(text).startsWith(success)
+      );
+      const progressOrder = f.terminal.write.mock.invocationCallOrder[progressIndex];
+      const successOrder = f.terminal.write.mock.invocationCallOrder[successIndex];
+      expect(progressOrder).toBeGreaterThan(previousOrder);
+      expect(progressOrder).toBeLessThan(operationOrder);
+      expect(successOrder).toBeGreaterThan(operationOrder);
+      previousOrder = successOrder;
+    }
   });
   it('leaves explicit automation outside the root menu', async () => {
     const f = fixture();
@@ -378,6 +490,10 @@ describe('Interactive coding frontend', () => {
     vi.mocked(f.dependencies.checkWorker).mockRejectedValueOnce(new Error('unavailable'));
     await expect(startInteractiveCoding(f.dependencies)).rejects.toThrow('not ready');
     expect(f.dependencies.approvePlan).not.toHaveBeenCalled();
+    const output = f.terminal.write.mock.calls.flat().join('');
+    expect(output).toContain('Checking worker deployment and task queue...');
+    expect(output).not.toContain('✓ Worker deployment and task queue available');
+    expect(output).not.toContain('Recording exact plan approval...');
   });
   it('does not launch on stale binding and requires explicit re-plan', async () => {
     const f = fixture();
@@ -394,7 +510,11 @@ describe('Interactive coding frontend', () => {
     vi.mocked(f.dependencies.setup).mockRejectedValueOnce(new Error('secret diagnostic'));
     await expect(startInteractiveCoding(f.dependencies)).rejects.toThrow('refused');
     expect(f.dependencies.runPlan).not.toHaveBeenCalled();
-    expect(f.terminal.write.mock.calls.flat().join('')).not.toContain('secret diagnostic');
+    const output = f.terminal.write.mock.calls.flat().join('');
+    expect(output).toContain('Preparing coding run...');
+    expect(output).not.toContain('✓ Setup preparation checked');
+    expect(output).not.toContain('Starting coding run...');
+    expect(output).not.toContain('secret diagnostic');
   });
   it('does not create another run after an ambiguous launch response', async () => {
     const f = fixture();

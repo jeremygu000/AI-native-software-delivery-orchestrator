@@ -9,9 +9,16 @@ async function main(): Promise<void> {
   if (args.length !== 0 && (args.length !== 1 || args[0] !== '--preflight')) {
     throw new Error('Usage: forge-worker [--preflight]');
   }
+  if (args[0] !== '--preflight') {
+    console.log('Initializing Forge worker...');
+  }
   const { deployment, temporal, mode } = resolveWorkerDeployment();
   if (args[0] === '--preflight') {
-    const report = await inspectWorkerDeployment({ deployment, temporal, mode });
+    const report = await inspectWorkerDeployment({
+      deployment,
+      temporal,
+      mode
+    });
     console.log(JSON.stringify(report, null, 2));
     process.exitCode = report.status === 'ready' ? 0 : 1;
     return;
@@ -29,6 +36,14 @@ async function main(): Promise<void> {
     try {
       const handle = await createTemporalWorker(temporal, {
         forgeActivities: composition.forgeActivities,
+        onStartup: (stage) => {
+          if (stage === 'connecting') {
+            console.log('Connecting to Temporal...');
+          }
+          if (stage === 'bundling') {
+            console.log('Building Temporal workflow bundle...');
+          }
+        },
         ...(telemetry === undefined ? {} : { plugins: [telemetry.plugin] })
       });
       const shutdown = async (): Promise<void> => {
@@ -38,7 +53,12 @@ async function main(): Promise<void> {
       process.on('SIGTERM', shutdown);
       process.on('SIGINT', shutdown);
       try {
-        await handle.run();
+        console.log(`Starting worker on task queue: ${temporal.taskQueue}`);
+        const running = handle.run();
+        if (handle.worker.getState() === 'RUNNING') {
+          console.log(`Forge worker is ready and polling for tasks on ${temporal.taskQueue}.`);
+        }
+        await running;
       } finally {
         process.off('SIGTERM', shutdown);
         process.off('SIGINT', shutdown);

@@ -4133,3 +4133,11 @@ PG16 定向 authority 测试为 159 项通过，5 项既有新版 feature tests 
 隔离 PostgreSQL 16 和 18 各有 8 项真实 connection 测试通过：合法 owner grant、6 种拒绝形态，以及合法 grant 与额外不兼容 grant 同时存在；audit 前后 membership 保持不变。17 项定向 unit tests 通过，其中新增 handoff tests 为 8 项；PG14/15 handoff branch 继续严格拒绝，也不访问新版 catalog columns。已有 recovery integration fixture 支持 authority tests 使用的 pinned PostgreSQL images，因此实际测试 driver connection。PG14/15 branch 不代表完整真实 server matrix。包含独立 presentation 工作的合并 working tree，其完整 pnpm check 通过：112 个文件中 1153 项测试通过，1 项无关 native TUI test 因未显式配置 Node runtime 而跳过；完整 PG18 suite 中 handoff cases 全部执行。Build 和 git diff --check 通过。覆盖率超过未改变门槛：语句 90.61%、分支 85.12%、函数 94.22%、代码行 90.54%。
 
 修复使 recovery setup 与已接受 membership policy 一致，不代表之前中断的 run 已恢复，也不声称 live Neon E2E 已完成。现有 TEMP 及其他 recovery checks 仍是前提。本次没有连接／修改线上 Neon、请求模型或重试 E2E。用户已授权按功能分两批提交并推送：先提交本 recovery 修复，再提交独立 CLI／worker presentation 工作。
+
+## 全屏 OpenTUI coding presentation
+
+既有交互 coding application 现在具有 React／OpenTUI 全屏界面：蓝色有边框面板、真正的多行任务编辑器、model／repository 身份、可滚动的 immutable plan 证据、显式批准选项、等待真实操作的 spinner，以及 durable running／outcome dashboard。Enter 换行，Ctrl+Enter 提交，方向键选择，Page Up／Page Down 滚动证据。安全的 repository 错误解释不存在的路径和未展开的 shell 变量。Predicted writes 明确标为预测，FAILED／CANCELLED 不会显示成成功完成。
+
+界面适配已有 terminal interface，只观察 application events。Planning、semantic review、approval、binding、setup、authority handoff、launch、status 和 cancellation 仍调用既有操作。Operator callbacks 对应实际 workspace／handoff 边界；worker 文案区分 Temporal 连接、worker 构建和既有 ready 状态。没有增加 server、router、迁移 Bun、改变 provider，或重写 authority／workflow。交互渲染需要 Node 26.4+ 与 `--experimental-ffi`；显式命令和 worker 保持既有 runtime 兼容性。完成、错误或取消后 renderer cleanup 恢复终端。
+
+Semantic controller／application tests 验证多行原文、精确批准和操作顺序。Presentation 阶段证据记录：实际 Node 26.4 + FFI 下 controller／runtime／native-render 共五项通过；普通 runtime 下 native test 仍是可选项。随后针对合并 working tree 的完整镜像版 pnpm check 已通过：112 个文件中 1153 项测试通过，1 项 native TUI test 因未显式配置 native-test Node runtime 而跳过。Build、TypeScript、全仓库 type-aware lint、格式和 git diff --check 通过。覆盖率超过未改变门槛：语句 90.61%、分支 85.12%、函数 94.22%、代码行 90.54%。此前失败的 aggregate run 已被本次成功验证取代。这是 repository verification，不是 live provider／Neon 验收；presentation 阶段没有执行真实 coding run 或新增模型／authority 操作。使用说明见 docs/interactive-coding-cli.en.md。用户已授权在 recovery 修复之后，将本工作作为第二个功能批次提交并推送；presentation 仍待独立复审。

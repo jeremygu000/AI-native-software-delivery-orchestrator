@@ -4,13 +4,13 @@
 
 This frontend builds on accepted `2a4306ec25e157647186096f9c18146f39acc2dd` on `m4/postgres-durable-authority`. A developer can enter a task and carry one exact model profile through planning, immutable approval, binding, existing setup and Temporal execution without manually copying identities between commands. Explicit commands remain the automation interface.
 
-After `pnpm build`, run `pnpm forge` in a terminal, or invoke the workspace `forge` binary. For the existing local deployment environment, use `pnpm local:forge` without a subcommand. The wrapper keeps privileged credentials out of worker environments. Bare invocation outside a terminal exits with instructions to use `forge --help`.
+After `pnpm build`, the bare interactive entry uses a full-screen OpenTUI React interface. It requires Node 26.4 or newer with `--experimental-ffi`, as required by the installed OpenTUI runtime. For example, run `node --experimental-ffi apps/cli/dist/main.js` in a terminal. For the existing local deployment environment, run `NODE_OPTIONS=--experimental-ffi pnpm local:forge` under a supported Node version. The wrapper keeps privileged credentials out of worker environments. Explicit noninteractive commands and worker entry points retain their existing Node requirements and do not load OpenTUI. Bare invocation outside a terminal exits with instructions to use `forge --help`.
 
 ## Start a coding task
 
 1. Select **Start a coding task**. The other root entries are Resume a run, View runs, Configure model and Check environment. Configure model reuses the accepted picker; the other three currently state that they are unavailable.
 2. Enter a Git repository path. The current directory is offered as a convenience. `~/` is expanded and the Git root is canonicalized. Analysis must succeed and the repository snapshot must remain stable during validation.
-3. Choose **Describe task** or **Use Markdown specification**. Multiline text ends with a line containing only `.`. Consecutive pasted lines are retained. A specification path is resolved relative to the CLI working directory.
+3. Choose **Describe task** or **Use Markdown specification**. In the full-screen task editor, Enter inserts a newline and Ctrl+Enter submits the complete text. Consecutive pasted lines are retained. A specification path is resolved relative to the CLI working directory. The injectable line-terminal adapter used by existing tests retains its dot-line terminator.
 4. Select an existing execution profile. Missing Forge credentials stop the chosen provider with its existing login/API-key instructions. There is no fallback or external credential discovery.
 5. Explicitly authorize the selected model to create and independently review the plan. No model request is made before consent. The existing defaults remain three planning attempts and maximum concurrency one.
 6. Inspect the plan summary and optionally review its requirements, dependencies, writes, verification and conflicts. **Revise task** creates another immutable artifact. **Cancel** leaves any already created plan intact and does not approve or execute it.
@@ -20,6 +20,10 @@ After `pnpm build`, run `pnpm forge` in a terminal, or invoke the workspace `for
 10. Progress polls the existing durable read model roughly once per second. Completion reports recorded task, verification, review, integration-event and lease evidence. It does not invent percentages or claim a push, PR or deployment.
 
 ## Execution and authority boundaries
+
+Use Up/Down and Enter for choices, and Page Up/Page Down to scroll the plan or run evidence independently of the approval choices. The selected model, repository, immutable artifact and run identities remain visible. Stage spinners represent awaited application operations, not estimated completion percentages. Predicted writes are labelled as predictions; actual terminal outcomes come from durable run status. Ctrl-C requests the existing cancellation path and waits for application cleanup before the renderer restores the terminal. Escape cancels an active interaction or closes a finished screen.
+
+The React screen receives presentation events and implements the existing terminal interface. It does not connect to PostgreSQL or Temporal, issue approvals, grant authority, launch another worker or introduce a separate router/server. Workspace and handoff progress are observations emitted around the accepted operator operations. Startup messages distinguish connecting to Temporal, building the worker and the existing ready state.
 
 File specifications and inline requests enter `planRepositoryFromSource`. Repository analysis, planning, semantic review, artifact creation and policy fingerprints use the same core. Source metadata deliberately differs: a file retains its Markdown path, while inline text is a `user-request`. Artifact identities, times and source fingerprints are not forced equal; prepared decisions and policy/snapshot identity are equivalent for equivalent facts and mocked model results.
 

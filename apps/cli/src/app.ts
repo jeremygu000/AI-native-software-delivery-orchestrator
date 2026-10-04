@@ -78,6 +78,7 @@ import {
   selectForgeModel,
   resolvePlanModelSelection,
   loginForgeModel,
+  ModelSelectionError,
   type ModelSelectionTerminal
 } from './model-selection.js';
 import { checkInteractiveDeployment } from '@ai-native-software-delivery-orchestrator/temporal-worker/interactive-deployment';
@@ -211,8 +212,14 @@ interface SerializableProjectGraph {
   readonly diagnostics: readonly RepositoryDiagnostic[];
   readonly files?: readonly FileNode[];
   readonly symbols?: readonly SymbolNode[];
-  readonly fileDependencies?: readonly { readonly from: string; readonly to: string }[];
-  readonly symbolReferences?: readonly { readonly from: string; readonly to: string }[];
+  readonly fileDependencies?: readonly {
+    readonly from: string;
+    readonly to: string;
+  }[];
+  readonly symbolReferences?: readonly {
+    readonly from: string;
+    readonly to: string;
+  }[];
 }
 
 const verificationPolicy = resolveVerificationPolicy(
@@ -253,6 +260,7 @@ export const planRepositoryFromSource = async (request: {
   readonly reviewProvider: string;
   readonly reviewModel: string;
   readonly reasoningEffort?: string;
+  readonly onProgress?: (stage: 'analysis' | 'planning' | 'semantic-review') => void;
 }): Promise<PlanArtifact> => {
   request.signal?.throwIfAborted();
   const { policy, model, execution } = resolveCliReviewPolicy(
@@ -280,6 +288,7 @@ export const planRepositoryFromSource = async (request: {
     loadSharedResourceRegistry(request.sharedResourcesPath),
     snapshotProvider.capture({ repositoryPath: request.repositoryPath })
   ]);
+  request.onProgress?.('analysis');
   const analysis = await analyzeRepository(request.repositoryPath);
   const repositorySnapshot = assertStableRepositorySnapshot(
     snapshotBeforeAnalysis,
@@ -291,6 +300,7 @@ export const planRepositoryFromSource = async (request: {
     planner: {
       propose: (input) => {
         request.signal?.throwIfAborted();
+        request.onProgress?.('planning');
         return tracePlanningModelRequest(
           {
             provider: request.reviewProvider,
@@ -306,6 +316,7 @@ export const planRepositoryFromSource = async (request: {
     reviewer: {
       review: (input) => {
         request.signal?.throwIfAborted();
+        request.onProgress?.('semantic-review');
         return tracePlanningModelRequest(
           {
             provider: request.reviewProvider,
@@ -746,17 +757,31 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .version('0.0.1');
 
   program.action(async () => {
-    await startInteractiveCoding({
-      terminal: dependencies.interactiveTerminal ?? createInteractiveTerminal(),
+    // OpenTUI is lazy-loaded: explicit commands retain the existing Node runtime boundary.
+    if (dependencies.interactiveTerminal === undefined) {
+      const { supportsCodingTui } = await import('./tui/runtime.js');
+      if (!supportsCodingTui(process.versions.node, process.execArgv, process.env.NODE_OPTIONS)) {
+        throw new ModelSelectionError(
+          'Interactive Forge requires Node >=26.4.0 with --experimental-ffi. Non-interactive forge commands retain their existing runtime.'
+        );
+      }
+    }
+    const terminal = dependencies.interactiveTerminal ?? createInteractiveTerminal();
+    const interactive: InteractiveCodingDependencies = {
+      terminal,
       cwd,
       environment: modelEnvironment,
       validateRepository:
         dependencies.validateInteractiveRepository ??
         (async (path) => {
           const snapshots = new GitRepositorySnapshotProvider();
-          const before = await snapshots.capture({ repositoryPath: await realpath(path) });
+          const before = await snapshots.capture({
+            repositoryPath: await realpath(path)
+          });
           await analyze(before.repositoryRoot);
-          const after = await snapshots.capture({ repositoryPath: before.repositoryRoot });
+          const after = await snapshots.capture({
+            repositoryPath: before.repositoryRoot
+          });
           assertStableRepositorySnapshot(before, after);
           return await realpath(before.repositoryRoot);
         }),
@@ -774,7 +799,13 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           if (process.env.FORGE_WORKER_AUTHORITY_MODE !== 'global') {
             return;
           }
+          dependencies.interactiveTerminal?.write('Preparing run metadata...\n');
+          request.onProgress?.('metadata', 'active');
           await runPlan({ ...request, prepareOnly: true });
+          request.onProgress?.('metadata', 'complete');
+          request.onProgress?.('workspace', 'active');
+          dependencies.interactiveTerminal?.write('✓ Run metadata prepared\n');
+          dependencies.interactiveTerminal?.write('Preparing isolated workspaces...\n');
           const authority = resolveAuthorityConfiguration(process.env);
           if (authority.backend !== 'postgres') {
             throw new Error('Global setup requires PostgreSQL authority');
@@ -792,11 +823,21 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
               request.planDirectory
             ),
             runtimeConnectionString: authority.connectionString,
-            runtimeSchema: authority.schema
+            runtimeSchema: authority.schema,
+            onProgress: request.onProgress
           });
+          dependencies.interactiveTerminal?.write('✓ Isolated workspaces ready\n');
+          request.onProgress?.('workspace', 'complete');
+          request.onProgress?.('authority', 'complete');
         }),
       ...(dependencies.interactiveWait === undefined ? {} : { wait: dependencies.interactiveWait })
-    });
+    };
+    if (dependencies.interactiveTerminal !== undefined) {
+      await startInteractiveCoding(interactive);
+    } else {
+      const { startCodingTui } = await import('./tui/start.js');
+      await startCodingTui(interactive);
+    }
   });
 
   const modelCommand = program

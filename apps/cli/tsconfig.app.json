@@ -3,10 +3,12 @@
   "compilerOptions": {
     "outDir": "dist",
     "types": ["node"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/react",
     "rootDir": "src",
     "tsBuildInfoFile": "dist/tsconfig.app.tsbuildinfo"
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
   "exclude": [],
   "references": [
     {

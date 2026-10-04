@@ -42,6 +42,7 @@ export interface WorkspaceSetupRequest {
   readonly runtimeConnectionString?: string;
   readonly runtimeSchema?: string;
   readonly writeOutput?: (output: string) => void;
+  readonly onProgress?: (stage: 'workspace' | 'authority', state: 'active' | 'complete') => void;
 }
 
 /** Explicit operator boundary; never creates a worker or forwards privileged credentials. */
@@ -284,8 +285,10 @@ export async function prepareApprovedWorkspaces(
                 { stdio: 'ignore' }
               );
             }
+            operatorRequest.onProgress?.('workspace', 'active');
             const workspace = await new GitWorkspaceManager().create(binding.workspace);
             await persistence.persistWorkspace({ runId, workspace });
+            operatorRequest.onProgress?.('workspace', 'complete');
           },
           () => 'Independent local setup process completed and awaited Git workspace creation'
         );
@@ -362,6 +365,7 @@ export async function prepareApprovedWorkspaces(
           throw error;
         }
       }
+      operatorRequest.onProgress?.('authority', 'active');
       const attestation = await new WorkspaceRecoveryAttestor(
         observer.observer,
         'local-recovery',
@@ -390,6 +394,7 @@ export async function prepareApprovedWorkspaces(
       if ('blocked' in child) {
         throw new Error('Execution handoff blocked; no workflow started');
       }
+      operatorRequest.onProgress?.('authority', 'complete');
       await writeFile(
         resolve(root, `.local/${runId}-${attempt.taskId}-setup.json`),
         JSON.stringify(

@@ -53,10 +53,13 @@ describe('createTemporalWorker', () => {
   it('passes explicit workflow and activity configuration and shuts down once', async () => {
     mocks.create.mockClear();
     const config = resolveTemporalConfig({ serverUrl: 'http://localhost:7233' });
+    const startup: string[] = [];
     const handle = await createTemporalWorker(config, {
+      onStartup: (stage) => startup.push(stage),
       workflowsPath: '/workspace/workflow.js',
       forgeActivities: activities
     });
+    expect(startup).toEqual(['connecting', 'bundling', 'created']);
 
     expect(mocks.connect).toHaveBeenCalledWith({ address: 'localhost:7233' });
     expect(mocks.create).toHaveBeenCalledWith({
