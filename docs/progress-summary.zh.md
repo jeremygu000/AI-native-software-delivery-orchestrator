@@ -4049,3 +4049,13 @@ Neon comparison bootstrap 现在要求该预建 schema 已存在、migration own
 本阶段没有线上 Neon query 或 mutation。实际 schema provisioning、Neon PG18 migration／GLOBAL_READY、worker preflight、traced GroundGraph 执行和 Tempo 证据仍待复审与线上执行。本增量没有增加产品 CLI 的 PostgreSQL preparation／bootstrap command 或 provider picker；schema preparation 使用已有 operator 工具。不需要新增 service、registry 或 authority layer。本增量供相对 `db24cb59` 的独立复审。
 
 最终 `pnpm build` 和完整镜像版 `pnpm check` 通过，authority fixture 使用 PG18：101 个文件中的 1053 项测试全部通过，无跳过。语句、分支、函数、代码行覆盖率分别为 90.78%、85.86%、94.69%、90.67%，超过未改变门槛。针对改变后的 deployment／TEMP 路径，五项 PG16 定向回归通过；另外 150 项由 filter 排除，因此不是新增完整 PG16 回归。格式、TypeScript、lint 和 `git diff --check` 通过。可独立转交的复审说明为 `docs/postgres-shared-database-review.en.md`。按用户要求，本修正作为独立 commit 供增量复审；独立接受结论仍待确认。既有安装需要协调 installer／worker rollout：仍要求旧函数配置的老 worker，无法在更新后的配置上启动。
+
+### 增量复审：schema owner 的 incoming membership
+
+共享数据库修正已作为 `1ff6ee5a918bdd3a8eac64edf653b88ef460f879` 提交。独立复审接受部署方向及 existing-empty／TEMP 边界，但发现一个 owner 越权 P1：preparation 拒绝 schema owner 的 outgoing membership，却允许无关应用登录成为 owner 的 member。该登录可 SET ROLE 为 authority owner，获得 schema／table／function 控制权。
+
+现在 preparation 同时检查两个方向。唯一 incoming 例外是：确认 current_user、session_user 与实际 database owner 相同之后，从 PostgreSQL database catalog 读取的 database-owner OID。这保留该 operator 执行 AUTHORIZATION 的前提。任何其他 incoming member 都会在 schema 创建前拒绝；所有 outgoing membership 继续拒绝。检查不授予、不撤销 membership，不修改 role definition，也不引入新 role 或 authority contract。PUBLIC TEMP、共享 database ACL 保留、显式 TLS、安全 search path 及历史 migration／checksum 行为保持不变。
+
+扩展后的真实 operator 回归在 `1ff6ee5a` 上复现缺口：无关 NOINHERIT 应用登录能够 SET ROLE forge_owner，且 preparation 仍成功。加入 guard 后，该应用及 forge_runtime 的 incoming membership 都被拒绝，没有创建 schema，也没有自动清理已有 membership；owner 的 outbound membership 仍被拒绝。已验证 database owner 仍可创建 schema，此后既有 bootstrap、GLOBAL_READY 和可选 dedicated hardening 检查仍通过。同一定向回归在临时 PG16 和 PG18 上均通过；每次仅选择一项测试，另外 154 项由 filter 排除，不宣称新增两次完整 authority 回归。`pnpm build` 通过。本阶段没有线上 Neon query 或 mutation，live schema preparation 和 traced E2E 仍待后续执行。按用户要求，本窄修正作为独立 commit 供相对 `1ff6ee5a` 的增量复审；独立接受结论仍待确认。
+
+最终完整镜像版 `pnpm check` 通过，authority fixture 使用 PG18：101 个文件中的 1053 项测试全部通过，无跳过。语句、分支、函数、代码行覆盖率分别为 90.77%、85.85%、94.69%、90.66%，超过未改变门槛。格式、TypeScript、lint 和 `git diff --check` 通过。可独立转交的复审说明见 `docs/postgres-owner-membership-review.en.md`。生产改动仅在 schema-preparation helper 中，没有扩大 deployment 或 runtime contract。

@@ -96,7 +96,11 @@ It does not revoke database/public-schema privileges, change role definitions or
 grant database CREATE to Forge. The actual deployment owner must already be able
 to SET ROLE to `forge_owner` for PostgreSQL's AUTHORIZATION operation; the tool
 never grants that capability. `forge_owner` must be an unprivileged login with no
-outgoing role membership or effective database CREATE. See the
+outgoing role membership or effective database CREATE. Incoming membership is
+also restricted: only the database-owner OID from the database whose owner login
+was verified against current_user and session_user may be a member of forge_owner.
+Every other member, including another application or restricted Forge login,
+causes rejection before schema creation. The tool does not revoke memberships. See the
 [CREATE SCHEMA reference](https://www.postgresql.org/docs/18/sql-createschema.html).
 The owner identity, supported server major, schema name and absence are checked;
 a transaction and the existing schema advisory lock protect creation. Pre-existing

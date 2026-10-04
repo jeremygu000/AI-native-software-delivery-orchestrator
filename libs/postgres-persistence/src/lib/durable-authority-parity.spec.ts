@@ -2445,6 +2445,7 @@ it('prepares a shared schema without global ACL changes and keeps dedicated hard
   const database = `forge_hardening_${process.pid}`;
   const databaseOwnerRole = `forge_database_owner_${process.pid}`;
   const inheritedRole = `forge_temp_grant_${process.pid}`;
+  const otherAppRole = `forge_other_app_${process.pid}`;
   const roles = [
     'forge_owner',
     'forge_runtime',
@@ -2459,7 +2460,7 @@ it('prepares a shared schema without global ACL changes and keeps dedicated hard
   let createdDatabase = false;
   let target: ReturnType<typeof postgres> | undefined;
   try {
-    for (const roleName of [databaseOwnerRole, inheritedRole, ...roles]) {
+    for (const roleName of [databaseOwnerRole, inheritedRole, otherAppRole, ...roles]) {
       await admin.unsafe(`create role "${roleName}" login`);
       createdRoles.push(roleName);
     }
@@ -2537,6 +2538,50 @@ it('prepares a shared schema without global ACL changes and keeps dedicated hard
       (select nspacl::text from pg_catalog.pg_namespace where nspname='public') as public_acl
       from pg_catalog.pg_database where datname=current_database()`);
     const beforeShared = await snapshotAcl();
+    await admin.unsafe(`alter role "${otherAppRole}" noinherit`);
+    for (const member of [otherAppRole, 'forge_runtime']) {
+      const blockedSchema = `${sharedSchema}_${member === otherAppRole ? 'app' : 'runtime'}`;
+      await admin.unsafe(`grant forge_owner to "${member}"`);
+      const outsider = postgres(urlFor(member), { max: 1, onnotice: () => undefined });
+      try {
+        await outsider`set role forge_owner`;
+        expect((await outsider`select current_user as role`)[0]?.role).toBe('forge_owner');
+        expect(() => invoke('apply', true, 'shared', blockedSchema)).toThrow(
+          'unexpected incoming membership'
+        );
+        expect(
+          await target.unsafe(`select 1 from pg_catalog.pg_namespace where nspname=$1`, [
+            blockedSchema
+          ])
+        ).toHaveLength(0);
+        const membership =
+          await target`select exists(select 1 from pg_catalog.pg_auth_members where roleid='forge_owner'::regrole and member=${member}::regrole) as present`;
+        expect(membership[0]?.present).toBe(true);
+        expect(await snapshotAcl()).toEqual(beforeShared);
+      } finally {
+        await outsider.end();
+        await admin.unsafe(`revoke forge_owner from "${member}"`);
+      }
+    }
+    await admin.unsafe(`grant "${inheritedRole}" to forge_owner`);
+    try {
+      const blockedSchema = `${sharedSchema}_outbound`;
+      expect(() => invoke('apply', true, 'shared', blockedSchema)).toThrow(
+        'unprivileged schema owner'
+      );
+      expect(
+        await target.unsafe(`select 1 from pg_catalog.pg_namespace where nspname=$1`, [
+          blockedSchema
+        ])
+      ).toHaveLength(0);
+      const membership =
+        await target`select exists(select 1 from pg_catalog.pg_auth_members where roleid=${inheritedRole}::regrole and member='forge_owner'::regrole) as present`;
+      expect(membership[0]?.present).toBe(true);
+      expect(await snapshotAcl()).toEqual(beforeShared);
+    } finally {
+      await admin.unsafe(`revoke "${inheritedRole}" from forge_owner`);
+    }
+
     expect(() => invoke('apply', true, 'shared', 'other_application_schema')).toThrow(
       'forge_comparison_'
     );

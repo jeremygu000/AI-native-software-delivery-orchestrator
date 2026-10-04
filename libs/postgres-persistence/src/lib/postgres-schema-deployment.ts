@@ -51,7 +51,7 @@ export const preparePostgresAuthoritySchema = async (
   try {
     return await sql.begin(async (tx) => {
       const identity = await tx`select current_database() as database, current_user as role,
-        session_user as login, pg_catalog.pg_get_userbyid(datdba) as owner,
+        session_user as login, pg_catalog.pg_get_userbyid(datdba) as owner, datdba as owner_oid,
         current_setting('server_version_num')::integer as version
         from pg_catalog.pg_database where datname=current_database()`;
       const row = identity[0];
@@ -68,7 +68,10 @@ export const preparePostgresAuthoritySchema = async (
         rolreplication, rolbypassrls,
         pg_catalog.has_database_privilege(oid,current_database(),'CREATE') as database_create,
         exists(select 1 from pg_catalog.pg_auth_members m
-          where m.member=r.oid) as membership
+          where m.member=r.oid) as membership,
+        exists(select 1 from pg_catalog.pg_auth_members m
+          where m.roleid=r.oid and m.member <> ${row.owner_oid}::oid)
+          as unexpected_incoming_membership
         from pg_catalog.pg_roles r where rolname=${configuration.ownerRole}`;
       const owner = owners[0];
       if (
@@ -85,6 +88,10 @@ export const preparePostgresAuthoritySchema = async (
         throw new Error(
           'Shared deployment requires an unprivileged schema owner without database CREATE'
         );
+      }
+      // Only the verified database-owner login may be a member for schema AUTHORIZATION.
+      if (owner.unexpected_incoming_membership !== false) {
+        throw new Error('PostgreSQL schema owner has unexpected incoming membership');
       }
       await tx`select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext(${`forge-schema:${configuration.schema}`}))`;
       const existing =
