@@ -170,10 +170,25 @@ const blockingReason = (
   return undefined;
 };
 
-const latestTaskState = (recovered: RecoveredRun, taskId: string): string =>
-  recovered.transitions
-    .filter((transition) => transition.taskId === taskId)
-    .toSorted((left, right) => right.sequence - left.sequence)[0]?.toState ?? 'PENDING';
+const latestTaskState = (recovered: RecoveredRun, taskId: string): string => {
+  // Runtime progress is persisted in decision input snapshots even when scheduling
+  // needs no transition. Transitions then apply after that sequence's snapshot.
+  const decision = recovered.decisions
+    .toSorted((left, right) => right.sequence - left.sequence)
+    .find((entry) => entry.inputSnapshot.taskStates.some((state) => state.taskId === taskId));
+  const snapshot = decision?.inputSnapshot.taskStates.find((state) => state.taskId === taskId);
+  const transition = recovered.transitions
+    .filter((entry) => entry.taskId === taskId)
+    .toReversed()
+    .toSorted((left, right) => right.sequence - left.sequence)[0];
+  if (
+    transition !== undefined &&
+    (decision === undefined || transition.sequence >= decision.sequence)
+  ) {
+    return transition.toState;
+  }
+  return snapshot?.state ?? 'PENDING';
+};
 
 const reviewReference = (
   review: PersistedTaskCodeReview,

@@ -4091,3 +4091,13 @@ Progress 来自已有 durable status read model，显示实际状态和证据，
 ## Interactive CLI 真实运行前提核实
 
 2026-10-04 的只读检查确认，实际 GroundGraph checkout 保持干净，仍在 `1e8835d37a0827c111291fa8a6cf4f12cc2caa68`。沙箱外的已有本地 preflight 中，repository、Temporal namespace 和固定 digest 的 Pi／Git images 均通过，但 authority 的 restricted-writer function audit 失败。只读 catalog transaction 确认：9 个 SECURITY DEFINER functions 仍使用旧 `search_path=pg_catalog`，没有使用已接受的 `pg_catalog, pg_temp` 的函数，也没有其他配置。真实执行前需要通过已接受 installer 更新这一部署配置。Queue poller availability 尚未检查。本次没有运行 installer、修改数据库、发模型请求、创建 run 或操作 Neon；真实 E2E 仍待完成。
+
+## Interactive Coding CLI 已接受：真实本地 GroundGraph 执行
+
+独立复审已接受 `0b8308a4103ecf36218ac931b22e0cc22d90ac15`，没有 P0／P1。用户随后授权对现有本地 authority 运行已接受 installer，明确排除线上 Neon。Installer 将全部 9 个旧 SECURITY DEFINER function 配置更新为 `pg_catalog, pg_temp`；migration version／checksum／applied timestamp 和 GLOBAL_READY 均保持不变。Runtime／global audit 与 preflight 通过。独立启动的当前 DeepSeek／high worker 匹配 repository／policy，并有两类 queue poller；privileged credentials 仍不交给 worker。
+
+真实生产版 bare Forge 入口在 PTY 中接受多行任务、选择已有 profile、请求 semantic-model consent、创建并审查单 task plan，再明确批准 workspace creation 与 exact integration。Run `9fff984d-5265-4184-ae2f-445b3af9dd3a` 在 PostgreSQL 和 Temporal 中均 COMPLETED，执行耗时 224.89 秒。真实 builder output 通过原有 approved root verifier 和 independent code review，不需要 repair。Confined integration 产生 GroundGraph commit `4bac482be43e8e847281e50965d039f23a6c936a`，只修改 query schema 及其已有测试。3 个 claims 全部 RELEASED，两类 unresolved-permit count 均为 0，无 active／stale lease。Checkout 保持干净；没有人工修改目标源码、push 或 PR。结算完成后已停止此次临时 worker。
+
+真实执行发现 read-model 显示问题：它读取 initial transition 中较早的 READY，忽略更新的 durable runtime snapshots，因此 terminal 显示 completed 0/1。窄修复只调整读取投影：选取 task 的最新 snapshot，再应用同 sequence 或之后的 transitions；同 sequence 保留 persisted order，已有 fallback 不变。不修改 authority data、workflow commands、schema 或 provider adapter。重新读取同一个已完成 run 后，正确显示 COMPLETED 和 1/1。新增 7 项回归与已有 frontend tests 共 26/26 通过，build 通过；最终完整镜像版 pnpm check 通过：107 个文件中的 1118/1118 项测试全部通过，无跳过，包含已有 PG18／Docker／Temporal fixtures。语句、分支、函数和代码行覆盖率为 90.63%、85.23%、94.30% 和 90.56%，超过未改变门槛；git diff --check 通过。用户已要求提交并推送该修复，供相对 0b8308a 的独立复审；接受状态仍待复审确认。
+
+Tempo 确认 forge-local 下真实 planner 和 semantic-plan-reviewer request spans，分别耗时 11.79 秒和 9.81 秒，DeepSeek／high，outcome completed。它们产生在 run ID 分配之前，不证明完整 workflow trace。已接受 plugin rule 要求 fresh authority；本次授权复用现有本地 authority，因此 worker tracing 保持关闭。完整 workflow trace 验收和 live Neon 仍待完成。自包含证据、限制与复审问题见 `docs/interactive-coding-e2e.en.md`。

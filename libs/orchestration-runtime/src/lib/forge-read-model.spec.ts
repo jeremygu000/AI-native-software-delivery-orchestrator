@@ -1,11 +1,141 @@
 import type { ForgeReadModelPersistence } from './forge-read-model.js';
+import type { RecoveredRun } from '@ai-native-software-delivery-orchestrator/domain';
 import { describe, expect, it } from 'vitest';
 
 import { ForgeReadModel } from './forge-read-model.js';
 
 const digest = (value: string): string => `sha256:${value.repeat(64).slice(0, 64)}`;
 
+const decision = (
+  sequence: number,
+  state: RecoveredRun['decisions'][number]['inputSnapshot']['taskStates'][number]['state'],
+  taskId = 'task-1'
+): RecoveredRun['decisions'][number] => ({
+  runId: 'run-1',
+  sequence,
+  inputSnapshot: { taskStates: [{ taskId, state }], runtimeBlocks: [] },
+  decision: { taskDecisions: [] }
+});
+const initialTransitions: RecoveredRun['transitions'] = [
+  { runId: 'run-1', sequence: 1, taskId: 'task-1', fromState: 'PENDING', toState: 'READY' },
+  { runId: 'run-1', sequence: 1, taskId: 'task-1', fromState: 'READY', toState: 'RUNNING' }
+];
+const readState = async (
+  decisions: RecoveredRun['decisions'],
+  transitions: RecoveredRun['transitions']
+) => {
+  const recovered: RecoveredRun = {
+    run: {
+      id: 'run-1',
+      repositoryId: 'repo-1',
+      state: 'ACTIVE',
+      createdAt: '2026-10-04T00:00:00Z',
+      authority: {
+        artifactId: 'plan-1',
+        artifactRevision: 1,
+        approvalId: 'approval-1',
+        planFingerprint: digest('1'),
+        approvalFingerprint: digest('2'),
+        claimFingerprint: digest('3'),
+        executionFingerprint: digest('4'),
+        repositoryRoot: '/repo',
+        baseCommit: 'a'.repeat(40),
+        workingTreeFingerprint: digest('5'),
+        repositoryFactsFingerprint: digest('6'),
+        sharedResourcePolicyFingerprint: digest('7'),
+        verificationPolicyFingerprint: digest('8'),
+        codeReviewPolicyFingerprint: digest('9')
+      }
+    },
+    tasks: [
+      {
+        id: 'task-1',
+        title: 'Task',
+        goal: 'Ship',
+        dependencies: [],
+        expectedReads: [],
+        expectedWrites: [],
+        sharedResources: [],
+        verification: []
+      }
+    ],
+    taskBindings: [],
+    hardConflicts: [],
+    riskConflicts: [],
+    scheduleOptions: { maxConcurrency: 1 },
+    impacts: [],
+    conflicts: [],
+    leases: [],
+    workspaces: [],
+    events: [],
+    attempts: [],
+    decisions,
+    transitions
+  };
+  const model = await new ForgeReadModel({
+    persistence: {
+      recoverRun: async () => recovered,
+      recoverReviews: async () => [],
+      recoverRepairAttempts: async () => [],
+      recoverVerificationEvidence: async () => []
+    }
+  }).read('run-1');
+  return model?.tasks[0];
+};
+
 describe('ForgeReadModel', () => {
+  it('applies both initial transitions in their persisted order within one sequence', async () => {
+    expect((await readState([decision(1, 'PENDING')], initialTransitions))?.state).toBe('RUNNING');
+  });
+
+  it.each(['VERIFYING', 'INTEGRATING', 'COMPLETED'] as const)(
+    'reads durable %s progress when later scheduling requires no transition',
+    async (state) => {
+      const task = await readState(
+        [decision(2, state), decision(1, 'PENDING')],
+        initialTransitions
+      );
+      expect(task?.state).toBe(state);
+      expect(task?.currentBlockingReason).toBeUndefined();
+    }
+  );
+
+  it('applies a transition after the snapshot at the same sequence', async () => {
+    expect(
+      (
+        await readState(
+          [decision(2, 'RUNNING')],
+          [
+            ...initialTransitions,
+            {
+              runId: 'run-1',
+              sequence: 2,
+              taskId: 'task-1',
+              fromState: 'RUNNING',
+              toState: 'BLOCKED'
+            }
+          ]
+        )
+      )?.state
+    ).toBe('BLOCKED');
+  });
+
+  it('ignores newer snapshots for unrelated tasks', async () => {
+    expect(
+      (
+        await readState(
+          [decision(3, 'FAILED', 'other-task'), decision(1, 'PENDING'), decision(2, 'COMPLETED')],
+          initialTransitions
+        )
+      )?.state
+    ).toBe('COMPLETED');
+  });
+
+  it('keeps the transition-only recovery fallback and default pending state', async () => {
+    expect((await readState([], initialTransitions))?.state).toBe('RUNNING');
+    expect((await readState([], []))?.state).toBe('PENDING');
+  });
+
   it('projects durable authority into provider-neutral summaries and correlations', async () => {
     const persistence: ForgeReadModelPersistence = {
       recoverRun: async () => ({
