@@ -3,6 +3,7 @@ import { createPublicKey } from 'node:crypto';
 
 import type { PostgresEvidenceStoreConfiguration } from './postgres-evidence-store.js';
 import { openPostgresConnection } from './postgres-connection.js';
+import { assertRestrictedPostgresRoleMemberships } from './postgres-role-membership.js';
 import { assertPostgresAuthorityLogin } from './postgres-authority-schema.js';
 
 type Sql = ReturnType<typeof postgres>;
@@ -31,9 +32,6 @@ const connectWriter = async (
       rolsuper, rolcreatedb, rolcreaterole,
       exists (select 1 from pg_catalog.pg_roles other where other.oid <> current_user::regrole
         and pg_has_role(current_user::regrole::oid,other.oid,'MEMBER')) as membership,
-      exists (select 1 from pg_catalog.pg_auth_members m
-        where m.roleid=current_user::regrole::oid
-          or m.member=current_user::regrole::oid) as direct_membership,
       has_database_privilege(current_user,current_database(),'CREATE') as create_database
       from pg_catalog.pg_roles where rolname=current_user`;
     const principal = identity[0];
@@ -44,11 +42,15 @@ const connectWriter = async (
       principal.rolcreatedb !== false ||
       principal.rolcreaterole !== false ||
       principal.membership !== false ||
-      principal.direct_membership !== false ||
       principal.create_database !== false
     ) {
       throw new Error('PostgreSQL authority writer must use a restricted login');
     }
+    await assertRestrictedPostgresRoleMemberships(
+      sql,
+      [configuration.role],
+      'PostgreSQL authority writer must use a restricted login'
+    );
     const rows = await sql`select n.nspowner::regrole::text as owner,
       has_schema_privilege(current_user,n.oid,'USAGE') as usage,
       has_schema_privilege(current_user,n.oid,'CREATE') as create_schema,

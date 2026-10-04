@@ -8,6 +8,7 @@ import {
 } from './postgres-evidence-store.js';
 import { resolvePostgresAuthorityServerMajor } from './postgres-server-version.js';
 import { openPostgresConnection } from './postgres-connection.js';
+import { assertRestrictedPostgresRoleMemberships } from './postgres-role-membership.js';
 import { assertEmptyPostgresAuthoritySchema } from './postgres-schema-deployment.js';
 
 type Sql = ReturnType<typeof postgres>;
@@ -1976,8 +1977,7 @@ const assertRestrictedWriterFunctions = async (
   }
   if (recoveryRole !== undefined) {
     const role = await sql`select rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,
-       has_database_privilege(oid,current_database(),'CREATE') as create_database,
-       exists (select 1 from pg_catalog.pg_auth_members m where m.member=r.oid or m.roleid=r.oid) as membership
+       has_database_privilege(oid,current_database(),'CREATE') as create_database
        from pg_catalog.pg_roles r where rolname=${recoveryRole}`;
     const row = role[0];
     if (
@@ -1986,11 +1986,16 @@ const assertRestrictedWriterFunctions = async (
       row.rolsuper !== false ||
       row.rolcreatedb !== false ||
       row.rolcreaterole !== false ||
-      row.create_database !== false ||
-      row.membership !== false
+      row.create_database !== false
     ) {
       throw new Error('PostgreSQL recovery role is not restricted');
     }
+    await assertRestrictedPostgresRoleMemberships(
+      sql,
+      [recoveryRole],
+      'PostgreSQL recovery role is not restricted',
+      serverMajor
+    );
     const tables =
       await sql`select 1 from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace
       where n.nspname=${schema} and c.relkind in ('r','p') and (
@@ -2010,11 +2015,12 @@ const assertRestrictedWriterFunctions = async (
     }
   }
   if (setupRole !== undefined) {
-    const membership = await sql`select 1 from pg_catalog.pg_auth_members
-       where roleid=${setupRole}::regrole::oid or member=${setupRole}::regrole::oid limit 1`;
-    if (membership.length > 0) {
-      throw new Error('PostgreSQL setup admission role membership is incompatible');
-    }
+    await assertRestrictedPostgresRoleMemberships(
+      sql,
+      [setupRole],
+      'PostgreSQL setup admission role membership is incompatible',
+      serverMajor
+    );
     const directWrites = await sql`select c.relname from pg_catalog.pg_class c
        join pg_catalog.pg_namespace n on n.oid=c.relnamespace
        where n.nspname=${schema} and c.relkind in ('r','p') and (
@@ -2037,15 +2043,12 @@ const assertRestrictedWriterFunctions = async (
     }
   }
   if (writers !== undefined) {
-    const membership = await sql`select m.roleid::regrole::text as granted_role,
-      m.member::regrole::text as member from pg_catalog.pg_auth_members m
-      where m.roleid in (${writers.trustAdminRole}::regrole::oid,
-        ${writers.generationIssuerRole}::regrole::oid)
-        or m.member in (${writers.trustAdminRole}::regrole::oid,
-          ${writers.generationIssuerRole}::regrole::oid) limit 1`;
-    if (membership.length > 0) {
-      throw new Error('PostgreSQL restricted writer role membership is incompatible');
-    }
+    await assertRestrictedPostgresRoleMemberships(
+      sql,
+      [writers.trustAdminRole, writers.generationIssuerRole],
+      'PostgreSQL restricted writer role membership is incompatible',
+      serverMajor
+    );
     const directWrites = await sql`select c.relname from pg_catalog.pg_class c
       join pg_catalog.pg_namespace n on n.oid=c.relnamespace
       where n.nspname=${schema} and c.relkind in ('r','p') and (
@@ -2139,6 +2142,12 @@ export const migratePostgresAuthoritySchema = async (
       if (identity[0]?.name !== configuration.role) {
         throw new Error('PostgreSQL migration owner role mismatch');
       }
+      await assertRestrictedPostgresRoleMemberships(
+        tx,
+        [runtimeRole],
+        'PostgreSQL authority runtime role is not least privileged',
+        serverMajor
+      );
       await tx`select pg_advisory_xact_lock(hashtext(${`forge-schema:${configuration.schema}`}))`;
       if (schemaMode === 'existing-empty') {
         await assertEmptyPostgresAuthoritySchema(tx, configuration.schema, configuration.role);
@@ -2281,8 +2290,7 @@ export const migratePostgresAuthoritySchema = async (
             throw new Error('PostgreSQL setup admission role binding cannot be changed');
           }
           const principal = await tx`select r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolcanlogin,
-             has_database_privilege(r.oid,current_database(),'CREATE') as create_database,
-             exists (select 1 from pg_catalog.pg_auth_members m where m.member=r.oid or m.roleid=r.oid) as membership
+             has_database_privilege(r.oid,current_database(),'CREATE') as create_database
              from pg_catalog.pg_roles r where r.rolname=${setupRole}`;
           if (
             principal.length !== 1 ||
@@ -2290,11 +2298,16 @@ export const migratePostgresAuthoritySchema = async (
             principal[0].rolcreatedb !== false ||
             principal[0].rolcreaterole !== false ||
             principal[0].rolcanlogin !== true ||
-            principal[0].create_database !== false ||
-            principal[0].membership !== false
+            principal[0].create_database !== false
           ) {
             throw new Error('PostgreSQL setup admission role is not restricted');
           }
+          await assertRestrictedPostgresRoleMemberships(
+            tx,
+            [setupRole],
+            'PostgreSQL setup admission role is not restricted',
+            serverMajor
+          );
           const roleName = quote(setupRole);
           const setupFunctions = [
             `forge_setup_admit(${Array(21).fill('text').join(',')})`,
@@ -2587,6 +2600,12 @@ export const assertPostgresAuthoritySchema = async (
   ) {
     throw new Error('PostgreSQL authority runtime role is not least privileged');
   }
+  await assertRestrictedPostgresRoleMemberships(
+    sql,
+    [configuration.role],
+    'PostgreSQL authority runtime role is not least privileged',
+    serverMajor
+  );
   const createSchemas = await sql`select nspname from pg_catalog.pg_namespace
     where nspname in (${configuration.schema}, 'pg_catalog')
       and has_schema_privilege(current_user, oid, 'CREATE')`;

@@ -113,6 +113,45 @@ For a separate private operator configuration, set
 Schema provisioning remains in this existing operator tool; no new Forge CLI
 command, service, registry or authority layer is introduced.
 
+## Restricted-role membership auditing
+
+The schema owner provisioning rule above remains separate from restricted-role
+membership auditing. On PostgreSQL 16–18, runtime, trust, issuer, setup and recovery
+roles may have an incoming membership only when every grant row has exactly:
+
+```text
+member OID = pg_database.datdba for the current database
+ADMIN = true
+INHERIT = false
+SET = false
+```
+
+The database owner is an already trusted deployment principal. ADMIN can grant
+the role to others or back to its holder with SET/INHERIT enabled; disabling those
+options prevents immediate privilege use, not escalation. The exception accepts
+that operator trust explicitly. It does not classify ADMIN as harmless. See the
+[PostgreSQL role-attribute warning](https://www.postgresql.org/docs/18/role-attributes.html).
+
+The predicate reads the actual database owner's OID on each audit. It uses no
+configured operator name, schema-owner name or Neon grantor requirement. All
+other incoming grants, any grant with INHERIT/SET enabled or ADMIN disabled,
+and every outbound membership are rejected, including ADMIN-only grants to
+another application or restricted Forge principal. Multiple grantors are checked
+row by row; one permitted grant never hides a second incompatible grant.
+PostgreSQL 14/15 retain rejection of every incoming/outgoing membership and never
+query the newer membership columns.
+
+The same read-only predicate is used by the installer, runtime startup,
+restricted writer audits and trust/issuer/setup connections. It never GRANTs,
+REVOKEs or repairs memberships. Table/function/schema ACLs and all existing
+principal, MAINTAIN, TLS and search-path checks remain in force. In particular,
+this rule does not grant SET to forge_owner or remove its database CREATE; those
+schema preparation prerequisites remain explicit operator actions.
+
+This compatibility increment requires independent review before resuming live
+Neon deployment. Its regressions use isolated local PostgreSQL fixtures;
+they do not establish Neon schema preparation, GLOBAL_READY or traced E2E.
+
 ## Dedicated database: optional hardening
 
 Only when the operator explicitly chooses a database dedicated to Forge:

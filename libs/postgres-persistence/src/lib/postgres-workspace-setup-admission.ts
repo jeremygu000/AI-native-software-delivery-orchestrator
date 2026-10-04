@@ -17,6 +17,7 @@ import {
 
 import type { PostgresEvidenceStoreConfiguration } from './postgres-evidence-store.js';
 import { openPostgresConnection } from './postgres-connection.js';
+import { assertRestrictedPostgresRoleMemberships } from './postgres-role-membership.js';
 import { assertPostgresAuthorityLogin } from './postgres-authority-schema.js';
 
 type Sql = ReturnType<typeof postgres>;
@@ -42,9 +43,13 @@ export class PostgresWorkspaceSetupAdmission {
     try {
       const identity = await sql`select current_user as name, session_user as session_name,
         rolsuper, rolcreatedb, rolcreaterole,
-        exists(select 1 from pg_catalog.pg_auth_members m where m.roleid=current_user::regrole::oid or m.member=current_user::regrole::oid) as membership,
         has_database_privilege(current_user,current_database(),'CREATE') as create_database
         from pg_catalog.pg_roles where rolname=current_user`;
+      await assertRestrictedPostgresRoleMemberships(
+        sql,
+        [configuration.role],
+        'PostgreSQL setup admission requires its restricted signing-service login'
+      );
       const fn =
         await sql`select p.prosecdef as security_definer, p.proconfig as configuration, p.proowner::regrole::text as owner,
         obj_description(p.oid,'pg_proc') as designated,
@@ -101,7 +106,6 @@ export class PostgresWorkspaceSetupAdmission {
         identity[0].rolsuper !== false ||
         identity[0].rolcreatedb !== false ||
         identity[0].rolcreaterole !== false ||
-        identity[0].membership !== false ||
         identity[0].create_database !== false ||
         fn.length !== 1 ||
         fn[0]?.security_definer !== true ||

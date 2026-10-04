@@ -52,6 +52,8 @@ import {
   POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
 } from './postgres-authority-schema.js';
 import { preparePostgresAuthoritySchema } from './postgres-schema-deployment.js';
+import { assertRestrictedPostgresRoleMemberships } from './postgres-role-membership.js';
+import type { PostgresEvidenceStoreConfiguration } from './postgres-evidence-store.js';
 
 let directory: string;
 let containerId: string | undefined;
@@ -3328,6 +3330,310 @@ it('rejects outsider EXECUTE on security-definer functions at startup and migrat
     await fixture.close();
   }
 });
+
+// The database owner is already a trusted deployment principal. ADMIN is an
+// escalation capability, not made safe by INHERIT=false and SET=false.
+it.skipIf(Number(process.env.FORGE_TEST_POSTGRES_MAJOR ?? '14') < 16)(
+  'accepts only actual database-owner ADMIN-only incoming memberships across restricted connections',
+  async () => {
+    const admin = postgres(connectionString, { onnotice: () => undefined });
+    const database = `forge_member_db_${++fixtureOrdinal}`;
+    const databaseOwner = `forge_deployment_${fixtureOrdinal}`;
+    const schema = `forge_comparison_member_${fixtureOrdinal}`;
+    const restricted = [
+      runtimeRole,
+      trustAdminRole,
+      generationIssuerRole,
+      setupAdmissionRole,
+      recoveryRole
+    ];
+    const urlFor = (login: string): string => {
+      const url = new URL(connectionString);
+      url.username = login;
+      url.pathname = `/${database}`;
+      return url.toString();
+    };
+    const operator = postgres(urlFor(databaseOwner), { onnotice: () => undefined });
+    const runtime = postgres(urlFor(runtimeRole), { onnotice: () => undefined });
+    const configuration = { connectionString: urlFor(role), schema, role };
+    const writers = { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole };
+    const memberships =
+      () => admin`select roleid,member,grantor,admin_option,inherit_option,set_option
+      from pg_catalog.pg_auth_members where member=${databaseOwner}::regrole order by roleid,grantor`;
+    let databaseCreated = false;
+    try {
+      await admin.unsafe(`create role "${databaseOwner}" login`);
+      await admin.unsafe(`create database "${database}" owner "${databaseOwner}"`);
+      databaseCreated = true;
+      // AUTHORIZATION needs SET to forge_owner, separately from restricted-role policy.
+      await admin.unsafe(`grant "${role}" to "${databaseOwner}" with inherit false, set true`);
+      for (const principal of restricted) {
+        await admin.unsafe(
+          `grant "${principal}" to "${databaseOwner}" with admin true, inherit false, set false`
+        );
+      }
+      expect(
+        (await operator`select rolsuper from pg_catalog.pg_roles where rolname=current_user`)[0]
+          ?.rolsuper
+      ).toBe(false);
+      const before = await memberships();
+      await preparePostgresAuthoritySchema({
+        connectionString: urlFor(databaseOwner),
+        database,
+        schema,
+        ownerRole: role
+      });
+      await migratePostgresAuthoritySchema(
+        configuration,
+        runtimeRole,
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+        writers,
+        'existing-empty'
+      );
+      await assertPostgresGlobalAuthoritySchema(runtime, {
+        connectionString: urlFor(runtimeRole),
+        schema,
+        role: runtimeRole
+      });
+      for (const [principal, connect] of [
+        [
+          trustAdminRole,
+          (config: PostgresEvidenceStoreConfiguration) => PostgresTrustRegistryAdmin.connect(config)
+        ],
+        [
+          generationIssuerRole,
+          (config: PostgresEvidenceStoreConfiguration) =>
+            PostgresExecutionGenerationIssuer.connect(config)
+        ],
+        [
+          setupAdmissionRole,
+          (config: PostgresEvidenceStoreConfiguration) =>
+            PostgresWorkspaceSetupAdmission.connect(config)
+        ]
+      ] as const) {
+        const client = await connect({
+          connectionString: urlFor(principal),
+          schema,
+          role: principal
+        });
+        await client.close();
+      }
+      const authority = await PostgresGlobalMutationAuthority.connect({
+        connectionString: urlFor(runtimeRole),
+        schema,
+        role: runtimeRole
+      });
+      try {
+        await authority.beginLegacyCutover();
+        await authority.completeLegacyCutover(
+          'Previous writers stopped in isolated test database.'
+        );
+      } finally {
+        await authority.close();
+      }
+      const ledger = await runtime.unsafe(
+        `select version,checksum,applied_at from "${schema}".forge_schema_migrations order by version`
+      );
+      await migratePostgresAuthoritySchema(
+        configuration,
+        runtimeRole,
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+        writers
+      );
+      expect(
+        await runtime.unsafe(
+          `select version,checksum,applied_at from "${schema}".forge_schema_migrations order by version`
+        )
+      ).toEqual(ledger);
+      expect(await memberships()).toEqual(before);
+
+      // Real ADMIN self-grant demonstrates why this exception trusts the owner.
+      // A second grantor's SET-enabled grant must be rejected even when the
+      // original ADMIN-only grant still exists; audits never silently repair it.
+      await expect(operator.unsafe(`set role "${trustAdminRole}"`)).rejects.toThrow(
+        'permission denied'
+      );
+      await operator.unsafe(
+        `grant "${trustAdminRole}" to "${databaseOwner}" with admin false, inherit false, set true`
+      );
+      await operator.begin(async (tx) => {
+        await tx.unsafe(`set local role "${trustAdminRole}"`);
+        expect((await tx`select current_user as name`)[0]?.name).toBe(trustAdminRole);
+      });
+      const escalated = await memberships();
+      const trustOid = (await admin`select ${trustAdminRole}::regrole::oid as oid`)[0]?.oid;
+      const trustGrants = escalated.filter((row) => row.roleid === trustOid);
+      expect(trustGrants).toHaveLength(2);
+      expect(
+        trustGrants
+          .map((row) => row.set_option)
+          .toSorted((left, right) => Number(left) - Number(right))
+      ).toEqual([false, true]);
+      await expect(
+        assertPostgresGlobalAuthoritySchema(runtime, {
+          connectionString: urlFor(runtimeRole),
+          schema,
+          role: runtimeRole
+        })
+      ).rejects.toThrow('writer role membership is incompatible');
+      await expect(
+        migratePostgresAuthoritySchema(
+          configuration,
+          runtimeRole,
+          POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+          writers
+        )
+      ).rejects.toThrow('writer role membership is incompatible');
+      expect(await memberships()).toEqual(escalated);
+      expect(
+        await runtime.unsafe(
+          `select version,checksum,applied_at from "${schema}".forge_schema_migrations order by version`
+        )
+      ).toEqual(ledger);
+    } finally {
+      await Promise.all([operator.end(), runtime.end()]);
+      if (databaseCreated) {
+        await admin.unsafe(`drop database "${database}"`);
+      }
+      await admin.unsafe(`drop role if exists "${databaseOwner}"`);
+      await admin.end();
+    }
+  }
+);
+
+it
+  .skipIf(Number(process.env.FORGE_TEST_POSTGRES_MAJOR ?? '14') < 16)
+  .each([
+    'other member',
+    'owner INHERIT',
+    'owner SET',
+    'owner without ADMIN',
+    'outbound',
+    'restricted member'
+  ] as const)(
+  'rejects %s membership across restricted startup and installer audits without repair',
+  async (shape) => {
+    const fixture = await createGlobalPermitFixture();
+    const outsider = `forge_membership_other_${++fixtureOrdinal}`;
+    const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
+    const runtimeConfig = {
+      connectionString: runtimeConnectionString,
+      schema: fixture.schema,
+      role: runtimeRole
+    };
+    const migration = { connectionString: ownerConnectionString, schema: fixture.schema, role };
+    const writers = { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole };
+    const restricted = [
+      runtimeRole,
+      trustAdminRole,
+      generationIssuerRole,
+      setupAdmissionRole,
+      recoveryRole
+    ];
+    const databaseOwner = String(
+      (
+        await fixture.admin`select datdba::regrole::text as owner from pg_catalog.pg_database where datname=current_database()`
+      )[0]?.owner
+    );
+    const membership =
+      () => fixture.admin`select roleid,member,grantor,admin_option,inherit_option,set_option
+    from pg_catalog.pg_auth_members order by roleid,member,grantor`;
+    try {
+      await fixture.admin.unsafe(`create role "${outsider}" login`);
+      for (const principal of restricted) {
+        const granted = shape === 'outbound' ? outsider : principal;
+        const member =
+          shape === 'outbound'
+            ? principal
+            : shape === 'other member'
+              ? outsider
+              : shape === 'restricted member'
+                ? principal === runtimeRole
+                  ? setupAdmissionRole
+                  : runtimeRole
+                : databaseOwner;
+        const options = `with admin ${shape !== 'owner without ADMIN'}, inherit ${shape === 'owner INHERIT'}, set ${shape === 'owner SET'}`;
+        await fixture.admin.unsafe(`grant "${granted}" to "${member}" ${options}`);
+        try {
+          const before = await membership();
+          await expect(assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig)).rejects.toThrow(
+            /membership|restricted|privileged/
+          );
+          await expect(
+            migratePostgresAuthoritySchema(
+              migration,
+              runtimeRole,
+              POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+              writers
+            )
+          ).rejects.toThrow(/membership|restricted|privileged/);
+          if (
+            principal === trustAdminRole ||
+            principal === generationIssuerRole ||
+            principal === setupAdmissionRole
+          ) {
+            const config = {
+              connectionString:
+                principal === trustAdminRole
+                  ? trustAdminConnectionString
+                  : principal === generationIssuerRole
+                    ? generationIssuerConnectionString
+                    : setupAdmissionConnectionString,
+              schema: fixture.schema,
+              role: principal
+            };
+            const connect =
+              principal === trustAdminRole
+                ? (input: PostgresEvidenceStoreConfiguration) =>
+                    PostgresTrustRegistryAdmin.connect(input)
+                : principal === generationIssuerRole
+                  ? (input: PostgresEvidenceStoreConfiguration) =>
+                      PostgresExecutionGenerationIssuer.connect(input)
+                  : (input: PostgresEvidenceStoreConfiguration) =>
+                      PostgresWorkspaceSetupAdmission.connect(input);
+            await expect(connect(config)).rejects.toThrow(/restricted/);
+          }
+          expect(await membership()).toEqual(before);
+        } finally {
+          await fixture.admin.unsafe(`revoke "${granted}" from "${member}"`);
+        }
+        await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
+      }
+    } finally {
+      await runtime.end();
+      await fixture.admin.unsafe(`drop role "${outsider}"`);
+      await fixture.close();
+    }
+  }
+);
+
+it.each([14, 15])(
+  'keeps the PG%i branch fail closed for actual-owner incoming membership',
+  async (legacyMajor) => {
+    const fixture = await createGlobalPermitFixture();
+    const databaseOwner = String(
+      (
+        await fixture.admin`select datdba::regrole::text as owner from pg_catalog.pg_database where datname=current_database()`
+      )[0]?.owner
+    );
+    try {
+      const options =
+        serverMajor >= 16 ? 'with admin true, inherit false, set false' : 'with admin option';
+      await fixture.admin.unsafe(`grant "${trustAdminRole}" to "${databaseOwner}" ${options}`);
+      await expect(
+        assertRestrictedPostgresRoleMemberships(
+          fixture.admin,
+          [trustAdminRole],
+          'Legacy membership rejected',
+          legacyMajor
+        )
+      ).rejects.toThrow('Legacy membership rejected');
+    } finally {
+      await fixture.admin.unsafe(`revoke "${trustAdminRole}" from "${databaseOwner}"`);
+      await fixture.close();
+    }
+  }
+);
 
 it.each([
   ['trust administrator', 'trust'],
