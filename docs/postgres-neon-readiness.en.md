@@ -36,43 +36,96 @@ this stage. Tests for privileges or catalog features absent from the selected
 major are explicitly skipped. PG18 exercises all of them. Existing application
 acceptance fixtures retain their native PostgreSQL backend.
 
-## Separate database-owner hardening
+## Shared database: normal deployment
 
-PostgreSQL grants database `CONNECT` and `TEMPORARY` to `PUBLIC` by default. Thus a
-role can have effective TEMP even without a direct grant. Forge's restricted
-roles must lack TEMP, database CREATE and public-schema CREATE. See the official
+Forge can coexist with other applications in `neondb`. Its authority boundary is
+an isolated `forge_comparison_*` schema owned by `forge_owner`, with exact
+relation/function ACLs and separate runtime, trust, issuer, setup and recovery
+logins. PostgreSQL grants database CONNECT and TEMPORARY to PUBLIC by default.
+TEMP is reported as deployment metadata and is allowed; it is not authority-table
+mutation permission. See the official
 [privilege reference](https://www.postgresql.org/docs/18/ddl-priv.html).
 
-Configure the actual deployment-owner URL in ignored, mode-600 `.env.local` as
-`FORGE_DATABASE_OWNER_CONNECTION_STRING`. This must be the database's owner login,
-such as `neondb_owner`, rather than `forge_owner`. Configure six distinct Forge
-role URLs at the same endpoint and database. Ordinary CLI, worker and comparison
-children never receive the deployment-owner credential.
+Forge rejects CREATE on its schema or pg_catalog for restricted roles, direct
+writes outside their existing approved table/function surfaces, grant options,
+role membership/SET ROLE escalation and MAINTAIN. CREATE in an unrelated
+application schema, including PUBLIC CREATE on the public schema, does not fail
+the Forge schema boundary. Existing restricted-role database CREATE and privileged
+role-attribute restrictions remain. Runtime's deliberately permitted DML remains
+unchanged; this stage does not redesign its accepted mutation contract.
 
-Inspect before making a change:
+Allowing TEMP requires safe object resolution. A real PG18 regression reproduced
+a temporary `jsonb` domain being used inside the generation SECURITY DEFINER
+function with the old `search_path=pg_catalog`. Functions now explicitly use
+`pg_catalog, pg_temp`, so the temporary namespace is last. PostgreSQL documents
+this ordering for [SECURITY DEFINER functions](https://www.postgresql.org/docs/18/sql-createfunction.html).
+Authority relations remain schema-qualified, catalog reads are qualified, and the
+shared client helper sets the same safe startup path. No migration statement,
+checksum or schema version changes. The installer applies validated function
+configuration after migrations, just as it installs ACLs. It recognizes only the
+previous exact `pg_catalog` setting or the new safe setting, rejects other drift,
+and sets the safe path. Runtime refuses the old setting until an operator runs
+the existing installer; startup never changes it.
+Older workers that require the old exact function setting cannot start against
+the updated configuration. Coordinate installer and worker rollout for an
+existing authority; a fresh comparison schema uses the new configuration from
+its first installation.
+
+Configure seven query-free role URLs at the same endpoint/database in ignored,
+mode-600 operator configuration. `FORGE_DATABASE_OWNER_CONNECTION_STRING` is the
+actual database-owner login, such as `neondb_owner`; it is distinct from
+`FORGE_OWNER_CONNECTION_STRING` (`forge_owner`). Ordinary CLI, worker and
+comparison children do not receive the deployment-owner credential. Explicit
+shell `FORGE_POSTGRES_SSL` overrides the private file in both deployment tools.
+
+Read-only inspection reports TEMP without rejecting it:
 
 ```sh
+export FORGE_POSTGRES_SSL=verify-full
 node apps/temporal-worker/local/neon-database-hardening.mjs inspect neondb
 ```
 
-The output contains role privileges, schema names and server major, with no
-connection strings or passwords. Apply only after confirming that this database
-is dedicated to Forge. Revoking PUBLIC privileges affects all database users.
+Prepare a new empty Forge schema in the shared database:
+
+```sh
+node apps/temporal-worker/local/neon-database-hardening.mjs apply neondb --shared-database forge_comparison_YYYYMMDD
+```
+
+This shared operation only creates that schema with `AUTHORIZATION forge_owner`.
+It does not revoke database/public-schema privileges, change role definitions or
+grant database CREATE to Forge. The actual deployment owner must already be able
+to SET ROLE to `forge_owner` for PostgreSQL's AUTHORIZATION operation; the tool
+never grants that capability. `forge_owner` must be an unprivileged login with no
+outgoing role membership or effective database CREATE. See the
+[CREATE SCHEMA reference](https://www.postgresql.org/docs/18/sql-createschema.html).
+The owner identity, supported server major, schema name and absence are checked;
+a transaction and the existing schema advisory lock protect creation. Pre-existing
+schemas, including empty ones, are refused by this preparation command. New
+schemas must have owner-only privileges and no dependent objects before commit.
+Default ACL drift causes rollback rather than silent privilege repair.
+
+For a separate private operator configuration, set
+`FORGE_DATABASE_HARDENING_ENV_FILE` to an ignored, mode-600 file with the same keys.
+Schema provisioning remains in this existing operator tool; no new Forge CLI
+command, service, registry or authority layer is introduced.
+
+## Dedicated database: optional hardening
+
+Only when the operator explicitly chooses a database dedicated to Forge:
 
 ```sh
 node apps/temporal-worker/local/neon-database-hardening.mjs apply neondb --dedicated-forge-database
 ```
 
-The owner performs one transaction: revoke PUBLIC database TEMP/CREATE and public
-schema CREATE, grant CONNECT to the Forge roles, revoke restricted-role database
-TEMP/CREATE and Forge-role public schema CREATE, and grant database CREATE only
-to `forge_owner`. Effective privileges are checked again before commit. If an
-inherited grant still violates the boundary, the entire transaction rolls back.
-The tool does not create or alter roles, authority schemas, ledgers or persisted
-authority rows. Runtime, setup and recovery processes never perform this step.
-
-For a separate private operator configuration, set
-`FORGE_DATABASE_HARDENING_ENV_FILE` to an ignored, mode-600 file with the same keys.
+This retains the previous database-wide transaction: revoke PUBLIC TEMP/CREATE
+and public schema CREATE, grant Forge CONNECT, remove restricted-role database
+TEMP/CREATE and grant schema-creation capability to `forge_owner`. Effective
+privileges are checked before commit; surviving inherited grants roll back the
+whole operation. Existing schemas, rows and role definitions remain untouched.
+This optional mode affects all database users and must not run on a shared
+database. Its database CREATE grant is for the legacy owner-created-schema
+installation path; shared bootstrap requires a pre-created schema and no owner
+database CREATE. Dedicated hardening is not a worker startup prerequisite.
 
 ## Fresh comparison bootstrap
 
@@ -99,17 +152,24 @@ field and tests the real client's resolved options. See the pinned
 [option parser](https://github.com/porsager/postgres/blob/v3.4.9/src/index.js) and
 [TLS implementation](https://github.com/porsager/postgres/blob/v3.4.9/src/connection.js).
 
-After hardening, follow `docs/forge-observability.en.md`: bootstrap only a new
-`forge_comparison_*` schema, retain three clean clones at the same baseline, use
-fresh traced Temporal queues, then perform preflight, planning, immutable
-approval, operator setup and sequential execution. The bootstrap checks TEMP and
-schema absence before migration. It never reuses or repairs an old authority.
+After shared schema preparation, follow `docs/forge-observability.en.md`.
+Keep three clean clones at the same baseline and fresh traced Temporal queues.
+Neon bootstrap requires the named schema to exist, be owned by `forge_owner`,
+contain no dependent objects (including sequences/types/functions), and have
+owner-only ACLs. The same checks run under the migration transaction's advisory
+lock with `existing-empty` mode; `forge_owner` must lack database CREATE. A wrong
+owner, wrong name, missing schema or pre-existing authority is refused. No old
+ledger is reused, repaired or deleted. TEMP no longer blocks this path. Run
+preflight, planning, immutable approval, operator setup and sequential traced
+execution after the independent deployment-model review accepts this increment.
 
-The live Neon inspection found PG18, the actual `neondb_owner` login and TEMP on
-all six Forge roles. No live database privileges were changed during that
-inspection. Dedicated-database confirmation, live hardening/bootstrap and the
-new traced GroundGraph comparison remain pending; the earlier provider
-comparison and the one-span Tempo smoke trace do not prove those steps.
+The prior live inspection found PG18, `neondb_owner` and effective TEMP. This
+stage performs no online Neon inspection or mutation. No live schema has been
+prepared, no new authority is GLOBAL_READY and no new traced GroundGraph
+comparison ran. Dedicated-database confirmation is no longer needed for shared
+schema deployment. Query-free role configuration, owner/schema provisioning and
+real Neon acceptance still remain; historical provider comparison and the
+one-span Tempo smoke trace do not prove those steps.
 
 ## Read-only TLS evidence
 

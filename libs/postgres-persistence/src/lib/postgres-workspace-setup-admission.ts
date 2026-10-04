@@ -42,54 +42,56 @@ export class PostgresWorkspaceSetupAdmission {
     try {
       const identity = await sql`select current_user as name, session_user as session_name,
         rolsuper, rolcreatedb, rolcreaterole,
-        exists(select 1 from pg_auth_members m where m.roleid=current_user::regrole::oid or m.member=current_user::regrole::oid) as membership,
-        has_database_privilege(current_user,current_database(),'CREATE') as create_database,
-        has_database_privilege(current_user,current_database(),'TEMP') as create_temp
-        from pg_roles where rolname=current_user`;
+        exists(select 1 from pg_catalog.pg_auth_members m where m.roleid=current_user::regrole::oid or m.member=current_user::regrole::oid) as membership,
+        has_database_privilege(current_user,current_database(),'CREATE') as create_database
+        from pg_catalog.pg_roles where rolname=current_user`;
       const fn =
-        await sql`select p.prosecdef as security_definer, p.proowner::regrole::text as owner,
+        await sql`select p.prosecdef as security_definer, p.proconfig as configuration, p.proowner::regrole::text as owner,
         obj_description(p.oid,'pg_proc') as designated,
         has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute,
         has_function_privilege('public',p.oid,'EXECUTE') as public_execute,
         has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION') as can_grant
-        from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+        from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
         where n.nspname=${configuration.schema} and p.proname='forge_setup_admit'`;
       const otherFunctions = await sql`select p.proname as name,
         has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute
-        from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+        from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
            where n.nspname=${configuration.schema} and p.proname not in ('forge_setup_admit','forge_setup_arm','forge_workspace_permit_begin','forge_workspace_permit_finish')
          order by p.proname`;
-      const armFunction = await sql`select p.prosecdef as security_definer,
+      const armFunction =
+        await sql`select p.prosecdef as security_definer, p.proconfig as configuration,
          p.proowner::regrole::text as owner, obj_description(p.oid,'pg_proc') as designated,
          has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute,
          has_function_privilege('public',p.oid,'EXECUTE') as public_execute,
          has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION') as can_grant
-         from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+         from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
           where n.nspname=${configuration.schema} and p.proname='forge_setup_arm'`;
-      const permitFunction = await sql`select p.prosecdef as security_definer,
+      const permitFunction =
+        await sql`select p.prosecdef as security_definer, p.proconfig as configuration,
           p.proowner::regrole::text as owner, obj_description(p.oid,'pg_proc') as designated,
           has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute,
           has_function_privilege('public',p.oid,'EXECUTE') as public_execute,
           has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION') as can_grant
-          from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+          from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
           where n.nspname=${configuration.schema} and p.proname='forge_workspace_permit_begin'`;
-      const finishFunction = await sql`select p.prosecdef as security_definer,
+      const finishFunction =
+        await sql`select p.prosecdef as security_definer, p.proconfig as configuration,
           p.proowner::regrole::text as owner, obj_description(p.oid,'pg_proc') as designated,
           has_function_privilege(current_user,p.oid,'EXECUTE') as can_execute,
           has_function_privilege('public',p.oid,'EXECUTE') as public_execute,
           has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION') as can_grant
-          from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+          from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
           where n.nspname=${configuration.schema} and p.proname='forge_workspace_permit_finish'`;
       const direct =
-        await sql`select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
+        await sql`select c.relname from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace
         where n.nspname=${configuration.schema} and c.relkind in ('r','p') and (
           has_table_privilege(current_user,c.oid,'INSERT') or has_table_privilege(current_user,c.oid,'UPDATE') or
           has_table_privilege(current_user,c.oid,'DELETE') or has_table_privilege(current_user,c.oid,'TRUNCATE') or
           has_table_privilege(current_user,c.oid,'REFERENCES') or has_table_privilege(current_user,c.oid,'TRIGGER') or
           has_any_column_privilege(current_user,c.oid,'INSERT') or has_any_column_privilege(current_user,c.oid,'UPDATE') or
           has_any_column_privilege(current_user,c.oid,'REFERENCES')) limit 1`;
-      const schemaCreate = await sql`select 1 from pg_namespace n
-        where has_schema_privilege(current_user,n.oid,'CREATE') limit 1`;
+      const schemaCreate = await sql`select 1 from pg_catalog.pg_namespace n
+        where n.nspname in (${configuration.schema}, 'pg_catalog') and has_schema_privilege(current_user,n.oid,'CREATE') limit 1`;
       const keyRead =
         await sql`select has_table_privilege(current_user,${configuration.schema}::text || '.forge_global_trust_keys','SELECT') as allowed`;
       if (
@@ -101,9 +103,10 @@ export class PostgresWorkspaceSetupAdmission {
         identity[0].rolcreaterole !== false ||
         identity[0].membership !== false ||
         identity[0].create_database !== false ||
-        identity[0].create_temp !== false ||
         fn.length !== 1 ||
         fn[0]?.security_definer !== true ||
+        JSON.stringify(fn[0].configuration) !==
+          JSON.stringify(['search_path=pg_catalog, pg_temp']) ||
         fn[0].owner === configuration.role ||
         fn[0].designated !== configuration.role ||
         fn[0].can_execute !== true ||
@@ -111,6 +114,8 @@ export class PostgresWorkspaceSetupAdmission {
         fn[0].can_grant !== false ||
         armFunction.length !== 1 ||
         armFunction[0]?.security_definer !== true ||
+        JSON.stringify(armFunction[0].configuration) !==
+          JSON.stringify(['search_path=pg_catalog, pg_temp']) ||
         armFunction[0].owner !== fn[0].owner ||
         armFunction[0].designated !== configuration.role ||
         armFunction[0].can_execute !== true ||
@@ -118,6 +123,8 @@ export class PostgresWorkspaceSetupAdmission {
         armFunction[0].can_grant !== false ||
         permitFunction.length !== 1 ||
         permitFunction[0]?.security_definer !== true ||
+        JSON.stringify(permitFunction[0].configuration) !==
+          JSON.stringify(['search_path=pg_catalog, pg_temp']) ||
         permitFunction[0].owner !== fn[0].owner ||
         permitFunction[0].designated !== configuration.role ||
         permitFunction[0].can_execute !== true ||
@@ -125,6 +132,8 @@ export class PostgresWorkspaceSetupAdmission {
         permitFunction[0].can_grant !== false ||
         finishFunction.length !== 1 ||
         finishFunction[0]?.security_definer !== true ||
+        JSON.stringify(finishFunction[0].configuration) !==
+          JSON.stringify(['search_path=pg_catalog, pg_temp']) ||
         finishFunction[0].owner !== fn[0].owner ||
         finishFunction[0].designated !== configuration.role ||
         finishFunction[0].can_execute !== true ||

@@ -1,5 +1,7 @@
 # Independent review request: PostgreSQL compatibility and Neon preparation
 
+> Historical review request for the PostgreSQL compatibility stage. Compatibility and explicit TLS have since been accepted. The current shared-database deployment model and review request are in `docs/postgres-shared-database-review.en.md`.
+
 Review the increment against accepted commit
 `06aa678a555f871bd557fee5714d77069745a050` on
 `m4/postgres-durable-authority`. The earlier deferred integration task-span P1 is

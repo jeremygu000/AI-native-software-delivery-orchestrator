@@ -10,7 +10,9 @@ import {
   PostgresTrustRegistryAdmin,
   resolvePostgresAuthorityServerMajor,
   openPostgresConnection,
-  resolvePostgresConnectionSsl
+  resolvePostgresConnectionSsl,
+  assertEmptyPostgresAuthoritySchema,
+  assertComparisonSchemaName
 } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 import { authorityConfigurationFingerprint } from '@ai-native-software-delivery-orchestrator/persistence';
 import { GitRepositorySnapshotProvider } from '@ai-native-software-delivery-orchestrator/workspace-git';
@@ -89,9 +91,7 @@ const snapshot = async (candidate) => {
 
 if (action === 'prepare') {
   const schema = argument;
-  if (!schema || !/^forge_comparison_[a-z0-9_]+$/.test(schema)) {
-    throw new Error('Supply a new forge_comparison_* schema name');
-  }
+  assertComparisonSchemaName(schema);
   for (const path of [privateEnvPath, evidencePath]) {
     try {
       await access(path);
@@ -114,17 +114,7 @@ if (action === 'prepare') {
   try {
     const version = await owner`select current_setting('server_version_num')::integer as version`;
     resolvePostgresAuthorityServerMajor(Number(version[0].version));
-    for (const role of Object.keys(roles).filter((name) => name !== 'forge_owner')) {
-      const privileges =
-        await owner`select has_database_privilege(${role},current_database(),'TEMP') as create_temp`;
-      if (privileges[0].create_temp) {
-        throw new Error(`Neon ${role} has database TEMP privilege; no schema was created`);
-      }
-    }
-    const existing = await owner`select 1 from pg_namespace where nspname=${schema}`;
-    if (existing.length !== 0) {
-      throw new Error('Neon comparison schema already exists; refusing reuse');
-    }
+    await assertEmptyPostgresAuthoritySchema(owner, schema, 'forge_owner');
   } finally {
     await owner.end();
   }
@@ -137,7 +127,8 @@ if (action === 'prepare') {
       generationIssuerRole: 'forge_issuer',
       setupAdmissionRole: 'forge_setup',
       recoveryRole: 'forge_recovery'
-    }
+    },
+    'existing-empty'
   );
   const authority = await PostgresGlobalMutationAuthority.connect(
     configuration('forge_runtime', schema)

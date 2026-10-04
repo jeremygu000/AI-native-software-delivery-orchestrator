@@ -31,3 +31,9 @@ export {
 } from './lib/postgres-server-version.js';
 // CLI, worker and independent operators share the explicit PostgreSQL transport boundary.
 export { openPostgresConnection, resolvePostgresConnectionSsl } from './lib/postgres-connection.js';
+// Deployment operators prepare a schema without acquiring database-wide authority for Forge roles.
+export {
+  preparePostgresAuthoritySchema,
+  assertEmptyPostgresAuthoritySchema,
+  assertComparisonSchemaName
+} from './lib/postgres-schema-deployment.js';

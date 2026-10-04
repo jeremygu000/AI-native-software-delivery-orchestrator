@@ -29,14 +29,13 @@ const connectWriter = async (
   try {
     const identity = await sql`select current_user as name, session_user as session_name,
       rolsuper, rolcreatedb, rolcreaterole,
-      exists (select 1 from pg_roles other where other.oid <> current_user::regrole
+      exists (select 1 from pg_catalog.pg_roles other where other.oid <> current_user::regrole
         and pg_has_role(current_user::regrole::oid,other.oid,'MEMBER')) as membership,
-      exists (select 1 from pg_auth_members m
+      exists (select 1 from pg_catalog.pg_auth_members m
         where m.roleid=current_user::regrole::oid
           or m.member=current_user::regrole::oid) as direct_membership,
-      has_database_privilege(current_user,current_database(),'CREATE') as create_database,
-      has_database_privilege(current_user,current_database(),'TEMP') as create_temp
-      from pg_roles where rolname=current_user`;
+      has_database_privilege(current_user,current_database(),'CREATE') as create_database
+      from pg_catalog.pg_roles where rolname=current_user`;
     const principal = identity[0];
     if (
       principal?.name !== configuration.role ||
@@ -46,8 +45,7 @@ const connectWriter = async (
       principal.rolcreaterole !== false ||
       principal.membership !== false ||
       principal.direct_membership !== false ||
-      principal.create_database !== false ||
-      principal.create_temp !== false
+      principal.create_database !== false
     ) {
       throw new Error('PostgreSQL authority writer must use a restricted login');
     }
@@ -55,10 +53,11 @@ const connectWriter = async (
       has_schema_privilege(current_user,n.oid,'USAGE') as usage,
       has_schema_privilege(current_user,n.oid,'CREATE') as create_schema,
       p.proowner::regrole::text as function_owner, p.prosecdef as security_definer,
+      p.proconfig as configuration,
       has_function_privilege(current_user,p.oid,'EXECUTE') as execute,
       has_function_privilege('public',p.oid,'EXECUTE') as public_execute,
       has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION') as grant_execute
-      from pg_namespace n join pg_proc p on p.pronamespace=n.oid
+      from pg_catalog.pg_namespace n join pg_catalog.pg_proc p on p.pronamespace=n.oid
       where n.nspname=${configuration.schema} and p.proname=${functionName}`;
     const row = rows[0];
     if (
@@ -68,6 +67,7 @@ const connectWriter = async (
       row?.usage !== true ||
       row.create_schema !== false ||
       row.security_definer !== true ||
+      JSON.stringify(row.configuration) !== JSON.stringify(['search_path=pg_catalog, pg_temp']) ||
       row.execute !== true ||
       row.public_execute !== false ||
       row.grant_execute !== false
@@ -75,7 +75,7 @@ const connectWriter = async (
       throw new Error('PostgreSQL restricted authority writer is not installed');
     }
     const tables =
-      await sql`select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
+      await sql`select c.relname from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace
       where n.nspname=${configuration.schema} and c.relkind in ('r','p') and (
           has_table_privilege(current_user,c.oid,'INSERT') or
           has_table_privilege(current_user,c.oid,'UPDATE') or
@@ -89,11 +89,17 @@ const connectWriter = async (
     if (tables.length !== 0) {
       throw new Error('PostgreSQL restricted writer has direct table mutation privileges');
     }
+    const writableSchemas = await sql`select 1 from pg_catalog.pg_namespace n
+      where n.nspname in (${configuration.schema}, 'pg_catalog')
+        and has_schema_privilege(current_user,n.oid,'CREATE') limit 1`;
+    if (writableSchemas.length !== 0) {
+      throw new Error('PostgreSQL restricted writer has authority schema CREATE privileges');
+    }
     const other =
       functionName === 'forge_trust_write' ? 'forge_generation_write' : 'forge_trust_write';
     const unwanted =
       await sql`select has_function_privilege(current_user,p.oid,'EXECUTE') as allowed
-      from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+      from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
       where n.nspname=${configuration.schema} and p.proname=${other}`;
     if (unwanted.length !== 1 || unwanted[0]?.allowed !== false) {
       throw new Error('PostgreSQL restricted writer has another authority function');

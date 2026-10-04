@@ -8,6 +8,7 @@ import {
 } from './postgres-evidence-store.js';
 import { resolvePostgresAuthorityServerMajor } from './postgres-server-version.js';
 import { openPostgresConnection } from './postgres-connection.js';
+import { assertEmptyPostgresAuthoritySchema } from './postgres-schema-deployment.js';
 
 type Sql = ReturnType<typeof postgres>;
 type TransactionSql = postgres.TransactionSql;
@@ -1242,8 +1243,8 @@ const assertNoMaintenancePrivileges = async (
     return;
   }
   const grants = await sql`select r.rolname as role, c.relname as relation
-    from pg_class c join pg_namespace n on n.oid=c.relnamespace
-    cross join pg_roles r
+    from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+    cross join pg_catalog.pg_roles r
     where n.nspname=${schema} and c.relkind in ('r','p')
       and r.rolname = any(${sql.array([...roles])}::text[])
       and has_table_privilege(r.oid,c.oid,'MAINTAIN') limit 1`;
@@ -1262,8 +1263,8 @@ const assertConstraintEnforcement = async (
   if (serverMajor < 18) {
     return;
   }
-  const drift = await sql`select 1 from pg_constraint con
-    join pg_class c on c.oid=con.conrelid join pg_namespace n on n.oid=c.relnamespace
+  const drift = await sql`select 1 from pg_catalog.pg_constraint con
+    join pg_catalog.pg_class c on c.oid=con.conrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace
     where n.nspname=${schema} and (
       not con.conenforced or not con.convalidated or
       (con.contype='n' and (con.connoinherit or not con.conislocal or con.coninhcount<>0
@@ -1423,7 +1424,7 @@ const assertGlobalAuthorityShape = async (
   const relations = await sql`select c.relname as name, c.relkind as kind,
     c.relpersistence as persistence, c.relrowsecurity as row_security,
     c.relforcerowsecurity as force_row_security
-    from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace
     where n.nspname=${schema} and c.relname like 'forge_global_%' and c.relkind in ('r','p')
     order by c.relname`;
   if (
@@ -1446,8 +1447,8 @@ const assertGlobalAuthorityShape = async (
   }
   const columns = await sql`select c.relname as table_name, a.attname as column_name,
     format_type(a.atttypid,a.atttypmod) as data_type, a.attnotnull as not_null
-    from pg_class c join pg_namespace n on n.oid=c.relnamespace
-    join pg_attribute a on a.attrelid=c.oid
+    from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+    join pg_catalog.pg_attribute a on a.attrelid=c.oid
     where n.nspname=${schema} and c.relname like 'forge_global_%'
       and c.relkind='r' and a.attnum>0 and not a.attisdropped
     order by c.relname,a.attnum`;
@@ -1499,8 +1500,8 @@ const assertGlobalAuthorityShape = async (
   }
   const constraints = await sql`select c.relname as table_name, con.contype as kind,
     pg_get_constraintdef(con.oid) as definition
-    from pg_constraint con join pg_class c on c.oid=con.conrelid
-    join pg_namespace n on n.oid=c.relnamespace
+    from pg_catalog.pg_constraint con join pg_catalog.pg_class c on c.oid=con.conrelid
+    join pg_catalog.pg_namespace n on n.oid=c.relnamespace
     where n.nspname=${schema} and c.relname like 'forge_global_%'
     order by c.relname, con.contype, pg_get_constraintdef(con.oid)`;
   const expectedConstraints = [
@@ -1621,21 +1622,24 @@ const assertGlobalAuthorityShape = async (
   ) {
     throw new Error('PostgreSQL global authority constraints are incompatible');
   }
-  const triggers = await sql`select 1 from pg_trigger t join pg_class c on c.oid=t.tgrelid
-    join pg_namespace n on n.oid=c.relnamespace
+  const triggers =
+    await sql`select 1 from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid
+    join pg_catalog.pg_namespace n on n.oid=c.relnamespace
     where n.nspname=${schema} and c.relname like 'forge_global_%'
       and not t.tgisinternal limit 1`;
-  const defaults = await sql`select 1 from pg_attrdef d join pg_class c on c.oid=d.adrelid
-    join pg_namespace n on n.oid=c.relnamespace
+  const defaults =
+    await sql`select 1 from pg_catalog.pg_attrdef d join pg_catalog.pg_class c on c.oid=d.adrelid
+    join pg_catalog.pg_namespace n on n.oid=c.relnamespace
     where n.nspname=${schema} and c.relname like 'forge_global_%' limit 1`;
-  const rules = await sql`select 1 from pg_rewrite r join pg_class c on c.oid=r.ev_class
-    join pg_namespace n on n.oid=c.relnamespace
+  const rules =
+    await sql`select 1 from pg_catalog.pg_rewrite r join pg_catalog.pg_class c on c.oid=r.ev_class
+    join pg_catalog.pg_namespace n on n.oid=c.relnamespace
     where n.nspname=${schema} and c.relname like 'forge_global_%' limit 1`;
   const extraIndexes = await sql`select c.relname as table_name, i.relname as index_name,
     x.indisunique as unique_index, pg_get_indexdef(x.indexrelid) as definition
-    from pg_index x join pg_class c on c.oid=x.indrelid
-    join pg_class i on i.oid=x.indexrelid
-    join pg_namespace n on n.oid=c.relnamespace
+    from pg_catalog.pg_index x join pg_catalog.pg_class c on c.oid=x.indrelid
+    join pg_catalog.pg_class i on i.oid=x.indexrelid
+    join pg_catalog.pg_namespace n on n.oid=c.relnamespace
     where n.nspname=${schema} and c.relname like 'forge_global_%'
       and not x.indisprimary order by c.relname,i.relname`;
   const allowedLineageIndex = `${schema}.forge_global_workspace_permit_lineages`;
@@ -1678,7 +1682,7 @@ const assertAuthorityShape = async (
   const relations = await sql`select c.relname as name, c.relkind as kind,
     c.relpersistence as persistence, c.relrowsecurity as row_security,
     c.relforcerowsecurity as force_row_security
-    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace
     where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
     order by c.relname`;
   if (
@@ -1696,8 +1700,8 @@ const assertAuthorityShape = async (
   }
   const defaults = await sql`select c.relname as table_name, a.attname as column_name,
     pg_get_expr(d.adbin, d.adrelid) as expression
-    from pg_attrdef d join pg_attribute a on a.attrelid = d.adrelid and a.attnum = d.adnum
-    join pg_class c on c.oid = d.adrelid join pg_namespace n on n.oid = c.relnamespace
+    from pg_catalog.pg_attrdef d join pg_catalog.pg_attribute a on a.attrelid = d.adrelid and a.attnum = d.adnum
+    join pg_catalog.pg_class c on c.oid = d.adrelid join pg_catalog.pg_namespace n on n.oid = c.relnamespace
     where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
     order by c.relname, a.attname`;
   if (
@@ -1708,12 +1712,14 @@ const assertAuthorityShape = async (
   ) {
     throw new Error('PostgreSQL authority column defaults are incompatible');
   }
-  const triggers = await sql`select 1 from pg_trigger t join pg_class c on c.oid = t.tgrelid
-    join pg_namespace n on n.oid = c.relnamespace
+  const triggers =
+    await sql`select 1 from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid = t.tgrelid
+    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
     where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
       and not t.tgisinternal limit 1`;
-  const rules = await sql`select 1 from pg_rewrite r join pg_class c on c.oid = r.ev_class
-    join pg_namespace n on n.oid = c.relnamespace
+  const rules =
+    await sql`select 1 from pg_catalog.pg_rewrite r join pg_catalog.pg_class c on c.oid = r.ev_class
+    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
     where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
     limit 1`;
   if (triggers.length > 0 || rules.length > 0) {
@@ -1721,8 +1727,8 @@ const assertAuthorityShape = async (
   }
   const columns = await sql`select c.relname as table_name, a.attname as column_name,
     format_type(a.atttypid, a.atttypmod) as data_type, a.attnotnull as not_null
-    from pg_class c join pg_namespace n on n.oid = c.relnamespace
-    join pg_attribute a on a.attrelid = c.oid
+    from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+    join pg_catalog.pg_attribute a on a.attrelid = c.oid
     where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
       and c.relkind in ('r','p') and a.attnum > 0 and not a.attisdropped
     order by c.relname, a.attnum`;
@@ -1744,8 +1750,8 @@ const assertAuthorityShape = async (
   }
   const constraints = await sql`select c.relname as table_name, con.contype as kind,
     pg_get_constraintdef(con.oid) as definition
-    from pg_constraint con join pg_class c on c.oid = con.conrelid
-    join pg_namespace n on n.oid = c.relnamespace
+    from pg_catalog.pg_constraint con join pg_catalog.pg_class c on c.oid = con.conrelid
+    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
     where n.nspname = ${schema} and c.relname in ('forge_schema_migrations','forge_runs','forge_records')
     order by c.relname, con.contype, pg_get_constraintdef(con.oid)`;
   const actualConstraints = constraints.map((row) => [row.table_name, row.kind, row.definition]);
@@ -1774,9 +1780,9 @@ const assertAuthorityShape = async (
   }
   const indexes = await sql`select c.relname as table_name, i.relname as index_name,
     pg_get_indexdef(i.oid) as definition
-    from pg_index x join pg_class c on c.oid = x.indrelid
-    join pg_namespace n on n.oid = c.relnamespace
-    join pg_class i on i.oid = x.indexrelid
+    from pg_catalog.pg_index x join pg_catalog.pg_class c on c.oid = x.indrelid
+    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+    join pg_catalog.pg_class i on i.oid = x.indexrelid
     where n.nspname = ${schema} and i.relname = 'forge_records_kind_run_idx'`;
   const expectedIndex = `CREATE INDEX forge_records_kind_run_idx ON ${schema}.forge_records USING btree (kind, run_id)`;
   if (
@@ -1799,7 +1805,8 @@ const assertRestrictedWriterFunctions = async (
   schema: string,
   runtimeRole: string,
   version: number,
-  serverMajor: number
+  serverMajor: number,
+  allowLegacySearchPath = false
 ): Promise<void> => {
   const functions = await sql`select p.proname as name, oidvectortypes(p.proargtypes) as arguments,
     p.proowner::regrole::text as owner, p.prosecdef as security_definer,
@@ -1810,7 +1817,7 @@ const assertRestrictedWriterFunctions = async (
        where a.grantee <> p.proowner) as grants,
     has_function_privilege(${runtimeRole},p.oid,'EXECUTE') as runtime_execute,
     has_function_privilege('public',p.oid,'EXECUTE') as public_execute
-    from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
     where n.nspname=${schema} order by p.proname`;
   const expected = [
     ['forge_generation_write', 'text, text, text, text, text, text, text, text, text, text, text'],
@@ -1834,7 +1841,7 @@ const assertRestrictedWriterFunctions = async (
       : [])
   ];
   const owner =
-    await sql`select nspowner::regrole::text as name from pg_namespace where nspname=${schema}`;
+    await sql`select nspowner::regrole::text as name from pg_catalog.pg_namespace where nspname=${schema}`;
   const recorded = functions[0]?.writer_roles;
   const setupBinding =
     version >= 9 ? functions.find((fn) => fn.name === 'forge_setup_admit')?.writer_roles : null;
@@ -1915,7 +1922,11 @@ const assertRestrictedWriterFunctions = async (
         fn.arguments !== expected[index]?.[1] ||
         fn.owner !== owner[0]?.name ||
         fn.security_definer !== true ||
-        JSON.stringify(fn.configuration) !== JSON.stringify(['search_path=pg_catalog']) ||
+        (JSON.stringify(fn.configuration) !== JSON.stringify(['search_path=pg_catalog, pg_temp']) &&
+          !(
+            allowLegacySearchPath &&
+            JSON.stringify(fn.configuration) === JSON.stringify(['search_path=pg_catalog'])
+          )) ||
         fn.writer_roles !==
           (fn.name === 'forge_setup_admit' ||
           fn.name === 'forge_setup_arm' ||
@@ -1966,9 +1977,8 @@ const assertRestrictedWriterFunctions = async (
   if (recoveryRole !== undefined) {
     const role = await sql`select rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,
        has_database_privilege(oid,current_database(),'CREATE') as create_database,
-       has_database_privilege(oid,current_database(),'TEMP') as create_temp,
-       exists (select 1 from pg_auth_members m where m.member=r.oid or m.roleid=r.oid) as membership
-       from pg_roles r where rolname=${recoveryRole}`;
+       exists (select 1 from pg_catalog.pg_auth_members m where m.member=r.oid or m.roleid=r.oid) as membership
+       from pg_catalog.pg_roles r where rolname=${recoveryRole}`;
     const row = role[0];
     if (
       role.length !== 1 ||
@@ -1977,12 +1987,12 @@ const assertRestrictedWriterFunctions = async (
       row.rolcreatedb !== false ||
       row.rolcreaterole !== false ||
       row.create_database !== false ||
-      row.create_temp !== false ||
       row.membership !== false
     ) {
       throw new Error('PostgreSQL recovery role is not restricted');
     }
-    const tables = await sql`select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    const tables =
+      await sql`select 1 from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace
       where n.nspname=${schema} and c.relkind in ('r','p') and (
         has_table_privilege(${recoveryRole},c.oid,'INSERT') or
         has_table_privilege(${recoveryRole},c.oid,'UPDATE') or
@@ -1993,20 +2003,20 @@ const assertRestrictedWriterFunctions = async (
         has_any_column_privilege(${recoveryRole},c.oid,'INSERT') or
         has_any_column_privilege(${recoveryRole},c.oid,'UPDATE') or
         has_any_column_privilege(${recoveryRole},c.oid,'REFERENCES')) limit 1`;
-    const schemas = await sql`select 1 from pg_namespace n
-       where has_schema_privilege(${recoveryRole},n.oid,'CREATE') limit 1`;
+    const schemas = await sql`select 1 from pg_catalog.pg_namespace n
+       where n.nspname in (${schema}, 'pg_catalog') and has_schema_privilege(${recoveryRole},n.oid,'CREATE') limit 1`;
     if (tables.length > 0 || schemas.length > 0) {
       throw new Error('PostgreSQL recovery role has direct authority mutations');
     }
   }
   if (setupRole !== undefined) {
-    const membership = await sql`select 1 from pg_auth_members
+    const membership = await sql`select 1 from pg_catalog.pg_auth_members
        where roleid=${setupRole}::regrole::oid or member=${setupRole}::regrole::oid limit 1`;
     if (membership.length > 0) {
       throw new Error('PostgreSQL setup admission role membership is incompatible');
     }
-    const directWrites = await sql`select c.relname from pg_class c
-       join pg_namespace n on n.oid=c.relnamespace
+    const directWrites = await sql`select c.relname from pg_catalog.pg_class c
+       join pg_catalog.pg_namespace n on n.oid=c.relnamespace
        where n.nspname=${schema} and c.relkind in ('r','p') and (
          has_table_privilege(${setupRole},c.oid,'INSERT') or
          has_table_privilege(${setupRole},c.oid,'UPDATE') or
@@ -2020,15 +2030,15 @@ const assertRestrictedWriterFunctions = async (
     if (directWrites.length > 0) {
       throw new Error('PostgreSQL setup admission role has direct table writes');
     }
-    const schemaCreate = await sql`select 1 from pg_namespace n
-         where has_schema_privilege(${setupRole},n.oid,'CREATE') limit 1`;
+    const schemaCreate = await sql`select 1 from pg_catalog.pg_namespace n
+         where n.nspname in (${schema}, 'pg_catalog') and has_schema_privilege(${setupRole},n.oid,'CREATE') limit 1`;
     if (schemaCreate.length > 0) {
       throw new Error('PostgreSQL setup admission role has schema CREATE privileges');
     }
   }
   if (writers !== undefined) {
     const membership = await sql`select m.roleid::regrole::text as granted_role,
-      m.member::regrole::text as member from pg_auth_members m
+      m.member::regrole::text as member from pg_catalog.pg_auth_members m
       where m.roleid in (${writers.trustAdminRole}::regrole::oid,
         ${writers.generationIssuerRole}::regrole::oid)
         or m.member in (${writers.trustAdminRole}::regrole::oid,
@@ -2036,8 +2046,8 @@ const assertRestrictedWriterFunctions = async (
     if (membership.length > 0) {
       throw new Error('PostgreSQL restricted writer role membership is incompatible');
     }
-    const directWrites = await sql`select c.relname from pg_class c
-      join pg_namespace n on n.oid=c.relnamespace
+    const directWrites = await sql`select c.relname from pg_catalog.pg_class c
+      join pg_catalog.pg_namespace n on n.oid=c.relnamespace
       where n.nspname=${schema} and c.relkind in ('r','p') and (
         has_table_privilege(${writers.trustAdminRole},c.oid,'INSERT') or
         has_table_privilege(${writers.trustAdminRole},c.oid,'UPDATE') or
@@ -2060,6 +2070,13 @@ const assertRestrictedWriterFunctions = async (
     if (directWrites.length > 0) {
       throw new Error('PostgreSQL restricted writer has direct table mutation privileges');
     }
+    const schemaCreate = await sql`select 1 from pg_catalog.pg_namespace n
+      where n.nspname in (${schema}, 'pg_catalog') and (
+        has_schema_privilege(${writers.trustAdminRole},n.oid,'CREATE') or
+        has_schema_privilege(${writers.generationIssuerRole},n.oid,'CREATE')) limit 1`;
+    if (schemaCreate.length > 0) {
+      throw new Error('PostgreSQL restricted writer has authority schema CREATE privileges');
+    }
   }
   await assertNoMaintenancePrivileges(
     sql,
@@ -2078,9 +2095,13 @@ export const migratePostgresAuthoritySchema = async (
   configuration: PostgresEvidenceStoreConfiguration,
   runtimeRole: string,
   targetVersion: PostgresAuthoritySchemaVersion = POSTGRES_AUTHORITY_SCHEMA_VERSION,
-  writerRoles?: PostgresAuthorityWriterRoles
+  writerRoles?: PostgresAuthorityWriterRoles,
+  schemaMode: 'create-or-upgrade' | 'existing-empty' = 'create-or-upgrade'
 ): Promise<void> => {
   assertPostgresEvidenceStoreConfiguration(configuration);
+  if (!['create-or-upgrade', 'existing-empty'].includes(schemaMode)) {
+    throw new Error('Unsupported PostgreSQL schema deployment mode');
+  }
   if (!migrations.some((migration) => migration.version === targetVersion)) {
     throw new Error('Unsupported PostgreSQL authority schema target version');
   }
@@ -2119,17 +2140,26 @@ export const migratePostgresAuthoritySchema = async (
         throw new Error('PostgreSQL migration owner role mismatch');
       }
       await tx`select pg_advisory_xact_lock(hashtext(${`forge-schema:${configuration.schema}`}))`;
-      const existing = await tx`select 1 from pg_namespace where nspname = ${configuration.schema}`;
+      if (schemaMode === 'existing-empty') {
+        await assertEmptyPostgresAuthoritySchema(tx, configuration.schema, configuration.role);
+        const privilege =
+          await tx`select has_database_privilege(current_user,current_database(),'CREATE') as allowed`;
+        if (privilege[0]?.allowed !== false) {
+          throw new Error('Shared bootstrap migration owner must not have database CREATE');
+        }
+      }
+      const existing =
+        await tx`select 1 from pg_catalog.pg_namespace where nspname = ${configuration.schema}`;
       if (existing.length === 0) {
         await tx.unsafe(`create schema ${schema}`);
       }
       const owners =
-        await tx`select nspowner::regrole::text as name from pg_namespace where nspname = ${configuration.schema}`;
+        await tx`select nspowner::regrole::text as name from pg_catalog.pg_namespace where nspname = ${configuration.schema}`;
       if (owners[0]?.name !== configuration.role) {
         throw new Error('PostgreSQL migration role does not own the authority schema');
       }
       const objects =
-        await tx`select relname from pg_class where relnamespace = ${configuration.schema}::regnamespace and relkind in ('r','p')`;
+        await tx`select relname from pg_catalog.pg_class where relnamespace = ${configuration.schema}::regnamespace and relkind in ('r','p')`;
       const hasLedger = objects.some((row) => row.relname === 'forge_schema_migrations');
       if (!hasLedger && objects.length !== 0) {
         throw new Error('PostgreSQL authority schema has objects but no migration ledger');
@@ -2144,7 +2174,7 @@ export const migratePostgresAuthoritySchema = async (
         `select version, checksum from ${schema}.forge_schema_migrations order by version`
       );
       const installedObjects =
-        await tx`select relname from pg_class where relnamespace = ${configuration.schema}::regnamespace and relkind in ('r','p')`;
+        await tx`select relname from pg_catalog.pg_class where relnamespace = ${configuration.schema}::regnamespace and relkind in ('r','p')`;
       const expectedTables =
         applied.length === 0
           ? ['forge_schema_migrations']
@@ -2204,7 +2234,7 @@ export const migratePostgresAuthoritySchema = async (
                 generationIssuerRole: writerRoles.generationIssuerRole
               });
         const previousBindings = await tx`select obj_description(p.oid,'pg_proc') as binding
-           from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+           from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
            where n.nspname=${configuration.schema} and p.proname in ('forge_trust_write','forge_generation_write')`;
         if (
           previousBindings.length !== 2 ||
@@ -2241,7 +2271,7 @@ export const migratePostgresAuthoritySchema = async (
         if (targetVersion >= 9 && writerRoles?.setupAdmissionRole !== undefined) {
           const setupRole = writerRoles.setupAdmissionRole;
           const recorded = await tx`select obj_description(p.oid,'pg_proc') as binding
-              from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+              from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
               where n.nspname=${configuration.schema} and p.proname in
                   ('forge_setup_admit', 'forge_setup_arm', 'forge_workspace_permit_begin', 'forge_workspace_permit_finish')`;
           if (
@@ -2252,9 +2282,8 @@ export const migratePostgresAuthoritySchema = async (
           }
           const principal = await tx`select r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolcanlogin,
              has_database_privilege(r.oid,current_database(),'CREATE') as create_database,
-             has_database_privilege(r.oid,current_database(),'TEMP') as create_temp,
-             exists (select 1 from pg_auth_members m where m.member=r.oid or m.roleid=r.oid) as membership
-             from pg_roles r where r.rolname=${setupRole}`;
+             exists (select 1 from pg_catalog.pg_auth_members m where m.member=r.oid or m.roleid=r.oid) as membership
+             from pg_catalog.pg_roles r where r.rolname=${setupRole}`;
           if (
             principal.length !== 1 ||
             principal[0]?.rolsuper !== false ||
@@ -2262,7 +2291,6 @@ export const migratePostgresAuthoritySchema = async (
             principal[0].rolcreaterole !== false ||
             principal[0].rolcanlogin !== true ||
             principal[0].create_database !== false ||
-            principal[0].create_temp !== false ||
             principal[0].membership !== false
           ) {
             throw new Error('PostgreSQL setup admission role is not restricted');
@@ -2293,9 +2321,9 @@ export const migratePostgresAuthoritySchema = async (
           ]) {
             await tx.unsafe(`revoke all on ${schema}.${table} from ${roleName}`);
           }
-          const setupColumnDrift = await tx`select c.relname from pg_class c
-            join pg_namespace n on n.oid=c.relnamespace
-            join pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
+          const setupColumnDrift = await tx`select c.relname from pg_catalog.pg_class c
+            join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+            join pg_catalog.pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
             cross join lateral aclexplode(a.attacl) acl
             where n.nspname=${configuration.schema} and c.relkind in ('r','p')
               and acl.grantee=${setupRole}::regrole::oid limit 1`;
@@ -2311,7 +2339,7 @@ export const migratePostgresAuthoritySchema = async (
         if (targetVersion >= 12 && writerRoles?.recoveryRole !== undefined) {
           const recoveryRole = writerRoles.recoveryRole;
           const recoveryBindings = await tx`select obj_description(p.oid,'pg_proc') as binding
-            from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+            from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
              where n.nspname=${configuration.schema} and p.proname in
                 ('forge_workspace_recovery_settle','forge_workspace_recovery_handoff','forge_workspace_recovery_abandon')`;
           if (
@@ -2341,9 +2369,9 @@ export const migratePostgresAuthoritySchema = async (
           ]) {
             await tx.unsafe(`revoke all on ${schema}.${table} from ${writer}`);
           }
-          const columnDrift = await tx`select 1 from pg_class c
-             join pg_namespace n on n.oid=c.relnamespace
-             join pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
+          const columnDrift = await tx`select 1 from pg_catalog.pg_class c
+             join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+             join pg_catalog.pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
              cross join lateral aclexplode(a.attacl) acl
              where n.nspname=${configuration.schema} and c.relkind in ('r','p')
                and acl.grantee=${recoveryRole}::regrole::oid limit 1`;
@@ -2356,8 +2384,8 @@ export const migratePostgresAuthoritySchema = async (
           }
         }
         if (writerRoles === undefined) {
-          const granted = await tx`select proname from pg_proc p
-            join pg_namespace n on n.oid=p.pronamespace
+          const granted = await tx`select proname from pg_catalog.pg_proc p
+            join pg_catalog.pg_namespace n on n.oid=p.pronamespace
             where n.nspname=${configuration.schema}
               and proname in ('forge_trust_write','forge_generation_write')
               and (select count(*) from aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
@@ -2371,9 +2399,8 @@ export const migratePostgresAuthoritySchema = async (
             r.rolcreaterole, r.rolcanlogin,
             pg_has_role(r.oid,${configuration.role}::name,'MEMBER') as migration_member,
             pg_has_role(r.oid,${runtimeRole}::name,'MEMBER') as runtime_member,
-            has_database_privilege(r.oid,current_database(),'CREATE') as create_database,
-            has_database_privilege(r.oid,current_database(),'TEMP') as create_temp
-            from pg_roles r where r.rolname in (${writerRoles.trustAdminRole},${writerRoles.generationIssuerRole})`;
+            has_database_privilege(r.oid,current_database(),'CREATE') as create_database
+            from pg_catalog.pg_roles r where r.rolname in (${writerRoles.trustAdminRole},${writerRoles.generationIssuerRole})`;
           if (
             writerPrincipals.length !== 2 ||
             writerPrincipals.some(
@@ -2384,8 +2411,7 @@ export const migratePostgresAuthoritySchema = async (
                 entry.rolcanlogin !== true ||
                 entry.migration_member !== false ||
                 entry.runtime_member !== false ||
-                entry.create_database !== false ||
-                entry.create_temp !== false
+                entry.create_database !== false
             )
           ) {
             throw new Error('PostgreSQL authority writer roles are not restricted');
@@ -2420,9 +2446,9 @@ export const migratePostgresAuthoritySchema = async (
             }
             await tx.unsafe(`grant execute on function ${schema}.${signature} to ${writer}`);
           }
-          const columnDrift = await tx`select c.relname from pg_class c
-             join pg_namespace n on n.oid=c.relnamespace
-             join pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
+          const columnDrift = await tx`select c.relname from pg_catalog.pg_class c
+             join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+             join pg_catalog.pg_attribute a on a.attrelid=c.oid and a.attnum>0 and not a.attisdropped
              cross join lateral aclexplode(a.attacl) acl
              where n.nspname=${configuration.schema} and c.relkind in ('r','p')
                and acl.grantee in (${writerRoles.trustAdminRole}::regrole::oid,
@@ -2439,6 +2465,22 @@ export const migratePostgresAuthoritySchema = async (
               `comment on function ${schema}.${signature} is '${roleBinding?.replaceAll("'", "''")}'`
             );
           }
+        }
+        await assertRestrictedWriterFunctions(
+          tx,
+          configuration.schema,
+          runtimeRole,
+          targetVersion,
+          serverMajor,
+          true
+        );
+        // Preserve historical migration text/checksums; install safe function metadata like ACLs.
+        // With TEMP allowed, pg_temp must be explicit and last for relation/type resolution.
+        const installedFunctions = await tx`select p.oid::pg_catalog.regprocedure::text as signature
+          from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
+          where n.nspname=${configuration.schema}`;
+        for (const fn of installedFunctions) {
+          await tx.unsafe(`alter function ${fn.signature} set search_path = pg_catalog, pg_temp`);
         }
         await assertRestrictedWriterFunctions(
           tx,
@@ -2517,39 +2559,42 @@ export const assertPostgresAuthoritySchema = async (
   ) {
     throw new Error('PostgreSQL authority role mismatch');
   }
-  const metadata =
-    await sql`select nspowner::regrole::text as owner from pg_namespace where nspname = ${configuration.schema}`;
+  const metadata = await sql`select nspowner::regrole::text as owner,
+      exists(select 1 from aclexplode(coalesce(nspacl,acldefault('n',nspowner))) a
+        where a.grantee=0) as public_grants
+      from pg_catalog.pg_namespace where nspname = ${configuration.schema}`;
   if (metadata.length !== 1 || metadata[0]?.owner === configuration.role) {
     throw new Error('PostgreSQL authority schema does not exist or runtime role owns it');
+  }
+  if (metadata[0]?.public_grants) {
+    throw new Error('PostgreSQL authority schema PUBLIC privileges are incompatible');
   }
   const identityPrivileges = await sql`select
     rolsuper, rolcreatedb, rolcreaterole,
     pg_has_role(current_user, ${metadata[0].owner}::name, 'MEMBER') as migration_member,
-    exists (select 1 from pg_roles other
+    exists (select 1 from pg_catalog.pg_roles other
       where other.oid <> current_user::regrole
         and pg_has_role(current_user::regrole::oid, other.oid, 'MEMBER')) as other_membership,
-    has_database_privilege(current_user, current_database(), 'CREATE') as create_database,
-    has_database_privilege(current_user, current_database(), 'TEMP') as create_temp
-    from pg_roles where rolname = current_user`;
+    has_database_privilege(current_user, current_database(), 'CREATE') as create_database
+    from pg_catalog.pg_roles where rolname = current_user`;
   if (
     identityPrivileges[0]?.rolsuper !== false ||
     identityPrivileges[0].rolcreatedb !== false ||
     identityPrivileges[0].rolcreaterole !== false ||
     identityPrivileges[0].migration_member !== false ||
     identityPrivileges[0].other_membership !== false ||
-    identityPrivileges[0].create_database !== false ||
-    identityPrivileges[0].create_temp !== false
+    identityPrivileges[0].create_database !== false
   ) {
     throw new Error('PostgreSQL authority runtime role is not least privileged');
   }
-  const createSchemas = await sql`select nspname from pg_namespace
-    where nspname !~ '^pg_' and nspname <> 'information_schema'
+  const createSchemas = await sql`select nspname from pg_catalog.pg_namespace
+    where nspname in (${configuration.schema}, 'pg_catalog')
       and has_schema_privilege(current_user, oid, 'CREATE')`;
   if (createSchemas.length > 0) {
     throw new Error('PostgreSQL authority runtime role can create objects in an accessible schema');
   }
   const objects =
-    await sql`select relname, relowner::regrole::text as owner from pg_class where relnamespace = ${configuration.schema}::regnamespace and relkind in ('r','p')`;
+    await sql`select relname, relowner::regrole::text as owner from pg_catalog.pg_class where relnamespace = ${configuration.schema}::regnamespace and relkind in ('r','p')`;
   for (const name of ['forge_schema_migrations', 'forge_runs', 'forge_records']) {
     const object = objects.find((row) => row.relname === name);
     if (object === undefined || object.owner === configuration.role) {
@@ -2738,7 +2783,7 @@ export const assertPostgresAuthoritySchema = async (
       // A table grant masks redundant column grants in has_any_column_privilege.
       // Installation never grants column privileges, so reject even redundant ACL drift.
       const columnGrants = await sql`select exists (
-         select 1 from pg_attribute attribute
+         select 1 from pg_catalog.pg_attribute attribute
          cross join lateral aclexplode(attribute.attacl) grant_entry
          where attribute.attrelid = ${relation}::regclass
            and attribute.attnum > 0 and not attribute.attisdropped

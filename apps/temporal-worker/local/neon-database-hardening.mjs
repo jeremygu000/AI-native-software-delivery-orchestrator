@@ -4,18 +4,24 @@ import { parseEnv } from 'node:util';
 import {
   resolvePostgresAuthorityServerMajor,
   openPostgresConnection,
-  resolvePostgresConnectionSsl
+  resolvePostgresConnectionSsl,
+  preparePostgresAuthoritySchema,
+  assertComparisonSchemaName
 } from '@ai-native-software-delivery-orchestrator/postgres-persistence';
 
-const [action, expectedDatabase, acknowledgement] = process.argv.slice(2);
+const [action, expectedDatabase, acknowledgement, schema] = process.argv.slice(2);
 if (
   !['inspect', 'apply'].includes(action) ||
   !expectedDatabase ||
-  (action === 'apply' && acknowledgement !== '--dedicated-forge-database')
+  (action === 'apply' &&
+    !['--dedicated-forge-database', '--shared-database'].includes(acknowledgement))
 ) {
   throw new Error(
-    'Usage: neon-database-hardening.mjs inspect DATABASE|apply DATABASE --dedicated-forge-database'
+    'Usage: neon-database-hardening.mjs inspect DATABASE|apply DATABASE --shared-database SCHEMA|apply DATABASE --dedicated-forge-database'
   );
+}
+if (acknowledgement === '--shared-database') {
+  assertComparisonSchemaName(schema ?? '');
 }
 const local = parseEnv(
   await readFile(
@@ -51,6 +57,7 @@ for (const [role, key] of Object.entries(keys)) {
   const url = privateConnection(key);
   if (
     !['postgres:', 'postgresql:'].includes(url.protocol) ||
+    url.searchParams.size !== 0 ||
     decodeURIComponent(url.username) !== role ||
     url.host !== databaseOwner.host ||
     url.pathname !== databaseOwner.pathname
@@ -61,7 +68,7 @@ for (const [role, key] of Object.entries(keys)) {
 const quote = (name) => `"${name.replaceAll('"', '""')}"`;
 const restricted = Object.keys(keys).filter((role) => role !== 'forge_owner');
 const ssl = resolvePostgresConnectionSsl(
-  local.FORGE_POSTGRES_SSL ?? process.env.FORGE_POSTGRES_SSL
+  process.env.FORGE_POSTGRES_SSL ?? local.FORGE_POSTGRES_SSL
 );
 const sql = openPostgresConnection(
   { connectionString: databaseOwner.toString(), ssl },
@@ -118,7 +125,18 @@ const inspect = async (tx) => {
 try {
   const before = await sql.begin('read only', inspect);
   console.log(JSON.stringify({ action: 'inspect', ...before }, null, 2));
-  if (action === 'apply') {
+  if (action === 'apply' && acknowledgement === '--shared-database') {
+    const prepared = await preparePostgresAuthoritySchema({
+      connectionString: databaseOwner.toString(),
+      ssl,
+      database: expectedDatabase,
+      schema,
+      ownerRole: 'forge_owner'
+    });
+    console.log(
+      JSON.stringify({ action: 'schema-prepared', mode: 'shared', ...prepared }, null, 2)
+    );
+  } else if (action === 'apply') {
     const after = await sql.begin(async (tx) => {
       // This is an explicit deployment-owner operation on a dedicated database.
       // No authority schemas, migration ledgers, role definitions or persisted rows are changed.

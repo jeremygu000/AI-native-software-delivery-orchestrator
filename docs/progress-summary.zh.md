@@ -4027,3 +4027,25 @@ Migration、runtime persistence、global authority、trust、issuer、setup、ev
 只读线上 probe 在 PGSSL=false 下，用共用 helper 对七个 Neon 登录显式启用 verified TLS。所有 client 都解析为 ssl=verify-full，所有实际 Node TLS socket 都报告 authorized=true、无 authorization error、TLSv1.3。按要求查询的 pg_stat_ssl 对全部 backend 返回 false，TLS version 为 null；保留这些结果，不将其记为 backend TLS PASS。客户端 verified TLS 与 backend 观察结果符合 Neon proxy 终止 TLS 的解释，但这是推断，不是对 Neon 内部传输的测量。证据证明客户端到 endpoint 的连接。私有 probe 只在内存中规范化已知 provider transport parameter，没有改变私有 role URL、线上权限、schema 或 authority row。Hardening、bootstrap 与 traced E2E 明确仍不执行。本修正保留供相对 `6a0710b` 的增量复审。
 
 最终完整镜像版 `pnpm check` 通过，durable authority fixture 使用 PostgreSQL 18：101 个文件中的 1050 项测试全部通过，无跳过。语句、分支、函数、代码行覆盖率分别为 90.81%、85.86%、94.73%、90.69%，超过未变更门槛。Build、格式、TypeScript、lint 和 `git diff --check` 通过。可独立转交的增量复审说明见 `docs/postgres-tls-review.en.md`。按用户要求，本修正作为独立 commit 供增量复审；独立接受结论仍待确认。
+
+后续独立复审已接受 `db24cb592db0c593e23373e8c560672adb8b1f12`，关闭显式 TLS P1。PostgreSQL 14–18 兼容与客户端到 endpoint 的 verified TLS 已成为接受基线。下述 deployment model 修正取代此前“必须专用 database”的要求；本修正的接受与线上部署仍是后续独立工作。
+
+## 共享 PostgreSQL database 与独立 Forge schema
+
+Forge 现在以共享 PostgreSQL database 为正常部署模式。其他应用保留自己的 schema、数据和数据库权限。Forge 通过 `forge_owner` 独占一个 schema，runtime 与 trust、issuer、setup、recovery 登录仍遵守此前接受的有限 authority surface。Database TEMP 允许 session 内创建 temporary object，现在允许该能力，也允许经 PUBLIC 继承；它作为 inspection observation 报告，不再阻塞 startup。Database-wide dedicated hardening 为可选项。
+
+这一边界需要一个已有实证的对象解析修正。真实 PostgreSQL 18 回归证明，旧 SECURITY DEFINER 配置 `search_path=pg_catalog` 仍会隐式优先查找 temporary types：恶意 `pg_temp.jsonb` domain 可以在 generation writer 内触发陷阱。现在连接 helper 和已安装函数明确使用 `pg_catalog, pg_temp`；authority relation 仍带 schema qualification，catalog audit 也使用显式 qualification。同一回归现在到达正常 authority 校验，不再使用临时 domain。同名 temporary trust-registry table 也不能重定向真实 writer。
+
+Installer 在验证准确的旧／新 path 后应用安全函数配置，不修改历史 migration statements 或 checksum。Runtime 会拒绝 legacy 函数配置，直到 operator 重新运行已有 installer。包含 public 或其他不可信 namespace 的任意 path 仍然拒绝，不会自动修复。真实回归比较配置升级前后的完整 migration ledger，确认其保持不变。这是 PostgreSQL 边界的安装 metadata，没有增加 schema version、workflow patch、durable command 或 domain contract。
+
+已有 Neon operator 工具增加 shared mode：实际 database owner 仅创建一个全新、空的 `forge_comparison_*` schema，使用 `AUTHORIZATION forge_owner`。Forge owner 不获得 database CREATE。PostgreSQL 要求 deployment owner 已具备 SET ROLE 到 schema owner 的能力才能执行该语句；这一已有 role-provisioning 能力须预先存在，工具不会授予它。工具检查 database-owner 登录、受支持 server major、长度受限的 schema 名、owner role 和 schema 不存在，使用已有 schema advisory lock，并在提交前验证 owner-only 权限。Preparation 不复用既有 schema。Shared 操作不改变 database／PUBLIC ACL、其他应用对象或 role definition。
+
+Neon comparison bootstrap 现在要求该预建 schema 已存在、migration owner 正确、没有任何 dependent object，且仅 owner 有权限。`existing-empty` migration mode 在安装事务的 advisory lock 下重复检查，并确认 owner 没有 database CREATE。缺少 schema、owner 错误、已有 sequence 或 authority 都会拒绝，不清空也不接管。普通本地安装和审计后的 migration upgrade 保留独立原有路径。可选 dedicated mode 保留显式确认和 rollback 行为；worker 和 shared bootstrap 都不依赖它。两个 operator 工具的 TLS precedence 统一为 shell 优先于 private file。
+
+针对 Forge 的 schema CREATE、PUBLIC schema／table／function ACL、grant option、role membership／SET ROLE 越权以及 PG17 MAINTAIN 仍然 fail closed。其他应用 schema 或 public schema 的 CREATE 可以存在，因为 Forge 不通过这些 namespace 解析 authority 对象；pg_catalog CREATE 仍然禁止。Runtime 此前接受的 table DML 和 protected mutation contract 保持不变；本增量不会将它们重构成一套全新的 SECURITY DEFINER API。
+
+本地共享库回归保留一条无关 public 数据行和完整 database／public-schema ACL，保留 PUBLIC TEMP 与 public-schema CREATE，以没有 database CREATE 的 owner 执行 migration、达到 GLOBAL_READY，并连接受限 clients；PUBLIC authority 写权限、PUBLIC Forge-schema USAGE、runtime Forge-schema CREATE 仍会拒绝。另覆盖错误 schema 名、重复 preparation、错误 owner、缺少 schema 和已有 sequence。普通 CLI／worker 的 owner 凭据隔离、显式 TLS、provider selection、tracing 和 workflow 边界都保持。Operator 命令与安全配置升级说明见 `docs/postgres-neon-readiness.en.md`。
+
+本阶段没有线上 Neon query 或 mutation。实际 schema provisioning、Neon PG18 migration／GLOBAL_READY、worker preflight、traced GroundGraph 执行和 Tempo 证据仍待复审与线上执行。本增量没有增加产品 CLI 的 PostgreSQL preparation／bootstrap command 或 provider picker；schema preparation 使用已有 operator 工具。不需要新增 service、registry 或 authority layer。本增量供相对 `db24cb59` 的独立复审。
+
+最终 `pnpm build` 和完整镜像版 `pnpm check` 通过，authority fixture 使用 PG18：101 个文件中的 1053 项测试全部通过，无跳过。语句、分支、函数、代码行覆盖率分别为 90.78%、85.86%、94.69%、90.67%，超过未改变门槛。针对改变后的 deployment／TEMP 路径，五项 PG16 定向回归通过；另外 150 项由 filter 排除，因此不是新增完整 PG16 回归。格式、TypeScript、lint 和 `git diff --check` 通过。可独立转交的复审说明为 `docs/postgres-shared-database-review.en.md`。按用户要求，本修正作为独立 commit 供增量复审；独立接受结论仍待确认。既有安装需要协调 installer／worker rollout：仍要求旧函数配置的老 worker，无法在更新后的配置上启动。

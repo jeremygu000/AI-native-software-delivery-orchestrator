@@ -51,6 +51,7 @@ import {
   POSTGRES_AUTHORITY_SCHEMA_VERSION,
   POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION
 } from './postgres-authority-schema.js';
+import { preparePostgresAuthoritySchema } from './postgres-schema-deployment.js';
 
 let directory: string;
 let containerId: string | undefined;
@@ -170,7 +171,6 @@ beforeAll(async () => {
     await admin.unsafe(`create role "${setupAdmissionRole}" login`);
     await admin.unsafe(`create role "${recoveryRole}" login`);
     await admin`revoke create on database postgres from public`;
-    await admin`revoke temporary on database postgres from public`;
     await admin`revoke create on schema public from public`;
     await admin.unsafe(`grant create on database postgres to "${role}"`);
     ownerConnectionString = `postgresql://${role}@127.0.0.1:${assignedPort}/postgres`;
@@ -2440,7 +2440,7 @@ it('restricts trust writes to the administrator function and preserves key ident
   }
 });
 
-it('hardens only an explicitly dedicated database as its actual owner and rolls back inherited privilege drift', async () => {
+it('prepares a shared schema without global ACL changes and keeps dedicated hardening optional', async () => {
   const admin = postgres(connectionString, { onnotice: () => undefined });
   const database = `forge_hardening_${process.pid}`;
   const databaseOwnerRole = `forge_database_owner_${process.pid}`;
@@ -2487,9 +2487,7 @@ it('hardens only an explicitly dedicated database as its actual owner and rolls 
     target = postgres(urlFor(databaseOwnerRole), { onnotice: () => undefined });
     await target`create table public.existing_operator_evidence (payload text not null)`;
     await target`insert into public.existing_operator_evidence values ('preserve this row')`;
-    await target.unsafe(`grant temporary on database "${database}" to "${inheritedRole}"`);
-    await admin.unsafe(`grant "${inheritedRole}" to forge_runtime`);
-    const invoke = (action: string, acknowledge = true): string =>
+    const invoke = (action: string, acknowledge = true, mode = 'dedicated', schema = ''): string =>
       execFileSync(
         process.execPath,
         [
@@ -2499,7 +2497,11 @@ it('hardens only an explicitly dedicated database as its actual owner and rolls 
           ),
           action,
           database,
-          ...(action === 'apply' && acknowledge ? ['--dedicated-forge-database'] : [])
+          ...(action === 'apply' && acknowledge
+            ? mode === 'shared'
+              ? ['--shared-database', schema]
+              : ['--dedicated-forge-database']
+            : [])
         ],
         {
           encoding: 'utf8',
@@ -2525,6 +2527,159 @@ it('hardens only an explicitly dedicated database as its actual owner and rolls 
         (entry: { create_temp: boolean }) => entry.create_temp
       )
     ).toBe(true);
+    // A PostgreSQL owner must be able to SET ROLE to the schema owner for AUTHORIZATION.
+    // The tool never grants that capability; it is an operator provisioning prerequisite.
+    await admin.unsafe(`grant forge_owner to "${databaseOwnerRole}"`);
+    await target`grant create on schema public to public`;
+    const sharedSchema = `forge_comparison_shared_${process.pid}`;
+    const snapshotAcl = async () =>
+      target!.unsafe(`select datacl::text as database_acl,
+      (select nspacl::text from pg_catalog.pg_namespace where nspname='public') as public_acl
+      from pg_catalog.pg_database where datname=current_database()`);
+    const beforeShared = await snapshotAcl();
+    expect(() => invoke('apply', true, 'shared', 'other_application_schema')).toThrow(
+      'forge_comparison_'
+    );
+    expect(invoke('apply', true, 'shared', sharedSchema)).toContain('"action": "schema-prepared"');
+    expect(await snapshotAcl()).toEqual(beforeShared);
+    expect(() => invoke('apply', true, 'shared', sharedSchema)).toThrow('already exists');
+    const migration = {
+      connectionString: urlFor('forge_owner'),
+      schema: sharedSchema,
+      role: 'forge_owner'
+    };
+    const writers = {
+      trustAdminRole: 'forge_trust',
+      generationIssuerRole: 'forge_issuer',
+      setupAdmissionRole: 'forge_setup',
+      recoveryRole: 'forge_recovery'
+    };
+    const owner = postgres(urlFor('forge_owner'), { max: 1, onnotice: () => undefined });
+    const runtime = postgres(urlFor('forge_runtime'), { max: 1, onnotice: () => undefined });
+    try {
+      await expect(owner.unsafe('create schema unrelated_forge_schema')).rejects.toThrow(
+        'permission denied'
+      );
+      await migratePostgresAuthoritySchema(
+        migration,
+        'forge_runtime',
+        POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+        writers,
+        'existing-empty'
+      );
+      const runtimeConfig = {
+        connectionString: urlFor('forge_runtime'),
+        schema: sharedSchema,
+        role: 'forge_runtime'
+      };
+      const authority = await PostgresGlobalMutationAuthority.connect(runtimeConfig);
+      try {
+        await authority.beginLegacyCutover();
+        await authority.completeLegacyCutover('Fresh shared schema has no old writers');
+        expect(
+          await target.unsafe(`select state from "${sharedSchema}".forge_global_control`)
+        ).toMatchObject([{ state: 'GLOBAL_READY' }]);
+      } finally {
+        await authority.close();
+      }
+      for (const [login, url] of [
+        ['forge_trust', urlFor('forge_trust')],
+        ['forge_issuer', urlFor('forge_issuer')]
+      ]) {
+        const config = { connectionString: url, schema: sharedSchema, role: login };
+        const writer =
+          login === 'forge_trust'
+            ? await PostgresTrustRegistryAdmin.connect(config)
+            : await PostgresExecutionGenerationIssuer.connect(config);
+        await writer.close();
+      }
+      const setup = await PostgresWorkspaceSetupAdmission.connect({
+        connectionString: urlFor('forge_setup'),
+        schema: sharedSchema,
+        role: 'forge_setup'
+      });
+      await setup.close();
+      await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
+      await owner.unsafe(`grant update on "${sharedSchema}".forge_global_trust_registry to public`);
+      await expect(assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig)).rejects.toThrow();
+      await owner.unsafe(
+        `revoke update on "${sharedSchema}".forge_global_trust_registry from public`
+      );
+      await owner.unsafe(`grant usage on schema "${sharedSchema}" to public`);
+      await expect(assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig)).rejects.toThrow(
+        'schema PUBLIC privileges'
+      );
+      await owner.unsafe(`revoke usage on schema "${sharedSchema}" from public`);
+      await owner.unsafe(`grant create on schema "${sharedSchema}" to forge_runtime`);
+      await expect(assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig)).rejects.toThrow(
+        'can create objects'
+      );
+      await owner.unsafe(`revoke create on schema "${sharedSchema}" from forge_runtime`);
+      await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
+      await expect(
+        migratePostgresAuthoritySchema(
+          migration,
+          'forge_runtime',
+          POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+          writers,
+          'existing-empty'
+        )
+      ).rejects.toThrow('empty schema');
+      const wrongOwner = `forge_comparison_wrong_${process.pid}`;
+      await target.unsafe(`create schema "${wrongOwner}"`);
+      await expect(
+        migratePostgresAuthoritySchema(
+          { ...migration, schema: wrongOwner },
+          'forge_runtime',
+          POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+          writers,
+          'existing-empty'
+        )
+      ).rejects.toThrow('owned by the migration role');
+      const nonempty = `forge_comparison_nonempty_${process.pid}`;
+      await preparePostgresAuthoritySchema({
+        connectionString: urlFor(databaseOwnerRole),
+        database,
+        schema: nonempty,
+        ownerRole: 'forge_owner'
+      });
+      await owner.unsafe(`create sequence "${nonempty}".unrelated_sequence`);
+      await expect(
+        migratePostgresAuthoritySchema(
+          { ...migration, schema: nonempty },
+          'forge_runtime',
+          POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+          writers,
+          'existing-empty'
+        )
+      ).rejects.toThrow('empty schema');
+      const missing = `forge_comparison_missing_${process.pid}`;
+      await expect(
+        migratePostgresAuthoritySchema(
+          { ...migration, schema: missing },
+          'forge_runtime',
+          POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+          writers,
+          'existing-empty'
+        )
+      ).rejects.toThrow('existing schema');
+      expect(
+        await target.unsafe(`select 1 from pg_catalog.pg_namespace where nspname=$1`, [missing])
+      ).toHaveLength(0);
+      expect(
+        await target.unsafe(
+          `select has_database_privilege('forge_owner',current_database(),'CREATE') as create_schema, has_database_privilege('forge_runtime',current_database(),'TEMP') as temporary`
+        )
+      ).toMatchObject([{ create_schema: false, temporary: true }]);
+      expect(await snapshotAcl()).toEqual(beforeShared);
+    } finally {
+      await Promise.all([owner.end(), runtime.end()]);
+    }
+    expect(await target`select payload from public.existing_operator_evidence`).toEqual([
+      { payload: 'preserve this row' }
+    ]);
+    await target.unsafe(`grant temporary on database "${database}" to "${inheritedRole}"`);
+    await admin.unsafe(`grant "${inheritedRole}" to forge_runtime`);
     expect(() => invoke('apply', false)).toThrow();
     privateEnvironment('forge_owner');
     expect(() => invoke('apply')).toThrow('actual database owner login');
@@ -2954,7 +3109,7 @@ it('rejects setup admission schema CREATE and removes the drift on migration rer
   }
 });
 
-it('rejects setup admission CREATE on another accessible schema without silently repairing it', async () => {
+it('allows CREATE in another application schema without changing its privileges', async () => {
   const fixture = await createGlobalPermitFixture();
   const other = `forge_setup_extra_${++fixtureOrdinal}`;
   const runtime = postgres(runtimeConnectionString, { onnotice: () => undefined });
@@ -2966,16 +3121,13 @@ it('rejects setup admission CREATE on another accessible schema without silently
   try {
     await fixture.admin.unsafe(`create schema "${other}"`);
     await fixture.admin.unsafe(`grant create on schema "${other}" to "${setupAdmissionRole}"`);
-    await expect(
-      PostgresWorkspaceSetupAdmission.connect({
-        connectionString: setupAdmissionConnectionString,
-        schema: fixture.schema,
-        role: setupAdmissionRole
-      })
-    ).rejects.toThrow('restricted signing-service login');
-    await expect(assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig)).rejects.toThrow(
-      'schema CREATE privileges'
-    );
+    const setup = await PostgresWorkspaceSetupAdmission.connect({
+      connectionString: setupAdmissionConnectionString,
+      schema: fixture.schema,
+      role: setupAdmissionRole
+    });
+    await setup.close();
+    await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
     await expect(
       migratePostgresAuthoritySchema(
         { connectionString: ownerConnectionString, schema: fixture.schema, role },
@@ -2983,8 +3135,10 @@ it('rejects setup admission CREATE on another accessible schema without silently
         POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
         { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
       )
-    ).rejects.toThrow('schema CREATE privileges');
-    await fixture.admin.unsafe(`revoke create on schema "${other}" from "${setupAdmissionRole}"`);
+    ).resolves.toBeUndefined();
+    const preserved =
+      await fixture.admin`select has_schema_privilege(${setupAdmissionRole},${other},'CREATE') as allowed`;
+    expect(preserved[0]?.allowed).toBe(true);
     await assertPostgresGlobalAuthoritySchema(runtime, runtimeConfig);
   } finally {
     await fixture.admin.unsafe(`revoke create on schema "${other}" from "${setupAdmissionRole}"`);
@@ -5795,7 +5949,7 @@ it('separates the installer from the restricted runtime role in real PostgreSQL'
     await expect(runtimeSql.unsafe('create schema forbidden_runtime')).rejects.toThrow();
     await expect(
       runtimeSql.unsafe('create temp table forbidden_runtime (id int)')
-    ).rejects.toThrow();
+    ).resolves.toBeDefined();
     await expect(
       runtimeSql.unsafe('create table public.forbidden_runtime (id int)')
     ).rejects.toThrow();
@@ -6318,3 +6472,107 @@ it('serializes cancellation before three genuinely blocked mutation claims', asy
     await fixture.close();
   }
 }, 15_000);
+
+it('keeps PUBLIC TEMP while preventing temporary objects from shadowing authority functions', async () => {
+  const fixture = await createGlobalPermitFixture();
+  const issuer = postgres(generationIssuerConnectionString, { max: 1, onnotice: () => undefined });
+  const trust = postgres(trustAdminConnectionString, { max: 1, onnotice: () => undefined });
+  try {
+    for (const login of [
+      runtimeRole,
+      trustAdminRole,
+      generationIssuerRole,
+      setupAdmissionRole,
+      recoveryRole
+    ]) {
+      const permissions =
+        await fixture.admin`select has_database_privilege(${login},current_database(),'TEMP') as temporary`;
+      expect(permissions[0]?.temporary).toBe(true);
+    }
+    await issuer`create temp table forge_global_claims (owner_json text)`;
+    await issuer`create function pg_temp.forbidden_type(pg_catalog.jsonb) returns boolean language plpgsql as $$ begin raise exception 'Temporary type reached'; end $$`;
+    await issuer`create domain pg_temp.jsonb as pg_catalog.jsonb check (pg_temp.forbidden_type(value))`;
+    await issuer`set search_path = pg_catalog`;
+    await expect(issuer.unsafe(`select '{}'::jsonb`)).rejects.toThrow('Temporary type reached');
+    await expect(
+      issuer.unsafe(
+        `select "${fixture.schema}".forge_generation_write('ISSUE','temp-generation',$1,$2,$3,'task-1','original','missing-workspace','supervisor',$4,$4)`,
+        [
+          fixture.scopeId,
+          fixture.originalClaim.claimId,
+          fixture.originalClaim.owner.runId,
+          'a'.repeat(64)
+        ]
+      )
+    ).rejects.toThrow('Generation parent claim mismatch');
+    await trust`create temp table forge_global_trust_registry (revision bigint)`;
+    const revision = await trust.unsafe(
+      `select "${fixture.schema}".forge_trust_write('SET_POLICY','policy','shared-policy') as revision`
+    );
+    expect(revision[0]?.revision).toBe('1');
+    expect(
+      await fixture.admin.unsafe(
+        `select policy_version from "${fixture.schema}".forge_global_trust_registry`
+      )
+    ).toMatchObject([{ policy_version: 'shared-policy' }]);
+    await expect(
+      trust.unsafe(
+        `update "${fixture.schema}".forge_global_trust_registry set policy_version='forged'`
+      )
+    ).rejects.toThrow('permission denied');
+  } finally {
+    await Promise.all([issuer.end(), trust.end()]);
+    await fixture.close();
+  }
+});
+
+it('requires safe definer paths and upgrades legacy configuration without rewriting migration evidence', async () => {
+  const fixture = await createGlobalPermitFixture();
+  const runtime = postgres(runtimeConnectionString, { max: 1, onnotice: () => undefined });
+  const configuration = {
+    connectionString: runtimeConnectionString,
+    schema: fixture.schema,
+    role: runtimeRole
+  };
+  const migrate = () =>
+    migratePostgresAuthoritySchema(
+      { connectionString: ownerConnectionString, schema: fixture.schema, role },
+      runtimeRole,
+      POSTGRES_GLOBAL_AUTHORITY_SCHEMA_VERSION,
+      { trustAdminRole, generationIssuerRole, setupAdmissionRole, recoveryRole }
+    );
+  const signature = `"${fixture.schema}".forge_generation_write(${Array(11).fill('text').join(',')})`;
+  try {
+    const before = await fixture.admin.unsafe(
+      `select * from "${fixture.schema}".forge_schema_migrations order by version`
+    );
+    await fixture.admin.unsafe(`alter function ${signature} set search_path = pg_catalog`);
+    await expect(assertPostgresGlobalAuthoritySchema(runtime, configuration)).rejects.toThrow(
+      'writer functions are incompatible'
+    );
+    await expect(
+      PostgresExecutionGenerationIssuer.connect({
+        connectionString: generationIssuerConnectionString,
+        schema: fixture.schema,
+        role: generationIssuerRole
+      })
+    ).rejects.toThrow('writer is not installed');
+    await migrate();
+    await assertPostgresGlobalAuthoritySchema(runtime, configuration);
+    expect(
+      await fixture.admin.unsafe(
+        `select * from "${fixture.schema}".forge_schema_migrations order by version`
+      )
+    ).toEqual(before);
+    await fixture.admin.unsafe(
+      `alter function ${signature} set search_path = pg_catalog, public, pg_temp`
+    );
+    await expect(migrate()).rejects.toThrow('writer functions are incompatible');
+    const unchanged =
+      await fixture.admin`select p.proconfig as configuration from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace where n.nspname=${fixture.schema} and p.proname='forge_generation_write'`;
+    expect(unchanged[0]?.configuration).toEqual(['search_path=pg_catalog, public, pg_temp']);
+  } finally {
+    await runtime.end();
+    await fixture.close();
+  }
+});

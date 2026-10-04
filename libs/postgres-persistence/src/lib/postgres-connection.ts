@@ -52,5 +52,9 @@ export const openPostgresConnection = (
     throw new Error('Non-loopback PostgreSQL connections require explicit ssl=verify-full');
   }
   // The explicit option overrides URL/environment fallbacks and cannot be weakened by caller options.
-  return postgres(configuration.connectionString, { ...options, ssl: configuration.ssl ?? false });
+  return postgres(configuration.connectionString, {
+    ...options,
+    ssl: configuration.ssl ?? false,
+    connection: { ...options.connection, search_path: 'pg_catalog, pg_temp' }
+  });
 };

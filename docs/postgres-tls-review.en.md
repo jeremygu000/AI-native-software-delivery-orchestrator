@@ -1,5 +1,7 @@
 # Incremental review request: explicit PostgreSQL TLS
 
+> Historical review: accepted as `db24cb592db0c593e23373e8c560672adb8b1f12`. The subsequent shared-database correction is described in `docs/postgres-shared-database-review.en.md`; it supersedes the dedicated-database prerequisite below.
+
 Please review the TLS increment following compatibility baseline `6a0710bcdc5fe9bc210689a5956d66af5f857908` on `m4/postgres-durable-authority`. The user requested a separate commit and push for this correction; independent acceptance remains pending. The review scope is the remaining TLS P1 from the PostgreSQL 14–18 and Neon preparation stage.
 
 ## Intent and constraints

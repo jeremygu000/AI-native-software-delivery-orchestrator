@@ -35,13 +35,26 @@ describe('explicit PostgreSQL transport', () => {
       const connectionString = `postgresql://forge_${role}:private-test@database.example/forge`;
       const sql = openPostgresConnection({ connectionString, ssl: 'verify-full' }, { max: 1 });
       try {
-        expect(postgres).toHaveBeenCalledWith(connectionString, { max: 1, ssl: 'verify-full' });
+        expect(postgres).toHaveBeenCalledWith(connectionString, {
+          max: 1,
+          ssl: 'verify-full',
+          connection: { search_path: 'pg_catalog, pg_temp' }
+        });
         expect(sql.options.ssl).toBe('verify-full');
       } finally {
         await sql.end();
       }
     }
   );
+
+  it('keeps catalog resolution ahead of temporary objects and overrides caller search_path', async () => {
+    const sql = openPostgresConnection(
+      { connectionString: 'postgresql://forge@localhost/forge' },
+      { connection: { search_path: 'public' } }
+    );
+    expect(sql.options.connection.search_path).toBe('pg_catalog, pg_temp');
+    await sql.end();
+  });
 
   it('keeps loopback development explicit and independent of PGSSL', async () => {
     vi.stubEnv('PGSSL', 'verify-full');
