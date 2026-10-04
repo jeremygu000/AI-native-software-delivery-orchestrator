@@ -4,7 +4,7 @@
 
 Review this increment against accepted Forge baseline `0b8308a4103ecf36218ac931b22e0cc22d90ac15` on `m4/postgres-durable-authority`. The user accepted that Interactive Coding CLI commit with no P0/P1 and explicitly authorized updating the existing local authority through the accepted installer, followed by a real GroundGraph run. Online Neon was excluded.
 
-This follow-up has two parts: real deployment/execution evidence, and a narrow correction to the existing read model exposed by that execution. Changed code is limited to `libs/orchestration-runtime/src/lib/forge-read-model.ts` and its spec. The remaining changes are this report and synchronized English/Chinese progress summaries. No workflow command/patch, schema, migration, checksum, provider adapter, approval or authority mutation contract changed. The user requested commit and push of this follow-up; independent acceptance of the read-model correction remains pending.
+This follow-up has two parts: real deployment/execution evidence, and a narrow correction to the existing read model exposed by that execution. Changed code is limited to `libs/orchestration-runtime/src/lib/forge-read-model.ts` and its spec. The remaining changes are this report and synchronized English/Chinese progress summaries. No workflow command/patch, schema, migration, checksum, provider adapter, approval or authority mutation contract changed. Independent review accepted this follow-up as `de715459f168adf15c960dea41b1dd918604c0a9` with no P0/P1. The Interactive Coding CLI stage, including its real execution, is closed. Subsequent full workflow tracing evidence is recorded separately in `docs/full-workflow-trace-acceptance.en.md`.
 
 ## Installer and readiness
 

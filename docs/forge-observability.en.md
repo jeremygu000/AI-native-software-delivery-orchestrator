@@ -74,15 +74,29 @@ responses, reasoning content, credentials, database URLs, source code or diffs
 into Forge attributes. Trace IDs and approved attributes can be queried in Tempo
 to compare timing and outcomes across DeepSeek, Copilot and Codex runs.
 
-The first real traced comparison is still required to confirm that all seven span
-types appear against a completed GroundGraph run and that Tempo groups them under
-the same trace. The local Temporal integration test checks the trace tree and
-export filter without sending its test data to Grafana. The configured Neon
-endpoint reported PostgreSQL 18.0 on 2026-10-04. Forge's version gate correctly
-rejected that bootstrap before creating the comparison schema. A read-only role
-inspection also found database `TEMP` privilege on every configured role. The
-original deployment rejected TEMP; the shared-database correction now permits
-it while retaining schema/table/function/role checks and safe temporary-object
-resolution. That earlier bootstrap did not modify Neon. PostgreSQL 14–18 and
-explicit TLS are accepted. Shared schema provisioning, real Neon bootstrap and
-the first traced comparison remain pending independent review and live execution.
+## Real workflow acceptance evidence
+
+The successful local GroundGraph run `8c7449d0-54fd-436a-b924-b97003c303b1`
+used a new schema `forge_comparison_20261004_full_trace` in the existing local
+database and a fresh queue `forge-full-trace-20261004`. Production Temporal
+tracing was enabled only for that deployment. Tempo trace
+`4f59f4801eb67abc02d9709461687301` contains 26 spans, including forge.run,
+forge.task, six model requests, verification, review and integration. Exported
+JSON confirms exact run/task/profile attributes, activity-context ancestry,
+task lifetime and safe filtering across all spans. The run completed with three
+released claims and zero unresolved permits. See
+`docs/full-workflow-trace-acceptance.en.md` for exact identities, durations,
+private evidence and review questions.
+
+Repair was not needed and is not claimed as observed live. Deferred integration,
+error and cancellation were not induced in this run; their existing integration
+regressions remain separate evidence. Planning requests are separate traces
+because they precede run allocation. This local successful-path acceptance closes
+the full workflow trace evidence gap independently of the accepted Interactive
+Coding CLI. It does not establish a new three-provider comparison or live Neon
+acceptance.
+
+The earlier read-only Neon inspection found PostgreSQL 18 and inherited TEMP;
+no Neon schema or privilege was changed. PostgreSQL 14–18, explicit verified TLS,
+shared-database schema isolation and owner membership checks are accepted.
+Real Neon schema preparation, bootstrap and traced execution remain pending.
