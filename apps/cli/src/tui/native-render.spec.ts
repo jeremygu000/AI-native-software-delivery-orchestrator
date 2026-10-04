@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { promisify } from 'node:util';
 import { build } from 'esbuild';
@@ -29,6 +30,30 @@ it('renders and handles real OpenTUI keyboard input under the explicitly support
       timeout: 30000
     });
     expect(result.stdout).toContain('OpenTUI native rendering');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 45000);
+
+it('renders the production compiled CLI in a terminal and cancels before application work', async (context) => {
+  const node = process.env.FORGE_TEST_TUI_NODE;
+  if (node === undefined) {
+    context.skip();
+    return;
+  }
+  const directory = await mkdtemp(join(tmpdir(), 'forge-compiled-tui-'));
+  try {
+    const result = await promisify(execFile)(
+      'python3',
+      [
+        resolve('apps/cli/test-fixtures/compiled-tui-acceptance.py'),
+        node,
+        resolve('apps/cli/dist/main.js')
+      ],
+      { cwd: directory, timeout: 30000 }
+    );
+    expect(result.stdout).toContain('Compiled Forge CLI initial render');
+    expect(await readdir(directory)).toEqual([]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

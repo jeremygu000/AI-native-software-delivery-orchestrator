@@ -4141,3 +4141,13 @@ PG16 定向 authority 测试为 159 项通过，5 项既有新版 feature tests 
 界面适配已有 terminal interface，只观察 application events。Planning、semantic review、approval、binding、setup、authority handoff、launch、status 和 cancellation 仍调用既有操作。Operator callbacks 对应实际 workspace／handoff 边界；worker 文案区分 Temporal 连接、worker 构建和既有 ready 状态。没有增加 server、router、迁移 Bun、改变 provider，或重写 authority／workflow。交互渲染需要 Node 26.4+ 与 `--experimental-ffi`；显式命令和 worker 保持既有 runtime 兼容性。完成、错误或取消后 renderer cleanup 恢复终端。
 
 Semantic controller／application tests 验证多行原文、精确批准和操作顺序。Presentation 阶段证据记录：实际 Node 26.4 + FFI 下 controller／runtime／native-render 共五项通过；普通 runtime 下 native test 仍是可选项。随后针对合并 working tree 的完整镜像版 pnpm check 已通过：112 个文件中 1153 项测试通过，1 项 native TUI test 因未显式配置 native-test Node runtime 而跳过。Build、TypeScript、全仓库 type-aware lint、格式和 git diff --check 通过。覆盖率超过未改变门槛：语句 90.61%、分支 85.12%、函数 94.22%、代码行 90.54%。此前失败的 aggregate run 已被本次成功验证取代。这是 repository verification，不是 live provider／Neon 验收；presentation 阶段没有执行真实 coding run 或新增模型／authority 操作。使用说明见 docs/interactive-coding-cli.en.md。用户已授权在 recovery 修复之后，将本工作作为第二个功能批次提交并推送；presentation 仍待独立复审。
+
+## 编译版 OpenTUI JSX runtime 修正
+
+独立复审已接受 recovery commit `4c17cc21f162379caf1d0141864950b4115b9996` 和 presentation commit `704a35fcf64b4f2fcee9e0e5fc3c276550767ec1`。随后启动编译版交互 CLI 时发现构建回归：JSX 被转换为没有 React binding 的 `React.createElement`。此前 source／native rendering tests 自行显式启用 automatic JSX，因此没有覆盖正式生产构建命令的错误。
+
+CLI esbuild 命令现在显式使用 automatic JSX，并指定 `@opentui/react` 为 import source，与已接受的 TSX 编译配置一致。编译产物导入 OpenTUI JSX runtime，无需逐文件补充 React imports。Application／presentation、runtime requirements、authority、Temporal、cancellation 和 provider 行为均未改变。
+
+已有可选 native suite 现在也在一次性 POSIX 终端中，通过 Node 26.4.0 与 FFI 实际启动无 subcommand 的 `apps/cli/dist/main.js`。小型 Python 3 fixture 等待根菜单 prompt 和键盘提示，发送 Ctrl-C，要求退出 130 且没有 ReferenceError；测试还确认临时工作目录保持为空。两项 native tests 都需要显式配置 `FORGE_TEST_TUI_NODE`；编译产物测试另需 Python 3 及已经构建的 CLI。回归在旧产物上重现相同 React ReferenceError，重新构建后通过。六项 controller／runtime／native 定向测试通过。这证明编译首屏和 pre-run cancellation，不代表 coding E2E。本修正没有连接线上 Neon、修改数据库、请求模型或创建新 run。此前失败的 Neon run 仍保留为失败证据。按用户要求，本修正提交并推送，供相对 `704a35fcf64b4f2fcee9e0e5fc3c276550767ec1` 的增量复审；独立验收仍待完成。
+
+最终验证通过 `pnpm build:cli`、三个文件中的六项定向测试、完整 `pnpm build` 和完整镜像版 `pnpm check`：112 个文件中 1155/1155 项测试通过，无跳过。`FORGE_TEST_TUI_NODE` 显式配置为 Node 26.4.0，因此 native 和编译版终端测试均实际执行。格式、TypeScript 和 type-aware lint 通过；覆盖率仍超过未改变的门槛：语句 90.61%、分支 85.12%、函数 94.22%、代码行 90.54%。编译后的 `forge --help` 在 Node 24.18.0、未启用 FFI 时也正常退出。最终格式与 `git diff --check` 通过。复审重点是生产 JSX 编译与 OpenTUI runtime 一致，以及新测试实际执行编译版根入口并保留可选 native-runtime gate。Live Neon coding 验收仍独立待完成。
