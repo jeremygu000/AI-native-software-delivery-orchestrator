@@ -23,9 +23,10 @@ if pid == 0:
 
 output = b""
 cancelled = False
+ready_at = None
 status = None
 try:
-    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", int(os.environ.get("FORGE_TEST_TUI_ROWS", "40")), int(os.environ.get("FORGE_TEST_TUI_COLUMNS", "120")), 0, 0))
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         readable, _, _ = select.select([terminal], [], [], 0.1)
@@ -37,14 +38,18 @@ try:
                     raise
                 chunk = b""
             output += chunk
-        if not cancelled and b"What do you want to do?" in output and b"Enter Confirm" in output:
-            os.write(terminal, b"\x03")
-            cancelled = True
+        if not cancelled and b"What do you want to do?" in output and b"Enter Confirm" in output and all(option in output for option in (b"Start a coding task", b"Resume a run", b"View runs", b"Configure model", b"Check environment")):
+            if ready_at is None:
+                ready_at = time.monotonic()
+            # Let terminal capability negotiation finish before sending a key.
+            if time.monotonic() - ready_at >= 1:
+                os.write(terminal, b"\x03")
+                cancelled = True
         ended, child_status = os.waitpid(pid, os.WNOHANG)
         if ended:
             status = child_status
             break
-    assert status is not None, "Compiled CLI did not exit after cancellation"
+    assert status is not None, "Compiled CLI did not exit after cancellation: " + output.decode(errors="replace")
     assert b"ReferenceError" not in output, output.decode(errors="replace")
     assert cancelled, output.decode(errors="replace")
     assert os.waitstatus_to_exitcode(status) == 130, output.decode(errors="replace")

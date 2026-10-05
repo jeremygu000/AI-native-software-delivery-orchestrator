@@ -4,7 +4,7 @@
 
 This frontend builds on accepted `2a4306ec25e157647186096f9c18146f39acc2dd` on `m4/postgres-durable-authority`. A developer can enter a task and carry one exact model profile through planning, immutable approval, binding, existing setup and Temporal execution without manually copying identities between commands. Explicit commands remain the automation interface.
 
-After `pnpm build`, the bare interactive entry uses a full-screen OpenTUI React interface. It requires Node 26.4 or newer with `--experimental-ffi`, as required by the installed OpenTUI runtime. For example, run `node --experimental-ffi apps/cli/dist/main.js` in a terminal. For the existing local deployment environment, run `NODE_OPTIONS=--experimental-ffi pnpm local:forge` under a supported Node version. The wrapper keeps privileged credentials out of worker environments. Explicit noninteractive commands and worker entry points retain their existing Node requirements and do not load OpenTUI. Bare invocation outside a terminal exits with instructions to use `forge --help`.
+After `pnpm build`, the bare interactive entry uses a full-screen OpenTUI React interface. It requires Node 26.4 or newer with `--experimental-ffi`, as required by the installed OpenTUI runtime. For example, run `node --experimental-ffi apps/cli/dist/main.js` in a terminal. For a configured comparison deployment under the same supported Node version, run `node apps/temporal-worker/local/comparison-run.mjs deepseek cli`; this wrapper enables FFI for the interactive child explicitly. Do not put `--experimental-ffi` in `NODE_OPTIONS`: Node rejects it there. The wrapper keeps privileged credentials out of worker environments. Explicit noninteractive commands and worker entry points retain their existing Node requirements and do not load OpenTUI. Bare invocation outside a terminal exits with instructions to use `forge --help`.
 
 ## Start a coding task
 
@@ -18,6 +18,14 @@ After `pnpm build`, the bare interactive entry uses a full-screen OpenTUI React 
 8. Forge checks the declared worker deployment against the repository and policy fingerprint, runs existing read-only preflight, and observes workflow and activity pollers on the configured Temporal queue. It does not start or manage a worker. The worker must already be configured for the chosen exact target; worker and binder checks remain authoritative if availability changes afterward.
 9. The frontend generates approval/run IDs, calls the existing approval and binder, performs accepted setup, and launches the existing runtime. It shows IDs and the run directory for later diagnostics.
 10. Progress polls the existing durable read model roughly once per second. Completion reports recorded task, verification, review, integration-event and lease evidence. It does not invent percentages or claim a push, PR or deployment.
+
+## Screen layout and help
+
+The interactive screen separates execution metadata, scrollable evidence, the current menu/editor and a two-line keyboard footer. Provider, model, reasoning, authority and queue each have a labeled row. Long metadata and repository values are truncated using OpenTUI's cell-aware rendering; open help to read their complete values. Authorization questions wrap in full rather than being abbreviated.
+
+On the root menu at 80 columns by 36 rows or larger, a blue FORGE title uses OpenTUI's block ASCII font, following the title style in the reference [LogoArt component](https://github.com/jeremygu000/bun-hono-opentui/blob/5b1ce1ff7628951434982eea006fcc4b86e98bea/apps/cli/src/components/logo-art.tsx). Smaller screens retain the compact FORGE panel title and reserve room for evidence and choices. The body consumes the remaining rows; editor height is bounded. Supported screens start at 40 columns by 24 rows. Smaller screens show a resize instruction and suspend hidden approval/input controls. Resizing restores the pending interaction and typed text.
+
+Press `?` for help from a menu, or `F1` from any screen. In text editors, `?` remains ordinary input. Help shows full execution metadata, repository path and extended keyboard/cancellation explanations; Page Up/Page Down scroll it. Escape or Enter closes help without approving or cancelling the underlying interaction. Outside help, Escape retains its existing cancellation behavior. The title and help belong only to the interactive presentation: explicit commands such as `forge --help`, `plan`, `status` and `run` do not gain a banner or altered output format.
 
 ## Execution and authority boundaries
 

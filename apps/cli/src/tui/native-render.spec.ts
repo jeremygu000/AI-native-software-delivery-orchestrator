@@ -35,7 +35,7 @@ it('renders and handles real OpenTUI keyboard input under the explicitly support
   }
 }, 45000);
 
-it.for(['direct', 'comparison'])(
+it.for(['direct', 'comparison', 'narrow'])(
   'renders the production compiled CLI through %s launch and cancels before application work',
   { timeout: 45000 },
   async (launch, context) => {
@@ -55,7 +55,7 @@ it.for(['direct', 'comparison'])(
       }
       const initialFiles = await readdir(directory);
       const childArguments =
-        launch === 'direct'
+        launch !== 'comparison'
           ? ['--experimental-ffi', resolve('apps/cli/dist/main.js')]
           : [resolve('apps/temporal-worker/local/comparison-run.mjs'), 'deepseek', 'cli'];
       const result = await promisify(execFile)(
@@ -66,6 +66,9 @@ it.for(['direct', 'comparison'])(
           timeout: 30000,
           env: {
             ...process.env,
+            ...(launch === 'narrow'
+              ? { FORGE_TEST_TUI_ROWS: '24', FORGE_TEST_TUI_COLUMNS: '40' }
+              : {}),
             ...(launch === 'comparison' ? { FORGE_COMPARISON_ENV_FILE: comparisonFile } : {})
           }
         }
