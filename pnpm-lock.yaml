@@ -474,6 +474,9 @@ importers:
       '@temporalio/client':
         specifier: 1.24.0
         version: 1.24.0
+      '@temporalio/common':
+        specifier: 1.24.0
+        version: 1.24.0
       postgres:
         specifier: 3.4.9
         version: 3.4.9

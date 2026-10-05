@@ -103,6 +103,14 @@ describe('Evidence-first run inspection', () => {
     expect(isInspectionEnvironment({ ...input.environment, authorityMode: 'legacy' })).toBe(false);
     expect(isRunInspection({ ...result, version: 2 })).toBe(false);
     expect(
+      isRunInspection({
+        ...result,
+        nodes: result.nodes.map((entry) =>
+          entry.state === 'unknown' ? { ...entry, unknownReason: 'unverified' } : entry
+        )
+      })
+    ).toBe(false);
+    expect(
       isRunInspection({ ...result, nodes: [{ ...result.nodes[0], state: 'assumed-complete' }] })
     ).toBe(false);
     expect(
@@ -141,6 +149,7 @@ describe('Evidence-first run inspection', () => {
       'child'
     ]) {
       expect(node(input, `:${suffix}`).state).toBe('unknown');
+      expect(node(input, `:${suffix}`).unknownReason).toBe('no-evidence');
     }
     expect(node(input, ':leases').state).toBe('unknown');
     expect(node(input, 'metadata').state).toBe('complete');
@@ -232,8 +241,44 @@ describe('Evidence-first run inspection', () => {
     };
     const updated = { ...input, setup: [fact, { ...fact, state: 'complete' as const }] };
     expect(node(updated, ':permit').state).toBe('unknown');
+    expect(node(updated, ':permit').unknownReason).toBe('conflicting-evidence');
+    expect(node(updated, ':permit').explanation).toContain('conflict');
     expect(node(updated, ':settlement').state).toBe('unknown');
     expect(node(updated, ':permit').evidence).toHaveLength(2);
+  });
+  it('distinguishes a current Temporal not-found result from source unavailability', () => {
+    const input = preparingFixture();
+    const notFound: InspectionInput = {
+      ...input,
+      temporal: { state: 'unknown', fields: { lookupResult: 'not-found' } }
+    };
+    expect(node(notFound, 'temporal').unknownReason).toBe('no-current-workflow');
+    const unavailable: InspectionInput = {
+      ...input,
+      sources: [
+        ...input.sources,
+        {
+          source: 'Temporal',
+          status: 'unavailable',
+          message: 'Observation unavailable',
+          observedAt: input.observedAt
+        }
+      ]
+    };
+    expect(node(unavailable, 'temporal').unknownReason).toBe('source-unavailable');
+    const gitUnavailable: InspectionInput = {
+      ...input,
+      sources: [
+        ...input.sources,
+        {
+          source: 'Git/worktree observation',
+          status: 'unavailable',
+          message: 'Observation unavailable',
+          observedAt: input.observedAt
+        }
+      ]
+    };
+    expect(node(gitUnavailable, ':worktree').unknownReason).toBe('source-unavailable');
   });
   it('maps a failed builder from its durable attempt without failing every other node', () => {
     const input = preparingFixture();

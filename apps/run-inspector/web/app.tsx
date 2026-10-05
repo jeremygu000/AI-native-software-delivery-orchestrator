@@ -21,6 +21,23 @@ const symbols: Record<InspectionState, string> = {
   failed: '✗',
   unknown: '?'
 };
+function stateLabel(node: InspectionNode): string {
+  if (node.state !== 'unknown') {
+    return node.state.toUpperCase();
+  }
+  switch (node.unknownReason) {
+    case 'no-evidence':
+      return 'NO EVIDENCE';
+    case 'conflicting-evidence':
+      return 'CONFLICTING EVIDENCE';
+    case 'no-current-workflow':
+      return 'NO CURRENT WORKFLOW';
+    case 'source-unavailable':
+      return 'SOURCE UNAVAILABLE';
+    default:
+      return 'INSUFFICIENT EVIDENCE';
+  }
+}
 async function readJson(url: string, signal: AbortSignal): Promise<unknown> {
   const response = await fetch(url, { signal, cache: 'no-store' });
   const body: unknown = await response.json();
@@ -133,7 +150,7 @@ function App() {
         label: (
           <>
             <span className={`state ${node.state}`}>
-              {symbols[node.state]} {node.state.toUpperCase()}
+              {symbols[node.state]} {stateLabel(node)}
             </span>
             <strong>{node.label}</strong>
             {node.taskId && <small>{node.taskId}</small>}
@@ -277,7 +294,7 @@ function App() {
           <div className="legend">
             {Object.entries(symbols).map(([state, symbol]) => (
               <span key={state} className={`state ${state}`}>
-                {symbol} {state}
+                {symbol} {state === 'unknown' ? 'unresolved evidence' : state}
               </span>
             ))}
             <span>Edges describe lifecycle order, not proof.</span>
@@ -330,7 +347,7 @@ function App() {
                 <br />
                 Temporal, worktree and local evidence.
               </p>
-              <p>Missing evidence remains unknown.</p>
+              <p>Missing evidence does not establish an outcome.</p>
             </div>
           )}
         </div>
@@ -352,7 +369,7 @@ function App() {
                 )}
               </dl>
               <span className={`state ${detail.state}`}>
-                {symbols[detail.state]} {detail.state.toUpperCase()}
+                {symbols[detail.state]} {stateLabel(detail)}
               </span>
               <p>{detail.explanation}</p>
               <button

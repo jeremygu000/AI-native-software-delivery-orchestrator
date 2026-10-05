@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { RecoveredRun } from '@ai-native-software-delivery-orchestrator/domain';
+import { WorkflowNotFoundError } from '@temporalio/common';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { durableAuthorityRunRequest } from '../../../persistence/src/lib/durable-authority.contract.test.js';
 import {
@@ -380,6 +381,22 @@ it('fails visibly when Temporal reports a different configured queue', async () 
   await expect(readTemporalObservation(configuration, 'run-1')).rejects.toThrow(
     'different task queue'
   );
+  expect(mocks.temporalClose).toHaveBeenCalled();
+});
+it('observes a missing current Temporal workflow without claiming historical absence or an outage', async () => {
+  mocks.describe.mockRejectedValueOnce(
+    new WorkflowNotFoundError('private Temporal diagnostic', 'forge-run:run-1', undefined)
+  );
+  const result = await inspectRun(configuration, 'run-1');
+  expect(result.sources.find((row) => row.source === 'Temporal')?.status).toBe('observed');
+  const node = result.nodes.find((row) => row.id === 'temporal');
+  expect(node?.state).toBe('unknown');
+  expect(node?.unknownReason).toBe('no-current-workflow');
+  expect(node?.evidence[0]?.fields).toMatchObject({
+    workflowId: 'forge-run:run-1',
+    lookupResult: 'not-found'
+  });
+  expect(JSON.stringify(result)).not.toContain('private Temporal diagnostic');
   expect(mocks.temporalClose).toHaveBeenCalled();
 });
 it('observes only matching persisted Git worktrees and leaves absent paths unknown', async () => {

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { Client, Connection } from '@temporalio/client';
+import { WorkflowNotFoundError } from '@temporalio/common';
 import { ForgeReadModel } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 import {
   openPostgresConnection,
@@ -303,7 +304,25 @@ export async function readTemporalObservation(
     return await connection.withDeadline(Date.now() + 10000, async () => {
       const client = new Client({ connection, namespace: configuration.environment.namespace });
       const handle = client.workflow.getHandle(workflowId(runId));
-      const description = await handle.describe();
+      let description;
+      try {
+        description = await handle.describe();
+      } catch (error) {
+        if (error instanceof WorkflowNotFoundError) {
+          const observation: AuxiliaryObservation = {
+            state: 'unknown',
+            fields: {
+              workflowId: workflowId(runId),
+              namespace: configuration.environment.namespace,
+              lookupResult: 'not-found',
+              observation:
+                'No current workflow record in the selected namespace; historical non-occurrence is not established.'
+            }
+          };
+          return observation;
+        }
+        throw error;
+      }
       if (description.taskQueue !== configuration.environment.taskQueue) {
         throw new InspectionError('Temporal workflow belongs to a different task queue', 409);
       }

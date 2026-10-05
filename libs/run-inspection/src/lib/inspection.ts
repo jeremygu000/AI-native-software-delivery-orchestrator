@@ -1,6 +1,12 @@
 import type { ForgeRunReadModel } from '@ai-native-software-delivery-orchestrator/orchestration-runtime';
 
 export type InspectionState = 'complete' | 'active' | 'pending' | 'failed' | 'unknown';
+export type InspectionUnknownReason =
+  | 'no-evidence'
+  | 'conflicting-evidence'
+  | 'no-current-workflow'
+  | 'source-unavailable'
+  | 'insufficient-evidence';
 export type EvidenceSource =
   | 'PostgreSQL durable authority'
   | 'Temporal'
@@ -28,6 +34,7 @@ export interface InspectionNode {
   readonly id: string;
   readonly label: string;
   readonly state: InspectionState;
+  readonly unknownReason?: InspectionUnknownReason;
   readonly explanation: string;
   readonly taskId?: string;
   readonly evidence: readonly Evidence[];
@@ -136,9 +143,21 @@ export function buildRunInspection(input: InspectionInput): ForgeRunInspection {
     state: InspectionState,
     entries: Evidence[],
     taskId?: string,
-    explanation = 'State is based only on the evidence listed for this node.'
+    explanation = 'State is based only on the evidence listed for this node.',
+    unknownReason?: InspectionUnknownReason
   ) => {
-    nodes.push({ id, label, state, taskId, evidence: entries, explanation });
+    nodes.push({
+      id,
+      label,
+      state,
+      taskId,
+      evidence: entries,
+      explanation,
+      ...(state === 'unknown' && {
+        unknownReason:
+          unknownReason ?? (entries.length === 0 ? 'no-evidence' : 'insufficient-evidence')
+      })
+    });
     return id;
   };
   const link = (source: string, target: string) =>
@@ -156,9 +175,24 @@ export function buildRunInspection(input: InspectionInput): ForgeRunInspection {
   ]);
   link('approval', 'binding');
   link('binding', 'metadata');
-  add('temporal', 'Temporal workflow', input.temporal.state, [
-    evidence('Temporal', input.temporal.fields)
-  ]);
+  const temporalSource = input.sources.find((row) => row.source === 'Temporal');
+  add(
+    'temporal',
+    'Temporal workflow',
+    input.temporal.state,
+    [evidence('Temporal', input.temporal.fields)],
+    undefined,
+    input.temporal.fields.lookupResult === 'not-found'
+      ? 'No current workflow record in the selected namespace; this does not prove it never existed.'
+      : temporalSource?.status === 'unavailable'
+        ? 'Temporal observation is unavailable in the selected environment.'
+        : undefined,
+    input.temporal.fields.lookupResult === 'not-found'
+      ? 'no-current-workflow'
+      : temporalSource?.status === 'unavailable'
+        ? 'source-unavailable'
+        : undefined
+  );
   link('metadata', 'temporal');
   const stages = [
     ['admission', 'Setup admission'],
@@ -202,6 +236,23 @@ export function buildRunInspection(input: InspectionInput): ForgeRunInspection {
         const states = [...matches, ...git].map((row) => row.state);
         const state =
           states.length > 0 && states.every((value) => value === states[0]) ? states[0] : 'unknown';
+        const sourceUnavailable =
+          (stage === 'worktree' &&
+            input.sources.some(
+              (source) =>
+                source.source === 'Git/worktree observation' && source.status === 'unavailable'
+            )) ||
+          (stage === 'attestation' &&
+            input.sources.some(
+              (source) =>
+                source.source === 'local operator evidence' && source.status === 'unavailable'
+            ));
+        const unknownReason =
+          states.length > 1 && !states.every((value) => value === states[0])
+            ? 'conflicting-evidence'
+            : entries.length === 0 && sourceUnavailable
+              ? 'source-unavailable'
+              : undefined;
         const id = `${task.id}:${attempt?.id ?? 'unobserved'}:${stage}`;
         add(
           id,
@@ -210,8 +261,15 @@ export function buildRunInspection(input: InspectionInput): ForgeRunInspection {
           entries,
           task.id,
           state === 'unknown'
-            ? 'Not observed, unavailable or conflicting evidence. Missing evidence does not prove failure or non-occurrence.'
-            : undefined
+            ? unknownReason === 'conflicting-evidence'
+              ? 'Observed stage states conflict; no single outcome is established.'
+              : unknownReason === 'source-unavailable'
+                ? 'The relevant observation source is unavailable.'
+                : entries.length === 0
+                  ? 'No evidence observed. This does not prove failure or historical non-occurrence.'
+                  : 'Observed evidence does not establish an outcome.'
+            : undefined,
+          unknownReason
         );
         link(previous, id);
         previous = id;

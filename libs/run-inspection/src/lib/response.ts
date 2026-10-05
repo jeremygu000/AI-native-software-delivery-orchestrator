@@ -12,6 +12,15 @@ const scalarFields = (value: unknown) =>
 const state = (value: unknown) =>
   typeof value === 'string' &&
   ['complete', 'active', 'pending', 'failed', 'unknown'].includes(value);
+const unknownReason = (value: unknown) =>
+  typeof value === 'string' &&
+  [
+    'no-evidence',
+    'conflicting-evidence',
+    'no-current-workflow',
+    'source-unavailable',
+    'insufficient-evidence'
+  ].includes(value);
 const source = (value: unknown) =>
   typeof value === 'string' &&
   [
@@ -53,6 +62,9 @@ export function isRunInspection(value: unknown): value is ForgeRunInspection {
         record(node) &&
         strings(node, ['id', 'label', 'explanation']) &&
         state(node.state) &&
+        (node.state === 'unknown'
+          ? node.unknownReason === undefined || unknownReason(node.unknownReason)
+          : node.unknownReason === undefined) &&
         (node.taskId === undefined || typeof node.taskId === 'string') &&
         Array.isArray(node.evidence) &&
         node.evidence.every(
