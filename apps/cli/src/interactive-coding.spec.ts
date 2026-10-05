@@ -194,6 +194,92 @@ const fixture = (
   return { dependencies, terminal, choices, calls, artifact, status };
 };
 describe('Interactive coding frontend', () => {
+  it('validates and presents the deployment repository without prompting, then enters task input', async () => {
+    const f = fixture(undefined, '/canonical/repository');
+    const present = vi.fn();
+    await startInteractiveCoding({
+      ...f.dependencies,
+      environment: {
+        ...f.dependencies.environment,
+        FORGE_WORKER_REPOSITORY_PATH: './configured/../checkout'
+      },
+      present
+    });
+    expect(f.terminal.prompt).not.toHaveBeenCalled();
+    expect(f.dependencies.validateRepository).toHaveBeenCalledExactlyOnceWith('/repo/checkout');
+    expect(present).toHaveBeenCalledWith({ type: 'repository', path: '/canonical/repository' });
+    const taskIndex = vi
+      .mocked(f.dependencies.terminal.choose)
+      .mock.calls.findIndex(([title]) => title === 'How would you like to provide the task?');
+    expect(f.terminal.choose.mock.invocationCallOrder[taskIndex]).toBeGreaterThan(
+      vi.mocked(f.dependencies.validateRepository).mock.invocationCallOrder[0]
+    );
+    expect(f.dependencies.planSource).toHaveBeenCalledWith(
+      expect.objectContaining({ repositoryPath: '/canonical/repository' })
+    );
+    expect(f.dependencies.runPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ repositoryPath: '/canonical/repository' })
+    );
+  });
+
+  it('retains manual repository input when no deployment repository is configured', async () => {
+    const f = fixture();
+    await startInteractiveCoding(f.dependencies);
+    expect(f.terminal.prompt).toHaveBeenCalledExactlyOnceWith(
+      'Repository',
+      '/repo',
+      expect.any(AbortSignal)
+    );
+    expect(f.dependencies.validateRepository).toHaveBeenCalledExactlyOnceWith('/repo');
+  });
+
+  it.each(['missing', 'not-git', 'unstable'])(
+    'refuses an invalid configured repository (%s) without prompting or planning',
+    async (failure) => {
+      const f = fixture();
+      const present = vi.fn();
+      vi.mocked(f.dependencies.validateRepository).mockRejectedValueOnce(
+        new Error(`private validation diagnostic: ${failure}`)
+      );
+      await expect(
+        startInteractiveCoding({
+          ...f.dependencies,
+          environment: {
+            ...f.dependencies.environment,
+            FORGE_WORKER_REPOSITORY_PATH: '/configured/invalid'
+          },
+          present
+        })
+      ).rejects.toThrow('Configured repository failed validation: /configured/invalid');
+      expect(f.dependencies.validateRepository).toHaveBeenCalledExactlyOnceWith(
+        '/configured/invalid'
+      );
+      expect(f.terminal.prompt).not.toHaveBeenCalled();
+      expect(f.terminal.multiline).not.toHaveBeenCalled();
+      expect(present).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'repository' }));
+      expect(f.calls).toEqual([]);
+      expect(f.terminal.write.mock.calls.flat().join('')).not.toContain(
+        'private validation diagnostic'
+      );
+    }
+  );
+
+  it.each(['', '   ', '$PWD/checkout'])(
+    'rejects malformed configured repository %j without a fallback prompt',
+    async (configured) => {
+      const f = fixture();
+      await expect(
+        startInteractiveCoding({
+          ...f.dependencies,
+          environment: { ...f.dependencies.environment, FORGE_WORKER_REPOSITORY_PATH: configured }
+        })
+      ).rejects.toThrow('FORGE_WORKER_REPOSITORY_PATH');
+      expect(f.terminal.prompt).not.toHaveBeenCalled();
+      expect(f.dependencies.validateRepository).not.toHaveBeenCalled();
+      expect(f.calls).toEqual([]);
+    }
+  );
+
   it('runs the OpenTUI semantic adapter through exact approval and durable status without changing application order', async () => {
     const f = fixture();
     const controller = new CodingTuiController();

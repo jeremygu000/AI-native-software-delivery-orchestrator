@@ -145,9 +145,22 @@ export async function startInteractiveCoding(
       }
       break;
     }
-    const entered = await terminal.prompt('Repository', dependencies.cwd, controller.signal);
+    const configuredRepository = environment.FORGE_WORKER_REPOSITORY_PATH;
+    const entered =
+      configuredRepository ??
+      (await terminal.prompt('Repository', dependencies.cwd, controller.signal));
+    const configurationFailure = () =>
+      new ModelSelectionError(
+        `Configured repository failed validation: ${entered || '(empty)'}\nCheck FORGE_WORKER_REPOSITORY_PATH; it must identify an existing, stable Git repository.`
+      );
     stage('repository', 'active');
+    if (configuredRepository !== undefined && entered.trim() === '') {
+      throw configurationFailure();
+    }
     if (/\$(?:[A-Za-z_]|\{)/.test(entered)) {
+      if (configuredRepository !== undefined) {
+        throw configurationFailure();
+      }
       throw new ModelSelectionError(
         `Repository not found: ${entered}\nShell variables such as $PWD are not expanded in this field.`
       );
@@ -160,6 +173,12 @@ export async function startInteractiveCoding(
         )
       )
       .catch((error: unknown) => {
+        if (error instanceof ModelSelectionCancelled) {
+          throw error;
+        }
+        if (configuredRepository !== undefined) {
+          throw configurationFailure();
+        }
         if (
           typeof error === 'object' &&
           error !== null &&

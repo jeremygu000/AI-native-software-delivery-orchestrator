@@ -4169,3 +4169,13 @@ Comparison wrapper 现在仅在 Node 26.4+ 或后续 major 下，对没有额外
 用户要求的 FORGE 标题复用参考 bun-hono-opentui 项目采用的 OpenTUI block 字体机制，仅在根菜单且宽高足够时展开；较小屏幕保留紧凑的面板标题。菜单中按 ?、编辑器中按 F1 打开帮助，任务里的问号仍是普通输入。关闭帮助后继续原有输入，不会批准或取消流程。终端小于 40 列或 24 行时显示调整尺寸提示，并暂停隐藏控件；已输入的任务在帮助切换和缩放后保留。取消仍调用原有 controller／应用路径。
 
 定向验证覆盖区域分配、完整授权措辞，以及 110×38、60×30、40×24 的真实原生渲染；还检查长 queue、帮助中的完整值、过小屏幕恢复和编辑内容保留。编译后 PTY 验证增加 40×24 的裸 CLI，继续保留直接启动与 comparison wrapper 启动覆盖。最终启用镜像的 pnpm check 通过 1169/1169，共 113 个测试文件，零跳过；明确配置 Node 26.4.0 和 FFI，四个原生／编译后测试全部实际执行。全量 build、TypeScript、类型感知 lint、格式检查及 git diff --check 均通过。覆盖率超过原有门槛：statements 90.62%、branches 85.12%、functions 94.23%、lines 90.54%。成功的全量结果取代此前 1168 通过／1 失败的一轮：该轮发现标题条件缺少 choice 请求限定，最终已明确只在根菜单显示大标题。这些是 UI／运行时测试证据，不是真实 provider 或 Neon 执行。本批没有生产模型请求、线上 authority 修改、部署 worker 重启或新的产品 run。已有显式命令、composition、运行时要求和凭据边界保持不变。用户已授权 commit 和 push，供相对 `272a5e08b55a918ca0fc9b519929a52487988594` 的增量复审，独立接受仍待完成。完整交接文档为 `docs/tui-layout-review.en.md`。
+
+## 交互 CLI 使用部署绑定的 repository
+
+独立复审已接受 `be61c69f8402c292992f3f516ea055b8a51dd4fe`，响应式 TUI 阶段关闭。本次窄改动取消重复的 repository 问题：comparison deployment 已通过 `FORGE_WORKER_REPOSITORY_PATH` 指定 checkout。该变量存在时，Start a coding task 将其作为部署绑定的输入，经已有 validator 解析，并在任务输入前展示 canonical Git repository。Validator 仍执行 repository analysis 和前后 snapshot 稳定性检查；原始环境路径不会被直接当成已验证 repository。没有该变量的普通交互调用仍保留人工输入。
+
+无效部署配置，包括空值、未展开的 shell variables 或验证失败，会明确显示配置路径和变量名并停止。Forge 不会提示改选其他 checkout，也不会开始 planning／run。已有 presentation event 传递 canonical path；没有新增确认页面、repository registry 或 persistence。生产代码仅改变交互协调器的输入来源和错误处理。Wrapper composition、worker binding、approval、planning、workspace setup、PostgreSQL、Temporal、model profiles、credential isolation 和显式命令保持不变。
+
+八项应用层回归覆盖配置及人工输入、canonical path 展示和后续流程，以及无效配置不回退、不产生应用副作用。已有编译版 comparison acceptance 现在通过 repository symlink，对一次性真实 Git checkout 进入 Start a coding task。Node 26.4.0 和 FFI 实际执行 wrapper、编译 CLI、analysis 和 snapshot 稳定性验证，然后到达任务输入，展示 canonical path，且没有 Repository prompt。测试在模型 planning 前以 130 取消退出。三个文件中的 48/48 项定向测试通过，包含全部四项 native／compiled tests；build:cli、全量 build、TypeScript 和类型感知 lint 通过。最终启用镜像的 `pnpm check` 通过 1177/1177，共 113 个文件、零跳过，包含 PostgreSQL 18、Docker、Temporal 和显式启用的 native runtime。覆盖率仍超过原有门槛：statements 90.62%、branches 85.12%、functions 94.28%、lines 90.54%。格式与 `git diff --check` 通过。
+
+这些是应用层和编译运行时测试，不是真实 coding acceptance run。本批没有模型请求、线上 Neon 操作、worker 重启或新生产 run。Live Neon acceptance 仍待完成，之前失败的 run 保留为失败证据。用户已授权 commit 和 push，供相对 `be61c69f8402c292992f3f516ea055b8a51dd4fe` 的独立复审；范围、证据限制和复审问题见 `docs/deployment-repository-input-review.en.md`。

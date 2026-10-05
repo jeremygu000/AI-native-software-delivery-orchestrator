@@ -36,7 +36,7 @@ it('renders and handles real OpenTUI keyboard input under the explicitly support
 }, 45000);
 
 it.for(['direct', 'comparison', 'narrow'])(
-  'renders the production compiled CLI through %s launch and cancels before application work',
+  'renders the production compiled CLI through %s launch and preserves repository routing before planning',
   { timeout: 45000 },
   async (launch, context) => {
     const node = process.env.FORGE_TEST_TUI_NODE;
@@ -52,6 +52,36 @@ it.for(['direct', 'comparison', 'narrow'])(
         await symlink(resolve('apps/cli/dist'), join(directory, 'apps/cli/dist'), 'dir');
         await writeFile(join(directory, '.env.local'), 'FORGE_WORKER_AUTHORITY_MODE=global\n');
         await writeFile(comparisonFile, 'FORGE_POSTGRES_SCHEMA=fixture_only\n');
+        const repository = join(directory, '.local/canonical-repository');
+        await mkdir(repository, { recursive: true });
+        await writeFile(join(repository, 'pnpm-workspace.yaml'), 'packages: []\n');
+        await writeFile(
+          join(repository, 'package.json'),
+          JSON.stringify({ name: 'repository-fixture', private: true, type: 'module' })
+        );
+        await writeFile(
+          join(repository, 'tsconfig.json'),
+          JSON.stringify({
+            compilerOptions: { target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext' },
+            files: ['index.ts']
+          })
+        );
+        await writeFile(join(repository, 'index.ts'), 'export const fixture = true;\n');
+        const execute = promisify(execFile);
+        await execute('git', ['init', '--initial-branch=main', repository]);
+        await execute('git', ['-C', repository, 'add', '.']);
+        await execute('git', [
+          '-C',
+          repository,
+          '-c',
+          'user.name=Fixture',
+          '-c',
+          'user.email=fixture@example.invalid',
+          'commit',
+          '-m',
+          'Repository fixture'
+        ]);
+        await symlink(repository, join(directory, '.local/neon-comparison-deepseek'), 'dir');
       }
       const initialFiles = await readdir(directory);
       const childArguments =
@@ -69,11 +99,16 @@ it.for(['direct', 'comparison', 'narrow'])(
             ...(launch === 'narrow'
               ? { FORGE_TEST_TUI_ROWS: '24', FORGE_TEST_TUI_COLUMNS: '40' }
               : {}),
-            ...(launch === 'comparison' ? { FORGE_COMPARISON_ENV_FILE: comparisonFile } : {})
+            ...(launch === 'comparison'
+              ? { FORGE_COMPARISON_ENV_FILE: comparisonFile, FORGE_TEST_TUI_CONTINUE_TO_TASK: '1' }
+              : {})
           }
         }
       );
       expect(result.stdout).toContain('Compiled Forge CLI initial render');
+      if (launch === 'comparison') {
+        expect(result.stdout).toContain('Deployment-bound repository reached task input');
+      }
       expect(await readdir(directory)).toEqual(initialFiles);
     } finally {
       await rm(directory, { recursive: true, force: true });
