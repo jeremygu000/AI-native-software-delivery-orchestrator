@@ -8,10 +8,61 @@ import {
   renderRunCompletion,
   integrationTaskIds
 } from '../interactive-render.js';
-import { CodingTuiController, stageLabels, type TuiRequest } from './controller.js';
+import { CodingTuiController, stageLabels, type TuiRequest, type TuiState } from './controller.js';
 
 const accent = '#7aa2f7';
 const muted = '#9aa5b8';
+
+export function copyableTuiDetails(state: TuiState, environment: NodeJS.ProcessEnv): string {
+  const artifact = state.events.find((event) => event.type === 'plan');
+  const run = state.events.find((event) => event.type === 'run');
+  const repository = state.events.find((event) => event.type === 'repository');
+  const identity = state.events.find((event) => event.type === 'identity');
+  const model = state.events.find((event) => event.type === 'model');
+  return [
+    'Forge execution',
+    `Provider: ${model?.provider ?? environment.FORGE_WORKER_REVIEW_PROVIDER ?? 'Select model'}`,
+    `Model: ${model?.model ?? environment.FORGE_WORKER_REVIEW_MODEL ?? '—'}`,
+    `Reasoning: ${model?.reasoning ?? environment.FORGE_MODEL_REASONING_EFFORT ?? '—'}`,
+    `Authority: ${environment.FORGE_WORKER_AUTHORITY_MODE ?? 'legacy'}`,
+    `Queue: ${environment.TEMPORAL_TASK_QUEUE ?? 'deployment default'}`,
+    repository?.type === 'repository' ? `Repository: ${repository.path}` : undefined,
+    artifact?.type === 'plan' && run === undefined
+      ? renderPlanDetails(artifact.artifact)
+      : undefined,
+    ...state.events
+      .filter((event) => event.type === 'stage')
+      .map((event) => `${stageLabels[event.stage]}: ${event.state}`),
+    run?.type === 'run'
+      ? state.finished
+        ? renderRunCompletion(run.status)
+        : renderRunProgress(run.status)
+      : undefined,
+    run?.type === 'run'
+      ? `Latest durable events\n${
+          run.status.timeline
+            .slice(-8)
+            .map((event) => `${event.sequence}. ${event.type} ${event.correlation.taskId ?? ''}`)
+            .join('\n') || 'No event recorded yet'
+        }\nLatest review summaries\n${run.status.tasks
+          .map((task) => `${task.title}: ${task.reviews.at(-1)?.summary ?? 'No review recorded'}`)
+          .join('\n')}`
+      : undefined,
+    artifact?.type === 'plan' && run?.type === 'run'
+      ? `Approved predicted writes (not an observed diff):\n${artifact.artifact.decision.specification.tasks.flatMap((task) => task.expectedWrites.map((write) => `${write.type}:${write.value}`)).join('\n') || 'none'}`
+      : undefined,
+    identity?.type === 'identity'
+      ? `Run ${identity.runId}\nApproval ${identity.approvalId}\nArtifact ${identity.artifactId}`
+      : undefined,
+    ...state.notices.slice(-3),
+    state.error,
+    state.request?.title,
+    state.request?.options.join('\n')
+  ]
+    .filter((line): line is string => line !== undefined && line.length > 0)
+    .join('\n');
+}
+
 function Entry({
   request,
   controller,
@@ -107,15 +158,20 @@ function Entry({
 export function ForgeTui({
   controller,
   environment,
-  exit
+  exit,
+  selectedText,
+  copyText
 }: {
   controller: CodingTuiController;
   environment: NodeJS.ProcessEnv;
   exit: () => void;
+  selectedText: () => string;
+  copyText: (value: string) => Promise<boolean>;
 }) {
   const state = useSyncExternalStore(controller.subscribe, controller.snapshot);
   const [tick, setTick] = useState(0);
   const [help, setHelp] = useState(false);
+  const [copyMessage, setCopyMessage] = useState<string>();
   const { width, height } = useTerminalDimensions();
   const layout = codingLayout(width, height, state.request);
   const editing = state.request?.kind === 'input' || state.request?.kind === 'task';
@@ -134,6 +190,21 @@ export function ForgeTui({
     content.current?.scrollTo(0);
   }, [help]);
   useKeyboard((key) => {
+    if (key.ctrl && key.name === 'y' && !layout.tooSmall) {
+      key.preventDefault();
+      const value = selectedText() || copyableTuiDetails(state, environment);
+      void copyText(value)
+        .then((copied) => {
+          setCopyMessage(
+            copied ? 'Copied to clipboard.' : 'Clipboard unavailable in this terminal.'
+          );
+        })
+        .catch(() => setCopyMessage('Clipboard unavailable in this terminal.'));
+      return;
+    }
+    if (copyMessage) {
+      setCopyMessage(undefined);
+    }
     if (key.name === 'f1' || (!editing && (key.name === '?' || key.sequence === '?'))) {
       key.preventDefault();
       setHelp((value) => !value);
@@ -246,7 +317,7 @@ export function ForgeTui({
             {metadata.map(([label, value]) => `${label}: ${value}`).join('\n')}
             {repository?.type === 'repository' && `\nRepository: ${repository.path}`}
             {
-              '\n\n↑/↓ Select · Enter Confirm\nCtrl+Enter Submit multiline task\nEsc Cancel current flow / request run cancellation\nCtrl+C Request cancellation and exit\nPgUp/PgDn Scroll evidence\n? / F1 Help · Esc / Enter Close help\n\nDurable state is authoritative. Predicted writes are not an observed diff.'
+              '\n\n↑/↓ Select · Enter Confirm\nCtrl+Enter Submit multiline task\nEsc Cancel current flow / request run cancellation\nCtrl+C Request cancellation and exit\nPgUp/PgDn Scroll evidence\nCtrl+Y Copy selected text or current details\n? / F1 Help · Esc / Enter Close help\n\nDurable state is authoritative. Predicted writes are not an observed diff.'
             }
           </text>
         ) : (
@@ -353,18 +424,19 @@ export function ForgeTui({
       )}
       <box visible={!layout.tooSmall} height={layout.footer} flexShrink={0} flexDirection="column">
         <text height={1} flexShrink={0} wrapMode="none" truncate fg={muted}>
-          {help
-            ? 'Esc / Enter Close help'
-            : state.finished
-              ? 'Enter Close'
-              : state.request?.kind === 'task'
-                ? 'Ctrl+Enter Submit · Enter Newline'
-                : state.request?.kind === 'input'
-                  ? 'Enter Continue'
-                  : '↑/↓ Select · Enter Confirm'}
+          {copyMessage ??
+            (help
+              ? 'Esc / Enter Close help'
+              : state.finished
+                ? 'Enter Close'
+                : state.request?.kind === 'task'
+                  ? 'Ctrl+Enter Submit · Enter Newline'
+                  : state.request?.kind === 'input'
+                    ? 'Enter Continue'
+                    : '↑/↓ Select · Enter Confirm')}
         </text>
         <text height={1} flexShrink={0} wrapMode="none" truncate fg={muted}>
-          Esc Cancel · Ctrl+C Exit · {editing ? 'F1' : '?'} Help
+          Esc Cancel · Ctrl+C Exit · Ctrl+Y Copy · {editing ? 'F1' : '?'} Help
         </text>
       </box>
     </box>

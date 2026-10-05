@@ -1,4 +1,5 @@
-import { createCliRenderer } from '@opentui/core';
+import { createCliRenderer, createHostClipboard } from '@opentui/core';
+import type { HostClipboardService } from '@opentui/core';
 import { createRoot } from '@opentui/react';
 import {
   startInteractiveCoding,
@@ -13,6 +14,18 @@ export async function startCodingTui(
 ): Promise<void> {
   const controller = new CodingTuiController();
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
+  let hostClipboard: HostClipboardService | undefined;
+  const copyText = async (value: string): Promise<boolean> => {
+    try {
+      if (renderer.copyToClipboardOSC52(value)) {
+        return true;
+      }
+      hostClipboard ??= createHostClipboard();
+      return (await hostClipboard.writeText(value)).status === 'written';
+    } catch {
+      return false;
+    }
+  };
   const root = createRoot(renderer);
   let close: (() => void) | undefined;
   const closed = new Promise<void>((resolve) => {
@@ -23,7 +36,13 @@ export async function startCodingTui(
   };
   try {
     root.render(
-      <ForgeTui controller={controller} environment={dependencies.environment} exit={exit} />
+      <ForgeTui
+        controller={controller}
+        environment={dependencies.environment}
+        exit={exit}
+        selectedText={() => renderer.getSelection()?.getSelectedText() ?? ''}
+        copyText={copyText}
+      />
     );
     try {
       await startInteractiveCoding({
@@ -43,6 +62,10 @@ export async function startCodingTui(
     await closed;
   } finally {
     root.unmount();
-    renderer.destroy();
+    try {
+      await hostClipboard?.dispose();
+    } finally {
+      renderer.destroy();
+    }
   }
 }

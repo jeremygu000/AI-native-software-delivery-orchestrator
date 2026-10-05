@@ -1,15 +1,27 @@
 import assert from 'node:assert/strict';
+import { act } from 'react';
 import { testRender } from '@opentui/react/test-utils';
 import { jsx } from '@opentui/react/jsx-runtime';
 import { ForgeTui } from '../src/tui/app.tsx';
 import { CodingTuiController } from '../src/tui/controller.ts';
 
 const controller = new CodingTuiController();
+const copied = [];
+let selected = '';
+let clipboardAvailable = true;
 const ui = await testRender(
   jsx(ForgeTui, {
     controller,
-    environment: { TEMPORAL_TASK_QUEUE: 'forge-neon-comparison-deepseek-' + 'queue'.repeat(12) },
-    exit() {}
+    environment: {
+      TEMPORAL_TASK_QUEUE: 'forge-neon-comparison-deepseek-' + 'queue'.repeat(12),
+      FORGE_OWNER_CONNECTION_STRING: 'private-connection-string'
+    },
+    exit() {},
+    selectedText: () => selected,
+    copyText: async (value) => {
+      copied.push(value);
+      return clipboardAvailable;
+    }
   }),
   {
     width: 110,
@@ -128,7 +140,13 @@ try {
   await ui.mockInput.typeText('First line');
   ui.mockInput.pressEnter();
   await ui.mockInput.typeText('Second line?');
-  ui.mockInput.pressKey('F1');
+  await act(async () => {
+    ui.mockInput.pressKey('y', { ctrl: true });
+  });
+  await ui.flush();
+  await act(async () => {
+    ui.mockInput.pressKey('F1');
+  });
   await ui.waitForFrame((value) => value.includes('Help · full execution details'));
   ui.mockInput.pressEscape();
   await ui.waitForFrame((value) => value.includes('Multiline task'));
@@ -187,6 +205,23 @@ try {
     });
     await ui.waitForFrame((value) => value.includes(`Run outcome: ${outcome}`));
   }
+  await act(async () => {
+    ui.mockInput.pressKey('y', { ctrl: true });
+  });
+  await ui.waitForFrame((value) => value.includes('Copied to clipboard.'));
+  assert.ok(copied.at(-1).includes('Queue: forge-neon-comparison-deepseek-'));
+  assert.ok(!copied.at(-1).includes('private-connection-string'));
+  selected = 'selected evidence';
+  await act(async () => {
+    ui.mockInput.pressKey('y', { ctrl: true });
+  });
+  await ui.flush();
+  assert.equal(copied.at(-1), selected);
+  clipboardAvailable = false;
+  await act(async () => {
+    ui.mockInput.pressKey('y', { ctrl: true });
+  });
+  await ui.waitForFrame((value) => value.includes('Clipboard unavailable in this terminal.'));
   console.log(
     'OpenTUI native rendering, choices, multiline submission and failed durable state passed'
   );

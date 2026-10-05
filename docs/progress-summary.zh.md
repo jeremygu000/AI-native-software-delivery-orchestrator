@@ -4207,3 +4207,9 @@ inspection 与 observation 定向测试 **38/38** 通过，完整 build 通过�
 `prepareApprovedWorkspaces()` 现在会在已有的配置、连接、recovery、admission、generation、Git、workspace 和 handoff 操作前，调用一个可选的、类型限定的阶段回调。回调只携带固定的阶段名；即使观察回调抛错，setup 仍按原有路径继续。交互 CLI 从初始 run metadata 准备到 operator setup 都携带最新阶段，并在执行中显示。失败时，界面显示精确阶段、run ID、概括性的部署环境标签和固定的安全诊断，不输出底层 driver 错误、URL、密码、私钥或签名证据。没有新增 retry、replay、settlement 或 authority mutation。显式 operator 和 automation 命令不需要回调，维持原行为。
 
 成功路径的 operator 测试验证了完整阶段顺序，同时保持 admission、generation、workspace persistence、settlement、handoff 与资源关闭。定向失败测试覆盖配置不匹配、setup key 缺失、admission blocked、已有 recovery evidence、在 admission 前拒绝的 recovery handoff 连接，以及 worktree persistence 之后的 Git permit finalization。交互测试验证回调转发、清洗后的输出、没有启动或重试，以及 metadata 准备失败不会继续进入 operator setup。定向测试 **36/36** 通过，完整 build 通过。采用项目固定的 PostgreSQL 18、Pi、Git 和 native TUI fixture，完整 `pnpm check` 为 **118 个文件、1258/1258 通过、0 skip**。覆盖率高于原门槛：statements **90.81%**、branches **85.50%**、functions **94.35%**、lines **90.74%**。本阶段只有代码级观察证据，没有新 Neon run、provider 请求、worker 重启、线上数据库写入或修复。原失败 run 仍保留为失败证据。下一步是独立复审，然后用这套诊断发起新的 Neon coding run；live Neon production-path 验收仍未完成。[setup-stage-diagnostics-review.en.md](setup-stage-diagnostics-review.en.md) 记录复审范围和问题。
+
+## 交互 TUI 文字复制
+
+Forge 的全屏 TUI 原先把 `Ctrl+C` 用于取消，没有应用内复制操作，因此终端自身的鼠标选择无法稳定复制界面内容。现在按 `Ctrl+Y` 时，如果 OpenTUI 中已有文字选区，就复制选区；否则复制当前界面提供的执行信息，包括 profile、队列、仓库、计划或 run 证据、可见提示以及当前问题。复制先使用 OpenTUI 的终端剪贴板协议，必要时回退到本机剪贴板。底部提示和帮助页说明快捷键；底部还会显示复制成功或剪贴板不可用的结果，不改变正在等待的用户输入。任务输入、批准、取消和显式非交互 CLI 命令维持原行为。
+
+复制文本只由现有展示状态和明确列出的非秘密环境字段组成，不读取任意进程环境变量或私有 authority 配置。Native OpenTUI 测试覆盖任务输入期间及 run 结束后的快捷键、选区优先、剪贴板不可用提示，以及私有连接串不会进入复制内容。配置 Node 26.4 与 FFI 后，native／布局／controller 定向测试 **13/13** 通过；完整带镜像的 `pnpm check` 为 **118 个文件、1258/1258 通过、0 skip**，build、typecheck、type-aware lint、格式与 diff 检查通过。测试中的剪贴板回调证明了界面调用路径，并不声称每一种终端或操作系统剪贴板都完成了真实写入。本次 UI 改动没有 provider 请求、Neon 写入或新的真实 coding run。[tui-copy-review.en.md](tui-copy-review.en.md) 是独立复审材料。
