@@ -13,8 +13,11 @@ AI Agent 同时去写代码。如果两个 Agent 同时改同一个文件,或者
 任务之间的依赖关系、任务会读写哪些文件/资源,自动算出"哪些任务可以安全地同时进行,哪些
 必须排队"。目标是让并行开发的决策**有依据、可解释、可复现**,而不是"AI 感觉应该没问题"。
 
-目前项目仍处于**打确定性地基的阶段**,但已经能够把真实 pnpm + TypeScript 仓库分析到
-文件和代码符号层。它还不能计算任务对代码的实际影响,也不能调度 Agent 或让 Agent 写代码。
+当前方向是实用的本地软件交付编排器 Forge v1。新分支 `product/forge-v1` 从
+`10bd7f9f4f6a2b3a8b3b82d3b885bf0064003afc` 开始，保留仓库分析、规划、并行任务执行、独立
+worktree、验证、review、有界 repair 和 SQLite 状态。后来的分布式 authority 分支保留为历史参考，
+不会合并进来。下文各阶段是历史开发记录；当前范围与产品缺口以
+`docs/forge-v1-baseline-and-product-plan.en.md` 的重置报告为准。
 
 ## 阶段一:搭建工程骨架
 
@@ -1981,3 +1984,30 @@ Stage 24 为 CLI 添加了运行操作和恢复控制命令。
 两个命令都支持 `--run-directory` 指定自定义数据库位置，默认为 `~/.forge/runs/<run-id>`。
 
 `pnpm check` 通过：578 passed、1 skipped、90.31% branch coverage；`pnpm build` 也通过。Stage 24 已关闭。
+
+## Forge v1 方向重置：基线已选定，尚未开始产品实现
+
+项目回到最初目标：理解仓库、规划有用的任务，让独立 coding task 在各自 Git worktree 并行执行，
+验证和 review 产物，必要时 repair，再逐个集成结果。一个 run 由一个活跃 orchestrator 拥有。
+多机器接管、全局 mutation permit、签名 authority 转移和分布式 quiescence 不属于 v1 承诺。
+原 `m4/postgres-durable-authority` 分支完整保留。
+
+历史与源码调查选定 `10bd7f9f4f6a2b3a8b3b82d3b885bf0064003afc`，它紧接在 Runtime V2／PostgreSQL
+foundation 之前，并从该提交创建 `product/forge-v1`。它保留 Stage 21–23 的本地产品循环，以及小型
+status／cancel CLI 增量。已有 local lease、revision 检查和 UNKNOWN attempt 是按实际需要简化的
+继承实现，不意味着产品承诺分布式 ownership。目前 cancel 只修改数据库状态，并不停止 agent；
+builder verification 失败会直接失败任务，而不是进入 repair。这些明确列为产品缺口，并未宣称完成。
+
+基线报告比较了候选提交，按 KEEP／SELECTIVELY PORT／DO NOT PORT 盘点能力，列出复杂度和缺口，
+并定义五个产品里程碑：P1 完整交付流程，P2 结构化规划／新文件／bug 意图，P3 可用性和实用恢复，
+P4 usage attribution，P5 TUI／产品打磨／真实仓库验证。后续代码按能力抽取，不带入 authority 架构。
+review 先评估 Product relevance、范围和简单性，再讨论支持模型内的正确性与测试。
+
+本次重置只修改文档。已检查历史、包边界和本地 runtime 接线，没有重跑基线测试或付费模型流程。
+上面的测试数量是历史证据，不是本次验证结果。P1 必须按所选基线安装依赖、构建和检查，并证明真实
+三任务流程：实际并行 coding、修复一次失败验证、串行集成。尚未实现任何新的产品功能。
+
+文档提交前运行了 `pnpm check`：格式、TypeScript 和 lint 通过，但基线过宽的 Vitest project glob
+扫描到 `.local/` 中保留的历史 GroundGraph worktree，因重复 project name 在测试启动阶段失败。
+没有测试执行，也没有在本次文档-only 批次修改配置。限定到真实 workspace 包的测试发现范围是
+明确的 P1 准备问题；历史实验材料继续保留。

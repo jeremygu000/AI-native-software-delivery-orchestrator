@@ -18,9 +18,12 @@ expected to read or write. From that, it works out which tasks can safely run at
 which ones must wait their turn. The goal is for parallelization decisions to be **evidence-based,
 explainable, and reproducible** — not "the AI thinks it's probably fine."
 
-The project is still building its deterministic foundation, but it can now analyze a real pnpm and
-TypeScript repository down to files and code symbols. It cannot yet calculate task-to-code impact,
-schedule agents, or let agents write code.
+Current direction: Forge v1 is a practical local software delivery orchestrator. The new
+`product/forge-v1` branch starts at `10bd7f9f4f6a2b3a8b3b82d3b885bf0064003afc`, retaining repository
+analysis, planning, parallel task execution, isolated worktrees, verification, review, bounded repair,
+and SQLite state. The later distributed-authority branch is preserved as historical reference and
+will not be merged. The stage entries below describe historical development; the reset report at
+`docs/forge-v1-baseline-and-product-plan.en.md` defines the current scope and remaining product gaps.
 
 ## Stage 1: Setting up the engineering scaffolding
 
@@ -2285,3 +2288,38 @@ The `forge cancel` command cancels an active run by calling `DrizzleSqliteOrches
 Both commands support `--run-directory` to specify custom database locations, defaulting to `~/.forge/runs/<run-id>`.
 
 `pnpm check` passes with 578 tests passed, 1 skipped, and 90.31% branch coverage; `pnpm build` also passes. Stage 24 is closed.
+
+## Forge v1 direction reset: baseline selected, implementation not started
+
+The project is returning to its original purpose: understand a repository, plan useful work, run
+independent coding tasks concurrently in separate Git worktrees, verify and review their output,
+repair it when necessary, and integrate one result at a time. One active orchestrator owns a run.
+Multi-machine takeover, global mutation permits, signed authority transfer and distributed quiescence
+are not supported v1 requirements. The old `m4/postgres-durable-authority` branch remains intact.
+
+History and source inspection selected `10bd7f9f4f6a2b3a8b3b82d3b885bf0064003afc`, immediately
+before the Runtime V2/PostgreSQL foundation, and created `product/forge-v1` from it. This retains the
+Stage 21–23 local product loop and the small status/cancel CLI increment. Existing local leases,
+revision checks and UNKNOWN attempts are inherited implementation details to simplify where useful,
+not a reason to promise distributed ownership. Cancel currently changes a database row rather than
+stopping agents, and builder verification failure currently fails the task rather than entering
+repair; these are explicit product gaps, not completed features.
+
+The baseline report compares candidates, classifies capabilities as KEEP / SELECTIVELY PORT / DO
+NOT PORT, inventories complexity and gaps, and defines five product milestones: P1 end-to-end
+delivery, P2 structured planning/new-file/bug intent, P3 usability and practical recovery, P4 usage
+attribution, and P5 TUI/polish/real-repository validation. Useful later code will be extracted by
+capability without importing its authority architecture. Reviews start with Product relevance,
+scope and simplicity before correctness and tests within the supported model.
+
+This reset changed documentation only. History, package boundaries and local runtime wiring were
+inspected; no baseline tests or paid-model workflow were rerun. Historical test counts above are
+historical evidence, not fresh results. P1 must install/build/check the selected baseline and prove
+a real three-task workflow with actual parallel coding, a repaired failed verification and serialized
+integration. No new product functionality has been implemented yet.
+
+Before committing this documentation, `pnpm check` passed formatting, TypeScript and lint, but test
+startup failed because the baseline's broad Vitest project glob discovered historical GroundGraph
+worktrees under `.local/` with duplicate project names. No tests executed and no configuration was
+changed in this documentation-only batch. Correct workspace-scoped discovery is a concrete P1 setup
+issue; the historical experiment evidence remains preserved.
