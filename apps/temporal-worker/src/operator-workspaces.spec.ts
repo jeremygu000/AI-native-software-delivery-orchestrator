@@ -26,7 +26,9 @@ const probes = vi.hoisted(() => ({
   settle: vi.fn(),
   handoff: vi.fn(),
   attest: vi.fn(),
-  exec: vi.fn()
+  exec: vi.fn(),
+  observerOpen: vi.fn(),
+  handoffConnect: vi.fn()
 }));
 vi.mock('node:child_process', () => ({ execFileSync: probes.exec }));
 vi.mock('@ai-native-software-delivery-orchestrator/postgres-persistence', async (original) => ({
@@ -62,11 +64,17 @@ vi.mock('@ai-native-software-delivery-orchestrator/postgres-persistence', async 
   }
 }));
 vi.mock('./postgres-workspace-recovery.js', () => ({
-  openPostgresWorkspaceRecoveryObserver: async () => ({ observer: {}, close: probes.closes })
+  openPostgresWorkspaceRecoveryObserver: async () => {
+    probes.observerOpen();
+    return { observer: {}, close: probes.closes };
+  }
 }));
 vi.mock('./postgres-workspace-handoff.js', () => ({
   PostgresWorkspaceHandoff: {
-    connect: async () => ({ settle: probes.settle, handoff: probes.handoff, close: probes.closes })
+    connect: async () => {
+      probes.handoffConnect();
+      return { settle: probes.settle, handoff: probes.handoff, close: probes.closes };
+    }
   }
 }));
 vi.mock('./workspace-recovery-attestation.js', () => ({
@@ -252,7 +260,39 @@ const setup = async () => {
 describe('Extracted approved operator setup', () => {
   it('keeps exact signed setup, independent role connections and published evidence before handoff', async () => {
     const f = await setup();
-    await prepareApprovedWorkspaces(f.request);
+    const stages: string[] = [];
+    await prepareApprovedWorkspaces({ ...f.request, onStage: (stage) => stages.push(stage) });
+    expect(stages).toEqual([
+      'operator-config',
+      'plan-evidence-load',
+      'postgres-runtime-connect',
+      'global-authority-connect',
+      'setup-admission-connect',
+      'issuer-connect',
+      'setup-key-load',
+      'recovery-key-load',
+      'recovery-observer-open',
+      'workspace-handoff-connect',
+      'recover-run',
+      'recover-global-scope',
+      'setup-approval',
+      'setup-admit',
+      'generation-issue',
+      'workspace-arm',
+      'git-permit',
+      'git-branch',
+      'git-worktree',
+      'workspace-persist',
+      'git-permit-finalize',
+      'supervisor-launch',
+      'recovery-evidence-check',
+      'recovery-attestation',
+      'recovery-evidence-save',
+      'setup-settle',
+      'execution-child-handoff',
+      'setup-evidence-save',
+      'operator-cleanup'
+    ]);
     expect(probes.connects.mock.calls.map(([configuration]) => configuration.role)).toEqual([
       'forge_runtime',
       'forge_runtime',
@@ -277,34 +317,96 @@ describe('Extracted approved operator setup', () => {
   });
   it('refuses authority mismatch before any database client or mutation', async () => {
     const f = await setup();
+    const stages: string[] = [];
     await expect(
-      prepareApprovedWorkspaces({ ...f.request, runtimeSchema: 'other' })
+      prepareApprovedWorkspaces({
+        ...f.request,
+        runtimeSchema: 'other',
+        onStage: (stage) => stages.push(stage)
+      })
     ).rejects.toThrow('does not match');
+    expect(stages).toEqual(['operator-config']);
     expect(probes.connects).not.toHaveBeenCalled();
     expect(probes.exec).not.toHaveBeenCalled();
   });
   it('retains fail-closed setup admission without running Git or minting generations', async () => {
     const f = await setup();
+    const stages: string[] = [];
     probes.admit.mockResolvedValueOnce({ status: 'blocked' });
-    await expect(prepareApprovedWorkspaces(f.request)).rejects.toThrow('independent recovery');
+    await expect(
+      prepareApprovedWorkspaces({ ...f.request, onStage: (stage) => stages.push(stage) })
+    ).rejects.toThrow('independent recovery');
+    expect(stages.at(-1)).toBe('setup-admit');
     expect(probes.exec).not.toHaveBeenCalled();
     expect(probes.issue).not.toHaveBeenCalled();
     expect(probes.closes).toHaveBeenCalledTimes(6);
   });
   it('closes already opened clients if signing material is absent', async () => {
     const f = await setup();
+    const stages: string[] = [];
     await rm(join(f.root, '.local/setup-private.pem'));
-    await expect(prepareApprovedWorkspaces(f.request)).rejects.toThrow();
+    await expect(
+      prepareApprovedWorkspaces({ ...f.request, onStage: (stage) => stages.push(stage) })
+    ).rejects.toThrow();
+    expect(stages.at(-1)).toBe('setup-key-load');
     expect(probes.closes).toHaveBeenCalledTimes(4);
     expect(probes.admit).not.toHaveBeenCalled();
   });
   it('preserves saved settlement evidence and refuses a second handoff', async () => {
     const f = await setup();
+    const stages: string[] = [];
     await writeFile(join(f.root, '.local/run-task-recovery.json'), 'existing-evidence');
-    await expect(prepareApprovedWorkspaces(f.request)).rejects.toThrow('do not mint');
+    await expect(
+      prepareApprovedWorkspaces({ ...f.request, onStage: (stage) => stages.push(stage) })
+    ).rejects.toThrow('do not mint');
+    expect(stages.at(-1)).toBe('recovery-evidence-check');
     expect(probes.settle).not.toHaveBeenCalled();
     expect(await readFile(join(f.root, '.local/run-task-recovery.json'), 'utf8')).toBe(
       'existing-evidence'
     );
+  });
+  it('reports a rejected recovery handoff connection before admission without disclosing its error', async () => {
+    const f = await setup();
+    const stages: string[] = [];
+    probes.handoffConnect.mockImplementationOnce(() => {
+      throw new Error('postgres://forge_recovery:private-password@neon.example/neondb');
+    });
+    await expect(
+      prepareApprovedWorkspaces({ ...f.request, onStage: (stage) => stages.push(stage) })
+    ).rejects.toThrow();
+    expect(stages.at(-1)).toBe('workspace-handoff-connect');
+    expect(JSON.stringify(stages)).not.toContain('private-password');
+    expect(probes.admit).not.toHaveBeenCalled();
+    expect(probes.issue).not.toHaveBeenCalled();
+    expect(probes.exec).not.toHaveBeenCalled();
+    expect(probes.closes).toHaveBeenCalledTimes(5);
+  });
+  it('attributes a permit failure after worktree persistence to permit finalization', async () => {
+    const f = await setup();
+    const stages: string[] = [];
+    probes.creation.mockImplementationOnce(
+      async (_request: unknown, create: () => Promise<void>) => {
+        await create();
+        throw new Error('private permit diagnostic');
+      }
+    );
+    await expect(
+      prepareApprovedWorkspaces({ ...f.request, onStage: (stage) => stages.push(stage) })
+    ).rejects.toThrow('private permit diagnostic');
+    expect(stages.at(-1)).toBe('git-permit-finalize');
+    expect(probes.persist).toHaveBeenCalledOnce();
+    expect(probes.attest).not.toHaveBeenCalled();
+    expect(probes.handoff).not.toHaveBeenCalled();
+  });
+  it('does not let a failing diagnostics callback change successful setup', async () => {
+    const f = await setup();
+    await prepareApprovedWorkspaces({
+      ...f.request,
+      onStage: () => {
+        throw new Error('observer failed');
+      }
+    });
+    expect(probes.admit).toHaveBeenCalledOnce();
+    expect(probes.handoff).toHaveBeenCalledOnce();
   });
 });

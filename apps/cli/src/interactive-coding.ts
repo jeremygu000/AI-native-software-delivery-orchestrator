@@ -16,6 +16,7 @@ import {
 } from './model-selection.js';
 import type { InteractiveTerminal } from './interactive-terminal.js';
 import type { CodingPresentation, CodingStage } from './interactive-presentation.js';
+import type { WorkspaceSetupStage } from '@ai-native-software-delivery-orchestrator/temporal-worker/operator-workspaces';
 import {
   integrationTaskIds,
   renderPlanDetails,
@@ -25,6 +26,23 @@ import {
 } from './interactive-render.js';
 
 type RunRequest = Parameters<NonNullable<ForgeProgramDependencies['runPlan']>>[0];
+type InteractiveSetupStage = 'run-metadata' | WorkspaceSetupStage;
+const setupDiagnostic = (stage: InteractiveSetupStage | undefined): string => {
+  switch (stage) {
+    case 'workspace-handoff-connect':
+      return 'PostgreSQL recovery handoff connection failed or was rejected by authority validation.';
+    case 'postgres-runtime-connect':
+    case 'global-authority-connect':
+    case 'setup-admission-connect':
+    case 'issuer-connect':
+    case 'recovery-observer-open':
+      return 'A required operator connection did not complete.';
+    case 'operator-config':
+      return 'Operator configuration could not be validated.';
+    default:
+      return 'Setup did not complete at this stage.';
+  }
+};
 export interface InteractiveCodingDependencies {
   readonly terminal: InteractiveTerminal;
   readonly cwd: string;
@@ -48,6 +66,7 @@ export interface InteractiveCodingDependencies {
         stage: 'metadata' | 'workspace' | 'authority',
         state: 'active' | 'complete'
       ) => void;
+      onSetupStage?: (stage: InteractiveSetupStage) => void;
     }
   ) => Promise<void>;
   readonly wait?: (signal: AbortSignal) => Promise<void>;
@@ -100,6 +119,7 @@ export async function startInteractiveCoding(
   let runPrepared = false;
   let cancellationAttempted = false;
   let phase = 'input';
+  let setupStage: InteractiveSetupStage | undefined;
   let activeStage: CodingStage | undefined;
   const stage = (value: CodingStage, state: 'active' | 'complete') => {
     activeStage = state === 'active' ? value : undefined;
@@ -364,7 +384,16 @@ export async function startInteractiveCoding(
       stage('workspace', 'active');
       runPrepared = true; // setup includes accepted initial dispatch; failures can leave durable authority.
       terminal.write('Preparing coding run...\n');
-      await dependencies.setup({ ...currentRun, artifact, approvedBy, onProgress: stage });
+      await dependencies.setup({
+        ...currentRun,
+        artifact,
+        approvedBy,
+        onProgress: stage,
+        onSetupStage: (value) => {
+          setupStage = value;
+          terminal.write(`Setup stage: ${value}...\n`);
+        }
+      });
       requireActive();
       terminal.write('✓ Setup preparation checked; runtime validation remains authoritative\n');
       stage('workspace', 'complete');
@@ -424,6 +453,15 @@ export async function startInteractiveCoding(
         await requestCancellation();
       }
       throw new ModelSelectionCancelled('Interactive coding cancelled.');
+    }
+    if (phase === 'setup' && currentRun !== undefined) {
+      const message =
+        `Setup failed\nStage: ${setupStage ?? 'setup'}\nRun: ${currentRun.runId}\n` +
+        `Environment: ${environment.FORGE_COMPARISON_ENV_FILE ? 'comparison deployment' : 'local deployment'}\n` +
+        `Diagnostic: ${setupDiagnostic(setupStage)}\n` +
+        'No automatic retry was attempted. Inspect durable status before recovery.';
+      terminal.write(`${message}\n`);
+      throw new ModelSelectionError(message);
     }
     terminal.write(
       `Interactive execution stopped during ${phase}.${currentRun === undefined ? ' No run was launched.' : ` Run ID: ${currentRun.runId}. Approval ID: ${currentRun.approvalId}. Run directory: ${currentRun.runDirectory ?? 'unspecified'}. Inspect durable status before recovery; no automatic retry.`}\n`

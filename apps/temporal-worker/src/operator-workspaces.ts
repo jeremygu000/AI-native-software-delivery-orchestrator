@@ -29,6 +29,40 @@ import { openPostgresWorkspaceRecoveryObserver } from './postgres-workspace-reco
 import { WorkspaceRecoveryAttestor } from './workspace-recovery-attestation.js';
 import { PostgresWorkspaceHandoff } from './postgres-workspace-handoff.js';
 
+export type WorkspaceSetupStage =
+  | 'operator-config'
+  | 'plan-evidence-load'
+  | 'postgres-runtime-connect'
+  | 'global-authority-connect'
+  | 'setup-admission-connect'
+  | 'issuer-connect'
+  | 'setup-key-load'
+  | 'recovery-key-load'
+  | 'recovery-observer-open'
+  | 'workspace-handoff-connect'
+  | 'recover-run'
+  | 'recover-global-scope'
+  | 'setup-approval'
+  | 'setup-admit'
+  | 'generation-issue'
+  | 'workspace-arm'
+  | 'git-permit'
+  | 'git-branch'
+  | 'git-worktree'
+  | 'workspace-persist'
+  | 'git-permit-finalize'
+  | 'permit-recovery-check'
+  | 'workspace-inspect'
+  | 'supervisor-launch'
+  | 'recovery-evidence-check'
+  | 'recovery-attestation'
+  | 'recovery-evidence-save'
+  | 'setup-abandon'
+  | 'setup-settle'
+  | 'execution-child-handoff'
+  | 'setup-evidence-save'
+  | 'operator-cleanup';
+
 export interface WorkspaceSetupRequest {
   readonly root: string;
   readonly runId: string;
@@ -43,12 +77,21 @@ export interface WorkspaceSetupRequest {
   readonly runtimeSchema?: string;
   readonly writeOutput?: (output: string) => void;
   readonly onProgress?: (stage: 'workspace' | 'authority', state: 'active' | 'complete') => void;
+  readonly onStage?: (stage: WorkspaceSetupStage) => void;
 }
 
 /** Explicit operator boundary; never creates a worker or forwards privileged credentials. */
 export async function prepareApprovedWorkspaces(
   operatorRequest: WorkspaceSetupRequest
 ): Promise<void> {
+  const markStage = (stage: WorkspaceSetupStage) => {
+    try {
+      operatorRequest.onStage?.(stage);
+    } catch {
+      // Operator observation must not change setup authority or control flow.
+    }
+  };
+  markStage('operator-config');
   if (!operatorRequest.authorizeWorkspaceCreation) {
     throw new Error('Explicit workspace setup authorization is required');
   }
@@ -116,6 +159,7 @@ export async function prepareApprovedWorkspaces(
       throw new Error('Operator configuration does not match the selected runtime authority');
     }
   }
+  markStage('plan-evidence-load');
   const plans = operatorRequest.planDirectory ?? resolve(root, '.local/plans');
   const artifact = await new JsonFilePlanArtifactStore(plans).load(
     artifactId,
@@ -131,12 +175,19 @@ export async function prepareApprovedWorkspaces(
     resources.push(() => resource.close());
     return resource;
   };
+  let completed = false;
   try {
+    markStage('postgres-runtime-connect');
     const persistence = await retain(PostgresOrchestrationPersistence.connect(runtime));
+    markStage('global-authority-connect');
     const authority = await retain(PostgresGlobalMutationAuthority.connect(runtime));
+    markStage('setup-admission-connect');
     const setup = await retain(PostgresWorkspaceSetupAdmission.connect(setupConfig));
+    markStage('issuer-connect');
     const issuer = await retain(PostgresExecutionGenerationIssuer.connect(issuerConfig));
+    markStage('setup-key-load');
     const privateKey = await readFile(resolve(root, '.local/setup-private.pem'), 'utf8');
+    markStage('recovery-key-load');
     await mkdir(resolve(root, '.local'), { recursive: true, mode: 0o700 });
     let recoveryPrivate: string;
     let recoveryPublic: string;
@@ -158,6 +209,7 @@ export async function prepareApprovedWorkspaces(
     }
     const supervisorId = 'local-independent-setup-supervisor';
     const image = 'node@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43';
+    markStage('recovery-observer-open');
     const observer = await retain(
       openPostgresWorkspaceRecoveryObserver({
         runtime,
@@ -166,6 +218,7 @@ export async function prepareApprovedWorkspaces(
         image
       })
     );
+    markStage('workspace-handoff-connect');
     const handoff = await retain(
       PostgresWorkspaceHandoff.connect({
         recovery: recoveryConfig,
@@ -176,10 +229,12 @@ export async function prepareApprovedWorkspaces(
         publicKey: recoveryPublic
       })
     );
+    markStage('recover-run');
     const recovered = await persistence.recoverRun(runId);
     if (!recovered || recovered.run.authority?.approvalId !== approvalId) {
       throw new Error('Run does not match the approved execution');
     }
+    markStage('recover-global-scope');
     const scopeId = await authority.recoverGlobalRunScope(runId);
     for (const { attempt } of recovered.attempts) {
       if (attempt.state === 'COMPLETED') {
@@ -194,6 +249,7 @@ export async function prepareApprovedWorkspaces(
       }
       const parentClaimId = `setup-${runId}-${attempt.taskId}`;
       const generationId = `setup-generation-${runId}-${attempt.taskId}`;
+      markStage('setup-approval');
       const setupStore = new JsonFileWorkspaceSetupApprovalStore(plans);
       const setupApproval =
         (await setupStore.load(`git-${runId}-${attempt.taskId}`)) ??
@@ -233,10 +289,12 @@ export async function prepareApprovedWorkspaces(
         throw new Error('Abandonment requires an existing uncertain setup, not new admission');
       }
       if (attempt.state === 'PREPARING') {
+        markStage('setup-admit');
         const admitted = await setup.admit(request);
         if (admitted.status !== 'granted') {
           throw new Error('Setup blocked by existing owner; independent recovery required');
         }
+        markStage('generation-issue');
         await issuer.issue({
           generationId,
           scopeId,
@@ -249,7 +307,9 @@ export async function prepareApprovedWorkspaces(
           setupPlanDigest: setupApproval.setupApprovalFingerprint.slice(7),
           executionPlanDigest: fingerprintPlanValue(binding.leasePlan).slice(7)
         });
+        markStage('workspace-arm');
         await setup.arm({ ...request, generationId });
+        markStage('git-permit');
         await setup.executeWorkspaceCreation(
           {
             ...request,
@@ -260,6 +320,7 @@ export async function prepareApprovedWorkspaces(
           },
           async () => {
             // Branch/worktree creation is inside the dedicated repository Git permit.
+            markStage('git-branch');
             try {
               execFileSync(
                 'git',
@@ -286,13 +347,17 @@ export async function prepareApprovedWorkspaces(
               );
             }
             operatorRequest.onProgress?.('workspace', 'active');
+            markStage('git-worktree');
             const workspace = await new GitWorkspaceManager().create(binding.workspace);
+            markStage('workspace-persist');
             await persistence.persistWorkspace({ runId, workspace });
             operatorRequest.onProgress?.('workspace', 'complete');
+            markStage('git-permit-finalize');
           },
           () => 'Independent local setup process completed and awaited Git workspace creation'
         );
       } else {
+        markStage('permit-recovery-check');
         const evidence = await authority.recoverWorkspaceSetupEvidence(scopeId, parentClaimId);
         if (evidence.phase !== 'WORKSPACE_UNCERTAIN' || evidence.permit?.completed !== true) {
           throw new Error(
@@ -304,11 +369,13 @@ export async function prepareApprovedWorkspaces(
           revision: 1,
           phase: 'READY_TO_INTEGRATE' as const
         };
+        markStage('workspace-inspect');
         await new GitWorkspaceStateInspector().inspect({
           workspace,
           approvedRepositoryRoot: artifact.repository.repositoryRoot,
           approvedBaseCommit: artifact.repository.baseCommit
         });
+        markStage('workspace-persist');
         await persistence.persistWorkspace({ runId, workspace });
       }
       const supervisor = new DockerWorkspaceGenerationSupervisor({
@@ -325,6 +392,7 @@ export async function prepareApprovedWorkspaces(
       const containerName = `forge-generation-${createHash('sha256')
         .update(JSON.stringify([scopeId, generationId]))
         .digest('hex')}`;
+      markStage('supervisor-launch');
       let existingContainer: string | undefined;
       try {
         existingContainer = execFileSync(
@@ -351,6 +419,7 @@ export async function prepareApprovedWorkspaces(
               supervisorId,
               containerId: existingContainer
             };
+      markStage('recovery-evidence-check');
       const evidencePath = resolve(
         root,
         `.local/${runId}-${attempt.taskId}-${operation === '--abandon' ? 'abandonment' : 'recovery'}.json`
@@ -366,6 +435,7 @@ export async function prepareApprovedWorkspaces(
         }
       }
       operatorRequest.onProgress?.('authority', 'active');
+      markStage('recovery-attestation');
       const attestation = await new WorkspaceRecoveryAttestor(
         observer.observer,
         'local-recovery',
@@ -373,6 +443,7 @@ export async function prepareApprovedWorkspaces(
       ).attest(generation);
       // Publish the exact signed evidence before a durable settlement binds its ID.
       // A failure afterward must retain this evidence rather than mint another ID.
+      markStage('recovery-evidence-save');
       await writeFile(
         evidencePath,
         JSON.stringify(
@@ -383,18 +454,22 @@ export async function prepareApprovedWorkspaces(
         { flag: 'wx', mode: 0o600 }
       );
       if (operation === '--abandon') {
+        markStage('setup-abandon');
         await handoff.abandon(generation, attestation);
         operatorRequest.writeOutput?.(
           JSON.stringify({ runId, taskId: attempt.taskId, status: 'setup-abandoned-no-child' })
         );
         continue;
       }
+      markStage('setup-settle');
       await handoff.settle(generation, attestation);
+      markStage('execution-child-handoff');
       const child = await handoff.handoff(generation, attestation, attempt.leasePlanFingerprint);
       if ('blocked' in child) {
         throw new Error('Execution handoff blocked; no workflow started');
       }
       operatorRequest.onProgress?.('authority', 'complete');
+      markStage('setup-evidence-save');
       await writeFile(
         resolve(root, `.local/${runId}-${attempt.taskId}-setup.json`),
         JSON.stringify(
@@ -419,7 +494,11 @@ export async function prepareApprovedWorkspaces(
         })
       );
     }
+    completed = true;
   } finally {
+    if (completed) {
+      markStage('operator-cleanup');
+    }
     await Promise.all(resources.map((close) => close()));
   }
 }

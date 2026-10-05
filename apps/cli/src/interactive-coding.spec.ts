@@ -444,6 +444,9 @@ describe('Interactive coding frontend', () => {
   });
   it('prepares initial dispatch before trusted setup, then launches with an explicit false prepare-only flag', async () => {
     const f = fixture(undefined, process.cwd());
+    vi.mocked(prepareApprovedWorkspaces).mockImplementationOnce(async (request) => {
+      request.onStage?.('workspace-handoff-connect');
+    });
     const authority = {
       backend: 'postgres' as const,
       connectionString: 'postgres://forge_runtime:private@localhost/forge',
@@ -485,8 +488,12 @@ describe('Interactive coding frontend', () => {
         artifactRevision: f.artifact.revision,
         authorizeWorkspaceCreation: true,
         runtimeConnectionString: authority.connectionString,
-        runtimeSchema: 'forge'
+        runtimeSchema: 'forge',
+        onStage: expect.any(Function)
       })
+    );
+    expect(f.terminal.write.mock.calls.flat().join('')).toContain(
+      'Setup stage: workspace-handoff-connect...'
     );
     const order = vi.mocked(f.dependencies.runPlan).mock.invocationCallOrder;
     expect(vi.mocked(prepareApprovedWorkspaces).mock.invocationCallOrder[0]).toBeGreaterThan(
@@ -593,14 +600,46 @@ describe('Interactive coding frontend', () => {
   });
   it('does not launch or retry after operator setup failure', async () => {
     const f = fixture();
-    vi.mocked(f.dependencies.setup).mockRejectedValueOnce(new Error('secret diagnostic'));
-    await expect(startInteractiveCoding(f.dependencies)).rejects.toThrow('refused');
+    vi.mocked(f.dependencies.setup).mockImplementationOnce(async (request) => {
+      request.onSetupStage?.('workspace-handoff-connect');
+      throw new Error(
+        'postgres://forge_recovery:private-password@neon.example/neondb private-key signed-evidence'
+      );
+    });
+    await expect(
+      startInteractiveCoding({
+        ...f.dependencies,
+        environment: {
+          ...f.dependencies.environment,
+          FORGE_COMPARISON_ENV_FILE: '/private/comparison.env'
+        }
+      })
+    ).rejects.toThrow('Stage: workspace-handoff-connect');
     expect(f.dependencies.runPlan).not.toHaveBeenCalled();
+    expect(f.dependencies.setup).toHaveBeenCalledTimes(1);
     const output = f.terminal.write.mock.calls.flat().join('');
     expect(output).toContain('Preparing coding run...');
+    expect(output).toContain('Setup failed');
+    expect(output).toContain('Stage: workspace-handoff-connect');
+    expect(output).toContain('Run: run');
+    expect(output).toContain('Environment: comparison deployment');
+    expect(output).toContain('PostgreSQL recovery handoff connection failed');
+    expect(output).toContain('No automatic retry was attempted');
     expect(output).not.toContain('✓ Setup preparation checked');
     expect(output).not.toContain('Starting coding run...');
-    expect(output).not.toContain('secret diagnostic');
+    expect(output).not.toMatch(/private-password|private-key|signed-evidence|postgres:\/\//);
+    expect(output).not.toContain('/private/comparison.env');
+  });
+  it('identifies run metadata preparation failure without starting operator setup or launch', async () => {
+    const f = fixture();
+    vi.mocked(f.dependencies.setup).mockImplementationOnce(async (request) => {
+      request.onSetupStage?.('run-metadata');
+      throw new Error('password=private');
+    });
+    await expect(startInteractiveCoding(f.dependencies)).rejects.toThrow('Stage: run-metadata');
+    expect(f.dependencies.setup).toHaveBeenCalledTimes(1);
+    expect(f.dependencies.runPlan).not.toHaveBeenCalled();
+    expect(f.terminal.write.mock.calls.flat().join('')).not.toContain('password=private');
   });
   it('does not create another run after an ambiguous launch response', async () => {
     const f = fixture();

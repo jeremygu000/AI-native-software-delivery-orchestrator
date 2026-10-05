@@ -801,6 +801,7 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           }
           dependencies.interactiveTerminal?.write('Preparing run metadata...\n');
           request.onProgress?.('metadata', 'active');
+          request.onSetupStage?.('run-metadata');
           await runPlan({ ...request, prepareOnly: true });
           request.onProgress?.('metadata', 'complete');
           request.onProgress?.('workspace', 'active');
@@ -824,7 +825,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
             ),
             runtimeConnectionString: authority.connectionString,
             runtimeSchema: authority.schema,
-            onProgress: request.onProgress
+            onProgress: request.onProgress,
+            onStage: request.onSetupStage
           });
           dependencies.interactiveTerminal?.write('✓ Isolated workspaces ready\n');
           request.onProgress?.('workspace', 'complete');
