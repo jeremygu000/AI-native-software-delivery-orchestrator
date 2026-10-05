@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist/types",
+    "types": ["node", "vitest/globals"],
+    "jsx": "react-jsx",
+    "lib": ["es2023", "dom", "dom.iterable"]
+  },
+  "include": ["src/**/*.ts", "web/**/*.tsx", "web/**/*.d.ts", "vitest.config.mts"],
+  "references": [
+    {
+      "path": "../../libs/run-inspection/tsconfig.lib.json"
+    }
+  ]
+}

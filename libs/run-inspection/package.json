@@ -1,0 +1,36 @@
+{
+  "name": "@ai-native-software-delivery-orchestrator/run-inspection",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./inspection": {
+      "types": "./dist/lib/inspection.d.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/lib/inspection.ts",
+      "import": "./dist/lib/inspection.js"
+    },
+    "./configuration": {
+      "types": "./dist/lib/configuration.d.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/lib/configuration.ts",
+      "import": "./dist/lib/configuration.js"
+    },
+    "./observations": {
+      "types": "./dist/lib/observations.d.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/lib/observations.ts",
+      "import": "./dist/lib/observations.js"
+    },
+    "./response": {
+      "types": "./dist/lib/response.d.ts",
+      "@ai-native-software-delivery-orchestrator/source": "./src/lib/response.ts",
+      "import": "./dist/lib/response.js"
+    }
+  },
+  "dependencies": {
+    "@ai-native-software-delivery-orchestrator/domain": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/orchestration-runtime": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/persistence": "workspace:*",
+    "@ai-native-software-delivery-orchestrator/postgres-persistence": "workspace:*",
+    "@temporalio/client": "1.24.0",
+    "postgres": "3.4.9"
+  }
+}

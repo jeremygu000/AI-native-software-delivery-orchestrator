@@ -181,10 +181,13 @@ export class PostgresOrchestrationPersistence
   #globalGateInstalled = false;
   #globalBindingInstalled = false;
 
-  private constructor(configuration: PostgresEvidenceStoreConfiguration) {
+  private constructor(configuration: PostgresEvidenceStoreConfiguration, readOnly = false) {
     this.#schema = `"${configuration.schema}"`;
     this.#sql = openPostgresConnection(configuration, {
-      connection: { application_name: 'forge-authority' },
+      connection: {
+        application_name: 'forge-authority',
+        ...(readOnly ? { default_transaction_read_only: true } : {})
+      },
       onnotice: () => undefined
     });
   }
@@ -192,8 +195,31 @@ export class PostgresOrchestrationPersistence
   static async connect(
     configuration: PostgresEvidenceStoreConfiguration
   ): Promise<PostgresOrchestrationPersistence> {
+    return this.#connect(configuration, false);
+  }
+
+  /** Observation clients keep the existing schema/login audit and cannot write through the session. */
+  static async connectReadOnly(
+    configuration: PostgresEvidenceStoreConfiguration
+  ): Promise<
+    Pick<
+      PostgresOrchestrationPersistence,
+      | 'recoverRun'
+      | 'recoverReviews'
+      | 'recoverRepairAttempts'
+      | 'recoverVerificationEvidence'
+      | 'close'
+    >
+  > {
+    return this.#connect(configuration, true);
+  }
+
+  static async #connect(
+    configuration: PostgresEvidenceStoreConfiguration,
+    readOnly: boolean
+  ): Promise<PostgresOrchestrationPersistence> {
     assertPostgresAuthorityLogin(configuration);
-    const store = new PostgresOrchestrationPersistence(configuration);
+    const store = new PostgresOrchestrationPersistence(configuration, readOnly);
     try {
       await assertPostgresAuthoritySchema(store.#sql, configuration);
       const globalVersion = await store.#sql.unsafe(

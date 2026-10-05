@@ -62,6 +62,12 @@
     },
     {
       "path": "./apps/temporal-worker"
+    },
+    {
+      "path": "./apps/run-inspector"
+    },
+    {
+      "path": "./libs/run-inspection"
     }
   ]
 }

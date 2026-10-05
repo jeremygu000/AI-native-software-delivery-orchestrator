@@ -33,6 +33,27 @@ afterEach(() => {
   observation.ssl = undefined;
 });
 
+it('configures the audited observation client as read-only at session startup', async () => {
+  await expect(
+    PostgresOrchestrationPersistence.connectReadOnly({
+      connectionString: 'postgresql://forge_runtime:private-test@database.example/forge',
+      schema: 'forge',
+      role: 'forge_runtime',
+      ssl: 'verify-full'
+    })
+  ).rejects.toThrow('observed explicit transport');
+  expect(postgres).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.objectContaining({
+      ssl: 'verify-full',
+      connection: expect.objectContaining({
+        default_transaction_read_only: true,
+        search_path: 'pg_catalog, pg_temp'
+      })
+    })
+  );
+});
+
 it.each([
   [
     'migration owner',

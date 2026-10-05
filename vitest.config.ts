@@ -26,6 +26,7 @@ export default defineConfig({
         'apps/cli/src/app.ts',
         // Process entry points are exercised as child processes, outside this V8 collector.
         'apps/temporal-worker/src/main.ts',
+        'apps/run-inspector/src/main.ts',
         'apps/temporal-worker/src/m3.12-external-smoke.ts',
         // Temporal evaluates bundled workflows in an isolated V8 sandbox.
         'libs/temporal-runtime/src/lib/workflows/forge-run.ts',

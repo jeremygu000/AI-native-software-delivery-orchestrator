@@ -1,0 +1,357 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #dce7ed;
+  background: #0a111a;
+  font-synthesis: none;
+  color-scheme: dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+main {
+  padding: 26px 32px;
+  max-width: 1920px;
+  margin: auto;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 22px;
+}
+h1 {
+  font-size: 30px;
+  font-weight: 650;
+  margin: 5px 0;
+  letter-spacing: -1px;
+}
+header p {
+  color: #8599aa;
+  margin: 4px 0;
+  font-size: 13px;
+}
+.eyebrow {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: #6db5cd;
+  font-weight: 700;
+}
+.readonly {
+  border: 1px solid #2b5e57;
+  padding: 8px 12px;
+  border-radius: 5px;
+  letter-spacing: 1.5px;
+  font-size: 10px;
+  color: #73d5b8;
+}
+.environment {
+  border: 1px solid #233b4e;
+  border-left: 3px solid #6db5cd;
+  background: #111e2b;
+  padding: 16px 20px;
+  border-radius: 7px;
+  display: grid;
+  grid-template-columns: 175px 1fr;
+  gap: 16px;
+}
+.environment strong {
+  display: block;
+  margin-top: 9px;
+  font-size: 16px;
+}
+.environment dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 22px;
+  margin: 0;
+}
+.environment dl div:last-child {
+  grid-column: 1/-1;
+}
+dt {
+  color: #8096aa;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+}
+dd {
+  margin: 4px 0 0;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.environment dd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  padding: 20px 0;
+}
+.toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 11px;
+  color: #a7bac9;
+}
+.toolbar label:first-child {
+  flex: 1;
+}
+.toolbar .auto {
+  flex-direction: row;
+  align-items: center;
+  align-self: center;
+  white-space: nowrap;
+}
+input,
+select,
+button {
+  font: inherit;
+  border: 1px solid #2a3e50;
+  border-radius: 5px;
+  background: #111e2a;
+  color: #dce7ed;
+  padding: 10px 12px;
+}
+input:focus,
+select:focus {
+  outline: 1px solid #6db5cd;
+}
+button {
+  background: #244d5c;
+  color: #c9f0f5;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+input[type='checkbox'] {
+  accent-color: #6db5cd;
+}
+select {
+  max-width: 220px;
+  font-size: 11px;
+}
+.refresh-time {
+  font-size: 10px;
+  color: #71889e;
+  align-self: center;
+  white-space: nowrap;
+}
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  min-height: 550px;
+  height: calc(100vh - 360px);
+  border: 1px solid #233748;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.graph {
+  position: relative;
+  min-height: 550px;
+  background: #0c1520;
+  display: flex;
+  flex-direction: column;
+}
+.legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px;
+  border-bottom: 1px solid #233748;
+  z-index: 1;
+  font-size: 10px;
+}
+.legend > span:last-child {
+  margin-left: auto;
+  color: #6d8499;
+}
+.graph .react-flow {
+  flex: 1;
+}
+.inspection-node {
+  border: 1px solid #314a5d !important;
+  border-radius: 7px !important;
+  text-align: left !important;
+  background: #142231 !important;
+  color: #dce7ed !important;
+  padding: 14px !important;
+  box-shadow: 0 4px 15px #0003;
+}
+.inspection-node.selected {
+  box-shadow: 0 0 0 2px #6db5cd !important;
+}
+.inspection-node strong {
+  display: block;
+  font-size: 12px;
+  margin: 6px 0;
+}
+.inspection-node small {
+  display: block;
+  font-size: 9px;
+  color: #8fa6b8;
+  overflow-wrap: anywhere;
+}
+.state {
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+.complete {
+  color: #54d6ae;
+}
+.active {
+  color: #71adff;
+}
+.failed {
+  color: #f68d9b;
+}
+.pending {
+  color: #adbac8;
+}
+.unknown {
+  color: #e7bd73;
+}
+.inspection-node.failed {
+  border-left: 3px solid #f68d9b !important;
+}
+.inspection-node.complete {
+  border-left: 3px solid #54d6ae !important;
+}
+.inspection-node.unknown {
+  border-left: 3px solid #e7bd73 !important;
+}
+aside {
+  background: #111d29;
+  padding: 22px;
+  overflow: auto;
+  border-left: 1px solid #233748;
+}
+aside h2 {
+  font-size: 18px;
+  margin: 9px 0 14px;
+}
+aside p {
+  color: #8ea6ba;
+  font-size: 11px;
+  line-height: 1.65;
+}
+.copy {
+  background: #172a39;
+  font-size: 10px;
+  margin: 5px 0 12px;
+}
+.evidence {
+  border-top: 1px solid #263a4b;
+  padding: 14px 0;
+}
+h3 {
+  font-size: 11px;
+  margin: 0 0 8px;
+}
+.evidence time {
+  font-size: 9px;
+  color: #698197;
+}
+.evidence dl div {
+  margin-top: 13px;
+}
+.sources {
+  border-top: 1px solid #263a4b;
+  padding-top: 18px;
+}
+.sources div {
+  margin-top: 14px;
+}
+.sources strong {
+  display: block;
+  font-size: 10px;
+}
+.sources span {
+  font-size: 9px;
+}
+.error {
+  border: 1px solid #723b46;
+  background: #2b1922;
+  color: #fab1ba;
+  padding: 12px;
+  margin-bottom: 15px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+.empty {
+  margin: auto;
+  text-align: center;
+  color: #8da7ba;
+}
+.empty-mark {
+  font-size: 70px;
+  color: #386077;
+}
+.empty h2 {
+  color: #c9dce7;
+  font-size: 20px;
+}
+.empty p {
+  font-size: 12px;
+  line-height: 1.8;
+}
+footer {
+  font-size: 10px;
+  color: #6d8499;
+  padding-top: 14px;
+}
+@media (max-width: 1000px) {
+  main {
+    padding: 18px;
+  }
+  .environment {
+    grid-template-columns: 1fr;
+  }
+  .environment dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .toolbar {
+    flex-wrap: wrap;
+  }
+  .toolbar label:first-child {
+    min-width: 250px;
+  }
+  .workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  .graph {
+    height: 600px;
+  }
+  aside {
+    border-left: 0;
+    border-top: 1px solid #233748;
+    max-height: 600px;
+  }
+}
+@media (max-width: 560px) {
+  .environment dl {
+    grid-template-columns: 1fr;
+  }
+  .toolbar label:first-child {
+    min-width: 100%;
+  }
+  .legend > span:last-child {
+    margin-left: 0;
+  }
+  .toolbar .refresh-time {
+    display: none;
+  }
+}

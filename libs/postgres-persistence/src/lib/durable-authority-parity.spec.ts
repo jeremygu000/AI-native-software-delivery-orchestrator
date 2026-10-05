@@ -257,6 +257,28 @@ const createFixture = async (): Promise<DurableAuthorityFixture & { schema: stri
 
 durableAuthorityContract('PostgreSQL isolated server', createFixture);
 
+it('opens audited observation sessions that reject writes and can recover durable runs', async () => {
+  const fixture = await createFixture();
+  const reader = await PostgresOrchestrationPersistence.connectReadOnly({
+    connectionString: runtimeConnectionString,
+    schema: fixture.schema,
+    role: runtimeRole
+  });
+  try {
+    // Deliberately recover the concrete writer surface to prove server enforcement.
+    if (!(reader instanceof PostgresOrchestrationPersistence)) {
+      throw new Error('Unexpected observation client');
+    }
+    await expect(reader.createRun(durableAuthorityRunRequest())).rejects.toThrow(/read.only/i);
+    expect(await fixture.store.recoverRun('contract-run')).toBeUndefined();
+    await fixture.store.createRun(durableAuthorityRunRequest());
+    expect((await reader.recoverRun('contract-run'))?.run.id).toBe('contract-run');
+  } finally {
+    await reader.close();
+    await fixture.close();
+  }
+});
+
 const createGlobalPermitFixture = async (): Promise<
   GlobalMutationPermitFixture & {
     schema: string;
