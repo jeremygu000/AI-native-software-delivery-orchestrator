@@ -28,6 +28,7 @@ export interface ObservableTuiState {
   error?: string;
   message?: string;
   scroll: number;
+  maxConcurrency: number;
 }
 
 /** Adapts keys to existing CLI commands. Approval and execution remain explicit actions. */
@@ -51,7 +52,8 @@ export class ObservableTuiController {
       input: '',
       repository: options.repository,
       busy: false,
-      scroll: 0
+      scroll: 0,
+      maxConcurrency: 1
     };
   }
   async refresh() {
@@ -154,7 +156,9 @@ export class ObservableTuiController {
             '--repository',
             this.state.repository,
             '--save',
-            '--semantic-review'
+            '--semantic-review',
+            '--max-concurrency',
+            String(this.state.maxConcurrency)
           ]);
         }
       } else if (name === 'return') {
@@ -165,7 +169,10 @@ export class ObservableTuiController {
         this.state.input += text;
       }
     } else if (!this.state.busy) {
-      if (name === 'n') {
+      if (name === 'p') {
+        this.state.maxConcurrency =
+          this.state.maxConcurrency === 4 ? 1 : this.state.maxConcurrency + 1;
+      } else if (name === 'n') {
         this.state.screen = TuiScreen.Request;
         this.state.input = '';
         this.state.error = undefined;
@@ -220,6 +227,7 @@ export function observableDiagnosticText(state: ObservableTuiState): string {
     `Repository: ${state.repository}`,
     state.busy ? 'Working… · observing recorded facts every second' : `Screen: ${state.screen}`
   ];
+  lines.push(`Planning concurrency: ${state.maxConcurrency} · P cycles 1–4 when idle`);
   if (state.error) {
     lines.push(`ERROR: ${state.error}`);
   }
@@ -242,13 +250,27 @@ export function observableDiagnosticText(state: ObservableTuiState): string {
     const view = state.view;
     lines.push(
       `Plan: ${view.planId} · ${view.approved ? 'APPROVED' : 'not approved'}`,
+      `Planned repository commit: ${view.repositoryCommit}`,
       `Run: ${view.runId ?? 'not started'} · ${view.state}`,
       `State source: ${view.stateSource ?? 'not recorded'}; run row: ${view.recordedRunState ?? 'not recorded'}`,
       `Mode: ${view.execution ?? 'not recorded'} / verification ${view.verificationMode ?? 'not recorded'} / review ${view.reviewMode ?? 'not recorded'}`,
+      ...(view.finalRepository
+        ? [
+            `Final repository checks: ${view.finalRepository.status} · clean: ${view.finalRepository.clean}`,
+            `Final HEAD: ${view.finalRepository.head}`,
+            ...(view.finalRepository.detail ? [view.finalRepository.detail] : [])
+          ]
+        : []),
+      'Task summary:',
+      ...view.tasks.map(
+        (task) =>
+          `  ${task.id}: ${task.state} · checks ${task.verification?.status ?? 'not recorded'} · review ${task.review?.recommendation ?? 'not recorded'} · commit ${task.integratedCommit ?? 'not integrated'}`
+      ),
       '',
       ...view.tasks.flatMap((task) => [
         `${task.id} · ${task.state}${task.stage ? ` · last completion phase ${task.stage}` : ''}`,
         `  ${task.goal}`,
+        ...(task.description ? [`  ${task.description}`] : []),
         `  planned: ${task.plannedFiles.join(', ') || 'none'}; actual: ${task.actualFiles.join(', ') || 'not recorded'}`,
         `  verification: ${task.verification?.status ?? 'not recorded'}; review: ${task.review?.recommendation ?? 'not recorded'}`,
         ...(task.verification?.detail ? [`  check output: ${task.verification.detail}`] : []),

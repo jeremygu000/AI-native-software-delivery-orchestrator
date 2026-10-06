@@ -12,6 +12,7 @@ import { analyzeRepository } from '@ai-native-software-delivery-orchestrator/rep
 import {
   ConflictSeverity,
   OrchestrationRunState,
+  TaskState,
   taskLeasePlanFromPredictedImpact
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
@@ -230,6 +231,70 @@ export async function runLocalPlan(
         };
       })
     });
+    let finalRepository;
+    if (
+      execution === 'live' &&
+      graph !== undefined &&
+      recovered.snapshot.taskStates.every((task) => task.state === TaskState.COMPLETED)
+    ) {
+      const lastWorkspace = recovered.workspaces.at(-1)?.workspace;
+      if (lastWorkspace === undefined) {
+        throw new Error('Completed live run has no recorded workspace.');
+      }
+      const firstTask = plan.tasks[0];
+      if (firstTask === undefined) {
+        throw new Error('Completed live run has no planned task.');
+      }
+      const finalVerification = await new RepositoryTaskVerifier(graph).verify({
+        runId: plan.runId,
+        task: {
+          ...firstTask,
+          verification: [
+            ...new Map(
+              plan.tasks
+                .flatMap((task) => task.verification)
+                .map((rule) => [JSON.stringify(rule), rule])
+            ).values()
+          ]
+        },
+        workspace: { ...lastWorkspace, workspacePath: plan.repository }
+      });
+      const head = await promisify(execFile)('git', ['rev-parse', 'HEAD'], {
+        cwd: plan.repository
+      });
+      const status = await promisify(execFile)('git', ['status', '--porcelain'], {
+        cwd: plan.repository
+      });
+      finalRepository = {
+        ...finalVerification,
+        head: head.stdout.trim(),
+        clean: status.stdout.trim() === ''
+      };
+      if (!finalRepository.clean) {
+        finalRepository = {
+          ...finalRepository,
+          status: 'failed' as const,
+          detail: 'Final integration repository has uncommitted changes.'
+        };
+      }
+      const metadataPath = join(directory, 'run.json');
+      await writeFile(
+        metadataPath,
+        JSON.stringify(
+          {
+            id: plan.runId,
+            planId,
+            execution,
+            verification,
+            completion: 'reviewed',
+            review: options.completion?.reviewer === undefined ? 'live-pi' : 'custom',
+            finalRepository
+          },
+          null,
+          2
+        )
+      );
+    }
     return {
       runId: plan.runId,
       planId,
@@ -237,7 +302,8 @@ export async function runLocalPlan(
       verification,
       completion: options.completion === undefined ? 'legacy' : 'reviewed',
       taskStates: recovered.snapshot.taskStates,
-      directory
+      directory,
+      finalRepository
     };
   } finally {
     persistence.close();

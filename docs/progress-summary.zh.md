@@ -1654,3 +1654,26 @@ branches 90.07%、functions 94.41%、lines 94.78%；build／diff checks 通过�
 run 保留证据及合法的部分集成，没有 repair、resume 或手工改目标代码。这是一项真实并行 happy-path
 证明，不是可靠率声明。P4 creates／deletes／spec 与 P5 usability／attribution 延后；repair、retry／resume、
 取消和 distributed authority 仍未实现。`docs/forge-v1-parallel-live.en.md` 记录完整证据及限制。
+
+## Forge v1 P4：从 TUI 开始的完整本地流程
+
+P3 在 `e3513f4` 获得独立接受后，真实终端入口增加 P 键选择规划并发数、完整 task description 和紧凑的
+全任务摘要。本次在干净的公开 pathe clone 中，从实际 TUI 输入自然语言请求，经过真实规划及 semantic
+review，查看并明确批准保存的 plan，再选择 live execution。Run `8134c1b6-5a7b-40ed-9283-b16b1660ced0`
+完成了 A/B 并行 writer 和依赖二者的 C；每项都经过真实仓库 checks 和独立接受的 output review。A/B
+实际重叠 10.7 秒，C 在两项集成之后从 B 的真实组合 commit 开始。没有人工修改目标源码、模型输出、
+checks 或数据库事实来制造成功。
+
+所有 task 集成后，Forge 在实际 integration root 再执行批准 verification rules 的去重合集，并保存最终
+passed／failed、clean 和 HEAD。RunView、TUI 与 GET-only React Flow 显示同一组事实。Task 完成与最终仓库
+检查失败是不同事实：最终命令失败或生成脏文件不会改写已完成 task，也不会回滚 Git。原 TUI、read model
+和实际浏览器一致显示三项 COMPLETED、最终 passed／clean，以及 HEAD
+`4f2b9f7753badb6703337f14548be6eda81bf5a3`；原 TUI 显示结果后正常退出。
+
+此前三份独立规划、批准的 TUI plan 分别因非 JSON review、模型测试格式和遗漏 findings 诚实失败，保留
+已消费 plan、worktree、证据及合法部分集成，没有 repair、retry 或 resume。Prompt 重申严格 JSON 契约，
+没有放宽解析。目标最终 test／build 通过：492 tests，原 8 skips 和 8 todos 保留，Git 干净。Forge check
+通过 33 文件 437/437 tests、format／type／lint 和原四项 90% gates：statements 94.73%、branches 90.03%、
+functions 94.44%、lines 94.75%；build 通过。这是一项完整 TUI happy-path 证明，不是模型可靠率声明。
+`docs/forge-v1-full-local-e2e.en.md` 记录证据及限制；repair、recovery、retry／resume、取消、attribution
+和新的 backend／control-plane 能力仍未实现。

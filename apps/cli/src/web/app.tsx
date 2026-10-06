@@ -152,6 +152,13 @@ function App() {
             {view.warnings.map((warning) => (
               <p key={warning}>{warning}</p>
             ))}
+            {view.finalRepository && (
+              <p>
+                Final repository checks: {view.finalRepository.status} · clean:{' '}
+                {String(view.finalRepository.clean)} · HEAD {view.finalRepository.head}
+                {view.finalRepository.detail ? ` · ${view.finalRepository.detail}` : ''}
+              </p>
+            )}
           </section>
           <div className="content">
             <section className="graph">

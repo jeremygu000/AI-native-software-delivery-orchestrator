@@ -35,6 +35,14 @@ export const runViewSchema = z.object({
   execution: z.string().optional(),
   verificationMode: z.string().optional(),
   reviewMode: z.string().optional(),
+  finalRepository: z
+    .object({
+      status: z.enum(['passed', 'failed']),
+      detail: z.string().optional(),
+      head: z.string(),
+      clean: z.boolean()
+    })
+    .optional(),
   tasks: z.array(taskViewSchema),
   edges: z.array(
     z.object({

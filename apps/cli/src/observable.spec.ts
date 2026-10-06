@@ -274,6 +274,7 @@ describe('Observable Forge local product', () => {
         dependencies: {
           planRepository: async (request) => {
             planned++;
+            expect(request.maxConcurrency).toBe(2);
             expect(await readFile(request.specificationPath, 'utf8')).toBe(
               'First line\nSecond line'
             );
@@ -292,6 +293,13 @@ describe('Observable Forge local product', () => {
         }
       });
       await tui.refresh();
+      await tui.key('p');
+      await tui.key('p');
+      await tui.key('p');
+      expect(tui.state.maxConcurrency).toBe(4);
+      await tui.key('p');
+      expect(tui.state.maxConcurrency).toBe(1);
+      await tui.key('p');
       await tui.key('n');
       await tui.key('', 'First line');
       await tui.key('return');
@@ -372,6 +380,30 @@ describe('Observable Forge local product', () => {
       db.prepare('DELETE FROM task_workspaces WHERE run_id = ?').run(result.runId);
       db.close();
       const active = runViewSchema.parse(await readRunView(f.store, plan.id));
+      const metadata = JSON.parse(await readFile(join(result.directory, 'run.json'), 'utf8'));
+      await writeFile(
+        join(result.directory, 'run.json'),
+        JSON.stringify({
+          ...metadata,
+          finalRepository: {
+            status: 'failed',
+            detail: 'Combined checks failed',
+            head: git(f.repository, 'rev-parse', 'HEAD'),
+            clean: false
+          }
+        })
+      );
+      const finalFailure = await readRunView(f.store, plan.id);
+      expect(finalFailure.finalRepository).toMatchObject({ status: 'failed', clean: false });
+      const presentation = new ObservableTuiController({
+        directory: f.state,
+        repository: f.repository
+      });
+      presentation.state.view = finalFailure;
+      presentation.state.screen = TuiScreen.Result;
+      expect(renderObservableTui(presentation.state, 160, 50)).toContain(
+        'Final repository checks: failed'
+      );
       expect(active.state).toBe('ACTIVE');
       expect(active.recordedRunState).toBe('ACTIVE');
       expect(active.tasks[0]?.state).toBe('PENDING');

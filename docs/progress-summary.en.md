@@ -1894,3 +1894,29 @@ resumed or manually edited. This is one demonstrated parallel happy path, not a 
 P4 creates/deletes/spec work and P5 usability/attribution remain deferred; repair, retry/resume,
 cancellation and distributed authority remain unimplemented. Full evidence and limits are in
 `docs/forge-v1-parallel-live.en.md`.
+
+## Forge v1 P4: full local workflow from the TUI
+
+After acceptance of P3 at `e3513f4`, the real terminal now selects planning concurrency with P and
+shows full task descriptions and a compact all-task summary. A fresh public pathe acceptance entered
+the request through the actual TUI, used real planning and semantic review, explicitly approved the
+saved plan, and selected live execution. Run `8134c1b6-5a7b-40ed-9283-b16b1660ced0` completed A/B
+parallel writers and dependent C, each with real repository checks and independent accepting review.
+A/B overlapped for 10.7 seconds; C started after both integrations from B's actual combined commit.
+No person changed target source, model output, checks or persistence to obtain success.
+
+After task integration, Forge now reruns the union of approved verification rules on the actual
+integration root and records final passed/failed checks, clean status and HEAD. RunView, TUI and the
+GET-only React Flow page display these same facts. Task completion and final-root failure remain
+distinct: failed final commands or a dirty root do not rewrite completed tasks or roll back Git.
+The TUI, read model and actual browser agreed on three completions and final passed/clean HEAD
+`4f2b9f7753badb6703337f14548be6eda81bf5a3`; the original TUI exited normally after displaying it.
+
+Three preceding fresh TUI plans failed honestly (non-JSON review, model formatting, omitted review
+findings). Their consumed plans, worktrees and legitimate partial integrations remain preserved; no
+repair/retry/resume was added. The prompt repeats the strict JSON contract without relaxed parsing.
+Final target test/build pass with 492 tests, existing 8 skips and 8 todos, and clean Git. Forge check
+passes 437/437 tests in 33 files, format/type/lint and unchanged 90% gates: statements 94.73%, branches
+90.03%, functions 94.44%, lines 94.75%; build passes. This demonstrates one full TUI happy path, not
+model reliability. `docs/forge-v1-full-local-e2e.en.md` records evidence and limits; repair, recovery,
+retry/resume, cancellation, attribution and new backend/control-plane features remain unimplemented.

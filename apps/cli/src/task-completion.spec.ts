@@ -17,7 +17,7 @@ import {
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
-async function fixture() {
+async function fixture(finalCheckFails = false) {
   const repository = await mkdtemp(join(realpathSync(tmpdir()), 'forge-completion-'));
   const state = await mkdtemp(join(realpathSync(tmpdir()), 'forge-completion-state-'));
   git(repository, 'init', '--initial-branch=main');
@@ -27,7 +27,8 @@ async function fixture() {
   await writeFile(join(repository, 'other.txt'), 'untouched\n');
   await writeFile(
     join(repository, 'check.cjs'),
-    `const fs = require('node:fs'); if(fs.readFileSync('value.txt','utf8') !== 'good\\n') { console.error('value must be good'); process.exit(1); }`
+    `const fs = require('node:fs'); if(fs.readFileSync('value.txt','utf8') !== 'good\\n') { console.error('value must be good'); process.exit(1); }
+${finalCheckFails ? "if(require('node:child_process').execFileSync('git',['branch','--show-current'],{encoding:'utf8'}).trim() === 'main') { console.error('Final repository check failed'); process.exit(1); }" : ''}`
   );
   await writeFile(
     join(repository, 'package.json'),
@@ -179,11 +180,98 @@ describe('trustworthy local task completion', () => {
       expect(JSON.parse(output)).toMatchObject({
         execution: 'live',
         verification: 'repository',
-        taskStates: [{ taskId: 'change', state: 'COMPLETED' }]
+        taskStates: [{ taskId: 'change', state: 'COMPLETED' }],
+        finalRepository: {
+          status: 'passed',
+          clean: true,
+          head: git(f.repository, 'rev-parse', 'HEAD')
+        }
       });
       expect(sessions).toBe(1);
       expect(await readFile(join(f.repository, 'value.txt'), 'utf8')).toBe('good\n');
       expect(git(f.repository, 'status', '--porcelain')).toBe('');
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('reports a failed final repository check without rewriting integrated task facts', async () => {
+    const f = await fixture(true);
+    try {
+      const result = await runLocalPlan(f.store, f.plan.id, {
+        executionMode: 'live',
+        liveGateway: {
+          start: async (request) => {
+            await request.onStarted('final-check-session');
+            await request.executeTool({
+              name: 'forge_write',
+              path: 'value.txt',
+              content: 'good\n'
+            });
+            return { sessionId: 'final-check-session' };
+          }
+        },
+        verificationMode: 'repository',
+        completion: { graph: f.graph, reviewer }
+      });
+      expect(result.taskStates[0]?.state).toBe('COMPLETED');
+      expect(result.finalRepository).toMatchObject({ status: 'failed', clean: true });
+      if (result.finalRepository?.status !== 'failed') {
+        throw new Error('Expected the actual final repository check to fail.');
+      }
+      expect(result.finalRepository.detail).toContain('Final repository check failed');
+      expect(git(f.repository, 'rev-parse', 'HEAD')).not.toBe(f.base);
+      expect(
+        JSON.parse(await readFile(join(result.directory, 'run.json'), 'utf8')).finalRepository
+      ).toEqual(result.finalRepository);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('reports a dirty final integration repository even when its command succeeds', async () => {
+    const f = await fixture();
+    try {
+      await writeFile(
+        join(f.repository, 'check.cjs'),
+        (await readFile(join(f.repository, 'check.cjs'), 'utf8')) +
+          "\nif(require('node:child_process').execFileSync('git',['branch','--show-current'],{encoding:'utf8'}).trim() === 'main') fs.writeFileSync('final-generated.txt','generated');"
+      );
+      git(f.repository, 'add', 'check.cjs');
+      git(f.repository, 'commit', '-m', 'Final command generates an untracked file');
+      const plan = await f.store.save(f.repository, {
+        attempts: 1,
+        semanticReview: { recommendation: 'accept', summary: 'Same saved task.', requirements: [] },
+        specification: { tasks: f.plan.tasks },
+        impacts: f.plan.impacts,
+        hardConflicts: [],
+        riskConflicts: [],
+        schedule: f.plan.schedule,
+        executionPlan: { waves: [{ index: 0, taskIds: ['change'] }] }
+      });
+      await f.store.approve(plan.id);
+      const result = await runLocalPlan(f.store, plan.id, {
+        executionMode: 'live',
+        liveGateway: {
+          start: async (request) => {
+            await request.onStarted('dirty-final-session');
+            await request.executeTool({
+              name: 'forge_write',
+              path: 'value.txt',
+              content: 'good\n'
+            });
+            return { sessionId: 'dirty-final-session' };
+          }
+        },
+        verificationMode: 'repository',
+        completion: { graph: f.graph, reviewer }
+      });
+      expect(result.finalRepository).toMatchObject({
+        status: 'failed',
+        clean: false,
+        detail: 'Final integration repository has uncommitted changes.'
+      });
+      expect(result.taskStates[0]?.state).toBe('COMPLETED');
     } finally {
       await f.close();
     }
@@ -581,6 +669,9 @@ describe('trustworthy local task completion', () => {
           expect(generation.prompt).toContain('findings MUST be an empty array');
           expect(generation.prompt).toContain('not praise');
           expect(generation.prompt).toContain('at least one actionable unresolved defect');
+          expect(generation.prompt.endsWith('Never omit findings, including for accept.')).toBe(
+            true
+          );
           return {
             sessionId: 'controlled',
             output: '{"recommendation":"accept","summary":"Reviewed","findings":[]}'

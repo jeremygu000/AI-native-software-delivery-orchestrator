@@ -12,7 +12,7 @@ import {
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { LocalPlanStore } from './local-plan.js';
 import { CompletionStage, CompletionScope, CompletionOutcome } from './completion-values.js';
-import type { RunView, TaskView } from './run-view-schema.js';
+import { runViewSchema, type RunView, type TaskView } from './run-view-schema.js';
 
 const rowSchema = z.object({ payload: z.string() });
 const evidenceSchema = z.object({
@@ -95,11 +95,17 @@ export async function readRunView(store: LocalPlanStore, planId: string): Promis
   const metadata = await optionalFile(join(directory, 'run.json'));
   if (metadata !== undefined) {
     const parsed = z
-      .object({ execution: z.string(), verification: z.string(), review: z.string().optional() })
+      .object({
+        execution: z.string(),
+        verification: z.string(),
+        review: z.string().optional(),
+        finalRepository: runViewSchema.shape.finalRepository
+      })
       .parse(JSON.parse(metadata));
     view.execution = parsed.execution;
     view.verificationMode = parsed.verification;
     view.reviewMode = parsed.review;
+    view.finalRepository = parsed.finalRepository;
   }
   let db: Database.Database;
   try {
