@@ -1677,3 +1677,37 @@ passed／failed、clean 和 HEAD。RunView、TUI 与 GET-only React Flow 显示�
 functions 94.44%、lines 94.75%；build 通过。这是一项完整 TUI happy-path 证明，不是模型可靠率声明。
 `docs/forge-v1-full-local-e2e.en.md` 记录证据及限制；repair、recovery、retry／resume、取消、attribution
 和新的 backend／control-plane 能力仍未实现。
+
+## 编译期声明的覆盖率命名约定
+
+P5 的独立人工验收由用户执行，本次不再运行 live 验收。零覆盖率的 CSS 声明和 repository graph 契约
+没有可执行代码。Repository graph 契约改名为 `repository-graph.types.ts`，引用同步更新，domain 包对外
+公开的类型保持不变。覆盖率统一排除 `**/*.d.ts` 和 `**/*.types.ts`，不再维护单个文件路径的例外；这些
+文件仍参与 TypeScript 检查。`.types.ts` 只用于纯 type／interface，运行时 schema、函数及常量仍须参与
+覆盖率统计。原四项 90% gates 保持不变。
+
+Format、type check、lint 和 build 通过；覆盖率运行通过 33 文件 437/437 tests，运行时代码比例保持
+94.73% statements、90.03% branches、94.44% functions、94.75% lines，两份纯类型文件不再列为零覆盖。
+首次 aggregate check 遇到共享 coverage 目录冲突，因此使用独立临时报告目录重跑覆盖率并通过。
+
+## Semantic reviewer 的运行时覆盖率
+
+Semantic plan reviewer 与声明文件不同，会构造 prompt 并执行运行时逻辑，因此继续参与覆盖率统计。
+新增五个测试用例，覆盖带路径／不带路径的需求来源标签、不修改输入的确定性 task 排序、保留同 key
+摘要交由下游验证，以及默认 adapter 接线。模型结果仍是 advisory，原样交给 semantic validator。
+测试使用受控 gateway 或作用域内的 adapter spy，不发起 live inference，也不代替用户的人工产品验收。
+
+该文件的 statements、branches、functions 和 lines 均达到 100%。`pnpm check` 通过 33 文件
+442/442 tests，format、type check、lint 及原四项 90% gates 均通过；总体覆盖率为 94.78% statements、
+90.29% branches、94.69% functions、94.81% lines，build 通过。
+
+## 运行时边界覆盖率补强
+
+新增受控测试覆盖默认 Pi SDK adapter 与错误传播、退出时 raw mode／屏幕／监听器恢复、非交互终端
+拒绝、HTTP assets 与缺失 plan 响应、端口占用和重复关闭，以及 local run 的模式与 scope 校验。
+仓库分析和默认 reviewer 接线使用作用域内的 spy，不发起付费推理，也不代替用户的人工产品验收。
+生产代码与覆盖率排除配置没有修改。Pi gateway 四项指标均达到 100%；TUI statements／lines 达到
+96.47%／98.19%，HTTP branches 提升到 80%，local-run branches 提升到 86.58%。剩余缺口包含防御性
+server 路径和尚未使用的 workspace 操作转发，没有通过新增 ignore 隐藏。`pnpm check` 通过 36 文件
+451/451 tests，原门槛保持不变；总体为 95.82% statements、91.03% branches、95.32% functions、
+95.88% lines，build 与 diff check 通过。

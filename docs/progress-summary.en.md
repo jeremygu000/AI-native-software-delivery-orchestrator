@@ -1920,3 +1920,44 @@ passes 437/437 tests in 33 files, format/type/lint and unchanged 90% gates: stat
 90.03%, functions 94.44%, lines 94.75%; build passes. This demonstrates one full TUI happy path, not
 model reliability. `docs/forge-v1-full-local-e2e.en.md` records evidence and limits; repair, recovery,
 retry/resume, cancellation, attribution and new backend/control-plane features remain unimplemented.
+
+## Coverage conventions for compile-time declarations
+
+The user will conduct P5's independent manual acceptance; no further live acceptance is being run
+by this change. The zero-coverage CSS declaration and repository graph contracts contain no executable
+code. Repository graph contracts are now named `repository-graph.types.ts`, and references follow the
+new defining filename while the domain package's public types remain unchanged. Coverage excludes
+`**/*.d.ts` and `**/*.types.ts` by convention rather than maintaining a special-case path. These files
+remain part of TypeScript checking. The `.types.ts` convention is reserved for pure types/interfaces;
+runtime schemas, functions and constants must remain in coverage. All four 90% gates are unchanged.
+
+Format, type checking, lint and build pass. Coverage passes 437/437 tests in 33 files with the same
+runtime percentages (94.73% statements, 90.03% branches, 94.44% functions, 94.75% lines); neither pure
+type file appears as a zero-coverage entry. The first aggregate check encountered a shared coverage
+directory conflict, so coverage was rerun successfully in an independent temporary report directory.
+
+## Semantic reviewer runtime coverage
+
+Unlike declaration files, the semantic plan reviewer builds prompts and executes runtime logic, so it
+remains included in coverage. Five additional test cases now cover source labels with and without a
+specification path, deterministic task ordering without input mutation, preservation of equal-key
+summaries for downstream validation, and default adapter wiring. Model responses remain advisory and
+are returned unchanged to the semantic validator. The tests use controlled gateways or a scoped
+adapter spy; they perform no live inference or manual product acceptance.
+
+The reviewer's statements, branches, functions and lines now all reach 100%. `pnpm check` passes
+442/442 tests in 33 files, formatting, type checking, lint and unchanged 90% coverage gates. Aggregate
+coverage is 94.78% statements, 90.29% branches, 94.69% functions and 94.81% lines; build passes.
+
+## Runtime boundary coverage follow-up
+
+Additional controlled tests exercise the default Pi SDK adapter and error propagation, terminal
+raw-mode/screen/listener restoration on exit, non-interactive terminal rejection, HTTP asset and
+missing-plan responses, occupied ports and repeated server shutdown, and local execution mode/scope
+validation before integration. Repository analysis and default reviewer wiring are tested with scoped
+spies; no paid inference or manual product acceptance is performed. Production code and coverage
+exclusions are unchanged. Pi gateway coverage reaches 100% in all four metrics. TUI statements/lines
+reach 96.47%/98.19%; HTTP branches rise to 80%, and local-run branches to 86.58%. Remaining gaps include
+defensive server paths and unused workspace-operation forwarding, rather than being hidden by new
+exclusions. `pnpm check` passes 451/451 tests in 36 files with unchanged gates; aggregate coverage is
+95.82% statements, 91.03% branches, 95.32% functions and 95.88% lines. Build and diff checks pass.

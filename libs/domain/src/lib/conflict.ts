@@ -1,4 +1,4 @@
-import type { FileId, ProjectId, RepositoryGraph, SymbolId } from './repository-graph.js';
+import type { FileId, ProjectId, RepositoryGraph, SymbolId } from './repository-graph.types.js';
 import type { TaskContract } from './task-contract.js';
 import { z } from 'zod';
 

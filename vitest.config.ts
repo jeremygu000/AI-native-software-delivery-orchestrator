@@ -9,7 +9,14 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['apps/*/src/**/*.ts', 'libs/*/src/**/*.ts'],
-      exclude: ['**/*.spec.ts', '**/src/index.ts', 'apps/cli/src/main.ts'],
+      exclude: [
+        '**/*.spec.ts',
+        '**/*.d.ts',
+        // Pure type modules contain no runtime code to instrument.
+        '**/*.types.ts',
+        '**/src/index.ts',
+        'apps/cli/src/main.ts'
+      ],
       thresholds: {
         branches: 90,
         functions: 90,

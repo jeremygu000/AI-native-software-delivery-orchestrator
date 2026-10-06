@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RepositoryGraph } from '@ai-native-software-delivery-orchestrator/domain';
 import type { PreparedOrchestrationPlan } from '@ai-native-software-delivery-orchestrator/planning';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as repositoryAnalysis from '@ai-native-software-delivery-orchestrator/repository-analysis';
 import { LocalPlanStore } from './local-plan.js';
 import { runLocalPlan } from './local-run.js';
 import { createForgeProgram } from './app.js';
@@ -137,6 +138,43 @@ const reviewer: OutputReviewer = {
 };
 
 describe('trustworthy local task completion', () => {
+  it('analyzes the repository when no graph is supplied and uses the default output reviewer', async () => {
+    const f = await fixture();
+    const analyze = vi.spyOn(repositoryAnalysis, 'analyzeRepository').mockResolvedValue({
+      graph: f.graph,
+      providerId: 'fixture'
+    });
+    const review = vi.spyOn(PiOutputReviewer.prototype, 'review').mockResolvedValue({
+      recommendation: 'accept',
+      summary: 'Verified change',
+      findings: []
+    });
+    try {
+      const result = await runLocalPlan(f.store, f.plan.id, {
+        verificationMode: 'repository',
+        completion: {},
+        agentRunner: {
+          run: async (request) => {
+            await request.onStarted({});
+            await writeFile(join(request.workspace.workspacePath, 'value.txt'), 'good\n');
+            return { status: 'completed' };
+          }
+        }
+      });
+      expect(analyze).toHaveBeenCalledWith(f.repository);
+      expect(review).toHaveBeenCalledOnce();
+      expect(result.taskStates[0]?.state).toBe('COMPLETED');
+      expect(JSON.parse(await readFile(join(result.directory, 'run.json'), 'utf8'))).toMatchObject({
+        verification: 'repository',
+        review: 'live-pi'
+      });
+    } finally {
+      analyze.mockRestore();
+      review.mockRestore();
+      await f.close();
+    }
+  });
+
   it('routes the explicit live CLI mode through Pi tools, real checks and one output review', async () => {
     const f = await fixture();
     let sessions = 0;
@@ -537,6 +575,17 @@ describe('trustworthy local task completion', () => {
   it('validates verifier mode before consuming an approved plan', async () => {
     const f = await fixture();
     try {
+      await expect(runLocalPlan(f.store, f.plan.id, { executionMode: 'live' })).rejects.toThrow(
+        'requires repository verification'
+      );
+      await expect(
+        runLocalPlan(f.store, f.plan.id, {
+          executionMode: 'live',
+          verificationMode: 'repository',
+          completion: { graph: f.graph },
+          agentRunner: { run: async () => ({ status: 'completed' }) }
+        })
+      ).rejects.toThrow('not an injected controlled agent');
       await expect(
         runLocalPlan(f.store, f.plan.id, { verificationMode: 'custom' })
       ).rejects.toThrow('injected verifier');
@@ -548,6 +597,55 @@ describe('trustworthy local task completion', () => {
       await f.close();
     }
   });
+
+  it.each(['outside-project', 'unplanned-file'] as const)(
+    'stops live output for %s without integrating or calling a second writer',
+    async (kind) => {
+      const f = await fixture();
+      let sessions = 0;
+      try {
+        const graph = {
+          ...f.graph,
+          projects: new Map(
+            [...f.graph.projects].map(([id, project]) => [
+              id,
+              { ...project, root: kind === 'outside-project' ? 'src' : '.' }
+            ])
+          )
+        };
+        const result = await runLocalPlan(f.store, f.plan.id, {
+          executionMode: 'live',
+          verificationMode: 'repository',
+          completion: {
+            graph,
+            reviewer: {
+              review: async () => ({ recommendation: 'accept', summary: 'Accept', findings: [] })
+            }
+          },
+          liveGateway: {
+            start: async (options) => {
+              sessions += 1;
+              await options.onStarted('scope-test');
+              await options.executeTool({
+                name: 'forge_write',
+                path: 'new.txt',
+                content: 'unplanned'
+              });
+              return { sessionId: 'scope-test' };
+            }
+          }
+        });
+        expect(sessions).toBe(1);
+        expect(result.taskStates[0]?.state).not.toBe('COMPLETED');
+        expect(git(f.repository, 'rev-parse', 'HEAD')).toBe(f.base);
+        await expect(readFile(join(result.directory, 'task-1', 'new.txt'))).rejects.toMatchObject({
+          code: 'ENOENT'
+        });
+      } finally {
+        await f.close();
+      }
+    }
+  );
 
   it.each(['binary', 'symlink', 'large', 'outside'] as const)(
     'inspects newly created files and rejects %s output without integration',
