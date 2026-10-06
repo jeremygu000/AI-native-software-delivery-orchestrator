@@ -155,7 +155,29 @@ export async function runLocalPlan(
     const runtime = new OrchestrationRuntime({
       scheduler: new DeterministicScheduler(),
       persistence,
-      workspaceManager: new GitWorkspaceManager(),
+      workspaceManager: (() => {
+        const manager = new GitWorkspaceManager();
+        return {
+          create: async (request: Parameters<typeof manager.create>[0]) => {
+            const task = plan.tasks.find((candidate) => candidate.id === request.taskId)!;
+            if (task.dependencies.length === 0) {
+              return manager.create(request);
+            }
+            const head = await promisify(execFile)('git', ['rev-parse', request.integrationRef], {
+              cwd: request.integrationRepositoryPath
+            });
+            return manager.create({ ...request, baseRef: head.stdout.trim() });
+          },
+          commit: (request: Parameters<typeof manager.commit>[0]) => manager.commit(request),
+          integrate: (workspace: Parameters<typeof manager.integrate>[0]) =>
+            manager.integrate(workspace),
+          resumeIntegration: (workspace: Parameters<typeof manager.resumeIntegration>[0]) =>
+            manager.resumeIntegration(workspace),
+          abortIntegration: (workspace: Parameters<typeof manager.abortIntegration>[0]) =>
+            manager.abortIntegration(workspace),
+          dispose: (request: Parameters<typeof manager.dispose>[0]) => manager.dispose(request)
+        };
+      })(),
       writeGuard,
       agentRunner,
       verifier,
@@ -191,7 +213,10 @@ export async function runLocalPlan(
           taskId: task.id,
           agentId: `local-agent-${index + 1}`,
           impact: { predicted: impact },
-          leasePlan: taskLeasePlanFromPredictedImpact(impact),
+          leasePlan: taskLeasePlanFromPredictedImpact({
+            ...impact,
+            projectsWritten: impact.explicitProjectsWritten
+          }),
           workspace: {
             id: `workspace-${index + 1}`,
             runId: plan.runId,

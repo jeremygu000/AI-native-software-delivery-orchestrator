@@ -117,6 +117,19 @@ export async function readRunView(store: LocalPlanStore, planId: string): Promis
       view.state = run.state;
       view.recordedRunState = run.state;
       view.stateSource = 'run-record';
+      const initial = db
+        .prepare(
+          'SELECT snapshot_json AS payload FROM scheduler_decisions WHERE run_id = ? ORDER BY sequence LIMIT 1'
+        )
+        .get(plan.runId);
+      const initialStates =
+        initial === undefined
+          ? []
+          : z
+              .object({
+                taskStates: z.array(z.object({ taskId: z.string(), state: taskStateSchema }))
+              })
+              .parse(JSON.parse(rowSchema.parse(initial).payload)).taskStates;
       const transitions = z
         .array(z.object({ task_id: z.string(), to_state: taskStateSchema, sequence: z.number() }))
         .parse(
@@ -128,7 +141,9 @@ export async function readRunView(store: LocalPlanStore, planId: string): Promis
         );
       for (const task of view.tasks) {
         task.state =
-          transitions.findLast((row) => row.task_id === task.id)?.to_state ?? 'NOT_RECORDED';
+          transitions.findLast((row) => row.task_id === task.id)?.to_state ??
+          initialStates.find((row) => row.taskId === task.id)?.state ??
+          'NOT_RECORDED';
       }
       for (const row of z
         .array(z.object({ sequence: z.number(), payload: z.string() }))

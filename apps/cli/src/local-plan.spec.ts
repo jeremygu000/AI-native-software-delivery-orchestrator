@@ -88,6 +88,90 @@ async function fixture() {
 }
 
 describe('simple local plan product path', () => {
+  it('runs disjoint file writers in the same project concurrently without widening their reservations', async () => {
+    const f = await fixture();
+    try {
+      await writeFile(join(f.directory, 'other.txt'), 'base\n');
+      git(f.directory, 'add', '.');
+      git(f.directory, 'commit', '-m', 'second file');
+      const first = f.prepared.specification.tasks[0];
+      const impact = f.prepared.impacts[0];
+      const prepared: PreparedOrchestrationPlan = {
+        ...f.prepared,
+        specification: {
+          tasks: [
+            first,
+            { ...first, id: 'edit-other', expectedWrites: [{ type: 'file', value: 'other.txt' }] },
+            {
+              ...first,
+              id: 'combined',
+              dependencies: [first.id, 'edit-other'],
+              expectedWrites: [{ type: 'file', value: 'combined.txt' }]
+            }
+          ]
+        },
+        impacts: [
+          { ...impact, projectsWritten: new Set(['fixture']) },
+          {
+            ...impact,
+            taskId: 'edit-other',
+            projectsWritten: new Set(['fixture']),
+            filesWritten: new Set(['fixture:other.txt']),
+            explicitFilesWritten: new Set(['fixture:other.txt'])
+          },
+          {
+            ...impact,
+            taskId: 'combined',
+            filesWritten: new Set(['fixture:combined.txt']),
+            explicitFilesWritten: new Set(['fixture:combined.txt'])
+          }
+        ],
+        schedule: { maxConcurrency: 2 }
+      };
+      const plan = await f.store.save(f.directory, prepared);
+      await f.store.approve(plan.id);
+      const bothStarted = Promise.withResolvers<void>();
+      const started: string[] = [];
+      const result = await runLocalPlan(f.store, plan.id, {
+        agentRunner: {
+          run: async (request) => {
+            started.push(request.taskId);
+            expect(request.leases?.map((lease) => lease.resource.type)).toEqual(['file']);
+            await request.onStarted?.({ sessionRef: { backend: 'test', value: request.taskId } });
+            if (request.taskId === 'combined') {
+              expect(
+                await readFile(join(request.workspace.workspacePath, 'value.txt'), 'utf8')
+              ).toBe('changed\n');
+              expect(
+                await readFile(join(request.workspace.workspacePath, 'other.txt'), 'utf8')
+              ).toBe('changed\n');
+              expect(request.workspace.baseRef).toBe(git(f.directory, 'rev-parse', 'HEAD'));
+              await writeFile(join(request.workspace.workspacePath, 'combined.txt'), 'combined\n');
+              return { status: 'completed' };
+            }
+            if (started.length === 2) {
+              bothStarted.resolve();
+            }
+            await bothStarted.promise;
+            await writeFile(
+              join(
+                request.workspace.workspacePath,
+                request.taskId === first.id ? 'value.txt' : 'other.txt'
+              ),
+              'changed\n'
+            );
+            return { status: 'completed' };
+          }
+        }
+      });
+      expect(started.slice(0, 2).toSorted()).toEqual(['edit-other', 'edit-value']);
+      expect(started[2]).toBe('combined');
+      expect(result.taskStates.every((task) => task.state === 'COMPLETED')).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('labels default no-op controlled execution honestly and preserves a failed verifier result without integration', async () => {
     const f = await fixture();
     try {

@@ -1631,3 +1631,26 @@ branches 90.05%、functions 94.62%、lines 94.84%。CLI／web build 通过。真
 passed check、接受的 review 与集成 commit。终端交互由 controller 测试，未声称 native terminal 自动化或
 新的付费模型验收。Repair、retry／resume、取消、attribution 和远程服务仍未实现。
 `docs/forge-v1-observable.en.md` 说明使用方法与限制。
+
+## Forge v1 P3：真实多任务并行 happy path
+
+P2 `65dd102` 独立验收后，真实 Pi／DeepSeek planner、semantic reviewer 和显式用户批准产生 pathe 三个
+任务：A／B 各自修改独立源码和测试，C 依赖两者并测试实际组合行为。Run
+`cef92ad5-5b07-4c09-9383-a7631c575647` 三项全部经过真实仓库 test／build、独立接受的 output review 和
+串行 Git 集成。A／B 在 UTC 07:46:35.423／424 启动，不同 worktree 和 Pi session 真实重叠 19.3 秒；C 在
+两项集成后的 07:50:10.788 才启动，记录 base 为合并后的 `569df62982e5d7810941021119b3584bde8ae824`。
+最终目标 commit 为 `6888775489130c3567090d047e7ef7354a0fccf9`，Git 工作树干净。
+
+只修正本地 composition／read-side 三项实际断点：派生的包含项目不再把精确文件 reservation 扩成整个
+项目；有依赖的 task 在既有串行 lifecycle 内从当前集成 branch 创建 worktree；尚无后续 transition 时，
+使用已记录的 scheduler 初始状态展示 PENDING。没有新增 scheduler、SQLite schema、ownership protocol 或
+执行 engine。独立的受控真实 Git 回归验证 writer 重叠、依赖 task 读取已集成改动及诚实的 RUNNING／PENDING
+显示。
+
+实际 React Flow 页面显示过依赖等待及最后三个完成状态；真实 pseudo-terminal 打开 TUI、选择完成 run，
+显示 verification／review／终态事实。目标最终 checks 通过 496 tests，保留原 8 skip 和 8 todo，build
+通过。Forge check 通过 33 文件 435/435 tests、format／type／lint 和原四项 90% gates：statements 94.75%、
+branches 90.07%、functions 94.41%、lines 94.78%；build／diff checks 通过。此前两次单独规划、批准的失败
+run 保留证据及合法的部分集成，没有 repair、resume 或手工改目标代码。这是一项真实并行 happy-path
+证明，不是可靠率声明。P4 creates／deletes／spec 与 P5 usability／attribution 延后；repair、retry／resume、
+取消和 distributed authority 仍未实现。`docs/forge-v1-parallel-live.en.md` 记录完整证据及限制。

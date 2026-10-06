@@ -81,6 +81,59 @@ async function fixture() {
 }
 
 describe('Observable Forge local product', () => {
+  it('shows recorded pending dependency tasks while two writers are running', async () => {
+    const f = await fixture();
+    try {
+      const first = f.prepared.specification.tasks[0];
+      const impact = f.prepared.impacts[0];
+      const prepared: PreparedOrchestrationPlan = {
+        ...f.prepared,
+        specification: {
+          tasks: [
+            first,
+            { ...first, id: 'second' },
+            { ...first, id: 'dependent', dependencies: ['edit', 'second'] }
+          ]
+        },
+        impacts: [
+          impact,
+          { ...impact, taskId: 'second', filesWritten: new Set(['repo:other.txt']) },
+          { ...impact, taskId: 'dependent' }
+        ],
+        schedule: { maxConcurrency: 2 }
+      };
+      const plan = await f.store.save(f.repository, prepared);
+      await f.store.approve(plan.id);
+      const writersStarted = Promise.withResolvers<void>();
+      const releaseWriters = Promise.withResolvers<void>();
+      let count = 0;
+      const running = runLocalPlan(f.store, plan.id, {
+        agentRunner: {
+          run: async (request) => {
+            await request.onStarted({});
+            if (++count === 2) {
+              writersStarted.resolve();
+            }
+            if (request.taskId !== 'dependent') {
+              await releaseWriters.promise;
+            }
+            return { status: 'completed' };
+          }
+        }
+      });
+      await writersStarted.promise;
+      try {
+        const view = await readRunView(f.store, plan.id);
+        expect(view.tasks.map((task) => task.state)).toEqual(['RUNNING', 'RUNNING', 'PENDING']);
+      } finally {
+        releaseWriters.resolve();
+        await running;
+      }
+    } finally {
+      await f.close();
+    }
+  });
+
   it('reads real SQLite terminal facts and completion evidence without changing the database, plan or Git', async () => {
     const f = await fixture();
     try {
@@ -321,9 +374,11 @@ describe('Observable Forge local product', () => {
       const active = runViewSchema.parse(await readRunView(f.store, plan.id));
       expect(active.state).toBe('ACTIVE');
       expect(active.recordedRunState).toBe('ACTIVE');
-      expect(active.tasks[0]?.state).toBe('NOT_RECORDED');
+      expect(active.tasks[0]?.state).toBe('PENDING');
       expect(planListingSchema.parse(await listLocalPlans(f.store))).toHaveLength(1);
       const observations = new Database(path);
+      observations.prepare('DELETE FROM scheduler_decisions WHERE run_id = ?').run(result.runId);
+      expect((await readRunView(f.store, plan.id)).tasks[0]?.state).toBe('NOT_RECORDED');
       observations
         .prepare(
           "INSERT INTO scheduler_events (run_id, sequence, occurred_at, event_json) VALUES (?, ?, '2026-01-01T00:00:00.000Z', ?)"

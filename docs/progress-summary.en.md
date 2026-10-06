@@ -1865,3 +1865,32 @@ A real browser opened the earlier live pathe run and displayed its completed tas
 accepted review and integrated commit. Terminal interaction is controller-tested; no native-terminal
 automation or new paid model run is claimed. Repair, retry/resume, cancellation, attribution and
 remote services remain unimplemented. `docs/forge-v1-observable.en.md` documents usage and limits.
+
+## Forge v1 P3: real parallel multi-task happy path
+
+After independent acceptance of P2 at `65dd102`, a real Pi/DeepSeek planner, semantic reviewer and
+explicit user approval produced three pathe tasks: independent A/B source-and-test changes followed
+by C's test composing both implementations. Run `cef92ad5-5b07-4c09-9383-a7631c575647` completed all
+three with actual repository test/build, independent accepting output reviews and serialized Git
+integration. A/B started at 07:46:35.423/424 UTC and overlapped for 19.3 seconds in distinct worktrees
+and Pi sessions. C started at 07:50:10.788, after both integrations, from the recorded combined base
+`569df62982e5d7810941021119b3584bde8ae824`. Final target commit is
+`6888775489130c3567090d047e7ef7354a0fccf9`, with a clean working tree.
+
+Three observed gaps were fixed in local composition/read-side code only: derived containing projects
+no longer widen exact-file reservations; dependency-bearing worktrees use the current integrated
+branch inside the existing serialized lifecycle; and initial recorded scheduler states supply PENDING
+when no later transition exists. No scheduler, SQLite schema, ownership protocol or execution engine
+was added. Controlled real Git regression tests independently prove writer overlap, dependent reads
+of integrated changes and honest RUNNING/PENDING observations.
+
+The real React Flow page displayed the dependency waiting and then all three completions. A real
+pseudo-terminal selected the resulting TUI run and displayed verification/review/terminal facts.
+Final target checks pass 496 tests with the original 8 skips and 8 todos preserved, plus build. Forge
+check passes 435/435 tests in 33 files, format/type/lint and unchanged 90% gates: statements 94.75%,
+branches 90.07%, functions 94.41%, lines 94.78%; build and diff checks pass. Two preceding independent
+failed runs retain their evidence and legitimate partial integrations; no failed plan was repaired,
+resumed or manually edited. This is one demonstrated parallel happy path, not a reliability claim.
+P4 creates/deletes/spec work and P5 usability/attribution remain deferred; repair, retry/resume,
+cancellation and distributed authority remain unimplemented. Full evidence and limits are in
+`docs/forge-v1-parallel-live.en.md`.
