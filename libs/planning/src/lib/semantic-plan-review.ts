@@ -7,27 +7,31 @@ import { z } from 'zod';
 import type { PlanningSource } from './autonomous-plan-phase.js';
 
 const nonEmptyStringSchema = z.string().trim().min(1);
+export const semanticReviewRecommendationSchema = z.enum(['accept', 'revise']);
+export const SemanticReviewRecommendation = semanticReviewRecommendationSchema.enum;
+export const semanticRequirementStatusSchema = z.enum(['covered', 'missing', 'ambiguous']);
+export const SemanticRequirementStatus = semanticRequirementStatusSchema.enum;
 const stableTaskIdsSchema = z
   .array(nonEmptyStringSchema)
   .transform((taskIds) => [...new Set(taskIds)].toSorted());
 
 const coveredRequirementSchema = z.object({
   requirement: nonEmptyStringSchema,
-  status: z.literal('covered'),
+  status: z.literal(SemanticRequirementStatus.covered),
   taskIds: stableTaskIdsSchema.pipe(z.array(nonEmptyStringSchema).min(1)),
   detail: nonEmptyStringSchema
 });
 
 const uncoveredRequirementSchema = z.object({
   requirement: nonEmptyStringSchema,
-  status: z.enum(['missing', 'ambiguous']),
+  status: semanticRequirementStatusSchema.exclude([SemanticRequirementStatus.covered]),
   taskIds: stableTaskIdsSchema,
   detail: nonEmptyStringSchema
 });
 
 export const semanticPlanReviewSchema = z
   .object({
-    recommendation: z.enum(['accept', 'revise']),
+    recommendation: semanticReviewRecommendationSchema,
     summary: nonEmptyStringSchema,
     requirements: z
       .array(z.discriminatedUnion('status', [coveredRequirementSchema, uncoveredRequirementSchema]))
@@ -47,15 +51,17 @@ export const semanticPlanReviewSchema = z
       requirements.add(identity);
     }
 
-    const hasGap = review.requirements.some((requirement) => requirement.status !== 'covered');
-    if (review.recommendation === 'accept' && hasGap) {
+    const hasGap = review.requirements.some(
+      (requirement) => requirement.status !== SemanticRequirementStatus.covered
+    );
+    if (review.recommendation === SemanticReviewRecommendation.accept && hasGap) {
       context.addIssue({
         code: 'custom',
         message: 'An accept recommendation cannot contain missing or ambiguous requirements',
         path: ['recommendation']
       });
     }
-    if (review.recommendation === 'revise' && !hasGap) {
+    if (review.recommendation === SemanticReviewRecommendation.revise && !hasGap) {
       context.addIssue({
         code: 'custom',
         message: 'A revise recommendation must identify a missing or ambiguous requirement',

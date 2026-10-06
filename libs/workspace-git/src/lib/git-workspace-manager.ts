@@ -11,6 +11,9 @@ import type {
   WorkspaceManager
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
+  WorkspaceIntegrationPhase,
+  WorkspaceIntegrationStatus,
+  WorkspaceDisposalStatus,
   createTaskWorkspaceRequestSchema,
   disposeTaskWorkspaceRequestSchema,
   taskWorkspaceSchema
@@ -74,7 +77,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
           integrationRepositoryPath,
           workspacePath,
           revision: 1,
-          phase: 'READY_TO_INTEGRATE'
+          phase: WorkspaceIntegrationPhase.READY_TO_INTEGRATE
         };
       }
       throw new GitWorkspaceError(
@@ -97,7 +100,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
       integrationRepositoryPath,
       workspacePath,
       revision: 1,
-      phase: 'READY_TO_INTEGRATE'
+      phase: WorkspaceIntegrationPhase.READY_TO_INTEGRATE
     };
   }
 
@@ -121,7 +124,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
 
   async resumeIntegration(workspace: TaskWorkspace): Promise<IntegrateTaskWorkspaceResult> {
     const parsed = taskWorkspaceSchema.parse(workspace);
-    if (parsed.phase !== 'INTEGRATION_BLOCKED') {
+    if (parsed.phase !== WorkspaceIntegrationPhase.INTEGRATION_BLOCKED) {
       throw new GitWorkspaceError(
         ['rebase', '--continue'],
         'Workspace is not integration blocked.'
@@ -144,7 +147,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
 
   async abortIntegration(workspace: TaskWorkspace): Promise<TaskWorkspace> {
     const parsed = taskWorkspaceSchema.parse(workspace);
-    if (parsed.phase !== 'INTEGRATION_BLOCKED') {
+    if (parsed.phase !== WorkspaceIntegrationPhase.INTEGRATION_BLOCKED) {
       return parsed;
     }
     if (parsed.blocker.type === 'rebase-conflict') {
@@ -158,7 +161,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     if (this.#workspacePathExists(parsed.workspace.workspacePath)) {
       const dirtyPaths = await this.#dirtyPaths(parsed.workspace.workspacePath);
       if (dirtyPaths.length > 0 && !parsed.force) {
-        return { status: 'dirty', paths: dirtyPaths };
+        return { status: WorkspaceDisposalStatus.Dirty, paths: dirtyPaths };
       }
       await this.#git(parsed.workspace.integrationRepositoryPath, [
         'worktree',
@@ -179,15 +182,15 @@ export class GitWorkspaceManager implements WorkspaceManager {
         parsed.workspace.branchName
       ]);
     }
-    return { status: 'disposed' };
+    return { status: WorkspaceDisposalStatus.Disposed };
   }
 
   async #integrate(workspace: TaskWorkspace): Promise<IntegrateTaskWorkspaceResult> {
-    if (workspace.phase === 'INTEGRATED') {
-      return { status: 'integrated', workspace };
+    if (workspace.phase === WorkspaceIntegrationPhase.INTEGRATED) {
+      return { status: WorkspaceIntegrationStatus.Integrated, workspace };
     }
-    if (workspace.phase === 'INTEGRATION_BLOCKED') {
-      return { status: 'blocked', workspace };
+    if (workspace.phase === WorkspaceIntegrationPhase.INTEGRATION_BLOCKED) {
+      return { status: WorkspaceIntegrationStatus.Blocked, workspace };
     }
     const rebase = await this.#tryGit(workspace.workspacePath, [
       'rebase',
@@ -208,7 +211,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     const dirtyPaths = await this.#dirtyPaths(integrationRepositoryPath);
     if (dirtyPaths.length > 0) {
       return {
-        status: 'blocked',
+        status: WorkspaceIntegrationStatus.Blocked,
         workspace: {
           id: workspace.id,
           runId: workspace.runId,
@@ -219,7 +222,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
           baseRef: workspace.baseRef,
           integrationRef: workspace.integrationRef,
           revision: workspace.revision + 1,
-          phase: 'INTEGRATION_BLOCKED',
+          phase: WorkspaceIntegrationPhase.INTEGRATION_BLOCKED,
           blocker: {
             type: 'repository-dirty',
             detail: 'Integration repository has uncommitted changes.',
@@ -255,7 +258,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
       await this.#git(integrationRepositoryPath, ['rev-parse', 'HEAD'])
     ).stdout.trim();
     return {
-      status: 'integrated',
+      status: WorkspaceIntegrationStatus.Integrated,
       workspace: {
         id: workspace.id,
         runId: workspace.runId,
@@ -266,7 +269,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
         baseRef: workspace.baseRef,
         integrationRef: workspace.integrationRef,
         revision: workspace.revision + 1,
-        phase: 'INTEGRATED',
+        phase: WorkspaceIntegrationPhase.INTEGRATED,
         integrationCommit
       }
     };
@@ -278,7 +281,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     detail: string
   ): Promise<IntegrateTaskWorkspaceResult> {
     return {
-      status: 'blocked',
+      status: WorkspaceIntegrationStatus.Blocked,
       workspace: {
         id: workspace.id,
         runId: workspace.runId,
@@ -289,7 +292,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
         baseRef: workspace.baseRef,
         integrationRef: workspace.integrationRef,
         revision: workspace.revision + 1,
-        phase: 'INTEGRATION_BLOCKED',
+        phase: WorkspaceIntegrationPhase.INTEGRATION_BLOCKED,
         blocker: {
           type,
           detail,
@@ -352,7 +355,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
       baseRef: workspace.baseRef,
       integrationRef: workspace.integrationRef,
       revision: workspace.revision + (advanceRevision ? 1 : 0),
-      phase: 'READY_TO_INTEGRATE'
+      phase: WorkspaceIntegrationPhase.READY_TO_INTEGRATE
     };
   }
 

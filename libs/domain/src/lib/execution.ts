@@ -6,12 +6,13 @@ import type {
   RiskTaskConflict,
   TaskImpact
 } from './conflict.js';
+import { ConflictAction, conflictActionSchema } from './conflict.js';
 import type { AgentExecutionAttempt, AgentSessionRef } from './agent-execution.js';
 import type { AgentCommandPolicy } from './command-policy.js';
 import type { AgentCommandSandboxProfile } from './command-sandbox.js';
 import type { WriteLease } from './write-lease.js';
 import type { TaskContract } from './task-contract.js';
-import { taskStateSchema } from './task-state.js';
+import { TaskState, taskStateSchema } from './task-state.js';
 import type { TaskWorkspace } from './workspace.js';
 
 const taskIdSchema = z.string().trim().min(1);
@@ -35,16 +36,22 @@ const taskEventSchema = z.object({ taskId: taskIdSchema });
 
 export const schedulerEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('run-started') }),
-  taskEventSchema.extend({ type: z.literal('agent-completed'), state: z.literal('VERIFYING') }),
-  taskEventSchema.extend({ type: z.literal('task-completed'), state: z.literal('COMPLETED') }),
-  taskEventSchema.extend({ type: z.literal('task-failed'), state: z.literal('FAILED') }),
+  taskEventSchema.extend({
+    type: z.literal('agent-completed'),
+    state: z.literal(TaskState.VERIFYING)
+  }),
+  taskEventSchema.extend({
+    type: z.literal('task-completed'),
+    state: z.literal(TaskState.COMPLETED)
+  }),
+  taskEventSchema.extend({ type: z.literal('task-failed'), state: z.literal(TaskState.FAILED) }),
   taskEventSchema.extend({
     type: z.literal('workspace-integrated'),
-    state: z.literal('COMPLETED')
+    state: z.literal(TaskState.COMPLETED)
   }),
   taskEventSchema.extend({
     type: z.literal('verification-completed'),
-    state: z.literal('INTEGRATING')
+    state: z.literal(TaskState.INTEGRATING)
   }),
   taskEventSchema.extend({ type: z.literal('lease-blocked'), leaseId: taskIdSchema }),
   taskEventSchema.extend({ type: z.literal('lease-released'), leaseId: taskIdSchema }),
@@ -121,12 +128,18 @@ export const schedulerDecisionReasonSchema = z.discriminatedUnion('type', [
   schedulerDecisionReasonBaseSchema.extend({
     type: z.literal('risk-policy-deferred'),
     conflictingTaskIds: z.array(taskIdSchema).min(1),
-    recommendedActions: z.array(z.enum(['stagger', 'serialize'])).min(1)
+    recommendedActions: z
+      .array(conflictActionSchema.extract([ConflictAction.stagger, ConflictAction.serialize]))
+      .min(1)
   }),
   schedulerDecisionReasonBaseSchema.extend({
     type: z.literal('risk-policy-allowed'),
     conflictingTaskIds: z.array(taskIdSchema).min(1),
-    recommendedActions: z.array(z.enum(['parallel', 'guarded-parallel'])).min(1)
+    recommendedActions: z
+      .array(
+        conflictActionSchema.extract([ConflictAction.parallel, ConflictAction['guarded-parallel']])
+      )
+      .min(1)
   }),
   schedulerDecisionReasonBaseSchema.extend({
     type: z.literal('selected-by-priority'),
@@ -160,28 +173,32 @@ const schedulerDecisionBaseSchema = z.object({
 export const schedulerTaskDecisionSchema = z.discriminatedUnion('action', [
   schedulerDecisionBaseSchema.extend({
     action: z.literal('ready'),
-    fromState: z.literal('PENDING'),
-    toState: z.literal('READY')
+    fromState: z.literal(TaskState.PENDING),
+    toState: z.literal(TaskState.READY)
   }),
   schedulerDecisionBaseSchema.extend({
     action: z.literal('start'),
-    fromState: z.literal('READY'),
-    toState: z.literal('RUNNING')
+    fromState: z.literal(TaskState.READY),
+    toState: z.literal(TaskState.RUNNING)
   }),
   schedulerDecisionBaseSchema.extend({
     action: z.literal('block'),
-    fromState: z.literal('RUNNING'),
-    toState: z.literal('BLOCKED')
+    fromState: z.literal(TaskState.RUNNING),
+    toState: z.literal(TaskState.BLOCKED)
   }),
   schedulerDecisionBaseSchema.extend({
     action: z.literal('unblock'),
-    fromState: z.literal('BLOCKED'),
-    toState: z.literal('READY')
+    fromState: z.literal(TaskState.BLOCKED),
+    toState: z.literal(TaskState.READY)
   }),
   schedulerDecisionBaseSchema.extend({
     action: z.literal('cancel'),
-    fromState: z.enum(['PENDING', 'READY', 'RUNNING', 'BLOCKED', 'VERIFYING', 'INTEGRATING']),
-    toState: z.literal('CANCELLED')
+    fromState: taskStateSchema.exclude([
+      TaskState.COMPLETED,
+      TaskState.FAILED,
+      TaskState.CANCELLED
+    ]),
+    toState: z.literal(TaskState.CANCELLED)
   }),
   schedulerDecisionBaseSchema.extend({ action: z.literal('defer') })
 ]);
@@ -231,21 +248,26 @@ export interface AgentRunRequest {
   readonly onStarted: (evidence: { readonly sessionRef?: AgentSessionRef }) => Promise<void>;
 }
 
+export const AgentRunStatus = {
+  Completed: 'completed',
+  Blocked: 'blocked',
+  Failed: 'failed'
+} as const;
 export type AgentRunResult =
   | {
-      readonly status: 'completed';
+      readonly status: typeof AgentRunStatus.Completed;
       readonly sessionRef?: AgentSessionRef;
       readonly observedImpact?: ObservedTaskImpact;
       readonly additionalLeases?: readonly WriteLease[];
     }
   | {
-      readonly status: 'blocked';
+      readonly status: typeof AgentRunStatus.Blocked;
       readonly leaseId: string;
       readonly detail: string;
       readonly observedImpact?: ObservedTaskImpact;
       readonly additionalLeases?: readonly WriteLease[];
     }
-  | { readonly status: 'failed'; readonly detail: string };
+  | { readonly status: typeof AgentRunStatus.Failed; readonly detail: string };
 
 export interface AgentRunner {
   run(request: AgentRunRequest): Promise<AgentRunResult>;
@@ -257,10 +279,16 @@ export interface TaskVerificationRequest {
   readonly workspace: TaskWorkspace;
 }
 
+export const TaskVerificationStatus = { Passed: 'passed', Failed: 'failed' } as const;
 export type TaskVerificationResult =
-  | { readonly status: 'passed' }
-  | { readonly status: 'failed'; readonly detail: string };
+  | { readonly status: typeof TaskVerificationStatus.Passed }
+  | { readonly status: typeof TaskVerificationStatus.Failed; readonly detail: string };
 
 export interface TaskVerifier {
   verify(request: TaskVerificationRequest): Promise<TaskVerificationResult>;
+}
+
+/** Local completion checks finish before the runtime commits or integrates a worktree. */
+export interface TaskCompletionGate {
+  complete(request: TaskVerificationRequest): Promise<TaskVerificationResult>;
 }

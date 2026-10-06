@@ -104,6 +104,7 @@ describe('simple local plan product path', () => {
       const second = await f.store.save(f.directory, f.prepared);
       await f.store.approve(second.id);
       const failed = await runLocalPlan(f.store, second.id, {
+        verificationMode: 'custom',
         verifier: { verify: async () => ({ status: 'failed', detail: 'Controlled rejection' }) }
       });
       expect(failed.taskStates).toEqual([{ taskId: 'edit-value', state: 'FAILED' }]);
@@ -167,9 +168,10 @@ describe('simple local plan product path', () => {
       });
       expect(agents).toBe(0);
       await command('approve', id, '--yes');
-      await expect(command('run', id)).rejects.toMatchObject({
-        code: 'commander.missingMandatoryOptionValue'
-      });
+      await expect(command('run', id)).rejects.toThrow('Select exactly one execution mode');
+      await expect(command('run', id, '--controlled', '--live')).rejects.toThrow(
+        'Select exactly one execution mode'
+      );
       const result = JSON.parse(await command('run', id, '--controlled'));
       expect(result).toMatchObject({
         planId: id,

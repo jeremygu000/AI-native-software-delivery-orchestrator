@@ -8,6 +8,10 @@ import type {
   WritableResource
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { isWritableResourceCoveredBy as resourceIsCoveredBy } from '@ai-native-software-delivery-orchestrator/domain';
+import {
+  WriteLeaseState,
+  WriteLeaseStatus
+} from '@ai-native-software-delivery-orchestrator/domain';
 
 const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -32,9 +36,14 @@ export interface AgentToolRuntimeContext {
   readonly writeGuard: WriteGuard;
 }
 
+export const AgentToolWriteStatus = {
+  Written: 'written',
+  Blocked: 'blocked',
+  Ready: 'ready'
+} as const;
 export type AgentToolWriteResult =
-  | { readonly status: 'written'; readonly path: string }
-  | { readonly status: 'blocked'; readonly leaseId: string };
+  | { readonly status: typeof AgentToolWriteStatus.Written; readonly path: string }
+  | { readonly status: typeof AgentToolWriteStatus.Blocked; readonly leaseId: string };
 
 export class AgentToolRuntime {
   readonly #context: AgentToolRuntimeContext;
@@ -79,7 +88,7 @@ export class AgentToolRuntime {
 
   async write(path: string, content: string): Promise<AgentToolWriteResult> {
     const target = await this.#prepareWrite(path);
-    if (target.status === 'blocked') {
+    if (target.status === AgentToolWriteStatus.Blocked) {
       return target;
     }
     return this.#writePrepared(target, content);
@@ -90,7 +99,7 @@ export class AgentToolRuntime {
       throw new AgentToolDeniedError('Expected edit text must not be empty');
     }
     const target = await this.#prepareWrite(path);
-    if (target.status === 'blocked') {
+    if (target.status === AgentToolWriteStatus.Blocked) {
       return target;
     }
     const content = await readFile(target.absolutePath, 'utf8');
@@ -128,17 +137,18 @@ export class AgentToolRuntime {
 
   #isAuthorized(resource: WritableResource): boolean {
     return [...(this.#initialLeases ?? []), ...this.#leasesByResource.values()].some(
-      (lease) => lease.state === 'ACTIVE' && resourceIsCoveredBy(lease.resource, resource)
+      (lease) =>
+        lease.state === WriteLeaseState.ACTIVE && resourceIsCoveredBy(lease.resource, resource)
     );
   }
 
   async #prepareWrite(path: string): Promise<
     | {
-        readonly status: 'ready';
+        readonly status: typeof AgentToolWriteStatus.Ready;
         readonly absolutePath: string;
         readonly workspaceRelativePath: string;
       }
-    | Extract<AgentToolWriteResult, { readonly status: 'blocked' }>
+    | Extract<AgentToolWriteResult, { readonly status: typeof AgentToolWriteStatus.Blocked }>
   > {
     const absolutePath = await this.#resolve(path);
     const workspaceRelativePath = this.#relative(absolutePath);
@@ -152,12 +162,12 @@ export class AgentToolRuntime {
         resource,
         mode: 'exclusive'
       });
-      if (acquired.status === 'blocked') {
+      if (acquired.status === WriteLeaseStatus.Blocked) {
         const leaseId = acquired.conflictingLeaseIds[0];
         if (leaseId === undefined) {
           throw new AgentToolDeniedError('Write lease block is missing an owner');
         }
-        return { status: 'blocked', leaseId };
+        return { status: AgentToolWriteStatus.Blocked, leaseId };
       }
       this.#leasesByResource.set(resourceKey, acquired.lease);
       await this.#context.persistence.persistLease({
@@ -165,13 +175,15 @@ export class AgentToolRuntime {
         lease: acquired.lease
       });
     }
-    return { status: 'ready', absolutePath, workspaceRelativePath };
+    return { status: AgentToolWriteStatus.Ready, absolutePath, workspaceRelativePath };
   }
 
   async #writePrepared(
     target: { readonly absolutePath: string; readonly workspaceRelativePath: string },
     content: string
-  ): Promise<Extract<AgentToolWriteResult, { readonly status: 'written' }>> {
+  ): Promise<
+    Extract<AgentToolWriteResult, { readonly status: typeof AgentToolWriteStatus.Written }>
+  > {
     await writeFile(target.absolutePath, content, 'utf8');
     this.#writtenFileIds.add(this.#context.resolveFileId(target.workspaceRelativePath));
     await this.#context.persistence.persistImpact({
@@ -179,7 +191,7 @@ export class AgentToolRuntime {
       taskId: this.#context.taskId,
       impact: { ...this.#currentImpact(), observed: this.observedImpact() }
     });
-    return { status: 'written', path: target.workspaceRelativePath };
+    return { status: AgentToolWriteStatus.Written, path: target.workspaceRelativePath };
   }
 
   #currentImpact(): TaskImpact {

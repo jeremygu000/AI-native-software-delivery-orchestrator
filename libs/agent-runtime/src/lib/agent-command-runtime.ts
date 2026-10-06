@@ -8,6 +8,7 @@ import type {
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { defaultAgentCommandSandboxProfile } from '@ai-native-software-delivery-orchestrator/domain';
 import { defaultAgentCommandTrustedPath } from '@ai-native-software-delivery-orchestrator/domain';
+import { AgentCommandStatus } from '@ai-native-software-delivery-orchestrator/domain';
 
 import { DockerReadOnlyCommandSandbox } from './docker-command-sandbox.js';
 import { MacosReadOnlyCommandSandbox } from './macos-command-sandbox.js';
@@ -100,17 +101,17 @@ export class NodeAgentCommandExecutor implements AgentCommandExecutor {
         termination = setTimeout(() => child.kill('SIGKILL'), this.#terminationGraceMs);
       };
       const timeout = setTimeout(() => {
-        terminate({ status: 'timed-out', stdout, stderr });
+        terminate({ status: AgentCommandStatus.TimedOut, stdout, stderr });
       }, command.timeoutMs);
       const cancel = () => {
-        terminate({ status: 'cancelled', stdout, stderr });
+        terminate({ status: AgentCommandStatus.Cancelled, stdout, stderr });
       };
       signal?.addEventListener('abort', cancel, { once: true });
       if (signal?.aborted === true) {
         cancel();
       }
       const limitOutput = () => {
-        terminate({ status: 'output-limited', stdout, stderr });
+        terminate({ status: AgentCommandStatus.OutputLimited, stdout, stderr });
       };
       child.stdout.on('data', (chunk: Buffer) => {
         stdout = appendOutput(stdout, chunk, command.maxOutputBytes);
@@ -126,7 +127,7 @@ export class NodeAgentCommandExecutor implements AgentCommandExecutor {
       });
       child.once('error', () => {
         result = {
-          status: 'failed',
+          status: AgentCommandStatus.Failed,
           detail: `Command could not start: ${command.id}`,
           stdout,
           stderr
@@ -134,7 +135,7 @@ export class NodeAgentCommandExecutor implements AgentCommandExecutor {
         finish(result);
       });
       child.once('close', (exitCode) => {
-        finish({ status: 'completed', exitCode: exitCode ?? -1, stdout, stderr });
+        finish({ status: AgentCommandStatus.Completed, exitCode: exitCode ?? -1, stdout, stderr });
       });
     });
   }

@@ -21,3 +21,4 @@ export type {
   PiPlanningToolResult
 } from './lib/pi-planning-agent.js';
 export { PiSemanticPlanReviewer } from './lib/pi-semantic-plan-reviewer.js';
+export { PiCodingAgentGateway } from './lib/pi-gateway.js';

@@ -13,14 +13,15 @@ export const taskStateSchema = z.enum([
 ]);
 
 export type TaskState = z.infer<typeof taskStateSchema>;
+export const TaskState = taskStateSchema.enum;
 
 const allowedTransitions = {
-  PENDING: ['READY', 'CANCELLED'],
-  READY: ['RUNNING', 'CANCELLED'],
-  RUNNING: ['BLOCKED', 'VERIFYING', 'FAILED', 'CANCELLED'],
-  BLOCKED: ['READY', 'FAILED', 'CANCELLED'],
-  VERIFYING: ['INTEGRATING', 'FAILED', 'CANCELLED'],
-  INTEGRATING: ['COMPLETED', 'FAILED', 'CANCELLED'],
+  PENDING: [TaskState.READY, TaskState.CANCELLED],
+  READY: [TaskState.RUNNING, TaskState.CANCELLED],
+  RUNNING: [TaskState.BLOCKED, TaskState.VERIFYING, TaskState.FAILED, TaskState.CANCELLED],
+  BLOCKED: [TaskState.READY, TaskState.FAILED, TaskState.CANCELLED],
+  VERIFYING: [TaskState.INTEGRATING, TaskState.FAILED, TaskState.CANCELLED],
+  INTEGRATING: [TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED],
   COMPLETED: [],
   FAILED: [],
   CANCELLED: []

@@ -1,4 +1,6 @@
 import {
+  ConflictAction,
+  ConflictSeverity,
   type HardTaskConflict,
   type RiskTaskConflict,
   type Scheduler,
@@ -10,7 +12,7 @@ import {
   type SchedulerTaskDecision,
   type ScheduleOptions,
   type TaskContract,
-  type TaskState,
+  TaskState,
   SchedulerInputError,
   scheduleOptionsSchema,
   schedulerEventSchema,
@@ -25,10 +27,17 @@ const compareTasks = (a: TaskContract, b: TaskContract): number => {
   return priorityDifference === 0 ? compareIds(a.id, b.id) : priorityDifference;
 };
 
-const terminalStates = new Set<TaskState>(['COMPLETED', 'FAILED', 'CANCELLED']);
-const runnableStates = new Set<TaskState>(['PENDING', 'READY']);
+const terminalStates = new Set<TaskState>([
+  TaskState.COMPLETED,
+  TaskState.FAILED,
+  TaskState.CANCELLED
+]);
+const runnableStates = new Set<TaskState>([TaskState.PENDING, TaskState.READY]);
 
-type CancellableTaskState = Exclude<TaskState, 'COMPLETED' | 'FAILED' | 'CANCELLED'>;
+type CancellableTaskState = Exclude<
+  TaskState,
+  typeof TaskState.COMPLETED | typeof TaskState.FAILED | typeof TaskState.CANCELLED
+>;
 
 const isCancellableTaskState = (state: TaskState): state is CancellableTaskState =>
   !terminalStates.has(state);
@@ -36,12 +45,14 @@ const isCancellableTaskState = (state: TaskState): state is CancellableTaskState
 const isDeferringRisk = (
   conflict: RiskTaskConflict
 ): conflict is RiskTaskConflict & { readonly recommendedAction: 'stagger' | 'serialize' } =>
-  conflict.recommendedAction === 'stagger' || conflict.recommendedAction === 'serialize';
+  conflict.recommendedAction === ConflictAction.stagger ||
+  conflict.recommendedAction === ConflictAction.serialize;
 
 const isAllowedRisk = (
   conflict: RiskTaskConflict
 ): conflict is RiskTaskConflict & { readonly recommendedAction: 'parallel' | 'guarded-parallel' } =>
-  conflict.recommendedAction === 'parallel' || conflict.recommendedAction === 'guarded-parallel';
+  conflict.recommendedAction === ConflictAction.parallel ||
+  conflict.recommendedAction === ConflictAction['guarded-parallel'];
 
 const sameRuntimeBlocker = (a: SchedulerRuntimeBlocker, b: SchedulerRuntimeBlocker): boolean => {
   switch (a.type) {
@@ -80,7 +91,7 @@ const toRuntimeBlockMap = (
     if (blocks.has(runtimeBlock.taskId)) {
       throw new SchedulerInputError(`Duplicate runtime block record: ${runtimeBlock.taskId}`);
     }
-    if (taskStates.get(runtimeBlock.taskId) !== 'BLOCKED') {
+    if (taskStates.get(runtimeBlock.taskId) !== TaskState.BLOCKED) {
       throw new SchedulerInputError(`Runtime block requires BLOCKED state: ${runtimeBlock.taskId}`);
     }
     blocks.set(runtimeBlock.taskId, [...runtimeBlock.blockers]);
@@ -196,17 +207,17 @@ export class DeterministicScheduler implements Scheduler {
   ) {
     const inputs = this.#validateInputs(tasks, hardConflicts, riskConflicts, options);
     const states: Map<string, TaskState> = new Map(
-      [...inputs.taskById.keys()].map((taskId) => [taskId, 'PENDING'])
+      [...inputs.taskById.keys()].map((taskId) => [taskId, TaskState.PENDING])
     );
     const waves: string[][] = [];
 
-    while ([...states.values()].some((state) => state === 'PENDING')) {
+    while ([...states.values()].some((state) => state === TaskState.PENDING)) {
       const selected = this.#select(states, new Map(), inputs).startTaskIds;
       if (selected.length === 0) {
         throw new SchedulerInputError('Initial plan cannot make progress');
       }
       for (const taskId of selected) {
-        states.set(taskId, 'COMPLETED');
+        states.set(taskId, TaskState.COMPLETED);
       }
       waves.push([...selected]);
     }
@@ -274,7 +285,7 @@ export class DeterministicScheduler implements Scheduler {
           `Invalid conflict task pair: ${conflict.taskA}, ${conflict.taskB}`
         );
       }
-      if (conflict.severity === 'hard') {
+      if (conflict.severity === ConflictSeverity.hard) {
         for (const constraint of conflict.constraints) {
           if (constraint.type !== 'producer-consumer') {
             continue;
@@ -334,7 +345,7 @@ export class DeterministicScheduler implements Scheduler {
           : undefined;
     if (blocker !== undefined) {
       const state = states.get(event.taskId);
-      if (state === 'BLOCKED') {
+      if (state === TaskState.BLOCKED) {
         const taskBlockers = blocks.get(event.taskId);
         if (taskBlockers === undefined) {
           throw new SchedulerInputError(
@@ -346,16 +357,16 @@ export class DeterministicScheduler implements Scheduler {
         }
         return;
       }
-      if (state !== 'RUNNING') {
+      if (state !== TaskState.RUNNING) {
         throw new SchedulerInputError(`Runtime block requires RUNNING state: ${event.taskId}`);
       }
-      states.set(event.taskId, 'BLOCKED');
+      states.set(event.taskId, TaskState.BLOCKED);
       blocks.set(event.taskId, [blocker]);
       decisions.push({
         taskId: event.taskId,
         action: 'block',
-        fromState: 'RUNNING',
-        toState: 'BLOCKED',
+        fromState: TaskState.RUNNING,
+        toState: TaskState.BLOCKED,
         reasons: [asReason({ type: 'runtime-blocked', blockers: [blocker] })]
       });
       return;
@@ -379,13 +390,13 @@ export class DeterministicScheduler implements Scheduler {
         continue;
       }
       blocks.delete(taskId);
-      if (states.get(taskId) === 'BLOCKED') {
-        states.set(taskId, 'READY');
+      if (states.get(taskId) === TaskState.BLOCKED) {
+        states.set(taskId, TaskState.READY);
         decisions.push({
           taskId,
           action: 'unblock',
-          fromState: 'BLOCKED',
-          toState: 'READY',
+          fromState: TaskState.BLOCKED,
+          toState: TaskState.READY,
           reasons: [asReason({ type: 'runtime-blocker-released', blockers: [releasedBlocker] })]
         });
       }
@@ -398,14 +409,15 @@ export class DeterministicScheduler implements Scheduler {
     inputs: SchedulingInputs,
     decisions: SchedulerTaskDecision[]
   ): void {
-    const terminalCauses = new Map<string, 'FAILED' | 'CANCELLED'>();
+    type TerminalCause = typeof TaskState.FAILED | typeof TaskState.CANCELLED;
+    const terminalCauses = new Map<string, TerminalCause>();
     for (const [taskId, state] of states) {
-      if (state === 'FAILED' || state === 'CANCELLED') {
+      if (state === TaskState.FAILED || state === TaskState.CANCELLED) {
         terminalCauses.set(taskId, state);
       }
     }
     const dependents = dependentIdsByTask(inputs.taskById, inputs.hardConflicts);
-    const terminalCausesByTask = new Map<string, Map<string, 'FAILED' | 'CANCELLED'>>();
+    const terminalCausesByTask = new Map<string, Map<string, TerminalCause>>();
     const queue = [...terminalCauses]
       .toSorted(([a], [b]) => compareIds(a, b))
       .map(([taskId, state]) => ({ taskId, causeTaskId: taskId, causeState: state }));
@@ -415,8 +427,7 @@ export class DeterministicScheduler implements Scheduler {
         if (terminalStates.has(states.get(dependentId)!)) {
           continue;
         }
-        const causes =
-          terminalCausesByTask.get(dependentId) ?? new Map<string, 'FAILED' | 'CANCELLED'>();
+        const causes = terminalCausesByTask.get(dependentId) ?? new Map<string, TerminalCause>();
         if (causes.has(causeTaskId)) {
           continue;
         }
@@ -430,19 +441,19 @@ export class DeterministicScheduler implements Scheduler {
       if (!isCancellableTaskState(fromState)) {
         continue;
       }
-      states.set(taskId, 'CANCELLED');
+      states.set(taskId, TaskState.CANCELLED);
       const causes = terminalCausesByTask.get(taskId)!;
       const failedTaskIds = [...causes]
-        .flatMap(([causeTaskId, state]) => (state === 'FAILED' ? [causeTaskId] : []))
+        .flatMap(([causeTaskId, state]) => (state === TaskState.FAILED ? [causeTaskId] : []))
         .toSorted(compareIds);
       const cancelledTaskIds = [...causes]
-        .flatMap(([causeTaskId, state]) => (state === 'CANCELLED' ? [causeTaskId] : []))
+        .flatMap(([causeTaskId, state]) => (state === TaskState.CANCELLED ? [causeTaskId] : []))
         .toSorted(compareIds);
       decisions.push({
         taskId,
         action: 'cancel',
         fromState,
-        toState: 'CANCELLED',
+        toState: TaskState.CANCELLED,
         reasons: [
           ...(failedTaskIds.length > 0
             ? [asReason({ type: 'dependency-failed' as const, failedTaskIds })]
@@ -466,17 +477,17 @@ export class DeterministicScheduler implements Scheduler {
     const decisions: SchedulerTaskDecision[] = [];
     const selected: string[] = [];
     const runningTaskIds = [...states]
-      .flatMap(([taskId, state]) => (state === 'RUNNING' ? [taskId] : []))
+      .flatMap(([taskId, state]) => (state === TaskState.RUNNING ? [taskId] : []))
       .toSorted(compareIds);
     const candidateTasks: TaskContract[] = [];
 
     for (const task of [...inputs.taskById.values()].toSorted(compareTasks)) {
       const state = states.get(task.id)!;
-      if (terminalStates.has(state) || state === 'RUNNING') {
+      if (terminalStates.has(state) || state === TaskState.RUNNING) {
         continue;
       }
       const runtimeBlockers = blocks.get(task.id);
-      if (state === 'BLOCKED' || runtimeBlockers !== undefined) {
+      if (state === TaskState.BLOCKED || runtimeBlockers !== undefined) {
         if (runtimeBlockers === undefined) {
           throw new SchedulerInputError(`BLOCKED task is missing runtime blockers: ${task.id}`);
         }
@@ -496,7 +507,7 @@ export class DeterministicScheduler implements Scheduler {
         continue;
       }
       const incompleteDependencies = task.dependencies.filter(
-        (dependencyId) => states.get(dependencyId) !== 'COMPLETED'
+        (dependencyId) => states.get(dependencyId) !== TaskState.COMPLETED
       );
       if (incompleteDependencies.length > 0) {
         decisions.push({
@@ -512,7 +523,7 @@ export class DeterministicScheduler implements Scheduler {
         continue;
       }
       const incompleteProducers = producerIdsFor(task.id, inputs.hardConflicts).filter(
-        (producerTaskId) => states.get(producerTaskId) !== 'COMPLETED'
+        (producerTaskId) => states.get(producerTaskId) !== TaskState.COMPLETED
       );
       if (incompleteProducers.length > 0) {
         decisions.push({
@@ -593,12 +604,12 @@ export class DeterministicScheduler implements Scheduler {
         });
         continue;
       }
-      if (states.get(task.id) === 'PENDING') {
+      if (states.get(task.id) === TaskState.PENDING) {
         decisions.push({
           taskId: task.id,
           action: 'ready',
-          fromState: 'PENDING',
-          toState: 'READY',
+          fromState: TaskState.PENDING,
+          toState: TaskState.READY,
           reasons: [
             asReason({ type: 'dependencies-completed', dependencyTaskIds: task.dependencies })
           ]
@@ -607,8 +618,8 @@ export class DeterministicScheduler implements Scheduler {
       decisions.push({
         taskId: task.id,
         action: 'start',
-        fromState: 'READY',
-        toState: 'RUNNING',
+        fromState: TaskState.READY,
+        toState: TaskState.RUNNING,
         reasons: [
           asReason({ type: 'selected-by-priority', priority: task.priority ?? 0 }),
           ...activeRisks.filter(isAllowedRisk).map((conflict) =>

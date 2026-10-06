@@ -53,18 +53,37 @@ export interface AgentCommandSandboxRequest {
   readonly signal?: AbortSignal;
 }
 
+export const AgentCommandStatus = {
+  Completed: 'completed',
+  TimedOut: 'timed-out',
+  Cancelled: 'cancelled',
+  OutputLimited: 'output-limited',
+  Failed: 'failed'
+} as const;
 export type AgentCommandSandboxResult =
   | {
-      readonly status: 'completed';
+      readonly status: typeof AgentCommandStatus.Completed;
       readonly exitCode: number;
       readonly stdout: string;
       readonly stderr: string;
     }
-  | { readonly status: 'timed-out'; readonly stdout: string; readonly stderr: string }
-  | { readonly status: 'cancelled'; readonly stdout: string; readonly stderr: string }
-  | { readonly status: 'output-limited'; readonly stdout: string; readonly stderr: string }
   | {
-      readonly status: 'failed';
+      readonly status: typeof AgentCommandStatus.TimedOut;
+      readonly stdout: string;
+      readonly stderr: string;
+    }
+  | {
+      readonly status: typeof AgentCommandStatus.Cancelled;
+      readonly stdout: string;
+      readonly stderr: string;
+    }
+  | {
+      readonly status: typeof AgentCommandStatus.OutputLimited;
+      readonly stdout: string;
+      readonly stderr: string;
+    }
+  | {
+      readonly status: typeof AgentCommandStatus.Failed;
       readonly detail: string;
       readonly stdout: string;
       readonly stderr: string;

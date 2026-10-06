@@ -1,6 +1,7 @@
 import { dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import { platform } from 'node:process';
+import { AgentCommandStatus } from '@ai-native-software-delivery-orchestrator/domain';
 import type {
   AgentCommandSandbox,
   AgentCommandSandboxRequest,
@@ -59,7 +60,7 @@ export class MacosReadOnlyCommandSandbox implements AgentCommandSandbox {
   }: AgentCommandSandboxRequest): Promise<AgentCommandSandboxResult> {
     if (sandbox.kind !== 'macos-read-only') {
       return {
-        status: 'failed',
+        status: AgentCommandStatus.Failed,
         detail: 'Unsupported command sandbox profile',
         stdout: '',
         stderr: ''
@@ -67,7 +68,7 @@ export class MacosReadOnlyCommandSandbox implements AgentCommandSandbox {
     }
     if (this.#platform() !== 'darwin') {
       return {
-        status: 'failed',
+        status: AgentCommandStatus.Failed,
         detail: 'macOS command sandbox requires Darwin',
         stdout: '',
         stderr: ''
@@ -110,15 +111,15 @@ export class MacosReadOnlyCommandSandbox implements AgentCommandSandbox {
         escalation = setTimeout(() => child.kill('SIGKILL'), this.#terminationGraceMs);
       };
       const timeout = setTimeout(
-        () => terminate({ status: 'timed-out', stdout, stderr }),
+        () => terminate({ status: AgentCommandStatus.TimedOut, stdout, stderr }),
         timeoutMs
       );
-      const cancel = () => terminate({ status: 'cancelled', stdout, stderr });
+      const cancel = () => terminate({ status: AgentCommandStatus.Cancelled, stdout, stderr });
       signal?.addEventListener('abort', cancel, { once: true });
       if (signal?.aborted) {
         cancel();
       }
-      const limit = () => terminate({ status: 'output-limited', stdout, stderr });
+      const limit = () => terminate({ status: AgentCommandStatus.OutputLimited, stdout, stderr });
       child.stdout.on('data', (chunk: Buffer) => {
         stdout = appendOutput(stdout, chunk, maxOutputBytes);
         if (Buffer.byteLength(stdout) >= maxOutputBytes) {
@@ -132,11 +133,16 @@ export class MacosReadOnlyCommandSandbox implements AgentCommandSandbox {
         }
       });
       child.once('error', () => {
-        result = { status: 'failed', detail: 'Command sandbox could not start', stdout, stderr };
+        result = {
+          status: AgentCommandStatus.Failed,
+          detail: 'Command sandbox could not start',
+          stdout,
+          stderr
+        };
         finish(result);
       });
       child.once('close', (exitCode) =>
-        finish({ status: 'completed', exitCode: exitCode ?? -1, stdout, stderr })
+        finish({ status: AgentCommandStatus.Completed, exitCode: exitCode ?? -1, stdout, stderr })
       );
     });
   }

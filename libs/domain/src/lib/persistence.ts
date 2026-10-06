@@ -13,7 +13,14 @@ import type { TaskState } from './task-state.js';
 import type { WriteLease } from './write-lease.js';
 import type { TaskWorkspace } from './workspace.js';
 
-export type OrchestrationRunState = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+export const OrchestrationRunState = {
+  ACTIVE: 'ACTIVE',
+  COMPLETED: 'COMPLETED',
+  FAILED: 'FAILED',
+  CANCELLED: 'CANCELLED'
+} as const;
+export type OrchestrationRunState =
+  (typeof OrchestrationRunState)[keyof typeof OrchestrationRunState];
 
 export interface PersistedRun {
   readonly id: string;

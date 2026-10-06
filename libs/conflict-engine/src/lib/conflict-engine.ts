@@ -1,14 +1,15 @@
-import type {
+import {
   ConflictAction,
-  ConflictAnalyzer,
-  ConflictReason,
-  HardTaskConflict,
-  PredictedTaskImpact,
-  RepositoryGraph,
-  RiskTaskConflict,
-  SchedulingConstraint,
-  SharedResourceAccessMode,
-  TaskConflict
+  ConflictSeverity,
+  type ConflictAnalyzer,
+  type ConflictReason,
+  type HardTaskConflict,
+  type PredictedTaskImpact,
+  type RepositoryGraph,
+  type RiskTaskConflict,
+  type SchedulingConstraint,
+  type SharedResourceAccessMode,
+  type TaskConflict
 } from '@ai-native-software-delivery-orchestrator/domain';
 import type { SharedResourcePolicyRegistry } from '@ai-native-software-delivery-orchestrator/task-impact';
 import { z } from 'zod';
@@ -105,18 +106,18 @@ const recommendedRiskAction = (
   configuration: ConflictEngineConfig
 ): ConflictAction => {
   if (score === 0) {
-    return 'parallel';
+    return ConflictAction.parallel;
   }
   if (score >= configuration.thresholds.serialize) {
-    return 'serialize';
+    return ConflictAction.serialize;
   }
   if (score >= configuration.thresholds.stagger) {
-    return 'stagger';
+    return ConflictAction.stagger;
   }
   if (score >= configuration.thresholds.guardedParallel) {
-    return 'guarded-parallel';
+    return ConflictAction['guarded-parallel'];
   }
-  return 'parallel';
+  return ConflictAction.parallel;
 };
 
 const hasWholeFileWriteScope = (
@@ -198,9 +199,9 @@ export class DeterministicConflictEngine implements ConflictAnalyzer {
         taskB: b.taskId,
         score,
         reasons: sortedReasons,
-        severity: 'hard',
+        severity: ConflictSeverity.hard,
         constraints: hardConstraints,
-        recommendedAction: requiresSerialization ? 'serialize' : 'stagger'
+        recommendedAction: requiresSerialization ? ConflictAction.serialize : ConflictAction.stagger
       };
       return conflict;
     }
@@ -210,7 +211,7 @@ export class DeterministicConflictEngine implements ConflictAnalyzer {
       taskB: b.taskId,
       score,
       reasons: sortedReasons,
-      severity: score === 0 ? 'none' : 'soft',
+      severity: score === 0 ? ConflictSeverity.none : ConflictSeverity.soft,
       constraints: [],
       recommendedAction: recommendedRiskAction(score, this.#configuration)
     };

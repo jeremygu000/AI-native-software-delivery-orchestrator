@@ -9,8 +9,14 @@ export const agentSessionRefSchema = z.object({
 
 export type AgentSessionRef = z.infer<typeof agentSessionRefSchema>;
 
+export const agentExecutionFailureTypeSchema = z.enum([
+  'execution-failed',
+  'unknown-outcome',
+  'cancelled'
+]);
+export const AgentExecutionFailureType = agentExecutionFailureTypeSchema.enum;
 export const agentExecutionFailureSchema = z.object({
-  type: z.enum(['execution-failed', 'unknown-outcome', 'cancelled']),
+  type: agentExecutionFailureTypeSchema,
   detail: nonEmptyStringSchema
 });
 
@@ -27,6 +33,7 @@ export const agentExecutionAttemptStateSchema = z.enum([
 ]);
 
 export type AgentExecutionAttemptState = z.infer<typeof agentExecutionAttemptStateSchema>;
+export const AgentExecutionAttemptState = agentExecutionAttemptStateSchema.enum;
 
 export const agentExecutionAttemptSchema = z
   .object({
@@ -56,7 +63,7 @@ export const agentExecutionAttemptSchema = z
         context.addIssue({ code: 'custom', path: [field], message });
       }
     };
-    if (attempt.state === 'PREPARING') {
+    if (attempt.state === AgentExecutionAttemptState.PREPARING) {
       forbid(
         attempt.startedAt !== undefined,
         'startedAt',
@@ -70,7 +77,10 @@ export const agentExecutionAttemptSchema = z
       forbid(attempt.failure !== undefined, 'failure', 'PREPARING attempt cannot have failure');
       return;
     }
-    if (attempt.state === 'STARTING' || attempt.state === 'RUNNING') {
+    if (
+      attempt.state === AgentExecutionAttemptState.STARTING ||
+      attempt.state === AgentExecutionAttemptState.RUNNING
+    ) {
       require(attempt.startedAt !==
         undefined, 'startedAt', `${attempt.state} attempt requires startedAt`);
       forbid(
@@ -85,7 +95,7 @@ export const agentExecutionAttemptSchema = z
       );
       return;
     }
-    if (attempt.state === 'COMPLETED') {
+    if (attempt.state === AgentExecutionAttemptState.COMPLETED) {
       require(attempt.startedAt !== undefined, 'startedAt', 'COMPLETED attempt requires startedAt');
       require(attempt.completedAt !==
         undefined, 'completedAt', 'COMPLETED attempt requires completedAt');

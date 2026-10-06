@@ -12,6 +12,7 @@ import type {
   TaskSpecification
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
+  ConflictSeverity,
   SchedulerInputError,
   scheduleOptionsSchema,
   taskSpecificationSchema
@@ -25,6 +26,8 @@ import { z } from 'zod';
 
 import {
   parseSemanticPlanReview,
+  SemanticReviewRecommendation,
+  SemanticRequirementStatus,
   type SemanticPlanReview,
   type SemanticPlanReviewer
 } from './semantic-plan-review.js';
@@ -298,7 +301,7 @@ export class AutonomousPlanPhase {
         }),
         new Set(candidate.plan.specification.tasks.map((task) => task.id))
       );
-      if (review.recommendation === 'revise') {
+      if (review.recommendation === SemanticReviewRecommendation.revise) {
         previousDiagnostics = review.requirements
           .filter(
             (
@@ -306,7 +309,7 @@ export class AutonomousPlanPhase {
             ): requirement is Extract<
               SemanticPlanReview['requirements'][number],
               { readonly status: 'missing' | 'ambiguous' }
-            > => requirement.status !== 'covered'
+            > => requirement.status !== SemanticRequirementStatus.covered
           )
           .map((requirement) => ({
             code: 'SEMANTIC_REQUIREMENT_GAP' as const,
@@ -448,7 +451,7 @@ export class AutonomousPlanPhase {
           impacts[secondIndex],
           repository
         );
-        if (conflict.severity === 'hard') {
+        if (conflict.severity === ConflictSeverity.hard) {
           hard.push(conflict);
         } else {
           risk.push(conflict);

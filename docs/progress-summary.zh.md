@@ -1560,3 +1560,31 @@ authority fingerprint 链、claim ownership、Runtime V2 移植或分布式基�
 使用 pnpm 链接 workspace 依赖并更新 CLI TypeScript references，没有修改既有 runtime／SQLite
 实现。`docs/forge-v1-local-plan-run.en.md` 说明命令和限制。output review、repair、真实 verifier、
 diff 对账、cancellation／resume、TUI、attribution 尚未实现；完整 P1 未完成，archive 分支未动。
+
+## Forge v1 P1：集成前的一次性 completion 检查
+
+P1.2 在 `89f521e` 获独立批准后，用户把本阶段收紧为一条 happy path：writer、实际 diff／scope
+检查、真实仓库 verification、output review、串行 Git integration。此前尚未提交的 repair loop
+已移除。失败保存证据和 worktree 后停止，没有自动 repair／retry、cancellation／resume 或新 ownership 模型。
+
+`run --live` 接通现有 Pi coding gateway 和 Forge 文件工具，强制执行 checks 及独立 output review。
+`--controlled` 继续明确标识并兼容旧路径。run metadata 如实记录 controlled／live、fake／repository／custom
+verification 及 review 模式，不再把注入的 verifier 一律标为 fake。简单 Plan、人工批准、clean HEAD 检查不变。
+
+Completion gate 在已有同 run reservation 内，把 tracked／untracked 变更与保存的 base、计划文件／显式
+project root 对账。没有改动或 writer 自己 commit 都失败。执行已保存的 package script／批准的本地命令，
+限制时间和输出；check 失败在 review 前停止。Review 必须针对实际 diff，接受后还会再次检查 diff，再集成。
+普通 JSONL 保存 check／review 或失败原因。仓库代码属于 trusted-local 执行，不是 sandbox；依赖准备仍由用户负责。
+
+本次 `pnpm check` 的 31 文件、421 测试以及格式／类型／lint 全部通过，四项 90% 门槛未变：
+statements 96.19%、branches 90.89%、functions 96.12%、lines 96.16%。`pnpm build` 和编译后 run help 通过。
+测试使用真实 Git、SQLite、npm checks，但 writer／review gateway 是受控实现，没有新执行付费／live model。
+Live 入口已接线，真正 live happy-path 验收仍待完成；不能据此宣布完整 P1 完成。
+`docs/forge-v1-task-completion.en.md` 说明命令和限制。
+
+用户还要求尽可能全仓库统一重复的状态字符串。核心生产判断现在使用定义在对应 domain contract 旁的命名值：
+task／run／attempt 状态，agent／verifier／command 结果，同 run reservation 状态与结果，Git workspace
+阶段与结果，冲突 severity／action，以及语义规划和 output review recommendation。已有 Zod enum 直接提供
+值对象，其他有限结果 union 使用保留字面量类型的常量对象。Scheduler、runtime、persistence、agent tools、
+Git manager 和 completion 路径都复用这些定义。JSON／SQLite 中的拼写与行为没有改变；新增序列化兼容测试，
+并由既有调度、持久化和产品测试共同验证。没有机械替换普通文字或测试期望，也没有引入新 lifecycle 或 authority 机制。

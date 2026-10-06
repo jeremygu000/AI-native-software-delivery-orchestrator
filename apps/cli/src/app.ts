@@ -327,21 +327,43 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     });
   program
     .command('run')
-    .description('Execute an approved plan with controlled agents and a fake verifier (P1.2 only)')
+    .description('Execute an approved plan once, checking and reviewing output before integration')
     .argument('<plan-id>')
-    .requiredOption(
-      '--controlled',
-      'explicitly select controlled execution; not live coding/verification'
-    )
+    .option('--controlled', 'explicitly select controlled execution; not live coding/verification')
+    .option('--live', 'use the configured Pi coding agent with repository checks and output review')
     .option('--state-directory <path>', 'local Forge state', stateDirectory)
-    .action(async (id: string, options: { stateDirectory: string }) => {
-      const result = await runLocalPlan(
-        new LocalPlanStore(resolve(cwd, options.stateDirectory)),
-        id,
-        dependencies.localExecution
-      );
-      writeOutput(`${JSON.stringify(result, null, 2)}\n`);
-    });
+    .option(
+      '--repository-checks',
+      'run planned repository checks, actual diff reconciliation and live output review'
+    )
+    .action(
+      async (
+        id: string,
+        options: {
+          stateDirectory: string;
+          repositoryChecks?: boolean;
+          controlled?: boolean;
+          live?: boolean;
+        }
+      ) => {
+        if (Boolean(options.controlled) === Boolean(options.live)) {
+          throw new Error('Select exactly one execution mode: --controlled or --live.');
+        }
+        const result = await runLocalPlan(
+          new LocalPlanStore(resolve(cwd, options.stateDirectory)),
+          id,
+          options.repositoryChecks || options.live
+            ? {
+                ...dependencies.localExecution,
+                executionMode: options.live ? 'live' : 'controlled',
+                verificationMode: 'repository',
+                completion: { ...dependencies.localExecution?.completion }
+              }
+            : dependencies.localExecution
+        );
+        writeOutput(`${JSON.stringify(result, null, 2)}\n`);
+      }
+    );
 
   return program;
 };

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AgentCommandStatus } from './command-sandbox.js';
 import {
   defaultAgentCommandSandboxProfile,
   agentCommandSandboxProfileSchema,
@@ -94,16 +95,28 @@ export interface AgentCommandExecutionRequest {
 
 export type AgentCommandExecutionResult =
   | {
-      readonly status: 'completed';
+      readonly status: typeof AgentCommandStatus.Completed;
       readonly exitCode: number;
       readonly stdout: string;
       readonly stderr: string;
     }
-  | { readonly status: 'timed-out'; readonly stdout: string; readonly stderr: string }
-  | { readonly status: 'cancelled'; readonly stdout: string; readonly stderr: string }
-  | { readonly status: 'output-limited'; readonly stdout: string; readonly stderr: string }
   | {
-      readonly status: 'failed';
+      readonly status: typeof AgentCommandStatus.TimedOut;
+      readonly stdout: string;
+      readonly stderr: string;
+    }
+  | {
+      readonly status: typeof AgentCommandStatus.Cancelled;
+      readonly stdout: string;
+      readonly stderr: string;
+    }
+  | {
+      readonly status: typeof AgentCommandStatus.OutputLimited;
+      readonly stdout: string;
+      readonly stderr: string;
+    }
+  | {
+      readonly status: typeof AgentCommandStatus.Failed;
       readonly detail: string;
       readonly stdout: string;
       readonly stderr: string;

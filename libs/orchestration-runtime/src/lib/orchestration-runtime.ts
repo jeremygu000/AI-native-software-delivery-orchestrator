@@ -7,6 +7,16 @@ import {
   taskLeasePlanFingerprint,
   taskLeasePlanSchema
 } from '@ai-native-software-delivery-orchestrator/domain';
+import {
+  TaskState,
+  AgentExecutionAttemptState,
+  AgentExecutionFailureType,
+  AgentRunStatus,
+  TaskVerificationStatus,
+  WriteLeaseStatus,
+  WorkspaceIntegrationStatus,
+  OrchestrationRunState
+} from '@ai-native-software-delivery-orchestrator/domain';
 import type {
   AgentRunner,
   AgentExecutionAttempt,
@@ -21,6 +31,7 @@ import type {
   TaskContract,
   TaskImpact,
   TaskVerifier,
+  TaskCompletionGate,
   TaskLeasePlan,
   WriteLease,
   WorkspaceManager,
@@ -65,6 +76,7 @@ export class OrchestrationRuntime {
   readonly #writeGuard: WriteGuard;
   readonly #agentRunner: AgentRunner;
   readonly #verifier: TaskVerifier;
+  readonly #completionGate?: TaskCompletionGate;
   readonly #now: () => Date;
   readonly #createAttemptId: () => string;
   #nextAttemptNumber = 1;
@@ -76,6 +88,7 @@ export class OrchestrationRuntime {
     readonly writeGuard: WriteGuard;
     readonly agentRunner: AgentRunner;
     readonly verifier: TaskVerifier;
+    readonly completionGate?: TaskCompletionGate;
     readonly now?: () => Date;
     readonly createAttemptId?: () => string;
   }) {
@@ -85,6 +98,7 @@ export class OrchestrationRuntime {
     this.#writeGuard = options.writeGuard;
     this.#agentRunner = options.agentRunner;
     this.#verifier = options.verifier;
+    this.#completionGate = options.completionGate;
     this.#now = options.now ?? (() => new Date());
     this.#createAttemptId =
       options.createAttemptId ?? (() => `attempt-${this.#nextAttemptNumber++}`);
@@ -99,7 +113,7 @@ export class OrchestrationRuntime {
       tasksById: new Map(request.tasks.map((task) => [task.id, task])),
       attemptsByTask: new Map<string, AgentExecutionAttempt>(),
       snapshot: {
-        taskStates: request.tasks.map((task) => ({ taskId: task.id, state: 'PENDING' as const })),
+        taskStates: request.tasks.map((task) => ({ taskId: task.id, state: TaskState.PENDING })),
         runtimeBlocks: []
       },
       nextSequence: 1,
@@ -120,7 +134,10 @@ export class OrchestrationRuntime {
       return {
         run: recovered.run,
         snapshot: {
-          taskStates: recovered.tasks.map((task) => ({ taskId: task.id, state: 'PENDING' })),
+          taskStates: recovered.tasks.map((task) => ({
+            taskId: task.id,
+            state: TaskState.PENDING
+          })),
           runtimeBlocks: []
         },
         workspaces: recovered.workspaces,
@@ -142,18 +159,20 @@ export class OrchestrationRuntime {
       event
     );
     const unresolvedAttempts = recovered.attempts.filter(
-      ({ attempt }) => attempt.state === 'STARTING' || attempt.state === 'RUNNING'
+      ({ attempt }) =>
+        attempt.state === AgentExecutionAttemptState.STARTING ||
+        attempt.state === AgentExecutionAttemptState.RUNNING
     );
     for (const { attempt } of unresolvedAttempts) {
       await this.#persistence.persistAttempt({
         runId,
         attempt: {
           ...attempt,
-          state: 'UNKNOWN',
+          state: AgentExecutionAttemptState.UNKNOWN,
           revision: attempt.revision + 1,
           completedAt: this.#now(),
           failure: {
-            type: 'unknown-outcome',
+            type: AgentExecutionFailureType['unknown-outcome'],
             detail: 'Process restarted during external agent execution.'
           }
         }
@@ -198,8 +217,8 @@ export class OrchestrationRuntime {
       pendingTaskIds: recovered.attempts
         .filter(
           ({ attempt }) =>
-            attempt.state === 'PREPARING' &&
-            this.#stateFor(recovered.snapshot, attempt.taskId) === 'RUNNING'
+            attempt.state === AgentExecutionAttemptState.PREPARING &&
+            this.#stateFor(recovered.snapshot, attempt.taskId) === TaskState.RUNNING
         )
         .map(({ attempt }) => attempt.taskId)
         .toSorted(compareIds),
@@ -257,7 +276,7 @@ export class OrchestrationRuntime {
           break;
         }
         const taskId = state.pendingTaskIds.shift();
-        if (taskId === undefined || this.#stateFor(state.snapshot, taskId) !== 'RUNNING') {
+        if (taskId === undefined || this.#stateFor(state.snapshot, taskId) !== TaskState.RUNNING) {
           continue;
         }
         const execution = this.#runTask(state, taskId)
@@ -301,7 +320,7 @@ export class OrchestrationRuntime {
       return { workspace, acquisition };
     });
     const { workspace, acquisition } = prepared;
-    if (acquisition.status === 'blocked') {
+    if (acquisition.status === WriteLeaseStatus.Blocked) {
       await this.#withLifecycle(state, async () => {
         for (const lease of acquisition.rolledBackLeases) {
           await this.#persistence.persistLease({ runId: state.request.run.id, lease });
@@ -321,7 +340,7 @@ export class OrchestrationRuntime {
     const starting = await this.#withLifecycle(state, async () => {
       const attempt: AgentExecutionAttempt = {
         ...preparing,
-        state: 'STARTING',
+        state: AgentExecutionAttemptState.STARTING,
         revision: preparing.revision + 1,
         startedAt: this.#now()
       };
@@ -349,7 +368,10 @@ export class OrchestrationRuntime {
           }
           executionEstablished = true;
           await this.#withLifecycle(state, async () => {
-            await this.#persistAttempt(state, taskId, { state: 'RUNNING', sessionRef });
+            await this.#persistAttempt(state, taskId, {
+              state: AgentExecutionAttemptState.RUNNING,
+              sessionRef
+            });
           });
         }
       });
@@ -359,12 +381,15 @@ export class OrchestrationRuntime {
       await this.#withLifecycle(state, async () => {
         if (executionEstablished) {
           await this.#persistAttempt(state, taskId, {
-            state: 'UNKNOWN',
+            state: AgentExecutionAttemptState.UNKNOWN,
             completedAt: this.#now(),
-            failure: { type: 'unknown-outcome', detail }
+            failure: { type: AgentExecutionFailureType['unknown-outcome'], detail }
           });
           // The external agent may still mutate the workspace, so retain its ACTIVE leases.
-          await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+          await this.#persistence.updateRunState(
+            state.request.run.id,
+            OrchestrationRunState.FAILED
+          );
           return;
         }
         await this.#failBeforeExecutionEstablished(state, taskId, acquisition.leases, detail);
@@ -372,35 +397,66 @@ export class OrchestrationRuntime {
       throw new OrchestrationRuntimeInputError(`Agent runner failed for task ${taskId}: ${detail}`);
     }
     await this.#withLifecycle(state, async () => {
-      if (agentResult.status === 'failed') {
+      if (agentResult.status === AgentRunStatus.Failed) {
         await this.#persistAttempt(state, taskId, {
-          state: 'FAILED',
+          state: AgentExecutionAttemptState.FAILED,
           completedAt: this.#now(),
-          failure: { type: 'execution-failed', detail: agentResult.detail }
+          failure: {
+            type: AgentExecutionFailureType['execution-failed'],
+            detail: agentResult.detail
+          }
         });
-        this.#setState(state, taskId, 'FAILED');
-        await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
-      } else if (agentResult.status === 'completed') {
+        this.#setState(state, taskId, TaskState.FAILED);
+        await this.#recordEvent(state, { type: 'task-failed', taskId, state: TaskState.FAILED });
+      } else if (agentResult.status === AgentRunStatus.Completed) {
         if (!executionEstablished) {
           const detail = 'Agent runner completed without calling onStarted.';
           await this.#failBeforeExecutionEstablished(state, taskId, acquisition.leases, detail);
           throw new OrchestrationRuntimeInputError(`Agent execution did not establish: ${taskId}`);
         }
         await this.#persistAttempt(state, taskId, {
-          state: 'COMPLETED',
+          state: AgentExecutionAttemptState.COMPLETED,
           completedAt: this.#now(),
           sessionRef: agentResult.sessionRef
         });
-        this.#setState(state, taskId, 'VERIFYING');
-        await this.#recordEvent(state, { type: 'agent-completed', taskId, state: 'VERIFYING' });
+        this.#setState(state, taskId, TaskState.VERIFYING);
+        await this.#recordEvent(state, {
+          type: 'agent-completed',
+          taskId,
+          state: TaskState.VERIFYING
+        });
       }
+      if (
+        agentResult.status === AgentRunStatus.Completed &&
+        agentResult.observedImpact !== undefined
+      ) {
+        await this.#persistence.persistImpact({
+          runId: state.request.run.id,
+          taskId,
+          impact: {
+            predicted: binding.impact?.predicted ?? this.#emptyPredictedImpact(taskId),
+            observed: agentResult.observedImpact
+          }
+        });
+      }
+      const completionRequest = {
+        runId: state.request.run.id,
+        task,
+        workspace
+      };
+      // Keep the same-run reservation through the one-shot completion checks.
+      const gatedVerification =
+        agentResult.status === AgentRunStatus.Completed && this.#completionGate !== undefined
+          ? await this.#completionGate.complete(completionRequest)
+          : undefined;
       const released = await this.#releaseLeasePlan([
         ...acquisition.leases,
-        ...(agentResult.status === 'completed' || agentResult.status === 'blocked'
+        ...(agentResult.status === AgentRunStatus.Completed ||
+        agentResult.status === AgentRunStatus.Blocked
           ? (agentResult.additionalLeases ?? [])
           : [])
       ]);
-      if (released.status !== 'released') {
+      if (released.status !== WriteLeaseStatus.Released) {
         for (const lease of released.leases) {
           await this.#persistence.persistLease({ runId: state.request.run.id, lease });
         }
@@ -409,7 +465,7 @@ export class OrchestrationRuntime {
           taskId,
           leaseId: released.leaseId
         });
-        await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+        await this.#persistence.updateRunState(state.request.run.id, OrchestrationRunState.FAILED);
         throw new OrchestrationRuntimeInputError(
           `Lease release failed for task ${taskId}: ${released.status}`
         );
@@ -418,10 +474,10 @@ export class OrchestrationRuntime {
         await this.#persistence.persistLease({ runId: state.request.run.id, lease });
         await this.#recordEvent(state, { type: 'lease-released', taskId, leaseId: lease.id });
       }
-      if (agentResult.status === 'failed') {
+      if (agentResult.status === AgentRunStatus.Failed) {
         return;
       }
-      if (agentResult.status === 'blocked') {
+      if (agentResult.status === AgentRunStatus.Blocked) {
         if (agentResult.observedImpact !== undefined) {
           await this.#persistence.persistImpact({
             runId: state.request.run.id,
@@ -433,7 +489,7 @@ export class OrchestrationRuntime {
           });
         }
         await this.#persistAttempt(state, taskId, {
-          state: 'COMPLETED',
+          state: AgentExecutionAttemptState.COMPLETED,
           completedAt: this.#now()
         });
         await this.#recordEvent(state, {
@@ -443,46 +499,36 @@ export class OrchestrationRuntime {
         });
         return;
       }
-      if (agentResult.observedImpact !== undefined) {
-        await this.#persistence.persistImpact({
-          runId: state.request.run.id,
-          taskId,
-          impact: {
-            predicted: binding.impact?.predicted ?? this.#emptyPredictedImpact(taskId),
-            observed: agentResult.observedImpact
-          }
-        });
-      }
-      const verification = await this.#verifier.verify({
-        runId: state.request.run.id,
-        task,
-        workspace
-      });
-      if (verification.status === 'failed') {
-        this.#setState(state, taskId, 'FAILED');
-        await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
+      const verification = gatedVerification ?? (await this.#verifier.verify(completionRequest));
+      if (verification.status === TaskVerificationStatus.Failed) {
+        this.#setState(state, taskId, TaskState.FAILED);
+        await this.#recordEvent(state, { type: 'task-failed', taskId, state: TaskState.FAILED });
         return;
       }
       await this.#workspaceManager.commit({
         workspace,
         message: `forge: ${task.id}`
       });
-      this.#setState(state, taskId, 'INTEGRATING');
+      this.#setState(state, taskId, TaskState.INTEGRATING);
       await this.#recordEvent(state, {
         type: 'verification-completed',
         taskId,
-        state: 'INTEGRATING'
+        state: TaskState.INTEGRATING
       });
       const integration = await this.#workspaceManager.integrate(workspace);
       await this.#persistence.persistWorkspace({
         runId: state.request.run.id,
         workspace: integration.workspace
       });
-      if (integration.status === 'blocked') {
+      if (integration.status === WorkspaceIntegrationStatus.Blocked) {
         return;
       }
-      this.#setState(state, taskId, 'COMPLETED');
-      await this.#recordEvent(state, { type: 'workspace-integrated', taskId, state: 'COMPLETED' });
+      this.#setState(state, taskId, TaskState.COMPLETED);
+      await this.#recordEvent(state, {
+        type: 'workspace-integrated',
+        taskId,
+        state: TaskState.COMPLETED
+      });
     });
   }
 
@@ -529,7 +575,7 @@ export class OrchestrationRuntime {
           leasePlanFingerprint: taskLeasePlanFingerprint(binding.leasePlan),
           commandPolicyFingerprint: agentCommandPolicyFingerprint(binding.commandPolicy),
           trustedCommandPath: binding.trustedCommandPath ?? defaultAgentCommandTrustedPath,
-          state: 'PREPARING',
+          state: AgentExecutionAttemptState.PREPARING,
           revision: 1
         };
         state.attemptsByTask.set(taskDecision.taskId, attempt);
@@ -598,14 +644,14 @@ export class OrchestrationRuntime {
     detail: string
   ): Promise<void> {
     await this.#persistAttempt(state, taskId, {
-      state: 'FAILED',
+      state: AgentExecutionAttemptState.FAILED,
       completedAt: this.#now(),
-      failure: { type: 'execution-failed', detail }
+      failure: { type: AgentExecutionFailureType['execution-failed'], detail }
     });
-    this.#setState(state, taskId, 'FAILED');
-    await this.#recordEvent(state, { type: 'task-failed', taskId, state: 'FAILED' });
+    this.#setState(state, taskId, TaskState.FAILED);
+    await this.#recordEvent(state, { type: 'task-failed', taskId, state: TaskState.FAILED });
     const released = await this.#releaseLeasePlan(leases);
-    if (released.status === 'released') {
+    if (released.status === WriteLeaseStatus.Released) {
       for (const lease of released.leases) {
         await this.#persistence.persistLease({ runId: state.request.run.id, lease });
         await this.#recordEvent(state, { type: 'lease-released', taskId, leaseId: lease.id });
@@ -620,7 +666,7 @@ export class OrchestrationRuntime {
         leaseId: released.leaseId
       });
     }
-    await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+    await this.#persistence.updateRunState(state.request.run.id, OrchestrationRunState.FAILED);
   }
 
   #assertRecoveryBindings(
@@ -628,7 +674,7 @@ export class OrchestrationRuntime {
     bindings: ReadonlyMap<string, RuntimeTaskBinding>
   ): void {
     for (const { attempt } of attempts) {
-      if (attempt.state !== 'PREPARING') {
+      if (attempt.state !== AgentExecutionAttemptState.PREPARING) {
         continue;
       }
       const binding = bindings.get(attempt.taskId);
@@ -655,9 +701,9 @@ export class OrchestrationRuntime {
     plan: TaskLeasePlan,
     agentId: string
   ): Promise<
-    | { readonly status: 'granted'; readonly leases: readonly WriteLease[] }
+    | { readonly status: typeof WriteLeaseStatus.Granted; readonly leases: readonly WriteLease[] }
     | {
-        readonly status: 'blocked';
+        readonly status: typeof WriteLeaseStatus.Blocked;
         readonly leaseId?: string;
         readonly rolledBackLeases: readonly WriteLease[];
       }
@@ -671,7 +717,7 @@ export class OrchestrationRuntime {
         resource,
         mode: 'exclusive'
       });
-      if (acquired.status === 'granted') {
+      if (acquired.status === WriteLeaseStatus.Granted) {
         leases.push(acquired.lease);
         await this.#persistence.persistLease({
           runId: state.request.run.id,
@@ -680,7 +726,7 @@ export class OrchestrationRuntime {
         continue;
       }
       const rollback = await this.#releaseLeasePlan(leases);
-      if (rollback.status !== 'released') {
+      if (rollback.status !== WriteLeaseStatus.Released) {
         for (const lease of rollback.leases) {
           await this.#persistence.persistLease({ runId: state.request.run.id, lease });
         }
@@ -689,24 +735,24 @@ export class OrchestrationRuntime {
           taskId: plan.taskId,
           leaseId: rollback.leaseId
         });
-        await this.#persistence.updateRunState(state.request.run.id, 'FAILED');
+        await this.#persistence.updateRunState(state.request.run.id, OrchestrationRunState.FAILED);
         throw new OrchestrationRuntimeInputError(
           `Lease rollback failed for task ${plan.taskId}: ${rollback.status}`
         );
       }
       return {
-        status: 'blocked',
+        status: WriteLeaseStatus.Blocked,
         leaseId: acquired.conflictingLeaseIds[0],
         rolledBackLeases: rollback.leases
       };
     }
-    return { status: 'granted', leases };
+    return { status: WriteLeaseStatus.Granted, leases };
   }
 
   async #releaseLeasePlan(leases: readonly WriteLease[]): Promise<
-    | { readonly status: 'released'; readonly leases: readonly WriteLease[] }
+    | { readonly status: typeof WriteLeaseStatus.Released; readonly leases: readonly WriteLease[] }
     | {
-        readonly status: 'not-found' | 'version-conflict';
+        readonly status: typeof WriteLeaseStatus.NotFound | typeof WriteLeaseStatus.VersionConflict;
         readonly leaseId: string;
         readonly leases: readonly WriteLease[];
       }
@@ -718,12 +764,12 @@ export class OrchestrationRuntime {
         leaseId: lease.id,
         expectedVersion: lease.version
       });
-      if (result.status !== 'released') {
+      if (result.status !== WriteLeaseStatus.Released) {
         return { status: result.status, leaseId: lease.id, leases: released };
       }
       released.push(result.lease);
     }
-    return { status: 'released', leases: released };
+    return { status: WriteLeaseStatus.Released, leases: released };
   }
 
   #applyTransitions(
@@ -845,12 +891,15 @@ interface RuntimeState {
 export class FakeAgentRunner implements AgentRunner {
   readonly #results: ReadonlyMap<
     string,
-    Extract<Awaited<ReturnType<AgentRunner['run']>>, { readonly status: 'failed' }>
+    Extract<
+      Awaited<ReturnType<AgentRunner['run']>>,
+      { readonly status: typeof AgentRunStatus.Failed }
+    >
   >;
 
   constructor(failures: ReadonlyMap<string, string> = new Map()) {
     this.#results = new Map(
-      [...failures].map(([taskId, detail]) => [taskId, { status: 'failed' as const, detail }])
+      [...failures].map(([taskId, detail]) => [taskId, { status: AgentRunStatus.Failed, detail }])
     );
   }
 
@@ -858,25 +907,31 @@ export class FakeAgentRunner implements AgentRunner {
     request: Parameters<AgentRunner['run']>[0]
   ): Promise<Awaited<ReturnType<AgentRunner['run']>>> {
     await request.onStarted({});
-    return this.#results.get(request.task.id) ?? { status: 'completed' };
+    return this.#results.get(request.task.id) ?? { status: AgentRunStatus.Completed };
   }
 }
 
 export class FakeTaskVerifier implements TaskVerifier {
   readonly #results: ReadonlyMap<
     string,
-    Extract<Awaited<ReturnType<TaskVerifier['verify']>>, { readonly status: 'failed' }>
+    Extract<
+      Awaited<ReturnType<TaskVerifier['verify']>>,
+      { readonly status: typeof TaskVerificationStatus.Failed }
+    >
   >;
 
   constructor(failures: ReadonlyMap<string, string> = new Map()) {
     this.#results = new Map(
-      [...failures].map(([taskId, detail]) => [taskId, { status: 'failed' as const, detail }])
+      [...failures].map(([taskId, detail]) => [
+        taskId,
+        { status: TaskVerificationStatus.Failed, detail }
+      ])
     );
   }
 
   async verify(
     request: Parameters<TaskVerifier['verify']>[0]
   ): Promise<Awaited<ReturnType<TaskVerifier['verify']>>> {
-    return this.#results.get(request.task.id) ?? { status: 'passed' };
+    return this.#results.get(request.task.id) ?? { status: TaskVerificationStatus.Passed };
   }
 }

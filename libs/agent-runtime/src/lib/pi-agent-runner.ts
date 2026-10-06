@@ -1,10 +1,16 @@
 import {
   defaultAgentCommandTrustedPath,
+  AgentRunStatus,
+  AgentCommandStatus,
   type AgentRunner
 } from '@ai-native-software-delivery-orchestrator/domain';
 
 import { AgentCommandRuntime, SandboxedAgentCommandExecutor } from './agent-command-runtime.js';
-import { AgentToolDeniedError, AgentToolRuntime } from './agent-tool-runtime.js';
+import {
+  AgentToolDeniedError,
+  AgentToolRuntime,
+  AgentToolWriteStatus
+} from './agent-tool-runtime.js';
 import type { PiSessionGateway, PiToolCall, PiToolResult } from './pi-gateway.js';
 
 export class PiAgentRunner implements AgentRunner {
@@ -73,7 +79,7 @@ export class PiAgentRunner implements AgentRunner {
       });
       if (blockedLeaseId !== undefined) {
         return {
-          status: 'blocked' as const,
+          status: AgentRunStatus.Blocked,
           leaseId: blockedLeaseId,
           detail: `Write blocked by lease: ${blockedLeaseId}`,
           observedImpact: tools.observedImpact(),
@@ -81,7 +87,7 @@ export class PiAgentRunner implements AgentRunner {
         };
       }
       return {
-        status: 'completed' as const,
+        status: AgentRunStatus.Completed,
         sessionRef: { backend: 'pi', value: session.sessionId },
         observedImpact: tools.observedImpact(),
         additionalLeases: tools.leases()
@@ -91,7 +97,7 @@ export class PiAgentRunner implements AgentRunner {
         throw error;
       }
       return {
-        status: 'failed' as const,
+        status: AgentRunStatus.Failed,
         detail: error instanceof Error ? error.message : 'Pi agent runner failed.'
       };
     }
@@ -112,14 +118,14 @@ export class PiAgentRunner implements AgentRunner {
           return { content: (await tools.find(call.path, call.text)).join('\n') };
         case 'forge_edit': {
           const result = await tools.edit(call.path, call.expected, call.replacement);
-          if (result.status === 'blocked') {
+          if (result.status === AgentToolWriteStatus.Blocked) {
             throw new AgentToolBlockedError(result.leaseId);
           }
           return { content: `Edited ${result.path}` };
         }
         case 'forge_write': {
           const result = await tools.write(call.path, call.content);
-          if (result.status === 'blocked') {
+          if (result.status === AgentToolWriteStatus.Blocked) {
             throw new AgentToolBlockedError(result.leaseId);
           }
           return { content: `Wrote ${result.path}` };
@@ -129,7 +135,7 @@ export class PiAgentRunner implements AgentRunner {
           const content = [result.stdout, result.stderr]
             .filter((value) => value.length > 0)
             .join('\n');
-          const failed = result.status !== 'completed' || result.exitCode !== 0;
+          const failed = result.status !== AgentCommandStatus.Completed || result.exitCode !== 0;
           return {
             content: content.length > 0 ? content : result.status,
             ...(failed ? { isError: true } : {})

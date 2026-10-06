@@ -230,7 +230,18 @@ export interface WriteLeaseRequest {
   readonly mode: 'exclusive';
 }
 
-export type WriteLeaseState = 'ACTIVE' | 'RELEASED' | 'STALE';
+export const writeLeaseStateSchema = z.enum(['ACTIVE', 'RELEASED', 'STALE']);
+export const WriteLeaseState = writeLeaseStateSchema.enum;
+export type WriteLeaseState = z.infer<typeof writeLeaseStateSchema>;
+export const WriteLeaseStatus = {
+  Granted: 'granted',
+  Blocked: 'blocked',
+  Active: 'active',
+  NotFound: 'not-found',
+  VersionConflict: 'version-conflict',
+  Stale: 'stale',
+  Released: 'released'
+} as const;
 
 export interface WriteLease {
   readonly id: string;
@@ -256,7 +267,7 @@ export const writeLeaseSchema = z.object({
   resource: writableResourceSchema,
   mode: z.literal('exclusive'),
   version: z.number().int().positive(),
-  state: z.enum(['ACTIVE', 'RELEASED', 'STALE']),
+  state: writeLeaseStateSchema,
   acquiredAt: z.date(),
   lastHeartbeatAt: z.date(),
   releasedAt: z.date().optional(),
@@ -266,11 +277,11 @@ export const writeLeaseSchema = z.object({
 
 export type WriteLeaseResult =
   | {
-      readonly status: 'granted';
+      readonly status: typeof WriteLeaseStatus.Granted;
       readonly lease: WriteLease;
     }
   | {
-      readonly status: 'blocked';
+      readonly status: typeof WriteLeaseStatus.Blocked;
       readonly conflictingLeaseIds: readonly string[];
     };
 
@@ -281,14 +292,14 @@ export interface HeartbeatWriteLeaseRequest {
 
 export type HeartbeatWriteLeaseResult =
   | {
-      readonly status: 'active';
+      readonly status: typeof WriteLeaseStatus.Active;
       readonly lease: WriteLease;
     }
   | {
-      readonly status: 'not-found';
+      readonly status: typeof WriteLeaseStatus.NotFound;
     }
   | {
-      readonly status: 'version-conflict';
+      readonly status: typeof WriteLeaseStatus.VersionConflict;
       readonly actualVersion: number;
     };
 
@@ -299,9 +310,9 @@ export interface MarkWriteLeaseStaleRequest {
 }
 
 export type MarkWriteLeaseStaleResult =
-  | { readonly status: 'stale'; readonly lease: WriteLease }
-  | { readonly status: 'not-found' }
-  | { readonly status: 'version-conflict'; readonly actualVersion: number };
+  | { readonly status: typeof WriteLeaseStatus.Stale; readonly lease: WriteLease }
+  | { readonly status: typeof WriteLeaseStatus.NotFound }
+  | { readonly status: typeof WriteLeaseStatus.VersionConflict; readonly actualVersion: number };
 
 export interface ReleaseWriteLeaseRequest {
   readonly leaseId: string;
@@ -309,9 +320,9 @@ export interface ReleaseWriteLeaseRequest {
 }
 
 export type ReleaseWriteLeaseResult =
-  | { readonly status: 'released'; readonly lease: WriteLease }
-  | { readonly status: 'not-found' }
-  | { readonly status: 'version-conflict'; readonly actualVersion: number };
+  | { readonly status: typeof WriteLeaseStatus.Released; readonly lease: WriteLease }
+  | { readonly status: typeof WriteLeaseStatus.NotFound }
+  | { readonly status: typeof WriteLeaseStatus.VersionConflict; readonly actualVersion: number };
 
 export interface WriteGuard {
   acquire(request: WriteLeaseRequest): Promise<WriteLeaseResult>;

@@ -9,6 +9,7 @@ export const workspaceIntegrationPhaseSchema = z.enum([
 ]);
 
 export type WorkspaceIntegrationPhase = z.infer<typeof workspaceIntegrationPhaseSchema>;
+export const WorkspaceIntegrationPhase = workspaceIntegrationPhaseSchema.enum;
 
 export const integrationBlockerSchema = z.object({
   type: z.enum(['rebase-conflict', 'fast-forward-failed', 'repository-dirty']),
@@ -31,13 +32,15 @@ const taskWorkspaceBaseSchema = z.object({
 });
 
 export const taskWorkspaceSchema = z.discriminatedUnion('phase', [
-  taskWorkspaceBaseSchema.extend({ phase: z.literal('READY_TO_INTEGRATE') }),
   taskWorkspaceBaseSchema.extend({
-    phase: z.literal('INTEGRATION_BLOCKED'),
+    phase: z.literal(WorkspaceIntegrationPhase.READY_TO_INTEGRATE)
+  }),
+  taskWorkspaceBaseSchema.extend({
+    phase: z.literal(WorkspaceIntegrationPhase.INTEGRATION_BLOCKED),
     blocker: integrationBlockerSchema
   }),
   taskWorkspaceBaseSchema.extend({
-    phase: z.literal('INTEGRATED'),
+    phase: z.literal(WorkspaceIntegrationPhase.INTEGRATED),
     integrationCommit: nonEmptyStringSchema
   })
 ]);
@@ -75,13 +78,21 @@ export const disposeTaskWorkspaceRequestSchema = z
 
 export type DisposeTaskWorkspaceRequest = z.infer<typeof disposeTaskWorkspaceRequestSchema>;
 
+export const WorkspaceIntegrationStatus = { Integrated: 'integrated', Blocked: 'blocked' } as const;
 export type IntegrateTaskWorkspaceResult =
-  | { readonly status: 'integrated'; readonly workspace: TaskWorkspace }
-  | { readonly status: 'blocked'; readonly workspace: TaskWorkspace };
+  | {
+      readonly status: typeof WorkspaceIntegrationStatus.Integrated;
+      readonly workspace: TaskWorkspace;
+    }
+  | {
+      readonly status: typeof WorkspaceIntegrationStatus.Blocked;
+      readonly workspace: TaskWorkspace;
+    };
 
+export const WorkspaceDisposalStatus = { Disposed: 'disposed', Dirty: 'dirty' } as const;
 export type DisposeTaskWorkspaceResult =
-  | { readonly status: 'disposed' }
-  | { readonly status: 'dirty'; readonly paths: readonly string[] };
+  | { readonly status: typeof WorkspaceDisposalStatus.Disposed }
+  | { readonly status: typeof WorkspaceDisposalStatus.Dirty; readonly paths: readonly string[] };
 
 export interface CommitTaskWorkspaceRequest {
   readonly workspace: TaskWorkspace;

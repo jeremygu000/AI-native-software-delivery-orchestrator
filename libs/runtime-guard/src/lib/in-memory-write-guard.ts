@@ -1,5 +1,7 @@
 import {
   areWritableResourcesConflicting,
+  WriteLeaseState,
+  WriteLeaseStatus,
   type HeartbeatWriteLeaseRequest,
   type HeartbeatWriteLeaseResult,
   type MarkWriteLeaseStaleRequest,
@@ -124,14 +126,14 @@ export class InMemoryWriteGuard implements WriteGuard {
           resourcesEqual(lease.resource, request.resource)
       );
       if (existing !== undefined) {
-        return { status: 'granted', lease: cloneLease(existing) };
+        return { status: WriteLeaseStatus.Granted, lease: cloneLease(existing) };
       }
       const conflictingLeaseIds = activeLeases
         .filter((lease) => areWritableResourcesConflicting(lease.resource, request.resource))
         .map((lease) => lease.id)
         .toSorted(compareIds);
       if (conflictingLeaseIds.length > 0) {
-        return { status: 'blocked', conflictingLeaseIds };
+        return { status: WriteLeaseStatus.Blocked, conflictingLeaseIds };
       }
       const now = this.#now();
       const lease: WriteLease = {
@@ -142,12 +144,12 @@ export class InMemoryWriteGuard implements WriteGuard {
         resource: cloneResource(request.resource),
         mode: 'exclusive',
         version: 1,
-        state: 'ACTIVE',
+        state: WriteLeaseState.ACTIVE,
         acquiredAt: now,
         lastHeartbeatAt: now
       };
       this.#leases.set(lease.id, lease);
-      return { status: 'granted', lease: cloneLease(lease) };
+      return { status: WriteLeaseStatus.Granted, lease: cloneLease(lease) };
     });
   }
 
@@ -156,11 +158,11 @@ export class InMemoryWriteGuard implements WriteGuard {
       requireNonEmpty(request.leaseId, 'leaseId');
       this.#assertVersion(request.expectedVersion);
       const lease = this.#leases.get(request.leaseId);
-      if (lease === undefined || lease.state !== 'ACTIVE') {
-        return { status: 'not-found' };
+      if (lease === undefined || lease.state !== WriteLeaseState.ACTIVE) {
+        return { status: WriteLeaseStatus.NotFound };
       }
       if (lease.version !== request.expectedVersion) {
-        return { status: 'version-conflict', actualVersion: lease.version };
+        return { status: WriteLeaseStatus.VersionConflict, actualVersion: lease.version };
       }
       const updated: WriteLease = {
         ...lease,
@@ -168,7 +170,7 @@ export class InMemoryWriteGuard implements WriteGuard {
         lastHeartbeatAt: this.#now()
       };
       this.#leases.set(updated.id, updated);
-      return { status: 'active', lease: cloneLease(updated) };
+      return { status: WriteLeaseStatus.Active, lease: cloneLease(updated) };
     });
   }
 
@@ -178,21 +180,21 @@ export class InMemoryWriteGuard implements WriteGuard {
       this.#assertVersion(request.expectedVersion);
       requireNonEmpty(request.evidence, 'evidence');
       const lease = this.#leases.get(request.leaseId);
-      if (lease === undefined || lease.state !== 'ACTIVE') {
-        return { status: 'not-found' };
+      if (lease === undefined || lease.state !== WriteLeaseState.ACTIVE) {
+        return { status: WriteLeaseStatus.NotFound };
       }
       if (lease.version !== request.expectedVersion) {
-        return { status: 'version-conflict', actualVersion: lease.version };
+        return { status: WriteLeaseStatus.VersionConflict, actualVersion: lease.version };
       }
       const updated: WriteLease = {
         ...lease,
         version: lease.version + 1,
-        state: 'STALE',
+        state: WriteLeaseState.STALE,
         staleDetectedAt: this.#now(),
         staleEvidence: request.evidence
       };
       this.#leases.set(updated.id, updated);
-      return { status: 'stale', lease: cloneLease(updated) };
+      return { status: WriteLeaseStatus.Stale, lease: cloneLease(updated) };
     });
   }
 
@@ -201,20 +203,20 @@ export class InMemoryWriteGuard implements WriteGuard {
       requireNonEmpty(request.leaseId, 'leaseId');
       this.#assertVersion(request.expectedVersion);
       const lease = this.#leases.get(request.leaseId);
-      if (lease === undefined || lease.state !== 'ACTIVE') {
-        return { status: 'not-found' };
+      if (lease === undefined || lease.state !== WriteLeaseState.ACTIVE) {
+        return { status: WriteLeaseStatus.NotFound };
       }
       if (lease.version !== request.expectedVersion) {
-        return { status: 'version-conflict', actualVersion: lease.version };
+        return { status: WriteLeaseStatus.VersionConflict, actualVersion: lease.version };
       }
       const updated: WriteLease = {
         ...lease,
         version: lease.version + 1,
-        state: 'RELEASED',
+        state: WriteLeaseState.RELEASED,
         releasedAt: this.#now()
       };
       this.#leases.set(updated.id, updated);
-      return { status: 'released', lease: cloneLease(updated) };
+      return { status: WriteLeaseStatus.Released, lease: cloneLease(updated) };
     });
   }
 
@@ -232,7 +234,7 @@ export class InMemoryWriteGuard implements WriteGuard {
   }
 
   #activeLeases(): readonly WriteLease[] {
-    return [...this.#leases.values()].filter((lease) => lease.state === 'ACTIVE');
+    return [...this.#leases.values()].filter((lease) => lease.state === WriteLeaseState.ACTIVE);
   }
 
   #createUniqueLeaseId(): string {

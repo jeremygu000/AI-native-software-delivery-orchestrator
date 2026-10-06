@@ -1,14 +1,67 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AgentRunStatus,
+  TaskVerificationStatus,
   scheduleOptionsSchema,
   schedulerDecisionReasonSchema,
   schedulerEventSchema,
   schedulerSnapshotSchema,
   schedulerTaskDecisionSchema
 } from './execution.js';
+import { TaskState, taskStateSchema } from './task-state.js';
+import { AgentExecutionAttemptState, agentExecutionAttemptStateSchema } from './agent-execution.js';
+import { WriteLeaseState, writeLeaseStateSchema, WriteLeaseStatus } from './write-lease.js';
+import {
+  ConflictAction,
+  ConflictSeverity,
+  conflictActionSchema,
+  conflictSeveritySchema
+} from './conflict.js';
+import { AgentCommandStatus } from './command-sandbox.js';
+import { OrchestrationRunState } from './persistence.js';
+import {
+  WorkspaceIntegrationPhase,
+  workspaceIntegrationPhaseSchema,
+  WorkspaceIntegrationStatus
+} from './workspace.js';
 
 describe('scheduler contracts', () => {
+  it('keeps persisted and public discriminator values unchanged when using named constants', () => {
+    for (const [schema, values] of [
+      [taskStateSchema, Object.values(TaskState)],
+      [agentExecutionAttemptStateSchema, Object.values(AgentExecutionAttemptState)],
+      [writeLeaseStateSchema, Object.values(WriteLeaseState)],
+      [conflictActionSchema, Object.values(ConflictAction)],
+      [conflictSeveritySchema, Object.values(ConflictSeverity)],
+      [workspaceIntegrationPhaseSchema, Object.values(WorkspaceIntegrationPhase)]
+    ] as const) {
+      for (const value of values) {
+        expect(schema.parse(JSON.parse(JSON.stringify(value)))).toBe(value);
+      }
+    }
+    expect(
+      JSON.parse(
+        JSON.stringify({
+          task: TaskState.COMPLETED,
+          run: OrchestrationRunState.ACTIVE,
+          agent: AgentRunStatus.Completed,
+          verification: TaskVerificationStatus.Passed,
+          lease: WriteLeaseStatus.Granted,
+          command: AgentCommandStatus.TimedOut,
+          integration: WorkspaceIntegrationStatus.Integrated
+        })
+      )
+    ).toEqual({
+      task: 'COMPLETED',
+      run: 'ACTIVE',
+      agent: 'completed',
+      verification: 'passed',
+      lease: 'granted',
+      command: 'timed-out',
+      integration: 'integrated'
+    });
+  });
   it('parses every supported scheduler event with replay evidence', () => {
     expect(
       [

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { AgentCommandStatus } from '@ai-native-software-delivery-orchestrator/domain';
 import type {
   AgentCommandSandbox,
   AgentCommandSandboxRequest,
@@ -24,7 +25,7 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
   async execute(request: AgentCommandSandboxRequest): Promise<AgentCommandSandboxResult> {
     if (request.profile.kind !== 'docker-read-only') {
       return {
-        status: 'failed',
+        status: AgentCommandStatus.Failed,
         detail: 'Unsupported command sandbox profile',
         stdout: '',
         stderr: ''
@@ -85,15 +86,15 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
         escalation = setTimeout(() => child.kill('SIGKILL'), this.#terminationGraceMs);
       };
       const timeout = setTimeout(
-        () => terminate({ status: 'timed-out', stdout, stderr }),
+        () => terminate({ status: AgentCommandStatus.TimedOut, stdout, stderr }),
         request.timeoutMs
       );
-      const cancel = () => terminate({ status: 'cancelled', stdout, stderr });
+      const cancel = () => terminate({ status: AgentCommandStatus.Cancelled, stdout, stderr });
       request.signal?.addEventListener('abort', cancel, { once: true });
       if (request.signal?.aborted) {
         cancel();
       }
-      const limit = () => terminate({ status: 'output-limited', stdout, stderr });
+      const limit = () => terminate({ status: AgentCommandStatus.OutputLimited, stdout, stderr });
       child.stdout.on('data', (chunk: Buffer) => {
         stdout = appendOutput(stdout, chunk, request.maxOutputBytes);
         if (Buffer.byteLength(stdout) >= request.maxOutputBytes) {
@@ -107,11 +108,16 @@ export class DockerReadOnlyCommandSandbox implements AgentCommandSandbox {
         }
       });
       child.once('error', () => {
-        result = { status: 'failed', detail: 'Command sandbox could not start', stdout, stderr };
+        result = {
+          status: AgentCommandStatus.Failed,
+          detail: 'Command sandbox could not start',
+          stdout,
+          stderr
+        };
         finish(result);
       });
       child.once('close', (exitCode) =>
-        finish({ status: 'completed', exitCode: exitCode ?? -1, stdout, stderr })
+        finish({ status: AgentCommandStatus.Completed, exitCode: exitCode ?? -1, stdout, stderr })
       );
     });
   }

@@ -3,8 +3,17 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, writeFile } from 'node:fs/promises';
 
-import type { AgentRunner, TaskVerifier } from '@ai-native-software-delivery-orchestrator/domain';
-import { taskLeasePlanFromPredictedImpact } from '@ai-native-software-delivery-orchestrator/domain';
+import type {
+  AgentRunner,
+  TaskVerifier,
+  RepositoryGraph
+} from '@ai-native-software-delivery-orchestrator/domain';
+import { analyzeRepository } from '@ai-native-software-delivery-orchestrator/repository-analysis';
+import {
+  ConflictSeverity,
+  OrchestrationRunState,
+  taskLeasePlanFromPredictedImpact
+} from '@ai-native-software-delivery-orchestrator/domain';
 import {
   FakeAgentRunner,
   FakeTaskVerifier,
@@ -14,18 +23,61 @@ import { DrizzleSqliteOrchestrationPersistence } from '@ai-native-software-deliv
 import { InMemoryWriteGuard } from '@ai-native-software-delivery-orchestrator/runtime-guard';
 import { DeterministicScheduler } from '@ai-native-software-delivery-orchestrator/scheduler';
 import { GitWorkspaceManager } from '@ai-native-software-delivery-orchestrator/workspace-git';
+import {
+  AgentToolRuntime,
+  PiAgentRunner,
+  PiCodingAgentGateway,
+  type PiSessionGateway
+} from '@ai-native-software-delivery-orchestrator/agent-runtime';
 
 import { LocalPlanStore } from './local-plan.js';
+import {
+  LocalTaskCompletionPipeline,
+  PiOutputReviewer,
+  RepositoryTaskVerifier,
+  type OutputReviewer
+} from './task-completion.js';
 
 export async function runLocalPlan(
   store: LocalPlanStore,
   planId: string,
   options: {
     readonly agentRunner?: AgentRunner;
+    readonly executionMode?: 'controlled' | 'live';
+    readonly liveGateway?: PiSessionGateway;
     readonly verifier?: TaskVerifier;
+    readonly verificationMode?: 'fake' | 'repository' | 'custom';
+    readonly completion?: {
+      readonly graph?: RepositoryGraph;
+      readonly reviewer?: OutputReviewer;
+    };
   } = {}
 ) {
   const pending = await store.load(planId);
+  const execution = options.executionMode ?? 'controlled';
+  if (
+    execution === 'live' &&
+    (options.verificationMode !== 'repository' || options.completion === undefined)
+  ) {
+    throw new Error('Live execution requires repository verification and output review.');
+  }
+  if (execution === 'live' && options.agentRunner !== undefined) {
+    throw new Error('Live execution uses the Pi writer, not an injected controlled agent.');
+  }
+  if (options.verifier !== undefined && options.verificationMode === undefined) {
+    throw new Error('An injected verifier requires an explicit verificationMode.');
+  }
+  if (options.verificationMode === 'custom' && options.verifier === undefined) {
+    throw new Error('Custom verification requires an injected verifier.');
+  }
+  if (options.verificationMode === 'repository' && options.completion === undefined) {
+    throw new Error('Repository verification requires the completion pipeline.');
+  }
+  const graph =
+    options.completion === undefined
+      ? undefined
+      : (options.completion.graph ?? (await analyzeRepository(pending.repository)).graph);
+  const verification = options.verificationMode ?? 'fake';
   const branch = await promisify(execFile)('git', ['symbolic-ref', '--short', 'HEAD'], {
     cwd: pending.repository
   });
@@ -35,31 +87,103 @@ export async function runLocalPlan(
   await writeFile(
     join(directory, 'run.json'),
     JSON.stringify(
-      { id: plan.runId, planId, execution: 'controlled', verification: 'fake' },
+      {
+        id: plan.runId,
+        planId,
+        execution,
+        verification,
+        completion: options.completion === undefined ? 'legacy' : 'reviewed',
+        review:
+          options.completion === undefined
+            ? 'none'
+            : options.completion.reviewer === undefined
+              ? 'live-pi'
+              : 'custom'
+      },
       null,
       2
     )
   );
   const persistence = new DrizzleSqliteOrchestrationPersistence(join(directory, 'state.sqlite'));
   try {
+    const writeGuard = new InMemoryWriteGuard();
+    const agentRunner =
+      execution === 'live' && graph !== undefined
+        ? new PiAgentRunner({
+            gateway: options.liveGateway ?? new PiCodingAgentGateway(),
+            createTools: (request) => {
+              const fileFor = (path: string) =>
+                [...graph.files.values()].find((file) => file.path === path);
+              const projectFor = (path: string) => {
+                const project = [...graph.projects.values()]
+                  .filter(
+                    (candidate) =>
+                      candidate.root === '.' ||
+                      path === candidate.root ||
+                      path.startsWith(`${candidate.root}/`)
+                  )
+                  .toSorted((a, b) => b.root.length - a.root.length)[0];
+                if (project === undefined) {
+                  throw new Error(`No repository project for workspace path: ${path}`);
+                }
+                return project;
+              };
+              return new AgentToolRuntime({
+                runId: request.runId,
+                taskId: request.taskId,
+                attemptId: request.attempt.id,
+                agentId: request.attempt.agentId,
+                workspacePath: request.workspace.workspacePath,
+                persistence,
+                writeGuard,
+                resolveFileId: (path) => fileFor(path)?.id ?? `${projectFor(path).id}:${path}`,
+                resolveResource: (path) => {
+                  const file = fileFor(path);
+                  return file === undefined
+                    ? { type: 'project', projectId: projectFor(path).id }
+                    : { type: 'file', projectId: file.projectId, fileId: file.id };
+                }
+              });
+            }
+          })
+        : (options.agentRunner ?? new FakeAgentRunner());
+    const verifier =
+      options.verifier ??
+      (verification === 'repository' && graph !== undefined
+        ? new RepositoryTaskVerifier(graph)
+        : new FakeTaskVerifier());
     const runtime = new OrchestrationRuntime({
       scheduler: new DeterministicScheduler(),
       persistence,
       workspaceManager: new GitWorkspaceManager(),
-      writeGuard: new InMemoryWriteGuard(),
-      agentRunner: options.agentRunner ?? new FakeAgentRunner(),
-      verifier: options.verifier ?? new FakeTaskVerifier()
+      writeGuard,
+      agentRunner,
+      verifier,
+      completionGate:
+        options.completion !== undefined && graph !== undefined
+          ? new LocalTaskCompletionPipeline({
+              graph,
+              impacts: plan.impacts,
+              verifier,
+              reviewer: options.completion.reviewer ?? new PiOutputReviewer(),
+              evidenceDirectory: join(directory, 'completion')
+            })
+          : undefined
     });
     const recovered = await runtime.startRun({
       run: {
         id: plan.runId,
         repositoryId: plan.repository,
-        state: 'ACTIVE',
+        state: OrchestrationRunState.ACTIVE,
         createdAt: new Date().toISOString()
       },
       tasks: plan.tasks,
-      hardConflicts: plan.conflicts.filter((conflict) => conflict.severity === 'hard'),
-      riskConflicts: plan.conflicts.filter((conflict) => conflict.severity !== 'hard'),
+      hardConflicts: plan.conflicts.filter(
+        (conflict) => conflict.severity === ConflictSeverity.hard
+      ),
+      riskConflicts: plan.conflicts.filter(
+        (conflict) => conflict.severity !== ConflictSeverity.hard
+      ),
       scheduleOptions: plan.schedule,
       taskBindings: plan.tasks.map((task, index) => {
         const impact = plan.impacts.find((candidate) => candidate.taskId === task.id)!;
@@ -84,8 +208,9 @@ export async function runLocalPlan(
     return {
       runId: plan.runId,
       planId,
-      execution: 'controlled',
-      verification: 'fake',
+      execution,
+      verification,
+      completion: options.completion === undefined ? 'legacy' : 'reviewed',
       taskStates: recovered.snapshot.taskStates,
       directory
     };

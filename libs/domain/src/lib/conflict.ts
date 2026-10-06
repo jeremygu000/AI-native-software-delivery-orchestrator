@@ -148,9 +148,18 @@ export const conflictReasonSchema = z.object({
   resourceIds: z.array(z.string())
 });
 
-export type ConflictAction = 'parallel' | 'guarded-parallel' | 'stagger' | 'serialize';
+export const conflictActionSchema = z.enum([
+  'parallel',
+  'guarded-parallel',
+  'stagger',
+  'serialize'
+]);
+export const ConflictAction = conflictActionSchema.enum;
+export type ConflictAction = z.infer<typeof conflictActionSchema>;
 export type HardConflictAction = Extract<ConflictAction, 'stagger' | 'serialize'>;
-export type ConflictSeverity = 'none' | 'soft' | 'hard';
+export const conflictSeveritySchema = z.enum(['none', 'soft', 'hard']);
+export const ConflictSeverity = conflictSeveritySchema.enum;
+export type ConflictSeverity = z.infer<typeof conflictSeveritySchema>;
 export type SchedulingConstraintType =
   | 'exclusive-resource'
   | 'ordered-resource'
@@ -230,14 +239,17 @@ const taskConflictBaseSchema = z.object({
 
 export const taskConflictSchema = z.discriminatedUnion('severity', [
   taskConflictBaseSchema.extend({
-    severity: z.literal('hard'),
+    severity: z.literal(ConflictSeverity.hard),
     constraints: z.tuple([schedulingConstraintSchema]).rest(schedulingConstraintSchema),
-    recommendedAction: z.enum(['stagger', 'serialize'])
+    recommendedAction: conflictActionSchema.extract([
+      ConflictAction.stagger,
+      ConflictAction.serialize
+    ])
   }),
   taskConflictBaseSchema.extend({
-    severity: z.enum(['none', 'soft']),
+    severity: conflictSeveritySchema.exclude([ConflictSeverity.hard]),
     constraints: z.tuple([]),
-    recommendedAction: z.enum(['parallel', 'guarded-parallel', 'stagger', 'serialize'])
+    recommendedAction: conflictActionSchema
   })
 ]);
 

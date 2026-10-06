@@ -1778,3 +1778,38 @@ runtime/SQLite implementations were not changed. `docs/forge-v1-local-plan-run.e
 commands and limitations. Output review, repair, real verification, diff reconciliation, cancellation,
 resume, TUI and attribution remain unimplemented. P1.2 is product wiring, not a claim of complete
 software delivery; the archived branches remain untouched.
+
+## Forge v1 P1: one-shot completion before integration
+
+After P1.2 was independently approved at `89f521e`, the user narrowed this stage to a single happy
+path: writer, actual diff/scope inspection, real repository verification, output review and serialized
+integration. The initially uncommitted repair loop was removed. Failure preserves evidence and the
+worktree and stops; there is no automatic repair/retry, cancellation, resume or new ownership model.
+
+`run --live` now selects the existing Pi coding gateway and Forge file tools, with mandatory checks
+and separate output review. `--controlled` remains explicit and backward-compatible. Run metadata
+records `controlled`/`live`, `fake`/`repository`/`custom` verification and the review mode rather than
+claiming every injected verifier is fake. The simple Plan/user approval/clean HEAD checks are unchanged.
+
+The completion gate keeps the existing same-run reservation while inspecting tracked/untracked
+changes against the saved base and planned files/explicit project roots. Empty output and writer
+commits fail. Saved package scripts or approved local commands run with bounded output/time; failed
+checks stop before review. An accepted review must refer to the actual diff, and the diff is checked
+again before integration. Ordinary JSONL records the checks/review or failure reason. Repository code
+is trusted-local, not sandboxed; dependency setup remains the user's responsibility.
+
+Fresh `pnpm check` passes 421 tests in 31 files with format/type/lint and unchanged 90% gates:
+96.19% statements, 90.89% branches, 96.12% functions and 96.16% lines. `pnpm build` and compiled run
+help pass. Real Git, SQLite and npm checks are exercised with controlled writer/review gateways;
+no fresh paid/live model run was performed. The live entry is implemented, but full live happy-path
+acceptance is still pending. `docs/forge-v1-task-completion.en.md` describes operation and these limits.
+
+The user additionally requested a repository-wide cleanup of repeated status/state strings. Core
+production decisions now use named values defined alongside their domain contracts: task/run/attempt
+states; agent, verifier and command outcomes; same-run reservation states/results; Git workspace phases
+and outcomes; conflict severity/actions; semantic plan and output-review recommendations. Zod-backed
+contracts expose their enum values directly, while finite result unions use literal-typed constant
+objects. The scheduler, runtime, persistence, agent tools, Git manager and completion path consume these
+definitions. JSON/SQLite spellings and behavior remain unchanged; a serialization compatibility test
+and the existing scheduling/persistence/product tests verify that boundary. Ordinary prose and test
+expectations were not mechanically replaced, and no lifecycle or authority mechanism was introduced.

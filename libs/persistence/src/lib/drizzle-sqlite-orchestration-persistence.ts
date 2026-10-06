@@ -23,7 +23,9 @@ import type {
   TaskConflict
 } from '@ai-native-software-delivery-orchestrator/domain';
 import {
+  ConflictSeverity,
   scheduleOptionsSchema,
+  AgentExecutionAttemptState,
   schedulerEventSchema,
   schedulerSnapshotSchema,
   schedulerTaskDecisionSchema,
@@ -373,7 +375,10 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
     if (
       startTaskIds.length !== attemptTaskIds.length ||
       startTaskIds.some((taskId, index) => taskId !== attemptTaskIds[index]) ||
-      attempts.some(({ attempt }) => attempt.state !== 'PREPARING' || attempt.revision !== 1)
+      attempts.some(
+        ({ attempt }) =>
+          attempt.state !== AgentExecutionAttemptState.PREPARING || attempt.revision !== 1
+      )
     ) {
       throw new PersistenceInputError(
         'Dispatch attempts must exactly match scheduler starts as revision 1 PREPARING evidence'
@@ -695,11 +700,11 @@ export class DrizzleSqliteOrchestrationPersistence implements OrchestrationPersi
       tasks: decode(run.tasksJson, isTaskContracts, 'task contracts'),
       hardConflicts: decode(run.hardConflictsJson, isTaskConflicts, 'hard conflicts').filter(
         (conflict): conflict is RecoveredRun['hardConflicts'][number] =>
-          conflict.severity === 'hard'
+          conflict.severity === ConflictSeverity.hard
       ),
       riskConflicts: decode(run.riskConflictsJson, isTaskConflicts, 'risk conflicts').filter(
         (conflict): conflict is RecoveredRun['riskConflicts'][number] =>
-          conflict.severity !== 'hard'
+          conflict.severity !== ConflictSeverity.hard
       ),
       scheduleOptions: decode(run.scheduleOptionsJson, isScheduleOptions, 'schedule options'),
       events: events.map((event) => ({
