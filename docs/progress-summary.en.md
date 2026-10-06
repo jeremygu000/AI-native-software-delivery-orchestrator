@@ -1839,3 +1839,29 @@ and completion tests pass 61/61. This is one real happy-path acceptance, not a r
 or proof of parallel live delivery. Repair, retry/resume, cancellation, TUI and attribution remain
 unimplemented. `docs/forge-v1-live-happy-path.en.md` records the completed run and all four failures;
 credentials and private model sessions are excluded from the report and tracked files.
+
+## Forge v1 P2: observable local workflow
+
+After acceptance of the live happy path at `749c03b`, this slice adds `forge tui`, `view` and `inspect`.
+The TUI adapts multiline planning, saved-plan inspection, explicit approval and separate live/controlled
+execution to existing CLI operations. A loopback GET-only React Flow page displays task graphs and
+details without browser mutation controls. Both consume ordinary Plan JSON, read-only SQLite and
+completion JSONL; missing or incomplete facts are labeled rather than reported as success.
+
+The inherited runtime can leave its run row ACTIVE after terminal task events. The view preserves
+`recordedRunState` and labels a displayed terminal task aggregate `stateSource: task-events`; it never
+rewrites persistence. VERIFYING/REVIEWING observations describe entry into existing completion checks.
+Actual changed files, diff, verification, independent review, worktree and integrated commit come only
+from recorded facts, and controlled/fake mode labels remain visible.
+
+At the user's request, Y/Ctrl+Y copies complete plain-text diagnostics without viewport truncation.
+Normal terminal mouse selection remains available. Clipboard failure saves the same text privately
+under local diagnostics and displays its path; copying also works while a run is active.
+
+Fresh check passes 433/433 tests in 33 files, format/type/lint and unchanged 90% gates: statements
+94.78%, branches 90.05%, functions 94.62%, lines 94.84%. CLI/web build passes. Real Git/SQLite tests
+verify read-side immutability and failure/terminal provenance, explicit actions and copy fallback.
+A real browser opened the earlier live pathe run and displayed its completed task, passed check,
+accepted review and integrated commit. Terminal interaction is controller-tested; no native-terminal
+automation or new paid model run is claimed. Repair, retry/resume, cancellation, attribution and
+remote services remain unimplemented. `docs/forge-v1-observable.en.md` documents usage and limits.

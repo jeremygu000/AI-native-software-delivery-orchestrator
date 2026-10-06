@@ -4,9 +4,11 @@
     "outDir": "dist",
     "types": ["node"],
     "rootDir": "src",
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "tsBuildInfoFile": "dist/tsconfig.app.tsbuildinfo"
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
   "exclude": [],
   "references": [
     { "path": "../../libs/orchestration-runtime/tsconfig.lib.json" },

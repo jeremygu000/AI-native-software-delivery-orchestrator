@@ -18,7 +18,16 @@
     "@ai-native-software-delivery-orchestrator/scheduler": "workspace:*",
     "@ai-native-software-delivery-orchestrator/task-impact": "workspace:*",
     "@ai-native-software-delivery-orchestrator/workspace-git": "workspace:*",
+    "@xyflow/react": "^12.12.0",
+    "better-sqlite3": "^13.0.3",
     "commander": "15.0.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0"
   }
 }

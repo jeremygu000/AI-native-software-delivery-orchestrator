@@ -328,8 +328,14 @@ describe('trustworthy local task completion', () => {
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line));
-      expect(evidence.map((row) => row.verification.status)).toEqual(['passed']);
-      expect(evidence.map((row) => row.review.recommendation)).toEqual(['accept']);
+      expect(
+        evidence
+          .filter((row) => row.verification && !row.stage)
+          .map((row) => row.verification.status)
+      ).toEqual(['passed']);
+      expect(evidence.filter((row) => row.review).map((row) => row.review.recommendation)).toEqual([
+        'accept'
+      ]);
       expect(
         JSON.parse(await readFile(join(result.directory, 'run.json'), 'utf8')).verification
       ).toBe('repository');

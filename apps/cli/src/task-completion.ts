@@ -17,6 +17,7 @@ import {
   type PredictedTaskImpact
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { z } from 'zod';
+import { CompletionStage, CompletionScope, CompletionOutcome } from './completion-values.js';
 
 const execute = promisify(execFile);
 const outputReviewRecommendationSchema = z.enum(['accept', 'reject']);
@@ -243,7 +244,7 @@ export class LocalTaskCompletionPipeline implements TaskCompletionGate {
       await mkdir(this.options.evidenceDirectory, { recursive: true });
       await appendFile(
         resolve(this.options.evidenceDirectory, `${request.workspace.id}.jsonl`),
-        `${JSON.stringify({ completion: 'failed', detail })}\n`
+        `${JSON.stringify({ completion: CompletionOutcome.Failed, detail })}\n`
       );
       return {
         status: TaskVerificationStatus.Failed,
@@ -264,7 +265,12 @@ export class LocalTaskCompletionPipeline implements TaskCompletionGate {
     const round = 0;
     const diff = await this.#diff(request);
     if (diff.paths.length === 0) {
-      await record({ round, diff, completion: 'failed', detail: 'Writer produced no changes.' });
+      await record({
+        round,
+        diff,
+        completion: CompletionOutcome.Failed,
+        detail: 'Writer produced no changes.'
+      });
       return {
         status: TaskVerificationStatus.Failed,
         detail: 'Writer produced no changes; nothing to verify or integrate.'
@@ -272,23 +278,30 @@ export class LocalTaskCompletionPipeline implements TaskCompletionGate {
     }
     const outside = this.#outsideScope(request.task, diff.paths);
     if (outside.length > 0) {
-      await record({ round, diff, scope: 'rejected', outside });
+      await record({ round, diff, scope: CompletionScope.Rejected, outside });
       return {
         status: TaskVerificationStatus.Failed,
         detail: `Actual diff exceeds planned scope: ${outside.join(', ')}`
       };
     }
+    await record({
+      stage: CompletionStage.Verifying,
+      taskId: request.task.id,
+      diff,
+      scope: CompletionScope.Matched
+    });
     const verification = await this.options.verifier.verify(request);
     if (verification.status === TaskVerificationStatus.Failed) {
       await record({
         taskId: request.task.id,
         diff,
-        scope: 'matched',
+        scope: CompletionScope.Matched,
         plannedVerification: request.task.verification,
         verification
       });
       return verification;
     }
+    await record({ stage: CompletionStage.Reviewing, taskId: request.task.id, verification });
     const review = reviewSchema.parse(
       await this.options.reviewer.review({ ...request, diff, verification, round })
     );
@@ -298,7 +311,7 @@ export class LocalTaskCompletionPipeline implements TaskCompletionGate {
     await record({
       taskId: request.task.id,
       diff,
-      scope: 'matched',
+      scope: CompletionScope.Matched,
       plannedVerification: request.task.verification,
       verification,
       review

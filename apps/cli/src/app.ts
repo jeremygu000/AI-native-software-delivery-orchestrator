@@ -33,6 +33,8 @@ import { Command } from 'commander';
 
 import { inspectLocalRepository, LocalPlanStore } from './local-plan.js';
 import { runLocalPlan } from './local-run.js';
+import { startObservableServer } from './observable-server.js';
+import { readRunView } from './run-view.js';
 
 export interface ForgeProgramDependencies {
   readonly cwd?: string;
@@ -212,6 +214,52 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .version('0.0.1');
 
   const stateDirectory = resolve(homedir(), '.forge');
+
+  program
+    .command('tui')
+    .description('Interactive local plan/approve/run presentation')
+    .option('--state-directory <path>', 'local Forge state', stateDirectory)
+    .option('-r, --repository <path>', 'repository for a new request', cwd)
+    .action(async (options: { stateDirectory: string; repository: string }) => {
+      const { startObservableTui } = await import('./observable-tui.js');
+      await startObservableTui(
+        resolve(cwd, options.stateDirectory),
+        resolve(cwd, options.repository)
+      );
+    });
+  program
+    .command('view')
+    .description('Read a local plan and its recorded run facts')
+    .argument('<plan-id>')
+    .option('--state-directory <path>', 'local Forge state', stateDirectory)
+    .action(async (id: string, options: { stateDirectory: string }) => {
+      writeOutput(
+        `${JSON.stringify(await readRunView(new LocalPlanStore(resolve(cwd, options.stateDirectory)), id), null, 2)}\n`
+      );
+    });
+  program
+    .command('inspect')
+    .description('Serve a loopback GET-only task graph and run details')
+    .option('--state-directory <path>', 'local Forge state', stateDirectory)
+    .option('--port <port>', 'loopback port (0 chooses a free port)', '0')
+    .action(async (options: { stateDirectory: string; port: string }) => {
+      const port = Number(options.port);
+      if (!Number.isInteger(port) || port < 0 || port > 65535) {
+        throw new Error('Port must be an integer from 0 to 65535.');
+      }
+      const server = await startObservableServer(
+        new LocalPlanStore(resolve(cwd, options.stateDirectory)),
+        port
+      );
+      writeOutput(`Read-only Forge inspector: ${server.url}\n`);
+      const stop = () => {
+        void server.close();
+        process.off('SIGINT', stop);
+        process.off('SIGTERM', stop);
+      };
+      process.on('SIGINT', stop);
+      process.on('SIGTERM', stop);
+    });
 
   program
     .command('analyze')

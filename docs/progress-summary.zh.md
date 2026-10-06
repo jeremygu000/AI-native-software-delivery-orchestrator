@@ -1609,3 +1609,25 @@ statements 96.16%、branches 90.89%、functions 95.98%、lines 96.16%。`pnpm bu
 completion 定向测试 61/61 通过。这是一项真实 happy-path 验收，不是模型可靠率排名，也不代表并行 live
 交付已验证。Repair、retry／resume、取消、TUI、attribution 仍未实现。
 `docs/forge-v1-live-happy-path.en.md` 记录成功 run 和四次失败；凭据与私有模型 session 不进入报告或 tracked 文件。
+
+## Forge v1 P2：可观察的本地工作流
+
+Live happy path `749c03b` 验收通过后，本批新增 `forge tui`、`view` 和 `inspect`。TUI 将多行规划、保存
+计划查看、显式批准及独立的 live／controlled 执行适配到已有 CLI 操作。Loopback GET-only React Flow 页面
+展示任务图和详情，没有浏览器写操作。两者读取普通 Plan JSON、只读 SQLite 和 completion JSONL，缺失或
+不完整事实明确标注，不冒充成功。
+
+继承 runtime 在 task events 终态后仍可能保留 ACTIVE run row。View 保留 `recordedRunState`，将显示的
+终态 task 汇总标为 `stateSource: task-events`，不改数据库。VERIFYING／REVIEWING 观察仅说明已有检查
+阶段的进入。实际文件、diff、verification、独立 review、worktree、集成 commit 只来自记录事实，保留
+controlled／fake 模式标识。
+
+按用户要求，Y／Ctrl+Y 复制完整纯文本诊断，不受窗口宽度或滚动截断；保留终端普通鼠标选择。剪贴板失败
+时将相同文字以私有权限保存到本地 diagnostics 并显示路径，运行中也可复制。
+
+本次 check 通过 33 文件 433/433 测试及 format／type／lint；原四项 90% 门槛不变：statements 94.78%、
+branches 90.05%、functions 94.62%、lines 94.84%。CLI／web build 通过。真实 Git／SQLite 测试验证只读
+无修改、失败／终态来源、显式动作与复制 fallback。实际浏览器打开此前 live pathe run，查看完成 task、
+passed check、接受的 review 与集成 commit。终端交互由 controller 测试，未声称 native terminal 自动化或
+新的付费模型验收。Repair、retry／resume、取消、attribution 和远程服务仍未实现。
+`docs/forge-v1-observable.en.md` 说明使用方法与限制。
