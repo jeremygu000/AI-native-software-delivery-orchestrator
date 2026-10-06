@@ -1541,3 +1541,22 @@ analyze 和 plan。
 `docs/forge-v1-executable-baseline.en.md` 记录证据和后续最小连接。本批到此停止，没有实现
 cancellation／resume、creates／deletes、TUI、attribution、分布式后端或 recovery infrastructure。
 完整 P1 尚未完成，历史 authority 分支保持不变。
+
+## Forge v1 P1.2：简单批准 Plan 到 local run
+
+P1.1 在 `9120740` 获独立认可后，本批用普通本地 Plan JSON 接通现有 planning 和 runtime。
+`plan --save` 保存仓库／base commit、任务、impact、conflict、schedule；`show` 显示计划；
+`approve --yes` 记录用户决定；`run --controlled` 把任务映射到生成的 agent／worktree 标识和
+现有 local runtime 输入。仓库变脏或 HEAD 改变时停止并要求重新规划。没有 approval token、
+authority fingerprint 链、claim ownership、Runtime V2 移植或分布式基础设施。
+
+受控执行明确标识：默认 agent 不写代码，verifier 是 fake，输出同时注明这两点。一个测试通过
+完整 CLI 路径注入受控 writer，实际编辑 Git worktree，经 SQLite runtime 集成回真实仓库。
+其他测试证明 no-op 完成不产生新 commit、验证失败不集成、显式批准不可省略，以及仓库变化、
+无效文件和重复运行会被拒绝。这是产品接线证明，不是 live model／真实仓库验证证明。
+
+本次 `pnpm check` 的 30 文件、402 测试及格式／类型／lint 全部通过；覆盖率为 statements
+96.44%、branches 91.43%、functions 96.66%、lines 96.41%，门槛未变。`pnpm build` 通过。
+使用 pnpm 链接 workspace 依赖并更新 CLI TypeScript references，没有修改既有 runtime／SQLite
+实现。`docs/forge-v1-local-plan-run.en.md` 说明命令和限制。output review、repair、真实 verifier、
+diff 对账、cancellation／resume、TUI、attribution 尚未实现；完整 P1 未完成，archive 分支未动。

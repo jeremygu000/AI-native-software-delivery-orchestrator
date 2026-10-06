@@ -9,6 +9,10 @@
   "include": ["src/**/*.ts"],
   "exclude": [],
   "references": [
+    { "path": "../../libs/orchestration-runtime/tsconfig.lib.json" },
+    { "path": "../../libs/persistence/tsconfig.lib.json" },
+    { "path": "../../libs/runtime-guard/tsconfig.lib.json" },
+    { "path": "../../libs/workspace-git/tsconfig.lib.json" },
     {
       "path": "../../libs/agent-runtime/tsconfig.lib.json"
     },

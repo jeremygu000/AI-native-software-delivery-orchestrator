@@ -1755,3 +1755,26 @@ commits/integrates; failed verification marks the task failed rather than repair
 P1.1 stops here: no cancellation/resume, creates/deletes, TUI, attribution, distributed backend
 or recovery infrastructure was implemented. Full P1 remains incomplete and the historical
 authority branch is unchanged.
+
+## Forge v1 P1.2: simple approved plan to local run
+
+After P1.1 was independently approved at `9120740`, P1.2 connected existing planning output to
+the local runtime with ordinary Plan JSON. `plan --save` records repository/base commit, tasks,
+impacts, conflicts and schedule; `show` exposes that plan; `approve --yes` sets a user decision;
+`run --controlled` maps tasks to generated worktree/agent identities and existing local runtime
+inputs. A dirty repository or changed HEAD stops with a re-plan message. No approval token,
+authority fingerprint chain, claim ownership, runtime-v2 port or distributed infrastructure was added.
+
+Controlled execution is deliberately explicit: the default agent does no coding and the verifier
+is fake, and output labels both facts. One test injects a controlled writer through the full CLI
+path and proves actual Git worktree editing, SQLite execution and integration into the repository.
+Other tests cover no-op completion without a new commit, failed verification without integration,
+explicit approval requirements, stale/dirty repository, invalid files and repeat-run rejection.
+
+Fresh `pnpm check` passes 402 tests in 30 files, format/type/lint and unchanged coverage gates:
+96.44% statements, 91.43% branches, 96.66% functions and 96.41% lines. `pnpm build` passes.
+Workspace dependencies were linked using pnpm and CLI TypeScript references updated; existing
+runtime/SQLite implementations were not changed. `docs/forge-v1-local-plan-run.en.md` explains
+commands and limitations. Output review, repair, real verification, diff reconciliation, cancellation,
+resume, TUI and attribution remain unimplemented. P1.2 is product wiring, not a claim of complete
+software delivery; the archived branches remain untouched.

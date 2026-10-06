@@ -63,21 +63,36 @@ importers:
       '@ai-native-software-delivery-orchestrator/domain':
         specifier: workspace:*
         version: link:../../libs/domain
+      '@ai-native-software-delivery-orchestrator/orchestration-runtime':
+        specifier: workspace:*
+        version: link:../../libs/orchestration-runtime
+      '@ai-native-software-delivery-orchestrator/persistence':
+        specifier: workspace:*
+        version: link:../../libs/persistence
       '@ai-native-software-delivery-orchestrator/planning':
         specifier: workspace:*
         version: link:../../libs/planning
       '@ai-native-software-delivery-orchestrator/repository-analysis':
         specifier: workspace:*
         version: link:../../libs/repository-analysis
+      '@ai-native-software-delivery-orchestrator/runtime-guard':
+        specifier: workspace:*
+        version: link:../../libs/runtime-guard
       '@ai-native-software-delivery-orchestrator/scheduler':
         specifier: workspace:*
         version: link:../../libs/scheduler
       '@ai-native-software-delivery-orchestrator/task-impact':
         specifier: workspace:*
         version: link:../../libs/task-impact
+      '@ai-native-software-delivery-orchestrator/workspace-git':
+        specifier: workspace:*
+        version: link:../../libs/workspace-git
       commander:
         specifier: 15.0.0
         version: 15.0.0
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
   libs/agent-runtime:
     dependencies:

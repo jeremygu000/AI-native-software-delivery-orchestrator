@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
 import {
@@ -30,6 +31,9 @@ import {
 } from '@ai-native-software-delivery-orchestrator/task-impact';
 import { Command } from 'commander';
 
+import { inspectLocalRepository, LocalPlanStore } from './local-plan.js';
+import { runLocalPlan } from './local-run.js';
+
 export interface ForgeProgramDependencies {
   readonly cwd?: string;
   readonly analyzeRepository?: (repositoryPath: string) => Promise<RepositoryGraphAnalysis>;
@@ -42,6 +46,7 @@ export interface ForgeProgramDependencies {
     readonly semanticReviewAuthorized: true;
   }) => Promise<PreparedOrchestrationPlan>;
   readonly writeOutput?: (output: string) => void;
+  readonly localExecution?: Parameters<typeof runLocalPlan>[2];
 }
 
 interface SerializableProjectGraph {
@@ -206,6 +211,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
     .description('Repository-aware multi-agent coding orchestrator')
     .version('0.0.1');
 
+  const stateDirectory = resolve(homedir(), '.forge');
+
   program
     .command('analyze')
     .description('Analyze repository projects, TypeScript files, symbols, and references')
@@ -240,6 +247,8 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
       '--semantic-review',
       'authorize an independent Pi review using the specification and read-only repository facts'
     )
+    .option('--state-directory <path>', 'local Forge plans and run state', stateDirectory)
+    .option('--save', 'save a local plan for inspect/approve/controlled run')
     .action(
       async (
         specification: string,
@@ -249,9 +258,14 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
           maxAttempts: number;
           maxConcurrency: number;
           semanticReview: true;
+          stateDirectory: string;
+          save?: boolean;
         }
       ) => {
         try {
+          const plannedRepository = options.save
+            ? await inspectLocalRepository(resolve(cwd, options.repository))
+            : undefined;
           const result = await planRepository({
             specificationPath: resolve(cwd, specification),
             repositoryPath: resolve(cwd, options.repository),
@@ -262,7 +276,18 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
             maxConcurrency: options.maxConcurrency,
             semanticReviewAuthorized: options.semanticReview
           });
-          writeOutput(`${JSON.stringify(serializePlan(result), null, 2)}\n`);
+          if (options.save) {
+            const saved = await new LocalPlanStore(resolve(cwd, options.stateDirectory)).save(
+              resolve(cwd, options.repository),
+              result,
+              plannedRepository?.repositoryCommit
+            );
+            writeOutput(
+              `${JSON.stringify({ ...serializePlan(result), planId: saved.id, repository: saved.repository, repositoryCommit: saved.repositoryCommit, approved: false }, null, 2)}\n`
+            );
+          } else {
+            writeOutput(`${JSON.stringify(serializePlan(result), null, 2)}\n`);
+          }
         } catch (error) {
           if (error instanceof AutonomousPlanningError) {
             const missingRegistryHint =
@@ -278,6 +303,45 @@ export const createForgeProgram = (dependencies: ForgeProgramDependencies = {}):
         }
       }
     );
+
+  program
+    .command('show')
+    .description('Inspect a saved local plan')
+    .argument('<plan-id>')
+    .option('--state-directory <path>', 'local Forge state', stateDirectory)
+    .action(async (id: string, options: { stateDirectory: string }) => {
+      const plan = await new LocalPlanStore(resolve(cwd, options.stateDirectory)).load(id);
+      writeOutput(
+        `${JSON.stringify(plan, (_key, value: unknown) => (value instanceof Set ? [...value] : value), 2)}\n`
+      );
+    });
+  program
+    .command('approve')
+    .description('Explicitly approve a previously inspected local plan')
+    .argument('<plan-id>')
+    .requiredOption('--yes', 'confirm approval of this plan')
+    .option('--state-directory <path>', 'local Forge state', stateDirectory)
+    .action(async (id: string, options: { stateDirectory: string }) => {
+      const plan = await new LocalPlanStore(resolve(cwd, options.stateDirectory)).approve(id);
+      writeOutput(`${JSON.stringify({ planId: plan.id, approved: plan.approved })}\n`);
+    });
+  program
+    .command('run')
+    .description('Execute an approved plan with controlled agents and a fake verifier (P1.2 only)')
+    .argument('<plan-id>')
+    .requiredOption(
+      '--controlled',
+      'explicitly select controlled execution; not live coding/verification'
+    )
+    .option('--state-directory <path>', 'local Forge state', stateDirectory)
+    .action(async (id: string, options: { stateDirectory: string }) => {
+      const result = await runLocalPlan(
+        new LocalPlanStore(resolve(cwd, options.stateDirectory)),
+        id,
+        dependencies.localExecution
+      );
+      writeOutput(`${JSON.stringify(result, null, 2)}\n`);
+    });
 
   return program;
 };
