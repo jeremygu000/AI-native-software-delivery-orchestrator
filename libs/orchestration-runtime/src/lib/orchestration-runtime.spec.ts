@@ -1367,6 +1367,29 @@ describe('OrchestrationRuntime', () => {
     expect(persistence.workspaces[0]?.workspace.phase).toBe('READY_TO_INTEGRATE');
   });
 
+  it('passes the approved task description to the writer, including test requirements and constraints', async () => {
+    const persistence = new MemoryPersistence();
+    const runWriter = vi.fn<AgentRunner['run']>(async (input) => {
+      expect(input.instructions).toBe(
+        'Complete A\n\nAdd the regression tests. Edit only value.txt; do not commit.'
+      );
+      await input.onStarted({});
+      return { status: 'completed' };
+    });
+    const writer: AgentRunner = { run: runWriter };
+    const runtime = createRuntime(persistence, undefined, undefined, writer);
+    const recovered = await runtime.startRun(
+      request([
+        {
+          ...task('A'),
+          description: 'Add the regression tests. Edit only value.txt; do not commit.'
+        }
+      ])
+    );
+    expect(recovered.snapshot.taskStates).toEqual([{ taskId: 'A', state: 'COMPLETED' }]);
+    expect(runWriter).toHaveBeenCalledTimes(1);
+  });
+
   it('persists runtime lease blocking evidence without running the agent', async () => {
     const persistence = new MemoryPersistence();
     const writeGuard = new MemoryWriteGuard();

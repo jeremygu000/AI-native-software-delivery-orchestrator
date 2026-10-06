@@ -572,6 +572,9 @@ describe('trustworthy local task completion', () => {
             isError: true
           });
           expect(generation.prompt).toContain('actual diff');
+          expect(generation.prompt).toContain('findings MUST be an empty array');
+          expect(generation.prompt).toContain('not praise');
+          expect(generation.prompt).toContain('at least one actionable unresolved defect');
           return {
             sessionId: 'controlled',
             output: '{"recommendation":"accept","summary":"Reviewed","findings":[]}'

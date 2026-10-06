@@ -1813,3 +1813,29 @@ objects. The scheduler, runtime, persistence, agent tools, Git manager and compl
 definitions. JSON/SQLite spellings and behavior remain unchanged; a serialization compatibility test
 and the existing scheduling/persistence/product tests verify that boundary. Ordinary prose and test
 expectations were not mechanically replaced, and no lifecycle or authority mechanism was introduced.
+
+## Forge v1: first real live happy path
+
+After independent approval of the one-shot completion implementation at `1a025078`, the next slice
+tested the entire existing product with actual model calls on public `unjs/pathe`, starting from clean
+commit `bc7477a01f0bd60ada017add8142c9f9d69ccdc5`. A live planner and semantic reviewer produced a saved
+plan, the operator explicitly approved it, and a real Pi writer changed the implementation and three
+tests. Forge checked the actual two-file scope, ran the repository's unchanged `test` and `build`,
+obtained a separate live output-review acceptance and serialized Git integration. Run
+`cdeaacd3-2e6e-42a0-821b-512070442ea3` ended `COMPLETED`; the clean target main branch contains commit
+`a193406bd5cc48ed195de349de34329a10a2b558`, with 25 insertions and one deletion in two files.
+
+Four earlier separately approved runs stopped on formatting, missing tests or invalid review output.
+Their evidence/worktrees remain preserved; no failed run was repaired, resumed or retried. Two actual
+Forge defects were fixed narrowly: the coding request now includes the approved task description as
+well as its goal, and the output reviewer is told the existing accept/empty-findings and
+reject/actionable-findings constraints. Neither schema validation nor repository gates were relaxed.
+No person edited the target source/tests. This enables a demonstrated live coding/check/review/integrate
+workflow without adding failure automation or authority infrastructure.
+
+Fresh `pnpm check` passes 422/422 tests in 31 files, format/type/lint and unchanged 90% gates:
+96.16% statements, 90.89% branches, 95.98% functions, 96.16% lines. `pnpm build` passes; focused runtime
+and completion tests pass 61/61. This is one real happy-path acceptance, not a reliability benchmark
+or proof of parallel live delivery. Repair, retry/resume, cancellation, TUI and attribution remain
+unimplemented. `docs/forge-v1-live-happy-path.en.md` records the completed run and all four failures;
+credentials and private model sessions are excluded from the report and tracked files.

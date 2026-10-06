@@ -361,7 +361,7 @@ export class OrchestrationRuntime {
         commandPolicy: binding.commandPolicy,
         trustedCommandPath: binding.trustedCommandPath,
         workspace,
-        instructions: task.goal,
+        instructions: [task.goal, task.description].filter(Boolean).join('\n\n'),
         onStarted: async ({ sessionRef }) => {
           if (executionEstablished) {
             throw new OrchestrationRuntimeInputError(`Agent execution started twice: ${taskId}`);

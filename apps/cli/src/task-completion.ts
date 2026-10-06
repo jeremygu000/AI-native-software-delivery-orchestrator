@@ -58,7 +58,7 @@ export class PiOutputReviewer implements OutputReviewer {
   async review(request: Parameters<OutputReviewer['review']>[0]): Promise<OutputReview> {
     const response = await this.gateway.generate({
       cwd: request.workspace.workspacePath,
-      prompt: `Review the coding output against this task, actual diff and repository verification. Return ONLY JSON {recommendation: "accept"|"reject", summary: string, findings: [{path, detail}]}. Findings must name changed paths. Do not execute commands or edit files.\n${JSON.stringify({ task: request.task, diff: request.diff, verification: request.verification })}`,
+      prompt: `Review the coding output against this task, actual diff and repository verification. Return ONLY JSON {recommendation: "accept"|"reject", summary: string, findings: [{path, detail}]}. For accept, findings MUST be an empty array: findings represent unresolved defects, not praise or a list of completed changes. For reject, include at least one actionable unresolved defect. Every finding must name one of these exact changed paths: ${JSON.stringify(request.diff.paths)}. Explain accepted changes in summary only. Do not execute commands or edit files.\n${JSON.stringify({ task: request.task, diff: request.diff, verification: request.verification })}`,
       executeTool: async () => ({
         content: 'Output review uses the supplied diff only.',
         isError: true

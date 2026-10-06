@@ -1588,3 +1588,24 @@ task／run／attempt 状态，agent／verifier／command 结果，同 run reserv
 值对象，其他有限结果 union 使用保留字面量类型的常量对象。Scheduler、runtime、persistence、agent tools、
 Git manager 和 completion 路径都复用这些定义。JSON／SQLite 中的拼写与行为没有改变；新增序列化兼容测试，
 并由既有调度、持久化和产品测试共同验证。没有机械替换普通文字或测试期望，也没有引入新 lifecycle 或 authority 机制。
+
+## Forge v1：首个真实 live happy path
+
+一次性 completion 实现 `1a025078` 独立验收通过后，本批用真实模型调用验证整个产品流程。目标是公开的
+`unjs/pathe`，从干净 commit `bc7477a01f0bd60ada017add8142c9f9d69ccdc5` 开始。真实 planner 和 semantic
+reviewer 生成保存的计划，用户显式批准，真实 Pi writer 修改实现和三项测试。Forge 检查实际两文件 scope，
+执行仓库未修改的 `test`、`build`，取得独立 live output review 的接受，再串行 Git 集成。Run
+`cdeaacd3-2e6e-42a0-821b-512070442ea3` 最终为 `COMPLETED`；目标 main 干净，新增 commit
+`a193406bd5cc48ed195de349de34329a10a2b558`，仅两文件、25 行新增与一行删除。
+
+此前四个单独规划、单独批准的 run 分别因格式、遗漏测试或非法 review 输出停止，现场和证据均保留；没有
+repair、resume 或重试已消费的 run。只修正两项实际暴露的 Forge 问题：writer 现在同时收到批准 task 的 goal
+和完整 description；output reviewer 提示明确已有的 accept 必须空 findings、reject 必须有可操作 findings
+约束。没有放宽 schema 或仓库检查，也没有人手编辑目标源码／测试。这证明实际 coding、检查、review、集成
+happy path 已能贯通，而不是继续扩展失败自动化或 authority 基础设施。
+
+新一轮 `pnpm check` 通过 31 文件 422/422 测试及 format／type／lint；原 90% coverage 门槛保持不变，实际
+statements 96.16%、branches 90.89%、functions 95.98%、lines 96.16%。`pnpm build` 通过，runtime 与
+completion 定向测试 61/61 通过。这是一项真实 happy-path 验收，不是模型可靠率排名，也不代表并行 live
+交付已验证。Repair、retry／resume、取消、TUI、attribution 仍未实现。
+`docs/forge-v1-live-happy-path.en.md` 记录成功 run 和四次失败；凭据与私有模型 session 不进入报告或 tracked 文件。
