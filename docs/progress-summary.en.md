@@ -1728,3 +1728,30 @@ historical `.local/` Vitest project names before tests ran; `git diff --check` p
 claim freshly reproduced test results or a live model result. P1's first action
 must scope test discovery to actual workspace packages before build/check, because historical local
 worktrees previously caused duplicate Vitest project names.
+
+## Forge v1 P1.1: trustworthy executable baseline
+
+After independent acceptance of the reset, P1.1 changed only Vitest project discovery to the
+intended `apps/*` and `libs/*` configuration files. Historical `.local/` repositories remain
+preserved but no longer participate in Forge's tests. No registry, dependency upgrade, runtime
+port or authority mechanism was added, and all existing 90% coverage gates remain unchanged.
+
+Fresh `pnpm check` passes formatting, typechecking, lint and all 397 tests in 29 files. Coverage
+is 96.46% statements, 91.33% branches, 96.85% functions and 96.43% lines. `pnpm build` passes
+the 12 library projects and compiled CLI. Six selected runtime scenarios and two planning
+scenarios were separately rerun and passed without paid models.
+
+The strongest existing integration uses real Git worktrees and SQLite with `PiAgentRunner`
+and its edit tool, but a controlled gateway and fake verifier. Parallel coding is proven in
+a separate memory-workspace scenario; dependency order, conflict rejection and failed
+verification refusing integration also pass. These separate tests do not constitute one full
+request-to-reviewed-code workflow. The compiled CLI still exposes only analyze and plan.
+
+Concrete gaps are simple Plan/user approval to local-run composition, mapping plan tasks to
+execution inputs, real repository-verifier wiring, output code review, bounded repair after
+failed gates, and actual Git diff reconciliation. Runtime currently verifies and then directly
+commits/integrates; failed verification marks the task failed rather than repairing it.
+`docs/forge-v1-executable-baseline.en.md` records the evidence and smallest later connections.
+P1.1 stops here: no cancellation/resume, creates/deletes, TUI, attribution, distributed backend
+or recovery infrastructure was implemented. Full P1 remains incomplete and the historical
+authority branch is unchanged.

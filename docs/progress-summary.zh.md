@@ -1518,3 +1518,26 @@ relevance 优先的 review 顺序。P1 尚未开始。本次检查历史、源�
 `git diff --check` 通过。不宣称测试套件通过或执行过 live model。P1 首先必须把测试发现限定为
 实际 workspace 包，再运行 build／check；此前保留的
 历史 worktree 曾造成 Vitest project name 重复。
+
+## Forge v1 P1.1：可信、可运行的产品基线
+
+方向重置获独立认可后，P1.1 仅把 Vitest project discovery 限定为 `apps/*`、`libs/*` 中的配置。
+历史 `.local/` 仓库完整保留，但不再混入 Forge 测试。没有引入 registry、升级依赖、迁移后期
+runtime 或增加 authority；原有四项 90% 覆盖率门槛均保持不变。
+
+本次实际执行 `pnpm check`，格式、类型、lint 及 29 个文件中的 397 个测试全部通过。覆盖率为
+statements 96.46%、branches 91.33%、functions 96.85%、lines 96.43%。`pnpm build` 的 12 个
+library project 和编译后 CLI 通过。另单独重跑六个 runtime 场景、两个 planning 场景，全部通过，
+没有调用付费模型。
+
+现有最强集成使用真实 Git worktree、SQLite、`PiAgentRunner` 和编辑工具，但 gateway 是受控实现，
+verifier 是 fake。并行 coding 在另一个内存 workspace 场景中证明；依赖顺序、冲突拒绝、验证失败
+不集成也通过。这些独立场景不能合称完整 request-to-reviewed-code 闭环。编译后的 CLI 仍只有
+analyze 和 plan。
+
+具体缺口是简单 Plan／用户批准到 local run 的产品接线、任务到执行输入的映射、真实仓库验证器
+接线、output code review、失败 gate 后的有界 repair，以及实际 Git diff 对账。当前 runtime
+验证后直接 commit／integrate，验证失败则标记任务失败，并不会 repair。
+`docs/forge-v1-executable-baseline.en.md` 记录证据和后续最小连接。本批到此停止，没有实现
+cancellation／resume、creates／deletes、TUI、attribution、分布式后端或 recovery infrastructure。
+完整 P1 尚未完成，历史 authority 分支保持不变。
