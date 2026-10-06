@@ -18,9 +18,11 @@ expected to read or write. From that, it works out which tasks can safely run at
 which ones must wait their turn. The goal is for parallelization decisions to be **evidence-based,
 explainable, and reproducible** — not "the AI thinks it's probably fine."
 
-The project is still building its deterministic foundation, but it can now analyze a real pnpm and
-TypeScript repository down to files and code symbols. It cannot yet calculate task-to-code impact,
-schedule agents, or let agents write code.
+Current direction: Forge v1 is a practical single-owner coding orchestrator. Its revised baseline is
+`ce358ca25c2b2fed706690b16406af3204f2d435`, before durable PlanArtifact approval/binding entered the
+execution architecture. It already has repository analysis, planning/semantic plan review and local
+parallel runtime libraries, but not a composed CLI run or output review/repair workflow. Historical
+stages below remain history; `docs/forge-v1-baseline-and-product-plan.en.md` defines the current plan.
 
 ## Stage 1: Setting up the engineering scaffolding
 
@@ -1691,3 +1693,38 @@ projects, 1,010 files, 7,617 symbols, three project dependencies, 3,592 file dep
 symbol references, and one known 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic. No live Planner or
 Reviewer model call was made; the automated adapter tests use controlled gateways, and the CLI now
 requires explicit review consent for real data egress.
+
+## Forge v1 reset correction: baseline before approval/authority coupling
+
+Independent review rejected the initial `10bd7f9` choice: being before Global Authority was not
+enough. That commit already organized execution around immutable PlanArtifact fingerprints,
+atomic approval claims, PlanExecutionIntent, runtime binding and stored RunAuthorityEvidence.
+We compared `ce358ca`, `2356dc`, `9982ddd` and `10bd7f9` and selected
+`ce358ca25c2b2fed706690b16406af3204f2d435`, the semantic plan review boundary before those contracts.
+
+The local and remote `product/forge-v1` branches now start there. The rejected report is preserved
+locally and remotely as `archive/forge-v1-stage24-candidate` at
+`9f0a645713a1dfc3852f88223ae861ed24326475`. With explicit user authorization, we verified the old
+remote SHA, pushed and verified the archive first, then replaced the product branch using an
+explicit SHA-bound `--force-with-lease`. The distributed-authority branch remains unchanged at
+`4204cfc4f3e01351200dc97929847148c1f143be`. No code implementation, merge or cherry-pick occurred.
+The new baseline retains analysis, DAG/impact/conflicts, scheduler, concurrent local agents,
+worktrees, verification, Pi planning and semantic plan review. CLI run/status/cancel, output code
+review/repair and observed Git reconciliation need selective restoration, not an authority port.
+
+Plan storage and user approval are SELECTIVELY PORT / REDESIGN: a visible Plan, user approval and
+Run(planId) with a simple repository-change check. Same-run collision prevention is retained as a
+behavior, not a lease protocol. SQLite run/task state is useful; full deterministic replay is
+REASSESS in P3. Interrupted work should support explicit abandon/retry after the old process stops,
+not distributed ownership recovery. These choices avoid inheriting complexity and postponing its
+removal indefinitely.
+
+P1–P5 remain product milestones: full delivery, structured planning/creates/bug workflow, execution
+usability/recovery, provider usage attribution, and TUI/real-repository polish. The report defines
+real parallel/verification-failure repair/serialized integration scenarios and the required Product
+relevance-first review order. P1 has not started. This correction verifies history/source and branch
+identity. Pre-commit `pnpm check` passed formatting, typechecking and lint but stopped at duplicate
+historical `.local/` Vitest project names before tests ran; `git diff --check` passed. It does not
+claim freshly reproduced test results or a live model result. P1's first action
+must scope test discovery to actual workspace packages before build/check, because historical local
+worktrees previously caused duplicate Vitest project names.

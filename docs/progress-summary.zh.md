@@ -13,8 +13,11 @@ AI Agent 同时去写代码。如果两个 Agent 同时改同一个文件,或者
 任务之间的依赖关系、任务会读写哪些文件/资源,自动算出"哪些任务可以安全地同时进行,哪些
 必须排队"。目标是让并行开发的决策**有依据、可解释、可复现**,而不是"AI 感觉应该没问题"。
 
-目前项目仍处于**打确定性地基的阶段**,但已经能够把真实 pnpm + TypeScript 仓库分析到
-文件和代码符号层。它还不能计算任务对代码的实际影响,也不能调度 Agent 或让 Agent 写代码。
+当前方向是实用的单 owner coding orchestrator Forge v1。修订基线为
+`ce358ca25c2b2fed706690b16406af3204f2d435`，位于持久化 PlanArtifact approval／binding 进入执行
+架构之前。它已有仓库分析、规划／semantic plan review 和本地并行 runtime library，但没有完整
+CLI run 或 output review／repair 流程。下文保留历史记录；当前计划见
+`docs/forge-v1-baseline-and-product-plan.en.md`。
 
 ## 阶段一:搭建工程骨架
 
@@ -1486,3 +1489,32 @@ project、1,010 个 file、7,617 个 symbol、3 条 project dependency、3,592 �
 symbol reference，以及一个已知的 25-file `UNCOVERED_TYPESCRIPT_FILES` diagnostic。本阶段没有执行 live Planner
 或 Reviewer model call；automated adapter test 使用 controlled gateway，真实 CLI 数据外发现在需要显式 review
 consent。
+
+## Forge v1 reset 修订：移到 approval／authority 耦合之前
+
+独立 review 否决了最初的 `10bd7f9`：Global Authority 之前不等于 authority-oriented 架构之前。
+该提交已经围绕 immutable PlanArtifact fingerprint、atomic approval claim、PlanExecutionIntent、
+runtime binding 和持久化 RunAuthorityEvidence 组织执行。重新比较 `ce358ca`、`2356dc`、`9982ddd`
+及 `10bd7f9` 后，选定 semantic plan review 边界 `ce358ca25c2b2fed706690b16406af3204f2d435`。
+
+本地和远端 `product/forge-v1` 现从该提交开始。原被否决报告已在本地和远端
+`archive/forge-v1-stage24-candidate` 保留，SHA 为 `9f0a645713a1dfc3852f88223ae861ed24326475`。
+经用户明确授权，先核验旧远端 SHA，再推送并核验 archive，最后使用显式绑定旧 SHA 的
+`--force-with-lease` 替换 product 分支；distributed-authority 分支保持
+`4204cfc4f3e01351200dc97929847148c1f143be` 不变。本次没有实现代码、merge 或 cherry-pick。
+新基线保留 analysis、DAG／impact／conflicts、
+scheduler、本地并行 agent、worktree、verification、Pi planning 和 semantic plan review。
+CLI run／status／cancel、output code review／repair、实际 Git diff 对账需要按产品语义抽取恢复。
+
+Plan 存储与用户批准改为 SELECTIVELY PORT / REDESIGN：可见的 Plan、用户批准、Run(planId)，以及
+简单的仓库变化检查。保留的是同 run mutation 不重叠的行为，不是 lease protocol。SQLite run／task
+状态有用；完整 deterministic replay 在 P3 标为 REASSESS。中断任务应在旧进程停止后显式
+abandon／retry，不引入 distributed ownership recovery，避免“先继承复杂度，以后再简化”。
+
+P1–P5 仍围绕完整交付、结构化规划／creates／bug、执行可用性与恢复、provider usage attribution、
+TUI／真实仓库打磨。报告定义实际并行、失败验证进入 repair、串行集成等验收，以及 Product
+relevance 优先的 review 顺序。P1 尚未开始。本次检查历史、源码与分支；提交前 `pnpm check` 的
+格式、类型和 lint 通过，但在测试执行前被历史 `.local/` Vitest project name 重复阻塞；
+`git diff --check` 通过。不宣称测试套件通过或执行过 live model。P1 首先必须把测试发现限定为
+实际 workspace 包，再运行 build／check；此前保留的
+历史 worktree 曾造成 Vitest project name 重复。
