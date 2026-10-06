@@ -1711,3 +1711,30 @@ Semantic plan reviewer 与声明文件不同，会构造 prompt 并执行运行�
 server 路径和尚未使用的 workspace 操作转发，没有通过新增 ignore 隐藏。`pnpm check` 通过 36 文件
 451/451 tests，原门槛保持不变；总体为 95.82% statements、91.03% branches、95.32% functions、
 95.88% lines，build 与 diff check 通过。
+
+## 一致的本地 TUI 与只读 graph UX
+
+本批先检查历史 `4204cfc` 界面作为视觉参考，没有合并其执行架构。Forge v1 现在提供蓝色有边界终端
+面板、宽屏首页标识、紧凑 footer、overview／task／detail 导航、帮助、可滚动证据和完整纯文本复制。
+原生终端继续支持 Node 24，不要求 OpenTUI／Bun／FFI 迁移。正常入口是 `forge tui`，可选
+`--repository`，本地存储由 Forge 管理；`--state-directory` 仅保留为高级／测试 override，用户不需要
+理解内部持久化文件。
+
+Web inspector 增加按依赖深度排列的 graph columns、独立 conflict edges、minimap、task filter、可选择
+证据、复制、帮助、手动／自动刷新和窄屏上下布局。刷新不重叠，旧请求会 abort，迟到响应不能覆盖新选中
+的 plan。缺失证据仍显示 not recorded；task-event state、单独记录的 run status 和最终 repository checks
+继续分别展示。浏览器保持 GET-only，没有 approve 或 execution control。既有 planner、明确批准、writer、
+verification、review、scheduler 和 Git integration 操作没有改变。
+
+有限展示值集中使用命名 `as const` 对象：`TuiPanel`、`TaskTone`、`TaskFilter`、`RunStateSource`、
+`RunEdgeKind`、`ObservationState`、`RepositoryCheckStatus`；task／run state 复用 domain 常量。序列化值
+与 read-model schema 的含义不变。受控测试覆盖 busy 时导航／帮助、未截断诊断复制、40×24 布局、缺失／
+冲突观察、graph filter、过期刷新、错误文本转义和 clipboard failure。`happy-dom` 仅为 CLI 测试依赖；
+交互测试 mock graph renderer，另用真实浏览器检查实际 graph。
+
+`pnpm check` 通过 39 文件 463/463 tests，以及 format、type check、lint 和原四项 90% coverage gates；
+总体为 95.72% statements、90.53% branches、95.09% functions、95.78% lines。`pnpm build` 通过。
+只读浏览器检查使用已有完成的 local run，task details／filter／help／refresh 正常，观察到的请求均为 GET；
+实际发现并修复长 select 引起的横向溢出，390px viewport 不再发生页面级横向溢出。这是展示层验证，不是
+新的付费模型运行，也不代替用户的独立人工验收。Repair、retry／resume、cancellation、recovery 和新增
+backend／control plane 仍不在本批范围内。

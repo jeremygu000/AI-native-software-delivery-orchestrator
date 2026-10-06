@@ -1961,3 +1961,36 @@ reach 96.47%/98.19%; HTTP branches rise to 80%, and local-run branches to 86.58%
 defensive server paths and unused workspace-operation forwarding, rather than being hidden by new
 exclusions. `pnpm check` passes 451/451 tests in 36 files with unchanged gates; aggregate coverage is
 95.82% statements, 91.03% branches, 95.32% functions and 95.88% lines. Build and diff checks pass.
+
+## Coherent local TUI and read-only graph UX
+
+The historical `4204cfc` interface was inspected as a visual reference, not merged as an execution
+architecture. Forge v1 now uses bounded blue terminal panels, a wide-screen home identity, compact
+footers, overview/task/detail navigation, help, scrollable evidence and full plain-text copying.
+The native terminal still supports Node 24; no OpenTUI/Bun/FFI migration is required. Normal startup
+is `forge tui` (optionally `--repository`), with Forge-managed local storage. `--state-directory`
+remains an advanced/testing override; users do not need to understand internal persistence files.
+
+The web inspector adds dependency-depth graph columns, distinct conflict edges, a minimap, task
+filtering, selectable evidence, copy, help, manual/automatic refresh and narrow-screen stacking.
+Refreshes do not overlap, obsolete requests are aborted, and late responses cannot replace a newly
+selected plan. Missing evidence remains not recorded; task-event state, separately recorded run
+status and final repository checks remain distinct observations. The browser remains GET-only and
+has no approval or execution controls. The existing planner, explicit approval, writer, verification,
+review, scheduler and Git integration operations are unchanged.
+
+Finite presentation values use named `as const` objects (`TuiPanel`, `TaskTone`, `TaskFilter`,
+`RunStateSource`, `RunEdgeKind`, `ObservationState`, `RepositoryCheckStatus`), while task/run state
+uses the existing domain constants. Serialized values and read-model schemas retain their meaning.
+Controlled tests cover keyboard navigation and help while busy, copying untruncated diagnostics,
+40×24 layouts, missing/conflicting observations, graph filtering, stale refreshes, escaped error
+details and clipboard failure. `happy-dom` is a CLI test-only dependency; graph rendering is mocked
+in interaction tests and checked separately in a real browser.
+
+`pnpm check` passes 463/463 tests in 39 files, including formatting, type checking, lint and all four
+unchanged 90% coverage gates (95.72% statements, 90.53% branches, 95.09% functions, 95.78% lines).
+`pnpm build` passes. Read-only browser checks used a previously completed local run: task details,
+filter/help/refresh worked, observed requests were GET, and a discovered long-select overflow was
+fixed so a 390px viewport has no page-level horizontal overflow. This is presentation verification,
+not a new paid-model run or the user's independent manual acceptance. Repair, retry/resume,
+cancellation, recovery and new backend/control-plane features remain outside this change.

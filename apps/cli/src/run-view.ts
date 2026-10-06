@@ -8,11 +8,19 @@ import {
   taskStateSchema,
   schedulerEventSchema,
   TaskState,
-  OrchestrationRunState
+  OrchestrationRunState,
+  ConflictSeverity
 } from '@ai-native-software-delivery-orchestrator/domain';
 import { LocalPlanStore } from './local-plan.js';
 import { CompletionStage, CompletionScope, CompletionOutcome } from './completion-values.js';
-import { runViewSchema, type RunView, type TaskView } from './run-view-schema.js';
+import {
+  runViewSchema,
+  RunStateSource,
+  RunEdgeKind,
+  ObservationState,
+  type RunView,
+  type TaskView
+} from './run-view-schema.js';
 
 const rowSchema = z.object({ payload: z.string() });
 const evidenceSchema = z.object({
@@ -52,14 +60,19 @@ export async function readRunView(store: LocalPlanStore, planId: string): Promis
     repository: plan.repository,
     repositoryCommit: plan.repositoryCommit,
     ...(plan.runId === undefined ? {} : { runId: plan.runId }),
-    state: plan.runId === undefined ? (plan.approved ? 'APPROVED' : 'PLANNED') : 'NOT_RECORDED',
-    stateSource: 'plan',
+    state:
+      plan.runId === undefined
+        ? plan.approved
+          ? ObservationState.Approved
+          : ObservationState.Planned
+        : ObservationState.NotRecorded,
+    stateSource: RunStateSource.Plan,
     tasks: plan.tasks.map((task) => ({
       id: task.id,
       title: task.title,
       goal: task.goal,
       description: task.description,
-      state: 'NOT_RECORDED',
+      state: ObservationState.NotRecorded,
       plannedFiles: [
         ...(plan.impacts.find((impact) => impact.taskId === task.id)?.filesWritten ?? [])
       ],
@@ -71,17 +84,17 @@ export async function readRunView(store: LocalPlanStore, planId: string): Promis
           id: `dependency:${dependency}:${task.id}`,
           source: dependency,
           target: task.id,
-          kind: 'dependency' as const,
+          kind: RunEdgeKind.Dependency,
           label: 'depends on'
         }))
       ),
       ...plan.conflicts
-        .filter((conflict) => conflict.severity !== 'none')
+        .filter((conflict) => conflict.severity !== ConflictSeverity.none)
         .map((conflict, index) => ({
           id: `conflict:${index}`,
           source: conflict.taskA,
           target: conflict.taskB,
-          kind: 'conflict' as const,
+          kind: RunEdgeKind.Conflict,
           label: `${conflict.severity}: ${conflict.recommendedAction}`
         }))
     ],
@@ -118,11 +131,11 @@ export async function readRunView(store: LocalPlanStore, planId: string): Promis
     db.pragma('query_only = ON');
     db.transaction(() => {
       const run = z
-        .object({ state: z.enum(['ACTIVE', 'COMPLETED', 'FAILED', 'CANCELLED']) })
+        .object({ state: z.enum(OrchestrationRunState) })
         .parse(db.prepare('SELECT state FROM orchestration_runs WHERE id = ?').get(plan.runId));
       view.state = run.state;
       view.recordedRunState = run.state;
-      view.stateSource = 'run-record';
+      view.stateSource = RunStateSource.RunRecord;
       const initial = db
         .prepare(
           'SELECT snapshot_json AS payload FROM scheduler_decisions WHERE run_id = ? ORDER BY sequence LIMIT 1'
@@ -149,7 +162,7 @@ export async function readRunView(store: LocalPlanStore, planId: string): Promis
         task.state =
           transitions.findLast((row) => row.task_id === task.id)?.to_state ??
           initialStates.find((row) => row.taskId === task.id)?.state ??
-          'NOT_RECORDED';
+          ObservationState.NotRecorded;
       }
       for (const row of z
         .array(z.object({ sequence: z.number(), payload: z.string() }))
@@ -187,7 +200,7 @@ export async function readRunView(store: LocalPlanStore, planId: string): Promis
           : view.tasks.some((task) => task.state === TaskState.FAILED)
             ? OrchestrationRunState.FAILED
             : OrchestrationRunState.CANCELLED;
-        view.stateSource = 'task-events';
+        view.stateSource = RunStateSource.TaskEvents;
       }
       for (const row of db
         .prepare('SELECT attempt_json AS payload FROM agent_execution_attempts WHERE run_id = ?')

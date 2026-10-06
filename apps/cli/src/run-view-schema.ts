@@ -1,6 +1,19 @@
 import { z } from 'zod';
 import { CompletionStage } from './completion-values.js';
 
+export const RunStateSource = {
+  Plan: 'plan',
+  RunRecord: 'run-record',
+  TaskEvents: 'task-events'
+} as const;
+export const RunEdgeKind = { Dependency: 'dependency', Conflict: 'conflict' } as const;
+export const RepositoryCheckStatus = { Passed: 'passed', Failed: 'failed' } as const;
+export const ObservationState = {
+  NotRecorded: 'NOT_RECORDED',
+  Approved: 'APPROVED',
+  Planned: 'PLANNED'
+} as const;
+
 export const taskViewSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -31,13 +44,13 @@ export const runViewSchema = z.object({
   runId: z.string().optional(),
   state: z.string(),
   recordedRunState: z.string().optional(),
-  stateSource: z.enum(['plan', 'run-record', 'task-events']).optional(),
+  stateSource: z.enum(RunStateSource).optional(),
   execution: z.string().optional(),
   verificationMode: z.string().optional(),
   reviewMode: z.string().optional(),
   finalRepository: z
     .object({
-      status: z.enum(['passed', 'failed']),
+      status: z.enum(RepositoryCheckStatus),
       detail: z.string().optional(),
       head: z.string(),
       clean: z.boolean()
@@ -49,7 +62,7 @@ export const runViewSchema = z.object({
       id: z.string(),
       source: z.string(),
       target: z.string(),
-      kind: z.enum(['dependency', 'conflict']),
+      kind: z.enum(RunEdgeKind),
       label: z.string()
     })
   ),

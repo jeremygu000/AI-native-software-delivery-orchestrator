@@ -7,6 +7,7 @@ import { createForgeProgram, type ForgeProgramDependencies } from './app.js';
 import { LocalPlanStore } from './local-plan.js';
 import { listLocalPlans, readRunView } from './run-view.js';
 import type { RunView } from './run-view-schema.js';
+import { runMetadataText, taskDetailsText, taskSymbol, TuiPanel } from './presentation.js';
 
 export const TuiScreen = {
   Home: 'home',
@@ -29,6 +30,9 @@ export interface ObservableTuiState {
   message?: string;
   scroll: number;
   maxConcurrency: number;
+  help?: boolean;
+  panel?: TuiPanel;
+  selectedTask?: number;
 }
 
 /** Adapts keys to existing CLI commands. Approval and execution remain explicit actions. */
@@ -122,6 +126,21 @@ export class ObservableTuiController {
     }
   }
   async key(name: string, text = '', control = false) {
+    if (name === 'f1' || (name === '?' && this.state.screen !== TuiScreen.Request)) {
+      this.state.help = !this.state.help;
+      this.state.scroll = 0;
+      this.options.changed?.();
+      return;
+    }
+    if (this.state.help && ['escape', 'return'].includes(name)) {
+      this.state.help = false;
+      this.state.scroll = 0;
+      this.options.changed?.();
+      return;
+    }
+    if (this.state.help && !['y', 'pageup', 'pagedown'].includes(name)) {
+      return;
+    }
     if (name === 'y' && (control || this.state.screen !== TuiScreen.Request)) {
       try {
         const textToCopy = observableDiagnosticText(this.state);
@@ -134,6 +153,38 @@ export class ObservableTuiController {
       }
       this.options.changed?.();
       return;
+    }
+    if (!this.state.help && this.state.screen !== TuiScreen.Request && this.state.view) {
+      if (name === 'tab') {
+        const panels = [TuiPanel.Overview, TuiPanel.Tasks, TuiPanel.Detail] as const;
+        this.state.panel =
+          panels[(panels.indexOf(this.state.panel ?? TuiPanel.Overview) + 1) % panels.length];
+        this.state.scroll = 0;
+        this.options.changed?.();
+        return;
+      }
+      if (
+        (name === 'up' || name === 'down') &&
+        this.state.panel !== undefined &&
+        this.state.panel !== TuiPanel.Overview
+      ) {
+        this.state.selectedTask = Math.max(
+          0,
+          Math.min(
+            this.state.view.tasks.length - 1,
+            (this.state.selectedTask ?? 0) + (name === 'up' ? -1 : 1)
+          )
+        );
+        this.state.scroll = 0;
+        this.options.changed?.();
+        return;
+      }
+      if (name === 'return' && this.state.panel === TuiPanel.Tasks) {
+        this.state.panel = TuiPanel.Detail;
+        this.state.scroll = 0;
+        this.options.changed?.();
+        return;
+      }
     }
     if (this.state.screen === TuiScreen.Request) {
       if (this.state.busy) {
@@ -199,6 +250,7 @@ export class ObservableTuiController {
         await this.#command(['run', this.state.planId, name === 'l' ? '--live' : '--controlled']);
       } else if (name === 'escape') {
         this.state.screen = TuiScreen.Home;
+        this.state.panel = TuiPanel.Overview;
       }
     }
     if (this.state.screen !== TuiScreen.Request) {
@@ -252,7 +304,7 @@ export function observableDiagnosticText(state: ObservableTuiState): string {
       `Plan: ${view.planId} · ${view.approved ? 'APPROVED' : 'not approved'}`,
       `Planned repository commit: ${view.repositoryCommit}`,
       `Run: ${view.runId ?? 'not started'} · ${view.state}`,
-      `State source: ${view.stateSource ?? 'not recorded'}; run row: ${view.recordedRunState ?? 'not recorded'}`,
+      `Status source: ${view.stateSource ?? 'not recorded'}; separately recorded run status: ${view.recordedRunState ?? 'not recorded'}`,
       `Mode: ${view.execution ?? 'not recorded'} / verification ${view.verificationMode ?? 'not recorded'} / review ${view.reviewMode ?? 'not recorded'}`,
       ...(view.finalRepository
         ? [
@@ -268,7 +320,7 @@ export function observableDiagnosticText(state: ObservableTuiState): string {
       ),
       '',
       ...view.tasks.flatMap((task) => [
-        `${task.id} · ${task.state}${task.stage ? ` · last completion phase ${task.stage}` : ''}`,
+        `${task.id} · ${task.title} · ${task.state}${task.stage ? ` · last completion phase ${task.stage}` : ''}`,
         `  ${task.goal}`,
         ...(task.description ? [`  ${task.description}`] : []),
         `  planned: ${task.plannedFiles.join(', ') || 'none'}; actual: ${task.actualFiles.join(', ') || 'not recorded'}`,
@@ -321,18 +373,145 @@ async function copyDiagnostic(text: string, directory: string): Promise<string> 
   }
 }
 
+const cellWidth = (text: string) =>
+  /[\p{Extended_Pictographic}\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\uff01-\uff60]/u.test(
+    text
+  )
+    ? 2
+    : 1;
+
 export function renderObservableTui(state: ObservableTuiState, width = 100, height = 30): string {
-  const expanded = observableDiagnosticText(state).split('\n');
-  const header = expanded.slice(0, 3);
-  const body = expanded.slice(3);
-  const start = Math.min(state.scroll, Math.max(0, body.length - Math.max(2, height - 5)));
+  const columns = Math.max(12, Math.floor(width) - 4);
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const characters = (text: string) =>
+    Array.from(segmenter.segment(safe(text)), (item) => item.segment);
+  const cells = (text: string) =>
+    characters(text).reduce((total, item) => total + cellWidth(item), 0);
+  const clip = (line: string) => {
+    let result = '';
+    let used = 0;
+    for (const character of characters(line)) {
+      used += cellWidth(character);
+      if (used > columns) {
+        break;
+      }
+      result += character;
+    }
+    return result;
+  };
+  const wrap = (value: string) =>
+    safe(value)
+      .split('\n')
+      .flatMap((line) => {
+        const lines: string[] = [];
+        let current = '';
+        let used = 0;
+        for (const character of characters(line)) {
+          const size = cellWidth(character);
+          if (used + size > columns) {
+            lines.push(current);
+            current = '';
+            used = 0;
+          }
+          current += character;
+          used += size;
+        }
+        lines.push(current);
+        return lines;
+      });
+  const border = (title: string) =>
+    `┌ ${clip(title)}${'─'.repeat(Math.max(0, columns - cells(clip(title))))} ┐`;
+  const row = (line: string) =>
+    `│ ${clip(line)}${' '.repeat(Math.max(0, columns - cells(clip(line))))} │`;
+  if (width < 40 || height < 24) {
+    return ['FORGE', 'Needs at least 40×24.', 'Resize to view; Q exits when idle.']
+      .map(clip)
+      .join('\n');
+  }
+  const header = [
+    border('FORGE · LOCAL CODING'),
+    row(
+      `${state.screen.toUpperCase()} · ${state.busy ? '◐ Working' : 'Ready'} · parallel ${state.maxConcurrency}`
+    ),
+    row(`Repository: ${state.repository}`)
+  ];
+  if (width >= 90 && height >= 36 && state.screen === TuiScreen.Home) {
+    header.push(
+      row('███████╗ ██████╗ ██████╗  ██████╗ ███████╗'),
+      row('██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝'),
+      row('█████╗  ██║   ██║██████╔╝██║  ███╗█████╗'),
+      row('██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝'),
+      row('██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗')
+    );
+  }
+  let content: string;
+  let title: string;
+  if (state.help) {
+    title = 'HELP';
+    content =
+      'N New request · P Planning concurrency\n↑/↓ Select plan or task · Enter Inspect\nTab Overview / Tasks / Detail\nA Explicit approve · L Live (paid)\nC Controlled (fake)\nEnter Newline in request\nCtrl+Enter / Ctrl+S Submit request\nPgUp/PgDn Scroll · Y/Ctrl+Y Copy full details\n? / F1 Help · Esc/Enter Close help\nEsc Plans · Q/Ctrl+C Exit only when idle\n\nSingle-owner local execution. No cancellation or recovery action.\nDisplayed task-event state is separate from the recorded run row. Final repository checks are a separate observation. Missing evidence stays not recorded.';
+  } else if (state.screen === TuiScreen.Request) {
+    title = 'REQUEST · Ctrl+Enter / Ctrl+S submit';
+    content = `${state.input}\n▌`;
+  } else if (state.screen === TuiScreen.Home) {
+    title = 'Saved plans · Enter inspect';
+    content = state.plans.length
+      ? state.plans.map((id, index) => `${index === state.selected ? '❯' : ' '} ${id}`).join('\n')
+      : 'No saved plans. Press N to describe a coding task.\nPlans require explicit approval before execution.';
+  } else if (state.view) {
+    const view = state.view;
+    const task = view.tasks[state.selectedTask ?? 0];
+    title = `OVERVIEW / TASKS / DETAIL · ${state.panel ?? TuiPanel.Overview}`;
+    content =
+      state.panel === TuiPanel.Detail && task
+        ? [
+            taskDetailsText(task),
+            ...view.edges
+              .filter((edge) => edge.source === task.id || edge.target === task.id)
+              .map((edge) => `${edge.source} → ${edge.target} · ${edge.label}`),
+            ...view.warnings
+          ].join('\n\n')
+        : state.panel === TuiPanel.Tasks
+          ? view.tasks
+              .map(
+                (item, index) =>
+                  `${index === (state.selectedTask ?? 0) ? '❯' : ' '} ${taskSymbol(item.state)} ${item.title}\n  ${item.id}: ${item.state}`
+              )
+              .join('\n') +
+            '\n\nDependencies / conflicts:\n' +
+            view.edges.map((edge) => `${edge.source} → ${edge.target} · ${edge.label}`).join('\n')
+          : runMetadataText(view) +
+            '\n\nTasks:\n' +
+            view.tasks
+              .map((item) => `${taskSymbol(item.state)} ${item.title}: ${item.state}`)
+              .join('\n');
+  } else {
+    title = 'OBSERVATIONS';
+    content = 'No plan evidence available.';
+  }
+  const lines = wrap(
+    [state.error ? `ERROR: ${state.error}` : '', state.message ?? '', content]
+      .filter(Boolean)
+      .join('\n\n')
+  );
+  const available = Math.max(1, height - header.length - 5);
+  const start = Math.min(state.scroll, Math.max(0, lines.length - available));
+  const body = lines.slice(start, start + available);
+  while (body.length < available) {
+    body.push('');
+  }
   return [
     ...header,
-    ...body.slice(start, start + Math.max(2, height - 5)),
-    'Y/Ctrl+Y: copy complete text · PgUp/PgDn: scroll · Q: exit when idle'
-  ]
-    .map((line) => safe(line).slice(0, Math.max(20, width - 2)))
-    .join('\n');
+    border(`${title} · ${Math.min(start + 1, lines.length)}/${lines.length}`),
+    ...body.map(row),
+    `└${'─'.repeat(width - 2)}┘`,
+    clip(state.help ? 'Esc Close · Y Copy' : 'Tab Views · Pg↑/↓ Scroll · ?/F1 Help'),
+    clip(
+      state.busy
+        ? 'Y Copy · active operation continues'
+        : 'N New · A Approve · L Live · Y Copy · Q Exit'
+    )
+  ].join('\n');
 }
 
 /** Full-screen terminal with a single owner; quitting an active run is intentionally not supported. */

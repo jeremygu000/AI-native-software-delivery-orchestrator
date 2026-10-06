@@ -3,15 +3,20 @@
 Build with `pnpm build`, then run:
 
 ```bash
-pnpm forge tui --repository /absolute/repository --state-directory /outside/repository/forge-state
-pnpm forge view <plan-id> --state-directory /outside/repository/forge-state
-pnpm forge inspect --state-directory /outside/repository/forge-state
+pnpm forge tui
+# Optionally select a different repository:
+pnpm forge tui --repository /absolute/repository
+pnpm forge view <plan-id>
+pnpm forge inspect
 ```
 
 The full-screen Node TUI calls the existing CLI operations. `N` enters a request; Enter inserts a
 newline and Ctrl+Enter (or Ctrl+S) submits it. Arrow keys and Enter inspect a saved plan. `A` explicitly
 approves, `L` starts live/paid execution, and `C` starts controlled/fake execution. PgUp/PgDn scroll,
-Esc returns to plans and Q exits when idle. Active execution cannot be cancelled by this UI.
+Esc returns to plans and Q exits when idle. Tab switches overview, tasks and selected task details;
+arrow keys select tasks and Enter opens their details. `?` / F1 opens help, also while working.
+P cycles planning concurrency before entering a request. Active execution cannot be cancelled by this UI.
+The bordered full-screen layout adapts to 40×24 terminals; larger home screens display the FORGE banner.
 
 `Y` or Ctrl+Y copies complete plain-text diagnostics, including errors, check output, review findings,
 identifiers, worktree and diff, without viewport truncation. In request entry, ordinary `y` remains
@@ -22,13 +27,23 @@ capture is enabled. Diagnostics may contain your source diff; review them before
 
 The browser URL printed by `inspect` is loopback-only and GET-only. React Flow shows saved tasks,
 dependency/conflict edges and recorded task details. It has no approval/run controls or write routes.
-Both interfaces use a thin shared read model over ordinary Plan JSON, read-only SQLite and completion
-JSONL. Partial evidence generates a warning; missing facts are not invented. The inherited run row may
-remain ACTIVE after task events are terminal: `recordedRunState` exposes that row, while a displayed
-terminal aggregate is explicitly labeled `stateSource: task-events`. Neither observation writes state.
+Both interfaces show the same recorded plan, task and run observations. Partial evidence generates a
+warning; missing facts are not invented. A separately recorded run status may remain ACTIVE after task
+events are terminal; the interface labels both facts instead of overwriting one with the other.
+Final repository checks, cleanliness and commit are displayed separately from task completion.
 Completion entry observations VERIFYING/REVIEWING do not change scheduling or execution semantics.
 
-Verification: `pnpm check` passes 433 tests in 33 files and unchanged 90% coverage gates; build passes
+The Web UI includes dependency-column layout, conflict labels, task filtering, minimap, a task list,
+copyable task details, manual/automatic refresh and help. Narrow browser widths stack graph and details.
+The browser has no execution buttons. Use the TUI or CLI for explicit approval and execution.
+
+## Advanced/testing overrides
+
+Forge manages its local records automatically under `~/.forge`; ordinary usage needs no storage
+configuration. `--state-directory /outside/repository/forge-state` is an advanced/testing override,
+not a normal startup requirement. Internal record formats are implementation details.
+
+Historical verification: `pnpm check` passed 433 tests in 33 files and unchanged 90% coverage gates; build passed
 for CLI and browser assets. Tests cover real Git/SQLite read-only observations, explicit TUI operations,
 failure/missing evidence, GET-only HTTP and complete diagnostic copy/fallback. A real browser smoke
 test opened the earlier completed live pathe run and selected its task to see passed verification,

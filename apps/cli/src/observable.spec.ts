@@ -521,6 +521,7 @@ describe('Observable Forge local product', () => {
         ],
         warnings: ['Observation warning']
       };
+      tui.state.panel = 'detail';
       const rendered = renderObservableTui(tui.state, 200, 100);
       for (const text of [
         'Full failure',
@@ -536,10 +537,10 @@ describe('Observable Forge local product', () => {
         expect(rendered).toContain(text);
       }
       tui.state.screen = TuiScreen.Request;
-      expect(renderObservableTui(tui.state)).toContain('Request');
+      expect(renderObservableTui(tui.state)).toContain('REQUEST');
       tui.state.view = undefined;
       tui.state.screen = TuiScreen.Result;
-      expect(renderObservableTui(tui.state)).toContain('Screen: result');
+      expect(renderObservableTui(tui.state)).toContain('RESULT');
     } finally {
       await f.close();
     }
